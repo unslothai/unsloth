@@ -22,10 +22,10 @@ def _auth(tmp_path, monkeypatch, auth_method):
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
     auth = mcp_client._oauth(URL)
     auth.context.client_info = OAuthClientInformationFull(
-        client_id = CLIENT_ID,
-        client_secret = CLIENT_SECRET,
-        token_endpoint_auth_method = auth_method,
-        redirect_uris = auth.context.client_metadata.redirect_uris,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        token_endpoint_auth_method=auth_method,
+        redirect_uris=auth.context.client_metadata.redirect_uris,
     )
     return auth
 
@@ -63,7 +63,7 @@ def test_post_auth_keeps_client_id_in_body(tmp_path, monkeypatch):
 
 def test_basic_auth_omits_client_id_from_refresh(tmp_path, monkeypatch):
     auth = _auth(tmp_path, monkeypatch, "client_secret_basic")
-    auth.context.current_tokens = OAuthToken(access_token = "at", refresh_token = "rt")
+    auth.context.current_tokens = OAuthToken(access_token="at", refresh_token="rt")
     request = asyncio.run(auth._refresh_token())
     form = _form(request)
 
@@ -91,12 +91,12 @@ def test_unpatchable_context_does_not_break_oauth():
         def prepare_token_auth(
             self,
             data,
-            headers = None,
+            headers=None,
         ):
             return data, headers or {}
 
         def __setattr__(self, name, value):
             raise AttributeError("frozen")
 
-    auth = types.SimpleNamespace(context = Frozen())
+    auth = types.SimpleNamespace(context=Frozen())
     mcp_client._strip_client_id_under_basic_auth(auth)

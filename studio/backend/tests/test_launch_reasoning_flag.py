@@ -84,17 +84,17 @@ def _probe(
     tmp_path,
     monkeypatch,
     help_text,
-    returncode = 0,
-    stream = "stdout",
+    returncode=0,
+    stream="stdout",
 ):
     """The real probe against a stubbed ``llama-server --help``."""
     binary = tmp_path / "llama-server"
     binary.write_text("")
     completed = subprocess.CompletedProcess(
-        args = [str(binary), "--help"],
-        returncode = returncode,
-        stdout = help_text if stream == "stdout" else "",
-        stderr = help_text if stream == "stderr" else "",
+        args=[str(binary), "--help"],
+        returncode=returncode,
+        stdout=help_text if stream == "stdout" else "",
+        stderr=help_text if stream == "stderr" else "",
     )
     monkeypatch.setattr(llama_cpp.subprocess, "run", lambda *a, **k: completed)
     LlamaCppBackend._capability_cache.clear()
@@ -117,7 +117,7 @@ class TestTheProbeReadsTheFlagAndNotItsNamesakes:
             {"help_text": "usage: llama-server [options]\n"},
             {"help_text": REMOVAL_STUB_HELP},
         ],
-        ids = ["empty-help", "failed-probe", "usage-only", "removal-stub"],
+        ids=["empty-help", "failed-probe", "usage-only", "removal-stub"],
     )
     def test_the_gate_is_closed_on_anything_but_a_positive_answer(
         self, tmp_path, monkeypatch, kwargs
@@ -129,7 +129,7 @@ class TestTheProbeReadsTheFlagAndNotItsNamesakes:
         """Same policy as the sibling flags: a nonzero exit after a full help still named
         the flags, and the doubt is carried separately in *_probe_inconclusive.
         """
-        caps = _probe(tmp_path, monkeypatch, MODERN_HELP, returncode = 1)
+        caps = _probe(tmp_path, monkeypatch, MODERN_HELP, returncode=1)
         assert caps["supports_reasoning_flag"] == caps["supports_reasoning_budget"] is True
         assert caps["reasoning_budget_probe_inconclusive"] is True
 
@@ -138,7 +138,7 @@ class TestTheProbeReadsTheFlagAndNotItsNamesakes:
         assert caps["supports_reasoning_flag"] is False
 
     def test_the_flag_is_read_from_stderr_too(self, tmp_path, monkeypatch):
-        caps = _probe(tmp_path, monkeypatch, MODERN_HELP, stream = "stderr")
+        caps = _probe(tmp_path, monkeypatch, MODERN_HELP, stream="stderr")
         assert caps["supports_reasoning_flag"] is True
 
 
@@ -189,7 +189,7 @@ class TestOnlyTheDeprecatedKeyMoves:
     @pytest.mark.parametrize(
         "caps",
         [OLD_CAPS, {}, {"supports_reasoning_flag": None}],
-        ids = ["old-build", "nothing-known", "unset"],
+        ids=["old-build", "nothing-known", "unset"],
     )
     def test_without_the_flag_the_argv_is_what_main_emits(self, caps):
         kwargs = {"enable_thinking": True, "preserve_thinking": False}
@@ -199,7 +199,7 @@ class TestOnlyTheDeprecatedKeyMoves:
         ]
 
     @pytest.mark.parametrize(
-        "caps", [MODERN_CAPS, OLD_CAPS, {}], ids = ["modern", "old-build", "nothing-known"]
+        "caps", [MODERN_CAPS, OLD_CAPS, {}], ids=["modern", "old-build", "nothing-known"]
     )
     def test_an_empty_dict_still_goes_out_as_main_sends_it(self, caps):
         """Nothing moved, so the argument main appends has to be appended.
@@ -243,8 +243,8 @@ def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
     version.cuda = None if rocm else "13.0"
     torch.version = version
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: device_count > 0,
-        device_count = lambda: device_count,
+        is_available=lambda: device_count > 0,
+        device_count=lambda: device_count,
     )
     return torch
 
@@ -252,25 +252,25 @@ def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
 def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
     """The argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
-    monkeypatch.setattr(llama_cpp.sys, "platform", platform, raising = False)
-    monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising = False)
+    monkeypatch.setattr(llama_cpp.sys, "platform", platform, raising=False)
+    monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising=False)
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch(rocm = vendor == "amd", device_count = 0 if vendor == "cpu" else 1),
+        _fake_torch(rocm=vendor == "amd", device_count=0 if vendor == "cpu" else 1),
     )
     memory = [] if vendor == "cpu" else [(0, 24_000, 24_000)]
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend, gguf = _backend(tmp_path, vulkan=False, memory=memory)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: dict(MODERN_CAPS if modern else OLD_CAPS)),
+        classmethod(lambda cls, binary=None: dict(MODERN_CAPS if modern else OLD_CAPS)),
     )
     captured = _launch(
         backend,
         gguf,
-        n_ctx = 4096,
-        chat_template_override = template,
+        n_ctx=4096,
+        chat_template_override=template,
     )
     return captured["cmd"]
 
@@ -304,10 +304,10 @@ class TestTheRealLaunchOnEveryHost:
         cmd = _argv_for(
             tmp_path,
             monkeypatch,
-            os_label = os_label,
-            vendor = vendor,
-            modern = True,
-            template = THINKING_TEMPLATE,
+            os_label=os_label,
+            vendor=vendor,
+            modern=True,
+            template=THINKING_TEMPLATE,
         )
         assert _reasoning_slice(cmd) == [
             "--reasoning",
@@ -322,10 +322,10 @@ class TestTheRealLaunchOnEveryHost:
         cmd = _argv_for(
             tmp_path,
             monkeypatch,
-            os_label = os_label,
-            vendor = vendor,
-            modern = False,
-            template = THINKING_TEMPLATE,
+            os_label=os_label,
+            vendor=vendor,
+            modern=False,
+            template=THINKING_TEMPLATE,
         )
         assert "--reasoning" not in cmd
         assert _reasoning_slice(cmd) == [
@@ -333,17 +333,17 @@ class TestTheRealLaunchOnEveryHost:
             '{"enable_thinking": true, "preserve_thinking": false}',
         ]
 
-    @pytest.mark.parametrize("modern", [True, False], ids = ["modern", "old"])
+    @pytest.mark.parametrize("modern", [True, False], ids=["modern", "old"])
     def test_an_effort_ladder_model_is_unchanged_on_both_vintages(
         self, tmp_path, monkeypatch, modern
     ):
         cmd = _argv_for(
             tmp_path,
             monkeypatch,
-            os_label = "linux",
-            vendor = "nvidia",
-            modern = modern,
-            template = EFFORT_TEMPLATE,
+            os_label="linux",
+            vendor="nvidia",
+            modern=modern,
+            template=EFFORT_TEMPLATE,
         )
         assert "--reasoning" not in cmd
         assert _reasoning_slice(cmd)[0] == "--chat-template-kwargs"
@@ -367,7 +367,7 @@ class TestInheritedExtrasTreatBothSpellingsAlike:
         ],
     )
     def test_a_template_override_strips_the_inherited_default(self, args):
-        assert strip_shadowing_flags([*args, "--threads", "8"], strip_template = True) == [
+        assert strip_shadowing_flags([*args, "--threads", "8"], strip_template=True) == [
             "--threads",
             "8",
         ]
@@ -377,4 +377,4 @@ class TestInheritedExtrasTreatBothSpellingsAlike:
         [["--reasoning", "off"], ["--chat-template-kwargs", '{"enable_thinking": false}']],
     )
     def test_without_a_template_override_both_survive(self, args):
-        assert strip_shadowing_flags([*args], strip_template = False) == args
+        assert strip_shadowing_flags([*args], strip_template=False) == args

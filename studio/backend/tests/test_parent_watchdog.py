@@ -32,7 +32,7 @@ def test_fires_when_reparented(monkeypatch):
 
     monkeypatch.setattr(pw.os, "getppid", _ppid)
     fired = threading.Event()
-    pw._watch_unix(4242, fired.set, threading.Event(), poll_seconds = 0.01)
+    pw._watch_unix(4242, fired.set, threading.Event(), poll_seconds=0.01)
     assert fired.is_set()
 
 
@@ -44,12 +44,12 @@ def test_fires_immediately_when_already_orphaned(monkeypatch):
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32", reason = "dispatches to the Windows watcher, which opens the real pid"
+    sys.platform == "win32", reason="dispatches to the Windows watcher, which opens the real pid"
 )
 def test_stop_event_ends_the_watch(monkeypatch):
     monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
     fired = threading.Event()
-    stop = pw.start_parent_watchdog(fired.set, poll_seconds = 0.01)
+    stop = pw.start_parent_watchdog(fired.set, poll_seconds=0.01)
     assert stop is not None
     stop.set()
     time.sleep(0.05)
@@ -69,12 +69,12 @@ def test_fires_immediately_when_the_owner_is_not_the_current_parent(monkeypatch)
     monkeypatch.setattr(pw.os, "getppid", lambda: 7777)
     fired = threading.Event()
     started = time.monotonic()
-    pw._watch_unix(4242, fired.set, threading.Event(), poll_seconds = 30)
+    pw._watch_unix(4242, fired.set, threading.Event(), poll_seconds=30)
     assert fired.is_set()
     assert time.monotonic() - started < 1
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "unix reparenting path")
+@pytest.mark.skipif(sys.platform == "win32", reason="unix reparenting path")
 def test_process_exits_when_parent_dies(tmp_path):
     # The callback writes a marker before exiting: liveness cannot be probed
     # with kill(pid, 0), which also succeeds while the child is an unreaped
@@ -112,7 +112,7 @@ subprocess.Popen([sys.executable, {str(watcher)!r}, str(os.getpid())])
 
     # The intermediate parent spawns the watcher and exits immediately,
     # orphaning it; the watchdog must notice and exit the watcher.
-    subprocess.run([sys.executable, str(parent)], check = True, timeout = 15)
+    subprocess.run([sys.executable, str(parent)], check=True, timeout=15)
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

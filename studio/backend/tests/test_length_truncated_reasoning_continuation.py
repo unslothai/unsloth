@@ -82,8 +82,8 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
         _url,
         payload,
         _cancel_event,
-        headers = None,
-        first_token_deadline = None,
+        headers=None,
+        first_token_deadline=None,
     ):
         payloads.append(copy.deepcopy(payload))
         stream = streams.pop(0)
@@ -92,7 +92,7 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
     def fake_iter_text_cancellable(
         response,
         _cancel_event,
-        first_token_deadline = None,
+        first_token_deadline=None,
     ):
         yield from response.chunks
 
@@ -120,9 +120,9 @@ def _run(backend, **kwargs):
     kwargs.setdefault("max_tool_iterations", 3)
     return list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
-            tools = [_WEB_SEARCH_TOOL],
-            enable_thinking = True,
+            messages=[{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+            tools=[_WEB_SEARCH_TOOL],
+            enable_thinking=True,
             **kwargs,
         )
     )
@@ -136,10 +136,10 @@ def _run_no_tools(backend, **kwargs):
     """Drives the FINAL generation, the pass taken once the tool loop is done."""
     return list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
-            tools = [],
-            max_tool_iterations = 0,
-            enable_thinking = True,
+            messages=[{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+            tools=[],
+            max_tool_iterations=0,
+            enable_thinking=True,
             **kwargs,
         )
     )
@@ -288,7 +288,7 @@ def test_a_good_tool_round_restores_the_full_allowance(monkeypatch):
     )
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "results")
 
-    _run(backend, max_tool_iterations = 8)
+    _run(backend, max_tool_iterations=8)
 
     # 1 stall + 1 continuation that called the tool + 3 more turns once the tool round
     # reset the allowance. A counter that survived would have stopped an attempt earlier.
@@ -326,7 +326,7 @@ def test_thinking_comes_back_on_after_a_good_tool_round(monkeypatch):
     )
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "results")
 
-    _run(backend, max_tool_iterations = 8)
+    _run(backend, max_tool_iterations=8)
 
     assert payloads[1]["chat_template_kwargs"]["enable_thinking"] is False
     assert payloads[2]["chat_template_kwargs"]["enable_thinking"] is True
@@ -471,7 +471,7 @@ def test_an_explicit_effort_does_not_survive_the_continuation(monkeypatch):
         payloads,
     )
 
-    _run(backend, reasoning_effort = "high")
+    _run(backend, reasoning_effort="high")
 
     assert payloads[0]["chat_template_kwargs"] == {"reasoning_effort": "high"}
     # "low", not "none": this style covers models that cannot actually disable
@@ -515,7 +515,7 @@ def test_the_caller_effort_comes_back_once_a_turn_gets_somewhere(monkeypatch):
         lambda name, arguments, **_kwargs: "a result",
     )
 
-    _run(backend, reasoning_effort = "high")
+    _run(backend, reasoning_effort="high")
 
     assert payloads[1]["chat_template_kwargs"] == {"reasoning_effort": "low"}
     assert payloads[2]["chat_template_kwargs"] == {"reasoning_effort": "high"}
@@ -556,7 +556,7 @@ def test_a_request_that_never_stalls_keeps_the_bound_it_always_had(monkeypatch):
         lambda name, arguments, **_kwargs: "a result",
     )
 
-    _run(backend, max_tool_iterations = 3)
+    _run(backend, max_tool_iterations=3)
 
     # Three tool rounds, then the tool-free final pass. Unchanged by the conversion.
     assert len(payloads) == 4
@@ -593,7 +593,7 @@ def test_a_stall_does_not_eat_the_tool_budget(monkeypatch):
 
     monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
 
-    _run(backend, max_tool_iterations = 1, nudge_tool_calls = True)
+    _run(backend, max_tool_iterations=1, nudge_tool_calls=True)
 
     assert calls == ["web_search"], "the stall spent the one tool iteration"
 
@@ -614,7 +614,7 @@ def test_the_final_pass_blames_the_cap_when_the_cap_is_what_was_spent(monkeypatc
         payloads,
     )
 
-    events = _run_no_tools(backend, max_tokens = 200)
+    events = _run_no_tools(backend, max_tokens=200)
 
     assert len(payloads) == 1, "a spent cap has nothing left to continue with"
     text = "".join(_texts(events, "content"))
@@ -740,7 +740,7 @@ def test_the_in_loop_give_up_names_the_cap_when_the_last_attempt_spent_it(monkey
     # 300 spent 100 at a time: every continuation is ADMITTED, and the cap runs out on
     # the last permitted attempt. That is the stale case -- reaching the give-up by way
     # of a refusal already sets the flag correctly.
-    events = _run(backend, max_tokens = 300)
+    events = _run(backend, max_tokens=300)
 
     assert len(payloads) == _MAX_LENGTH_CONTINUATIONS + 1, "a continuation was refused"
     text = "".join(_texts(events, "content"))
@@ -794,12 +794,12 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [*old_turns, latest],
-            tools = [_WEB_SEARCH_TOOL],
-            enable_thinking = True,
-            max_tool_iterations = 3,
-            max_tokens = 100,
-            context_overflow = "truncate_oldest",
+            messages=[*old_turns, latest],
+            tools=[_WEB_SEARCH_TOOL],
+            enable_thinking=True,
+            max_tool_iterations=3,
+            max_tokens=100,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -837,11 +837,11 @@ def test_final_pass_continuation_counts_strip_media_and_payloads_keep_it(monkeyp
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [latest],
-            tools = [],
-            max_tool_iterations = 0,
-            enable_thinking = True,
-            context_overflow = "truncate_oldest",
+            messages=[latest],
+            tools=[],
+            max_tool_iterations=0,
+            enable_thinking=True,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -901,11 +901,11 @@ def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [*old_turns, {"role": "user", "content": "Show me the HTML inline"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 3,
-            max_tokens = 1000,
-            context_overflow = "truncate_oldest",
+            messages=[*old_turns, {"role": "user", "content": "Show me the HTML inline"}],
+            tools=[_WEB_SEARCH_TOOL],
+            max_tool_iterations=3,
+            max_tokens=1000,
+            context_overflow="truncate_oldest",
         )
     )
 

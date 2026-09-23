@@ -22,10 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def dockerfile() -> str:
     assert DOCKERFILE.is_file(), f"missing {DOCKERFILE}"
-    return DOCKERFILE.read_text(encoding = "utf-8")
+    return DOCKERFILE.read_text(encoding="utf-8")
 
 
 def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
@@ -82,7 +82,7 @@ def _cublas_pkg_for(dockerfile: str, soname: str) -> str:
     lines = snippet.replace("\\\n", "\n")
     script = "\n".join([f"want={shlex.quote(soname)}", lines, 'printf %s "$pkg"'])
     return subprocess.run(
-        ["sh", "-eu", "-c", script], capture_output = True, text = True, check = True
+        ["sh", "-eu", "-c", script], capture_output=True, text=True, check=True
     ).stdout
 
 

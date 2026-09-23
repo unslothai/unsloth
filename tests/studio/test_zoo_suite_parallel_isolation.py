@@ -66,7 +66,7 @@ MLX_DESELECT = (
 
 def _commands() -> list[str]:
     """Every `python -m pytest ...` invocation, line continuations resolved."""
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     joined = re.sub(r"\\\s*\n\s*", " ", text)
     return [
         line.strip()
@@ -108,7 +108,7 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
     )
 
 
-@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+@pytest.mark.parametrize("path,reason", ISOLATED, ids=lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
     cmd = _zoo_parallel()
     covered = f"--ignore={path}" in cmd or (
@@ -121,7 +121,7 @@ def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str)
     )
 
 
-@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+@pytest.mark.parametrize("path,reason", ISOLATED, ids=lambda v: v.split("/")[-1])
 def test_an_isolated_file_still_runs_serially(path: str, reason: str) -> None:
     """The silent half. An ignore with no rerun deletes the tests and stays green."""
     assert path in _zoo_serial(path), (
@@ -130,7 +130,7 @@ def test_an_isolated_file_still_runs_serially(path: str, reason: str) -> None:
     )
 
 
-@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+@pytest.mark.parametrize("path,reason", ISOLATED, ids=lambda v: v.split("/")[-1])
 def test_the_serial_rerun_is_not_itself_parallel(path: str, reason: str) -> None:
     """Rerunning these under xdist would reproduce exactly what it exists to avoid."""
     assert "-n " not in _zoo_serial(path), (
@@ -147,11 +147,11 @@ def test_the_serial_reruns_tolerate_an_empty_collection() -> None:
             f"skip (pytest exit 5, nothing collected) fails the whole job"
         )
     assert 'if [ "$1" = 5 ]' in WORKFLOW.read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     ), "the isolated rerun no longer tolerates pytest's no-tests-collected exit"
 
 
-@pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
+@pytest.mark.parametrize("path,reason", ISOLATED, ids=lambda v: v.split("/")[-1])
 def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> None:
     """Give every contaminating file its own process."""
     cmd = _zoo_serial(path)
@@ -189,7 +189,7 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
         "-n " not in _zoo_mlx_group()
     ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
     # Per-file exclusions are applied while building the group, not on pytest itself.
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     for path, _ in ISOLATED:
         name = path.rsplit("/", 1)[-1]
         if not name.startswith("test_mlx_"):
@@ -205,7 +205,7 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
     """The group is passed unquoted, so an empty list is not an empty run: with nothing
     in ``mlx_group`` the command collects the whole rootdir instead, green and far
     slower. The glob only has to stop matching once, upstream renaming the family say."""
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     assert 'if [ -z "$mlx_group" ]' in text, (
         "nothing checks that the mlx group glob matched anything, so an empty glob "
         "silently turns this step into a serial run of the entire suite"
@@ -213,7 +213,7 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
 
 
 def _doc() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _job(jid: str) -> dict:
@@ -349,7 +349,7 @@ def test_the_shared_preamble_is_not_also_inlined() -> None:
             f"{SETUP_ACTION} so both halves cannot drift apart; a second copy is the "
             f"drift, and it is silent until the two jobs disagree about a version"
         )
-    action = yaml.safe_load(ACTION.read_text(encoding = "utf-8"))
+    action = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
     run = "\n".join(str(step.get("run", "")) for step in action["runs"]["steps"])
     for marker in ("pip install -e .", "download.pytorch.org/whl/cpu", "git clone"):
         assert marker in run, f"{SETUP_ACTION} no longer does {marker!r}"
@@ -359,7 +359,7 @@ def test_a_skipped_isolated_file_is_named_in_the_log() -> None:
     """Exit 5 is tolerated, so the file that produced it has to be identifiable: an
     expected module-level skip and a file that stopped collecting for a new reason both
     exit 5 and both stay green."""
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     for path, _ in ISOLATED:
         assert f'_keep "$?" {path}' in text, (
             f"the rerun of {path} does not pass its own name to _keep, so a silent "

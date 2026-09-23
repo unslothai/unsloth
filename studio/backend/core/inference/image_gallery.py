@@ -63,7 +63,7 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
     buf = io.BytesIO()
-    image.save(buf, format = "PNG", pnginfo = info)
+    image.save(buf, format="PNG", pnginfo=info)
     return buf.getvalue()
 
 
@@ -80,7 +80,7 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
         os.replace(tmp_path, final_path)
     except BaseException:
         try:
-            tmp_path.unlink(missing_ok = True)
+            tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
@@ -197,7 +197,7 @@ def list_images(
     # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
     # per file and leave the early break below intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
+    paths.sort(key=lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse=True)
     # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
     # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
     # page, so a deep scroll is O(offset) header-opens.
@@ -231,7 +231,7 @@ def set_flags(
         path = owned_image_path(image_id)
         if path is None:
             return None
-        gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned = pinned, archived = archived)
+        gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned=pinned, archived=archived)
         meta = _read_meta(path)
     if meta is None:  # raced a delete between the guard and the read
         return None
@@ -241,7 +241,7 @@ def set_flags(
 def delete(image_id: str) -> bool:
     path = image_path(image_id)
     # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
-    if path is None or _read_meta(path, strict_io = True) is None:
+    if path is None or _read_meta(path, strict_io=True) is None:
         if _ID_RE.fullmatch(image_id):
             # Only prune absent files, preserving foreign files and symlinks.
             try:

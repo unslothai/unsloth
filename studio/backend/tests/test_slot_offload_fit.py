@@ -36,10 +36,10 @@ FRAC = LlamaCppBackend._GPU_PIN_VRAM_FRACTION  # 0.97; usable = free - 0.03*tota
 
 
 def _backend(
-    vocab = 248320,
-    embd = 5120,
-    kv_fixed_mib = 0,
-    kv_calls = None,
+    vocab=248320,
+    embd=5120,
+    kv_fixed_mib=0,
+    kv_calls=None,
 ):
     """Backend with the dims the compute buffer reads; KV mocked to a fixed size so the
     only slot-dependent term is the synthetic compute buffer from
@@ -54,7 +54,7 @@ def _backend(
 
     def estimate(
         ctx,
-        t = None,
+        t=None,
         **kwargs,
     ):
         if kv_calls is not None:
@@ -72,9 +72,9 @@ def _run(
     base_mib,
     gpus,
     total_by_idx,
-    overhead_mib = 0,
-    swa_full = False,
-    split_extra_mib = 0,
+    overhead_mib=0,
+    swa_full=False,
+    split_extra_mib=0,
 ):
     # Split step passed only when set, so the other cases keep exercising the default.
     extra = {"split_extra_bytes": int(split_extra_mib * MIB)} if split_extra_mib else {}
@@ -88,8 +88,8 @@ def _run(
         FRAC,
         int(overhead_mib * MIB),
         1,
-        n_ubatch = 512,
-        swa_full = swa_full,
+        n_ubatch=512,
+        swa_full=swa_full,
         **extra,
     )
 
@@ -135,7 +135,7 @@ class TestSlotsThatFitOnGpu:
     def test_kv_counted_per_candidate(self):
         # A non-zero (slot-independent) KV shifts the threshold: with 3000 MiB KV and
         # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
-        gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
+        gi, use_fit, slots = _run(_backend(kv_fixed_mib=3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
 
     def test_split_rate_is_rechecked_on_multi_gpu_candidates(self):
@@ -143,24 +143,24 @@ class TestSlotsThatFitOnGpu:
         # rate, so a candidate that lands on 2 GPUs owes one enlarged copy per card.
         # Charging it drops the count further (3 -> 1) rather than pinning an OOM.
         gpus, totals = [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
-        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 500) == ([0, 1], False, 1)
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib=500) == ([0, 1], False, 1)
         # And when no count clears it, offload (the pre-existing failure mode).
-        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib=1000) == (None, True, 4)
 
     def test_split_step_does_not_touch_a_single_gpu_candidate(self):
-        assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib = 500) == (
+        assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib=500) == (
             _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576})
         )
 
     def test_swa_full_is_used_for_every_candidate(self):
         calls = []
         _run(
-            _backend(kv_calls = calls),
+            _backend(kv_calls=calls),
             4,
             22500,
             [(0, 24576)],
             {0: 24576},
-            swa_full = True,
+            swa_full=True,
         )
         assert calls
         assert all(call["swa_full"] is True for call in calls)
@@ -172,12 +172,12 @@ class TestSlotsThatFitOnGpu:
 
         def ubatch_for_slots(slots: int):
             return _extra_args_n_ubatch(
-                None, env = {}, n_ctx = CTX, n_batch = _emitted_n_batch(1, slots), n_ubatch = 64
+                None, env={}, n_ctx=CTX, n_batch=_emitted_n_batch(1, slots), n_ubatch=64
             )
 
         def _fit(**kwargs):
             calls = []
-            got = _backend(kv_calls = calls)._slots_that_fit_on_gpu(
+            got = _backend(kv_calls=calls)._slots_that_fit_on_gpu(
                 4,
                 CTX,
                 [(0, 24576)],
@@ -187,14 +187,14 @@ class TestSlotsThatFitOnGpu:
                 FRAC,
                 0,
                 1,
-                n_ubatch = 64,
+                n_ubatch=64,
                 **kwargs,
             )
             return got, [call["n_ubatch"] for call in calls]
 
         # priced at the batch each candidate LAUNCHES with: the first one fits, so the
         # search stops there
-        assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
+        assert _fit(ubatch_for_slots=ubatch_for_slots) == (([0], False, 3), [3])
         # held at the requested count's micro-batch, the same card loses a slot
         assert _fit() == (([0], False, 2), [64, 64])
 
@@ -208,7 +208,7 @@ class TestMtpReserveIsRepricedPerCandidate:
     def _fit(
         self,
         mtp_for_slots,
-        base_mib = 22000,
+        base_mib=22000,
     ):
         return _backend()._slots_that_fit_on_gpu(
             4,
@@ -220,8 +220,8 @@ class TestMtpReserveIsRepricedPerCandidate:
             FRAC,
             0,
             1,
-            n_ubatch = 512,
-            mtp_bytes_for_slots = mtp_for_slots,
+            n_ubatch=512,
+            mtp_bytes_for_slots=mtp_for_slots,
         )
 
     def test_a_slot_scaled_reserve_shrinks_with_the_candidate(self):
@@ -244,7 +244,7 @@ class TestMtpReserveIsRepricedPerCandidate:
         and not the one the original request was sized at (PR #8172)."""
         seen = []
         # base 24000: no candidate fits, so every one is priced and observed.
-        self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
+        self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib=24000)
         assert seen, "the reserve callback was never consulted"
         # ubatch_for_slots is None here, so n_ubatch passes through; what matters is that
         # it travels with the slot count instead of being dropped.

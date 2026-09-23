@@ -17,10 +17,10 @@ _MODELS = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models"
 
 def _load_get_model_name():
     mapper_ns = {}
-    with open(os.path.join(_MODELS, "mapper.py"), encoding = "utf-8") as f:
+    with open(os.path.join(_MODELS, "mapper.py"), encoding="utf-8") as f:
         exec(compile(f.read(), "mapper.py", "exec"), mapper_ns)
 
-    with open(os.path.join(_MODELS, "loader_utils.py"), encoding = "utf-8") as f:
+    with open(os.path.join(_MODELS, "loader_utils.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
 
     namespace = dict(mapper_ns)
@@ -44,4 +44,4 @@ def test_bad_mappings_redirect_every_listed_name():
     get_model_name, bad_mappings = _load_get_model_name()
     assert bad_mappings, "BAD_MAPPINGS should not be empty"
     for name, expected in bad_mappings.items():
-        assert get_model_name(name, load_in_4bit = True) == expected, name
+        assert get_model_name(name, load_in_4bit=True) == expected, name

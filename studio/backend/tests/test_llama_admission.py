@@ -39,13 +39,13 @@ _ADMISSION_ENV = (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_queues(monkeypatch):
     # Clear ambient settings for every test, not just the ones that remember to:
     # a canonical name set on the machine silently beats the legacy name a test
     # is exercising, and the queue registry is process-global.
     for name in _ADMISSION_ENV:
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
     reset_llama_admission_queues()
     yield
     reset_llama_admission_queues()
@@ -63,7 +63,7 @@ def test_admission_config_defaults(monkeypatch):
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_KEEPALIVE_INTERVAL",
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_MAX_QUEUE",
     ):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
 
     config = llama_admission_config_from_env()
 
@@ -124,9 +124,9 @@ def test_fifo_capacity_one_grants_next_waiter_on_release():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
-        third = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
+        third = queue.reserve(capacity=1, config=config)
 
         first_lease = first.lease_nowait()
         assert first_lease is not None
@@ -156,7 +156,7 @@ def test_pool_hands_out_distinct_slots_and_reuses_them():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        leases = [queue.reserve(capacity = 3, config = config).lease_nowait() for _ in range(3)]
+        leases = [queue.reserve(capacity=3, config=config).lease_nowait() for _ in range(3)]
         assert sorted(lease.slot for lease in leases) == [0, 1, 2]  # one slot each
         snapshot = queue.snapshot()
         assert (snapshot.active, snapshot.free, snapshot.capacity) == (3, 0, 3)
@@ -165,7 +165,7 @@ def test_pool_hands_out_distinct_slots_and_reuses_them():
         freed = leases[1].slot
         leases[1].release()
         assert queue.snapshot().free == 1
-        reused = queue.reserve(capacity = 3, config = config).lease_nowait()
+        reused = queue.reserve(capacity=3, config=config).lease_nowait()
         assert reused.slot == freed
 
         reused.release()
@@ -182,8 +182,8 @@ def test_pool_waiter_is_handed_a_real_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        held = queue.reserve(capacity = 1, config = config).lease_nowait()
-        waiting = queue.reserve(capacity = 1, config = config)
+        held = queue.reserve(capacity=1, config=config).lease_nowait()
+        waiting = queue.reserve(capacity=1, config=config)
         assert waiting.lease_nowait() is None
         assert queue.snapshot().free == 0
 
@@ -200,12 +200,12 @@ def test_shrinking_capacity_retires_slots_beyond_the_new_pool():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        leases = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        leases = [queue.reserve(capacity=4, config=config).lease_nowait() for _ in range(4)]
         assert queue.snapshot().capacity == 4
 
         # llama-server reloaded with fewer --parallel slots; in-flight holders keep
         # running and their slots retire instead of returning to the smaller pool.
-        shrunk = queue.reserve(capacity = 2, config = config)
+        shrunk = queue.reserve(capacity=2, config=config)
         assert shrunk.lease_nowait() is None  # all 4 still held, nothing free
         for lease in leases:
             lease.release()
@@ -229,13 +229,13 @@ def test_queue_limit_scales_with_the_serving_slots():
     assert config.queue_limit(1) == 64  # floor, not 16
     assert config.queue_limit(2) == 64  # floor, not 32
     # An explicit cap wins, and a None multiplier means an unbounded line.
-    assert LlamaAdmissionConfig(max_queue = 5).queue_limit(8) == 5
-    assert LlamaAdmissionConfig(queue_per_slot = None).queue_limit(8) is None
+    assert LlamaAdmissionConfig(max_queue=5).queue_limit(8) == 5
+    assert LlamaAdmissionConfig(queue_per_slot=None).queue_limit(8) is None
     # Non-positive settings mean unbounded, never "reject everything".
-    assert LlamaAdmissionConfig(max_queue = 0).queue_limit(4) is None
-    assert LlamaAdmissionConfig(max_queue = -1).queue_limit(4) is None
-    assert LlamaAdmissionConfig(queue_per_slot = 0).queue_limit(4) is None
-    assert LlamaAdmissionConfig(queue_per_slot = -3).queue_limit(4) is None
+    assert LlamaAdmissionConfig(max_queue=0).queue_limit(4) is None
+    assert LlamaAdmissionConfig(max_queue=-1).queue_limit(4) is None
+    assert LlamaAdmissionConfig(queue_per_slot=0).queue_limit(4) is None
+    assert LlamaAdmissionConfig(queue_per_slot=-3).queue_limit(4) is None
 
 
 def test_queue_limit_rejects_only_once_the_line_is_full():
@@ -243,14 +243,14 @@ def test_queue_limit_rejects_only_once_the_line_is_full():
         queue = get_llama_admission_queue("http://llama.test")
         # Explicit cap, so the test drives rejection without standing up the 64
         # waiters the scaled floor would otherwise require.
-        config = LlamaAdmissionConfig(max_queue = 4)
+        config = LlamaAdmissionConfig(max_queue=4)
 
-        held = [queue.reserve(capacity = 2, config = config).lease_nowait() for _ in range(2)]
-        parked = [queue.reserve(capacity = 2, config = config) for _ in range(4)]
+        held = [queue.reserve(capacity=2, config=config).lease_nowait() for _ in range(2)]
+        parked = [queue.reserve(capacity=2, config=config) for _ in range(4)]
         assert queue.snapshot().queued == 4
 
         with pytest.raises(LlamaAdmissionQueueFull):
-            queue.reserve(capacity = 2, config = config)
+            queue.reserve(capacity=2, config=config)
 
         for reservation in parked:
             reservation.cancel()
@@ -273,7 +273,7 @@ def test_single_request_at_a_time_never_queues_or_allocates_waiters():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
         for _ in range(50):
-            reservation = queue.reserve(capacity = 4, config = config)
+            reservation = queue.reserve(capacity=4, config=config)
             lease = reservation.lease_nowait()
             assert lease is not None  # admitted immediately
             assert queue.snapshot().queued == 0  # nobody ever lined up
@@ -289,10 +289,10 @@ def test_unbounded_queue_keeps_waiting_instead_of_rejecting():
     # ever rejected, callers just line up for the next free slot.
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = None, queue_per_slot = None)
+        config = LlamaAdmissionConfig(max_queue=None, queue_per_slot=None)
 
-        held = queue.reserve(capacity = 1, config = config).lease_nowait()
-        waiters = [queue.reserve(capacity = 1, config = config) for _ in range(200)]
+        held = queue.reserve(capacity=1, config=config).lease_nowait()
+        waiters = [queue.reserve(capacity=1, config=config) for _ in range(200)]
         assert queue.snapshot().queued == 200  # no LlamaAdmissionQueueFull
 
         held.release()
@@ -308,15 +308,15 @@ def test_unbounded_queue_keeps_waiting_instead_of_rejecting():
 def test_queue_full_rejects_excess_waiter():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = 1)
+        config = LlamaAdmissionConfig(max_queue=1)
 
-        first = queue.reserve(capacity = 1, config = config)
-        queued = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        queued = queue.reserve(capacity=1, config=config)
 
         assert first.lease_nowait() is not None
         assert queued.lease_nowait() is None
         with pytest.raises(LlamaAdmissionQueueFull):
-            queue.reserve(capacity = 1, config = config)
+            queue.reserve(capacity=1, config=config)
 
     asyncio.run(_run())
 
@@ -324,10 +324,10 @@ def test_queue_full_rejects_excess_waiter():
 def test_disabled_admission_bypasses_active_slot_limit():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(enabled = False)
+        config = LlamaAdmissionConfig(enabled=False)
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
 
         assert first.lease_nowait() is not None
         assert second.lease_nowait() is not None
@@ -342,8 +342,8 @@ def test_cancelling_promoted_waiter_releases_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
 
         first_lease.release()
@@ -362,8 +362,8 @@ def test_cancelling_promoted_waiter_before_delivery_releases_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
 
         first_lease.release()
@@ -381,8 +381,8 @@ def test_external_waiter_future_cancel_invalidates_reservation():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         assert second._waiter is not None
@@ -406,8 +406,8 @@ def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         assert second._waiter is not None
@@ -416,7 +416,7 @@ def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
         await asyncio.sleep(0)
         second._waiter.future.cancel()
 
-        assert await asyncio.wait_for(wait_task, timeout = 0.1) is None
+        assert await asyncio.wait_for(wait_task, timeout=0.1) is None
         assert second.is_cancelled is True
 
         first_lease.release()
@@ -432,8 +432,8 @@ def test_capacity_increase_promotes_existing_waiter_fifo():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
 
         first_lease = first.lease_nowait()
         assert first_lease is not None
@@ -441,7 +441,7 @@ def test_capacity_increase_promotes_existing_waiter_fifo():
         assert queue.snapshot().active == 1
         assert queue.snapshot().queued == 1
 
-        third = queue.reserve(capacity = 2, config = config)
+        third = queue.reserve(capacity=2, config=config)
 
         second_lease = await second.wait(0.1)
         assert second_lease is not None
@@ -470,11 +470,11 @@ def test_lease_release_is_idempotent_under_concurrent_calls():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        reservation = queue.reserve(capacity = 1, config = config)
+        reservation = queue.reserve(capacity=1, config=config)
         lease = reservation.lease_nowait()
         assert lease is not None
 
-        threads = [threading.Thread(target = lease.release) for _ in range(16)]
+        threads = [threading.Thread(target=lease.release) for _ in range(16)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -498,9 +498,9 @@ def test_releasing_a_stale_lease_does_not_free_someone_elses_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        stale = queue.reserve(capacity = 1, config = config).lease_nowait()
+        stale = queue.reserve(capacity=1, config=config).lease_nowait()
         stale.release()
-        other = queue.reserve(capacity = 1, config = config).lease_nowait()
+        other = queue.reserve(capacity=1, config=config).lease_nowait()
         assert other.slot == stale.slot  # the slot got reused
 
         stale.release()
@@ -524,8 +524,8 @@ def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
 
         async def _fill_and_queue():
             nonlocal held
-            held = queue.reserve(capacity = 1, config = config).lease_nowait()
-            assert queue.reserve(capacity = 1, config = config).lease_nowait() is None
+            held = queue.reserve(capacity=1, config=config).lease_nowait()
+            assert queue.reserve(capacity=1, config=config).lease_nowait() is None
 
         dead.run_until_complete(_fill_and_queue())
     finally:
@@ -548,8 +548,8 @@ def test_cancel_returns_the_granted_slot_when_the_waiters_loop_is_gone():
 
         async def _fill_and_queue():
             nonlocal held, reservation
-            held = queue.reserve(capacity = 1, config = config).lease_nowait()
-            reservation = queue.reserve(capacity = 1, config = config)
+            held = queue.reserve(capacity=1, config=config).lease_nowait()
+            reservation = queue.reserve(capacity=1, config=config)
 
         dead.run_until_complete(_fill_and_queue())
         held.release()  # promotes the waiter, so cancel() has a lease to return
@@ -571,8 +571,8 @@ def test_delivery_to_an_already_finished_waiter_releases_the_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        held = queue.reserve(capacity = 1, config = config).lease_nowait()
-        reservation = queue.reserve(capacity = 1, config = config)
+        held = queue.reserve(capacity=1, config=config).lease_nowait()
+        reservation = queue.reserve(capacity=1, config=config)
         waiter = reservation._waiter
 
         held.release()  # schedules _deliver_lease, sets granted_lease
@@ -602,7 +602,7 @@ def test_new_key_retains_in_flight_prior_load_queue():
     busy = get_llama_admission_queue("http://127.0.0.1:2001")
 
     async def _run():
-        reservation = busy.reserve(capacity = 1, config = config)
+        reservation = busy.reserve(capacity=1, config=config)
         lease = reservation.lease_nowait()
         assert lease is not None
 
@@ -626,14 +626,14 @@ def test_capacity_shrink_never_admits_past_the_new_ceiling():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        held = [queue.reserve(capacity=4, config=config).lease_nowait() for _ in range(4)]
         assert all(lease is not None for lease in held)
-        waiter = queue.reserve(capacity = 4, config = config)
+        waiter = queue.reserve(capacity=4, config=config)
 
-        queue.reserve(capacity = 1, config = config)  # capacity collapses to 1
+        queue.reserve(capacity=1, config=config)  # capacity collapses to 1
         # Release the one id that still falls inside the shrunk pool, so it goes
         # back on the free list; ids at or above capacity retire instead.
-        low = min(held, key = lambda lease: lease.slot)
+        low = min(held, key=lambda lease: lease.slot)
         assert low.slot == 0
         low.release()
 
@@ -671,7 +671,7 @@ def test_max_queue_zero_from_env_is_unbounded_end_to_end(monkeypatch):
 
 def test_legacy_env_fallback_covers_every_setting(monkeypatch):
     for canonical, legacy in llama_admission._LEGACY_ENV.items():
-        monkeypatch.delenv(canonical, raising = False)
+        monkeypatch.delenv(canonical, raising=False)
         monkeypatch.setenv(legacy, "0" if "CONTROL" in canonical else "7")
     config = llama_admission_config_from_env()
     assert config.enabled is False
@@ -696,7 +696,7 @@ def test_explicit_queue_per_slot_is_not_floored(monkeypatch):
     assert config.queue_limit(8) == 16
 
     # Unset, the default multiplier is floored instead.
-    monkeypatch.delenv(ADMISSION_QUEUE_PER_SLOT_ENV, raising = False)
+    monkeypatch.delenv(ADMISSION_QUEUE_PER_SLOT_ENV, raising=False)
     assert llama_admission_config_from_env().queue_limit(1) == 64
 
     # A value that does not parse falls back to the default multiplier, so it has
@@ -712,7 +712,7 @@ def test_module_imports_on_python_39(monkeypatch):
     import ast
     import pathlib
 
-    src = pathlib.Path(llama_admission.__file__).read_text(encoding = "utf-8")
+    src = pathlib.Path(llama_admission.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
 
     # int.bit_count() (3.10+)
@@ -757,7 +757,7 @@ def test_slots_gate_matches_the_running_interpreter():
 
     # Construct through the gate either way: slots=True rebuilds the class, so a
     # field it cannot carry over would only show up on instantiation.
-    config = LlamaAdmissionConfig(max_queue = 7)
+    config = LlamaAdmissionConfig(max_queue=7)
     assert config.max_queue == 7 and config.queue_limit(4) == 7
     assert llama_admission.LlamaAdmissionSnapshot("k", 1, 1, 0).capacity == 1
 
@@ -769,11 +769,11 @@ def test_held_count_tracks_the_bitmask():
         config = LlamaAdmissionConfig()
         popcount = lambda: bin(queue._in_use).count("1")
 
-        leases = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        leases = [queue.reserve(capacity=4, config=config).lease_nowait() for _ in range(4)]
         assert queue._held == popcount() == 4
         leases[1].release()
         assert queue._held == popcount() == 3
-        shrunk = queue.reserve(capacity = 2, config = config)  # shrink with slots held
+        shrunk = queue.reserve(capacity=2, config=config)  # shrink with slots held
         assert queue._held == popcount() == 3
         shrunk.cancel()  # else it is granted a slot as the others drain
         for lease in leases:
@@ -790,9 +790,9 @@ def test_snapshot_free_never_exceeds_what_can_be_admitted():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
-        queue.reserve(capacity = 1, config = config)  # capacity collapses to 1
-        min(held, key = lambda lease: lease.slot).release()
+        held = [queue.reserve(capacity=4, config=config).lease_nowait() for _ in range(4)]
+        queue.reserve(capacity=1, config=config)  # capacity collapses to 1
+        min(held, key=lambda lease: lease.slot).release()
 
         snapshot = queue.snapshot()
         assert snapshot.free == 0, snapshot  # nothing is actually takeable
@@ -811,12 +811,12 @@ def test_a_newcomer_does_not_barge_past_a_parked_waiter():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        held = queue.reserve(capacity = 1, config = config).lease_nowait()
-        parked = queue.reserve(capacity = 1, config = config)
+        held = queue.reserve(capacity=1, config=config).lease_nowait()
+        parked = queue.reserve(capacity=1, config=config)
         assert parked.lease_nowait() is None
 
         held.release()
-        newcomer = queue.reserve(capacity = 1, config = config)
+        newcomer = queue.reserve(capacity=1, config=config)
         assert newcomer.lease_nowait() is None, "newcomer barged past the parked waiter"
         assert (await parked.wait(0.1)) is not None
 
@@ -829,20 +829,20 @@ def test_dead_waiters_stop_counting_against_the_queue_limit():
     # queue-full limit all drift for the life of the queue.
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue = 2)
+        config = LlamaAdmissionConfig(max_queue=2)
 
-        held = queue.reserve(capacity = 1, config = config).lease_nowait()
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        held = queue.reserve(capacity=1, config=config).lease_nowait()
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         assert queue.snapshot().queued == 2
         with pytest.raises(LlamaAdmissionQueueFull):
-            queue.reserve(capacity = 1, config = config)
+            queue.reserve(capacity=1, config=config)
 
         first._waiter.future.cancel()
         second._waiter.future.cancel()
         assert queue.snapshot().queued == 0, "dead waiters still occupy the line"
         # The freed depth is usable again, and an idle queue is evictable.
-        queue.reserve(capacity = 1, config = config).cancel()
+        queue.reserve(capacity=1, config=config).cancel()
         held.release()
         assert queue.is_idle()
 
@@ -860,8 +860,8 @@ def test_parking_frees_the_slot_for_a_waiter():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
-        second = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
+        second = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         assert second.lease_nowait() is None
@@ -885,13 +885,13 @@ def test_unpark_without_park_is_a_no_op():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity = 1, config = config)
+        first = queue.reserve(capacity=1, config=config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         first_lease.unpark()
         first_lease.unpark()
 
-        second = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity=1, config=config)
         assert second.lease_nowait() is None, "capacity leaked past the limit"
 
     asyncio.run(_run())
@@ -905,7 +905,7 @@ def test_releasing_a_parked_lease_leaves_the_queue_evictable():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+        lease = queue.reserve(capacity=1, config=config).lease_nowait()
         lease.park()
         assert not queue.is_idle(), "a parked holder is coming back to this queue"
         lease.release()
@@ -922,24 +922,24 @@ def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        a = queue.reserve(capacity = 1, config = config)
+        a = queue.reserve(capacity=1, config=config)
         a_lease = a.lease_nowait()
         assert a_lease is not None, "A takes the only slot"
-        b = queue.reserve(capacity = 1, config = config)
+        b = queue.reserve(capacity=1, config=config)
         assert b.lease_nowait() is None, "B waits behind A"
 
         a_lease.park()  # A parks on an approval prompt; its slot goes to B
-        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        b_lease = await asyncio.wait_for(b.wait(timeout_s=1), timeout=2)
         assert b_lease is not None, "B was granted the parked slot"
 
         # A answers the prompt while B is still decoding: it must WAIT.
-        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s=0.01))
         await asyncio.sleep(0.05)
         assert not resumed.done(), "A must not resume while B holds the slot"
         assert queue.snapshot().active <= 1, "never over capacity while waiting"
 
         b_lease.release()
-        await asyncio.wait_for(resumed, timeout = 2)
+        await asyncio.wait_for(resumed, timeout=2)
         assert a_lease.slot is not None, "A took a real slot back"
         assert queue.snapshot().active <= 1, "still within capacity after resuming"
 
@@ -951,19 +951,19 @@ def test_unpark_gives_up_when_the_caller_is_cancelled():
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
-        a = queue.reserve(capacity = 1, config = config)
+        a = queue.reserve(capacity=1, config=config)
         a_lease = a.lease_nowait()
         assert a_lease is not None
-        b = queue.reserve(capacity = 1, config = config)
+        b = queue.reserve(capacity=1, config=config)
         a_lease.park()
-        assert await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2) is not None
+        assert await asyncio.wait_for(b.wait(timeout_s=1), timeout=2) is not None
 
         ev = threading.Event()
-        waiting = asyncio.ensure_future(a_lease.unpark_async(cancel_event = ev, poll_s = 0.01))
+        waiting = asyncio.ensure_future(a_lease.unpark_async(cancel_event=ev, poll_s=0.01))
         await asyncio.sleep(0.03)
         assert not waiting.done()
         ev.set()
-        await asyncio.wait_for(waiting, timeout = 2)
+        await asyncio.wait_for(waiting, timeout=2)
         assert a_lease.slot is None, "gave up without a slot rather than over-admitting"
 
     asyncio.run(scenario())
@@ -977,22 +977,22 @@ def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        a = queue.reserve(capacity = 1, config = config)
+        a = queue.reserve(capacity=1, config=config)
         a_lease = a.lease_nowait()
         assert a_lease is not None
-        b = queue.reserve(capacity = 1, config = config)
+        b = queue.reserve(capacity=1, config=config)
         a_lease.park()  # A's slot goes to B
-        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        b_lease = await asyncio.wait_for(b.wait(timeout_s=1), timeout=2)
         assert b_lease is not None
 
         # A is approved and starts waiting; C arrives only after that.
-        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s=0.01))
         await asyncio.sleep(0.03)
-        c = queue.reserve(capacity = 1, config = config)
+        c = queue.reserve(capacity=1, config=config)
         assert c.lease_nowait() is None
 
         b_lease.release()  # the slot frees exactly once
-        await asyncio.wait_for(resumed, timeout = 2)
+        await asyncio.wait_for(resumed, timeout=2)
         # A resumed; C is still queued behind it rather than having overtaken it.
         assert c.lease_nowait() is None
         assert queue.snapshot().active <= 1
@@ -1007,32 +1007,32 @@ def test_two_approved_chats_do_not_block_each_other():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        a = queue.reserve(capacity = 1, config = config)
+        a = queue.reserve(capacity=1, config=config)
         a_lease = a.lease_nowait()
         assert a_lease is not None
-        b = queue.reserve(capacity = 1, config = config)
+        b = queue.reserve(capacity=1, config=config)
         a_lease.park()  # A parks; B is admitted
-        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        b_lease = await asyncio.wait_for(b.wait(timeout_s=1), timeout=2)
         assert b_lease is not None
 
-        c = queue.reserve(capacity = 1, config = config)
+        c = queue.reserve(capacity=1, config=config)
         b_lease.park()  # B parks too; C is admitted
-        c_lease = await asyncio.wait_for(c.wait(timeout_s = 1), timeout = 2)
+        c_lease = await asyncio.wait_for(c.wait(timeout_s=1), timeout=2)
         assert c_lease is not None
 
         # Both approvals come back while C is still decoding.
-        first = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        first = asyncio.ensure_future(a_lease.unpark_async(poll_s=0.01))
         await asyncio.sleep(0.02)
-        second = asyncio.ensure_future(b_lease.unpark_async(poll_s = 0.01))
+        second = asyncio.ensure_future(b_lease.unpark_async(poll_s=0.01))
         await asyncio.sleep(0.02)
         assert not first.done() and not second.done()
 
         c_lease.release()
         # The earlier approval goes first; the other follows once it releases.
-        await asyncio.wait_for(first, timeout = 2)
+        await asyncio.wait_for(first, timeout=2)
         assert not second.done(), "the second approval waits its turn, not forever"
         a_lease.release()
-        await asyncio.wait_for(second, timeout = 2)
+        await asyncio.wait_for(second, timeout=2)
         assert queue.snapshot().active <= 1
 
     asyncio.run(scenario())
@@ -1046,23 +1046,23 @@ def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        a = queue.reserve(capacity = 1, config = config)
+        a = queue.reserve(capacity=1, config=config)
         a_lease = a.lease_nowait()
         assert a_lease is not None
         a_lease.park()  # A is on an approval prompt; its slot is up for grabs
-        b = queue.reserve(capacity = 1, config = config)
+        b = queue.reserve(capacity=1, config=config)
         b_lease = b.lease_nowait()
         assert b_lease is not None
 
-        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s=0.01))
         await asyncio.sleep(0.03)  # A is approved and now holds a ticket
 
         # No await between these two: C arrives before A's poll can run again.
         b_lease.release()
-        c = queue.reserve(capacity = 1, config = config)
+        c = queue.reserve(capacity=1, config=config)
         assert c.lease_nowait() is None, "the freed slot is reserved for the approved chat"
 
-        await asyncio.wait_for(resumed, timeout = 2)
+        await asyncio.wait_for(resumed, timeout=2)
         assert queue.snapshot().active <= 1
 
     asyncio.run(scenario())
@@ -1083,11 +1083,11 @@ def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
 
         leases = []
         for _ in range(limit):
-            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            lease = queue.reserve(capacity=1, config=config).lease_nowait()
             assert lease is not None and lease.park()
             leases.append(lease)
 
-        refused = queue.reserve(capacity = 1, config = config).lease_nowait()
+        refused = queue.reserve(capacity=1, config=config).lease_nowait()
         assert refused is not None
         assert not refused.park(), "parking is unbounded"
         # Refusing means keeping the slot, the old behaviour, not an error.
@@ -1116,17 +1116,17 @@ def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
 
         for index in range(limit):
             queue = first if index % 2 == 0 else second
-            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            lease = queue.reserve(capacity=1, config=config).lease_nowait()
             assert lease.park()
 
-        spare = second.reserve(capacity = 1, config = config).lease_nowait()
+        spare = second.reserve(capacity=1, config=config).lease_nowait()
         assert not spare.park(), "each queue got its own budget"
 
         # A reset drops the queues the count was claimed against, so it must drop
         # the count too or the leak shrinks the budget process-wide.
         reset_llama_admission_queues()
         revived = get_llama_admission_queue("http://llama.test:1")
-        fresh = revived.reserve(capacity = 1, config = config).lease_nowait()
+        fresh = revived.reserve(capacity=1, config=config).lease_nowait()
         assert fresh.park(), "reset leaked the park count"
         fresh.release()
 
@@ -1139,7 +1139,7 @@ def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
     # rather than read off this host, since a container gets a small one.
     for cpus in (1, 2, 4, 8, 16, 28, 64):
         workers = min(32, cpus + 4)
-        monkeypatch.setattr(llama_admission, "_executor_workers", lambda w = workers: w)
+        monkeypatch.setattr(llama_admission, "_executor_workers", lambda w=workers: w)
         reserve = llama_admission._executor_reserve(workers)
         assert reserve >= 2, f"{workers} workers left no reserve"
 
@@ -1179,7 +1179,7 @@ def test_the_stream_retries_a_park_that_was_refused():
 
     # Read rather than import: routes.inference pulls in the whole app.
     route = os.path.join(_backend, "routes", "inference.py")
-    with open(route, encoding = "utf-8") as handle:
+    with open(route, encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
     helpers = [
         node
@@ -1213,11 +1213,11 @@ def test_the_park_budget_counts_every_live_backend(monkeypatch):
     async def scenario():
         config = LlamaAdmissionConfig()
         old = get_llama_admission_queue("http://llama.test:1")
-        draining = old.reserve(capacity = 16, config = config).lease_nowait()
+        draining = old.reserve(capacity=16, config=config).lease_nowait()
         assert draining is not None  # in flight, so the registry keeps this queue
 
         new = get_llama_admission_queue("http://llama.test:2")
-        lease = new.reserve(capacity = 16, config = config).lease_nowait()
+        lease = new.reserve(capacity=16, config=config).lease_nowait()
         assert lease is not None
 
         # 16 slots each against 32 workers: their prompts alone can fill it.
@@ -1243,22 +1243,22 @@ def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
 
         parked = []
         for _ in range(llama_admission._max_parked(1)):
-            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            lease = queue.reserve(capacity=1, config=config).lease_nowait()
             assert lease is not None and lease.park()
             parked.append(lease)
 
-        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        blocked = queue.reserve(capacity=1, config=config).lease_nowait()
         assert blocked is not None
         assert not blocked.park(), "the budget was not full to begin with"
 
         # One prompt is answered. Its slot is taken, so the resume queues for one.
-        resumed = asyncio.ensure_future(parked[0].unpark_async(poll_s = 0.01))
+        resumed = asyncio.ensure_future(parked[0].unpark_async(poll_s=0.01))
         await asyncio.sleep(0.05)
         assert not resumed.done(), "the resume needs to still be waiting for its slot"
 
         assert blocked.park(), "budget held for a prompt wait that is over"
         # Which is what frees the slot the resumer was waiting for.
-        await asyncio.wait_for(resumed, timeout = 2)
+        await asyncio.wait_for(resumed, timeout=2)
         for lease in parked[1:] + [blocked]:
             lease.release()
         parked[0].release()
@@ -1278,11 +1278,11 @@ def test_releasing_a_parked_holder_returns_its_budget(monkeypatch):
 
         parked = []
         for _ in range(llama_admission._max_parked(1)):
-            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            lease = queue.reserve(capacity=1, config=config).lease_nowait()
             assert lease is not None and lease.park()
             parked.append(lease)
 
-        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        blocked = queue.reserve(capacity=1, config=config).lease_nowait()
         assert blocked is not None
         assert not blocked.park(), "the budget was not full to begin with"
 

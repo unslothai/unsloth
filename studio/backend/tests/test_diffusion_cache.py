@@ -54,7 +54,7 @@ _Config = FirstBlockCacheConfig
 class _MixinTransformer:
     """A CacheMixin-style transformer: exposes ``enable_cache``."""
 
-    def __init__(self, *, fail = False):
+    def __init__(self, *, fail=False):
         self.fail = fail
         self.enabled_with = None
 
@@ -104,8 +104,8 @@ class _PrefixKVTransformer(_MixinTransformer):
         self,
         hidden_states,
         *,
-        kv_cache = None,
-        kv_cache_mode = None,
+        kv_cache=None,
+        kv_cache_mode=None,
     ):
         return hidden_states
 
@@ -116,8 +116,8 @@ class _PrefixKVPipe(_CtxPipe):
 
     def __call__(self, *args, **kwargs):
         with self.transformer.cache_context("cond"):
-            self.transformer(None, kv_cache = object(), kv_cache_mode = "extract")
-            self.transformer(None, kv_cache = object(), kv_cache_mode = "cached")
+            self.transformer(None, kv_cache=object(), kv_cache_mode="extract")
+            self.transformer(None, kv_cache=object(), kv_cache_mode="cached")
         return None
 
 
@@ -125,7 +125,7 @@ def _pipe(transformer):
     return _CtxPipe(transformer)
 
 
-def _stub_diffusers(monkeypatch, *, hook_recorder = None):
+def _stub_diffusers(monkeypatch, *, hook_recorder=None):
     diffusers = types.ModuleType("diffusers")
     diffusers.FirstBlockCacheConfig = _Config
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -155,7 +155,7 @@ def _stub_diffusers(monkeypatch, *, hook_recorder = None):
         def remove_hook(
             self,
             name,
-            recurse = True,
+            recurse=True,
         ):
             type(self).removed.append(name)
 
@@ -175,15 +175,15 @@ def _stub_diffusers(monkeypatch, *, hook_recorder = None):
 def test_disabled_mode_is_noop(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = None) is None
-    assert apply_step_cache(_pipe(t), mode = "off") is None
+    assert apply_step_cache(_pipe(t), mode=None) is None
+    assert apply_step_cache(_pipe(t), mode="off") is None
     assert t.enabled_with is None
 
 
 def test_enable_cache_path_default_threshold(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    engaged = apply_step_cache(_pipe(t), mode="fbcache")
     assert engaged == TC_FBCACHE
     assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
     assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
@@ -192,23 +192,23 @@ def test_enable_cache_path_default_threshold(monkeypatch):
 def test_quant_active_raises_default_threshold(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    apply_step_cache(_pipe(t), mode = "fbcache", quant_active = True)
+    apply_step_cache(_pipe(t), mode="fbcache", quant_active=True)
     assert t.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
 
 
 def test_explicit_threshold_overrides_quant(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.2, quant_active = True)
+    apply_step_cache(_pipe(t), mode="fbcache", threshold=0.2, quant_active=True)
     assert t.enabled_with.threshold == 0.2
 
 
 def test_non_cachemixin_runs_uncached(monkeypatch):
     # A transformer without enable_cache (e.g. Z-Image) must NOT get the standalone hook: its pipeline opens no cache_context, so it runs uncached instead of crashing.
     rec: dict = {}
-    _stub_diffusers(monkeypatch, hook_recorder = rec)
+    _stub_diffusers(monkeypatch, hook_recorder=rec)
     t = _NonCacheMixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert rec == {}  # the standalone hook was never called
 
 
@@ -217,7 +217,7 @@ def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
     # FluxTransformer2DModel) must run uncached, else the First-Block-Cache hook raises "No context is set" on the first forward.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_NoCtxPipe(t), mode="fbcache") is None
     assert t.enabled_with is None  # enable_cache was never called
 
 
@@ -228,7 +228,7 @@ def test_prefix_kv_transformer_runs_uncached(monkeypatch):
     # match the size of tensor b (4297)" at step 2 of a user's generation, not at load.
     _stub_diffusers(monkeypatch)
     t = _PrefixKVTransformer()
-    assert apply_step_cache(_PrefixKVPipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_PrefixKVPipe(t), mode="fbcache") is None
     assert t.enabled_with is None  # enable_cache was never called
 
 
@@ -237,7 +237,7 @@ def test_prefix_kv_guard_does_not_catch_an_ordinary_transformer(monkeypatch):
     # kv_cache_mode (Flux, Qwen-Image) keeps a constant sequence length and must still be cached.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == "fbcache"
+    assert apply_step_cache(_pipe(t), mode="fbcache") == "fbcache"
     assert t.enabled_with is not None
 
 
@@ -247,24 +247,24 @@ def test_prefix_kv_guard_ignores_a_parameter_the_loop_never_drives(monkeypatch):
     # rather than on the signature alone.
     _stub_diffusers(monkeypatch)
     t = _PrefixKVTransformer()
-    assert apply_step_cache(_CtxPipe(t), mode = "fbcache") == "fbcache"
+    assert apply_step_cache(_CtxPipe(t), mode="fbcache") == "fbcache"
     assert t.enabled_with is not None
 
 
 def test_incompatible_model_runs_uncached(monkeypatch):
     # enable_cache raising (e.g. unrecognised block signature) must not fail the load.
     _stub_diffusers(monkeypatch)
-    t = _MixinTransformer(fail = True)
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    t = _MixinTransformer(fail=True)
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
 
 
 def test_enable_cache_failure_rolls_back_partial_hooks(monkeypatch):
     # enable_cache can raise after hooking some blocks, so the failure path calls disable_cache rather than run half-cached.
     _stub_diffusers(monkeypatch)
-    t = _MixinTransformer(fail = True)
+    t = _MixinTransformer(fail=True)
     t.disabled = False
     t.disable_cache = lambda: setattr(t, "disabled", True)
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert t.disabled is True
 
 
@@ -276,14 +276,14 @@ def test_config_import_falls_back_to_hooks_module(monkeypatch):
     hooks.FirstBlockCacheConfig = _Config
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     t = _MixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
 
 
 def test_missing_transformer_is_none(monkeypatch):
     _stub_diffusers(monkeypatch)
-    pipe = types.SimpleNamespace(transformer = None)
-    assert apply_step_cache(pipe, mode = "fbcache") is None
+    pipe = types.SimpleNamespace(transformer=None)
+    assert apply_step_cache(pipe, mode="fbcache") is None
 
 
 def test_diffusers_unavailable_runs_uncached(monkeypatch):
@@ -292,7 +292,7 @@ def test_diffusers_unavailable_runs_uncached(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", None)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
 
 
 # ── the auto policy: normalize("auto") + generation-time toggling ──────────────────
@@ -347,7 +347,7 @@ def test_toggle_stays_off_for_low_strength_workflow(monkeypatch):
     # End to end: a 28-step request would engage FBCache, but at strength 0.35 the effective ~10 steps keep it uncached.
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    mode = maybe_toggle_step_cache(_pipe(t), steps = effective_denoise_steps(28, 0.35))
+    mode = maybe_toggle_step_cache(_pipe(t), steps=effective_denoise_steps(28, 0.35))
     assert mode is None and t.enables == 0
 
 
@@ -376,14 +376,14 @@ def test_apply_treats_stray_auto_as_off(monkeypatch):
     # AUTO is resolved by the loader; if it ever reaches the engage call the load runs uncached instead of crashing.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    assert apply_step_cache(_pipe(t), mode = "auto") is None
+    assert apply_step_cache(_pipe(t), mode="auto") is None
     assert t.enabled_with is None
 
 
 def test_toggle_engages_at_the_step_bar(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    mode = maybe_toggle_step_cache(_pipe(t), steps = FBCACHE_MIN_STEPS)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=FBCACHE_MIN_STEPS)
     assert mode == TC_FBCACHE and t.enables == 1
     assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
     assert t._unsloth_step_cache
@@ -392,27 +392,27 @@ def test_toggle_engages_at_the_step_bar(monkeypatch):
 def test_toggle_uses_quant_threshold(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(_pipe(t), steps = 28, quant_active = True)
+    maybe_toggle_step_cache(_pipe(t), steps=28, quant_active=True)
     assert t.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
 
 
 def test_toggle_is_idempotent_when_engaged(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
-    mode = maybe_toggle_step_cache(_pipe(t), steps = 28)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=28)
     assert mode == TC_FBCACHE and t.enables == 1 and t.disables == 0
 
 
 def test_toggle_disengages_below_the_bar(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
-    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=8)
     assert mode is None and t.disables == 1
     assert not t._unsloth_step_cache
     # and it stays off on repeat calls (no flapping disable calls).
-    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps=8) is None
     assert t.disables == 1
 
 
@@ -452,11 +452,11 @@ def test_toggle_disengages_even_when_the_private_hook_names_are_gone(monkeypatch
     """
     _stub_diffusers(monkeypatch)
     t = _DiffusersLikeTransformer()
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
     assert t._cache_config is not None, "the engage did not leave a live config to key on"
 
     _hide_private_hook_names(monkeypatch)
-    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=8)
     assert mode is None, "a cache diffusers removed itself is still being reported as engaged"
     assert t.disables == 1
     assert not t._unsloth_step_cache
@@ -470,31 +470,31 @@ def test_toggle_keeps_an_adopted_cache_it_cannot_verify_removed(monkeypatch):
     """
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()  # never sets _cache_config: the adopted low-level shape
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
 
     _hide_private_hook_names(monkeypatch)
-    assert maybe_toggle_step_cache(_pipe(t), steps = 8) == TC_FBCACHE
+    assert maybe_toggle_step_cache(_pipe(t), steps=8) == TC_FBCACHE
     assert t._unsloth_step_cache, "the marker came off hooks that were never verified gone"
 
 
 def test_toggle_reengages_after_a_disable(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
-    maybe_toggle_step_cache(_pipe(t), steps = 8)
-    mode = maybe_toggle_step_cache(_pipe(t), steps = 24)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
+    maybe_toggle_step_cache(_pipe(t), steps=8)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=24)
     assert mode == TC_FBCACHE and t.enables == 2
 
 
 def test_toggle_noop_without_cache_support(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _NonCacheMixinTransformer()
-    assert maybe_toggle_step_cache(_pipe(t), steps = 28) is None
-    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps=28) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps=8) is None
 
 
 def test_toggle_noop_without_transformer():
-    assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None
+    assert maybe_toggle_step_cache(types.SimpleNamespace(), steps=28) is None
 
 
 # ── compiled cache-hook inners (regional compile x step cache composition) ──────────
@@ -516,22 +516,22 @@ class _BoundInner:
 
 def _hooked_block(
     *,
-    compiled = True,
-    hook_name = "fbc_block_hook",
-    bound = True,
+    compiled=True,
+    hook_name="fbc_block_hook",
+    bound=True,
 ):
     inner = _BoundInner()
     orig = inner.forward if bound else functools.partial(_BoundInner.forward, inner)
-    hook = types.SimpleNamespace(fn_ref = types.SimpleNamespace(original_forward = orig))
+    hook = types.SimpleNamespace(fn_ref=types.SimpleNamespace(original_forward=orig))
     block = types.SimpleNamespace(
-        _diffusers_hook = types.SimpleNamespace(hooks = {hook_name: hook}),
-        _compiled_call_impl = object() if compiled else None,
+        _diffusers_hook=types.SimpleNamespace(hooks={hook_name: hook}),
+        _compiled_call_impl=object() if compiled else None,
     )
     return block, hook, orig
 
 
 def _fake_dit(blocks):
-    return types.SimpleNamespace(modules = lambda: [types.SimpleNamespace()] + blocks)
+    return types.SimpleNamespace(modules=lambda: [types.SimpleNamespace()] + blocks)
 
 
 def _stub_torch_compile(monkeypatch):
@@ -573,7 +573,7 @@ def test_arming_is_idempotent(monkeypatch):
 def test_arming_skips_uncompiled_blocks(monkeypatch):
     # An eager-tier load has no _compiled_call_impl: the hook must stay untouched, else compiling the inner adds compile the user declined.
     _stub_torch_compile(monkeypatch)
-    block, hook, orig = _hooked_block(compiled = False)
+    block, hook, orig = _hooked_block(compiled=False)
     assert _compile_hooked_block_inners(_fake_dit([block])) == 0
     assert hook.fn_ref.original_forward is orig
 
@@ -581,7 +581,7 @@ def test_arming_skips_uncompiled_blocks(monkeypatch):
 def test_arming_skips_partial_captured_inner(monkeypatch):
     # A stacked hook chain (e.g. group offload) captures a functools.partial, not the bound method; arming would compile the wrong layer.
     _stub_torch_compile(monkeypatch)
-    block, hook, orig = _hooked_block(bound = False)
+    block, hook, orig = _hooked_block(bound=False)
     assert _compile_hooked_block_inners(_fake_dit([block])) == 0
     assert hook.fn_ref.original_forward is orig
 
@@ -595,7 +595,7 @@ def test_arming_covers_every_cache_hook_family(monkeypatch):
         "fbc_leader_block_hook",
         "fbc_block_hook",
     )
-    blocks = [_hooked_block(hook_name = n)[0] for n in names]
+    blocks = [_hooked_block(hook_name=n)[0] for n in names]
     assert _compile_hooked_block_inners(_fake_dit(blocks)) == len(names)
 
 
@@ -624,7 +624,7 @@ def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
             return [block]
 
     t = _T()
-    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    engaged = apply_step_cache(_pipe(t), mode="fbcache")
     assert engaged == TC_FBCACHE
     assert hook.fn_ref.original_forward is not orig
     assert hook._unsloth_orig_inner is orig
@@ -645,8 +645,8 @@ def test_toggle_disable_restores_inners_before_disable(monkeypatch):
             return []
 
     t = _T()
-    maybe_toggle_step_cache(_pipe(t), steps = 28)
-    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    maybe_toggle_step_cache(_pipe(t), steps=28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps=8)
     assert mode is None and t.disables == 1
     assert order[-2:] == ["restore-walk", "disable"]
 
@@ -669,7 +669,7 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
             return []
 
     t = _T()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     # Two walks: the pre-engage probe that asks whether FBCache's hooks were ALREADY installed by
     # someone else, then the restore. What this pins is that the restore precedes disable_cache.
     assert order == ["restore-walk", "restore-walk", "disable"]
@@ -683,15 +683,15 @@ def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
     # (empty), so a later toggle-time enable_cache would install hooks the context never reaches ("No context is set").
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
-    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache=["stale"])
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert t._diffusers_hook._child_registries_cache is None
 
 
 def test_invalidate_child_registry_cache_tolerates_absence():
     _invalidate_child_registry_cache(types.SimpleNamespace())  # no registry: no-op
-    reg = types.SimpleNamespace(_child_registries_cache = None)
-    _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook = reg))
+    reg = types.SimpleNamespace(_child_registries_cache=None)
+    _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook=reg))
     assert reg._child_registries_cache is None
 
 
@@ -735,12 +735,12 @@ class _RealisticCacheMixin:
 def test_a_redundant_engage_keeps_the_running_cache(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _RealisticCacheMixin()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     first = t.enabled_with
 
     # Same settings a second time: the cache must still be on, on the SAME config object, and diffusers must
     # not have been asked to enable or disable anything.
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert t.is_cache_enabled is True
     assert t.enabled_with is first
     assert (t.enable_calls, t.disable_calls) == (1, 0)
@@ -752,8 +752,8 @@ def test_re_engaging_at_a_new_threshold_reconfigures(monkeypatch):
     # only order diffusers accepts, and it must leave the marker describing the NEW threshold.
     _stub_diffusers(monkeypatch)
     t = _RealisticCacheMixin()
-    apply_step_cache(_pipe(t), mode = "fbcache")
-    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) == TC_FBCACHE
+    apply_step_cache(_pipe(t), mode="fbcache")
+    assert apply_step_cache(_pipe(t), mode="fbcache", threshold=0.5) == TC_FBCACHE
     assert t.is_cache_enabled is True
     assert t.enabled_with.threshold == 0.5
     assert (t.enable_calls, t.disable_calls) == (2, 1)
@@ -767,7 +767,7 @@ def test_a_failed_re_engage_clears_the_marker(monkeypatch):
     # marker that says it does.
     _stub_diffusers(monkeypatch)
     t = _RealisticCacheMixin()
-    apply_step_cache(_pipe(t), mode = "fbcache")
+    apply_step_cache(_pipe(t), mode="fbcache")
     assert t._unsloth_step_cache == f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
 
     real_enable = t.enable_cache
@@ -777,7 +777,7 @@ def test_a_failed_re_engage_clears_the_marker(monkeypatch):
         raise RuntimeError("block signature not recognised")
 
     t.enable_cache = _boom
-    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.5) is None
+    assert apply_step_cache(_pipe(t), mode="fbcache", threshold=0.5) is None
     assert t._unsloth_step_cache is None
 
 
@@ -787,7 +787,7 @@ def test_a_stale_marker_without_hooks_re_engages(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _RealisticCacheMixin()
     t._unsloth_step_cache = f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert t.is_cache_enabled is True
     assert t.enable_calls == 1
 
@@ -797,7 +797,7 @@ class _CleanupAlsoFailsTransformer:
     attempt; the cleanup ``disable_cache`` raises too, leaving those hooks live. ``is_cache_enabled``
     reports that honestly, and it is the only signal the recovery branch has to go on."""
 
-    def __init__(self, *, enabled_after_failure = True):
+    def __init__(self, *, enabled_after_failure=True):
         self.enabled_after_failure = enabled_after_failure
         self.attempted = False
         self.disable_attempted = False
@@ -823,10 +823,10 @@ def test_a_failed_cleanup_removes_the_hooks_itself_then_clears_the_marker(monkey
     """disable_cache raising does not end it: the hooks come off by NAME through the registry, which is
     the layer under diffusers' own teardown, so the marker can be cleared on evidence rather than hope."""
     registry = _stub_diffusers(monkeypatch)
-    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure=True)
     t._unsloth_step_cache = "fbcache@0.1"
 
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert t.disable_attempted is True
     assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
     assert t._unsloth_step_cache is None
@@ -859,7 +859,7 @@ def test_a_silently_partial_engage_still_has_its_hooks_taken_off(monkeypatch):
             raise AssertionError("not used")
 
     t = _PartlyHooked()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
     assert t._unsloth_step_cache is None
 
@@ -869,14 +869,14 @@ def test_an_unverifiable_teardown_keeps_the_marker(monkeypatch):
     there would let the graph wrapper capture a partly-hooked forward, so it stays set and the
     transformer keeps the eager path: slower, and not wrong."""
     _stub_diffusers(monkeypatch)
-    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising=False)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
     sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
     sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
 
-    t = _CleanupAlsoFailsTransformer(enabled_after_failure = True)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure=True)
     t._unsloth_step_cache = "fbcache@0.1"
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert t._unsloth_step_cache == "fbcache@0.1"
 
 
@@ -884,10 +884,10 @@ def test_a_failed_cleanup_that_did_unhook_still_clears_the_marker(monkeypatch):
     """disable_cache raising but the model reporting the cache OFF means the hooks went anyway, so the
     marker must come off; leaving it would force eager on a transformer that does not cache."""
     _stub_diffusers(monkeypatch)
-    t = _CleanupAlsoFailsTransformer(enabled_after_failure = False)
+    t = _CleanupAlsoFailsTransformer(enabled_after_failure=False)
     t._unsloth_step_cache = "fbcache@0.1"
 
-    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert apply_step_cache(_pipe(t), mode="fbcache") is None
     assert t._unsloth_step_cache is None
 
 
@@ -920,10 +920,10 @@ def test_a_reconfigure_whose_cleanup_unhooked_anyway_re_engages(monkeypatch):
     """disable_cache raised, but the cache reads as OFF, so it did the thing this call wanted. Keeping
     the old marker there would pin the transformer to the eager path and block every later re-engage."""
     _stub_diffusers(monkeypatch)
-    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = False)
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable=False)
     t._unsloth_step_cache = "fbcache@0.1"
 
-    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache", threshold=0.42) == TC_FBCACHE
     assert t.enabled_with.threshold == 0.42
     assert t._unsloth_step_cache == "fbcache@0.42"
 
@@ -933,15 +933,15 @@ def test_a_reconfigure_that_cannot_be_verified_keeps_reporting_the_prior_mode(mo
     on top of hooks that may still be installed is the dangerous move, so this reports the mode that was
     last known to be running and leaves the marker describing it."""
     _stub_diffusers(monkeypatch)
-    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising=False)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
     sys.modules["diffusers.hooks"].apply_first_block_cache = lambda *_a, **_k: None
     sys.modules["diffusers.hooks"].FirstBlockCacheConfig = _Config
 
-    t = _ReconfigureCleanupPartlyFails(enabled_after_disable = True)
+    t = _ReconfigureCleanupPartlyFails(enabled_after_disable=True)
     t._unsloth_step_cache = "fbcache@0.1"
 
-    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.42) == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache", threshold=0.42) == TC_FBCACHE
     assert t.enabled_with is None  # never re-engaged
     assert t._unsloth_step_cache == "fbcache@0.1"  # marker still describes the live hooks
 
@@ -978,7 +978,7 @@ def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(
     t._unsloth_step_cache = "fbcache@0.1"
 
     # Re-configuring at a new threshold: the half-torn cache is finished off, then the engage proceeds.
-    assert apply_step_cache(_pipe(t), mode = "fbcache", threshold = 0.3) == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache", threshold=0.3) == TC_FBCACHE
     assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
     assert t.enabled_with.threshold == 0.3
     assert t._unsloth_step_cache == "fbcache@0.3"
@@ -1015,7 +1015,7 @@ def test_another_cache_type_is_left_alone(monkeypatch):
     t._unsloth_step_cache = "magcache@0.1"
 
     # Reports the cache that is actually running, and does not touch it.
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == "magcache"
+    assert apply_step_cache(_pipe(t), mode="fbcache") == "magcache"
     assert registry.removed == []  # FBC's names were never touched
     assert isinstance(
         t._cache_config, _MagCacheConfig
@@ -1054,7 +1054,7 @@ def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
             raise AssertionError("not used")
 
     t = _CachedByHand()  # note: no _unsloth_step_cache at all
-    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    engaged = apply_step_cache(_pipe(t), mode="fbcache")
 
     assert engaged == TC_FBCACHE
     assert t.disable_calls == 0  # the healthy cache was never torn down
@@ -1096,7 +1096,7 @@ def test_a_stale_marker_cannot_authorize_the_no_op(monkeypatch):
         f"fbcache@{DEFAULT_FBCACHE_THRESHOLD}"  # stale: says what we last asked for
     )
 
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert t.disable_calls == 1  # reconfigured, not waved through
     assert (
         t._cache_config.threshold == DEFAULT_FBCACHE_THRESHOLD
@@ -1114,7 +1114,7 @@ def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
     ran = []
     monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
     monkeypatch.setattr(
-        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+        dc, "_compile_hooked_block_inners", lambda t, log=None: ran.append("compile")
     )
 
     class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
@@ -1138,7 +1138,7 @@ def test_an_adopted_cache_gets_the_post_enable_integration(monkeypatch):
         def cache_context(self, *_a, **_k):
             raise AssertionError("not used")
 
-    assert apply_step_cache(_pipe(_CachedByHand()), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(_CachedByHand()), mode="fbcache") == TC_FBCACHE
     assert ran == ["invalidate", "compile"]
 
 
@@ -1168,7 +1168,7 @@ def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatc
 
     t = _HookedTheOtherWay()
     # Reports the cache that is actually running, exactly as a live MagCache is reported.
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert registry.removed == []  # and the working hooks were never touched
 
 
@@ -1183,7 +1183,7 @@ def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkey
     ran = []
     monkeypatch.setattr(dc, "_invalidate_child_registry_cache", lambda t: ran.append("invalidate"))
     monkeypatch.setattr(
-        dc, "_compile_hooked_block_inners", lambda t, log = None: ran.append("compile")
+        dc, "_compile_hooked_block_inners", lambda t, log=None: ran.append("compile")
     )
 
     class _HookedTheOtherWay:
@@ -1200,7 +1200,7 @@ def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkey
             raise AssertionError("not used")
 
     t = _HookedTheOtherWay()
-    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert apply_step_cache(_pipe(t), mode="fbcache") == TC_FBCACHE
     assert ran == ["invalidate", "compile"]  # the same integration the live-config branch runs
     # Truthy, so the CUDA graph wrapper stays eager over the live hooks; mode-only, because the
     # threshold this cache is running is whatever its installer chose, not the one we asked for.
@@ -1224,7 +1224,7 @@ def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cac
             self.disable_calls += 1  # diffusers' no-op: there is no config for it to act on
 
     t = _AdoptedLowLevel()
-    assert maybe_toggle_step_cache(_pipe(t), steps = 8) is None
+    assert maybe_toggle_step_cache(_pipe(t), steps=8) is None
     assert t.disable_calls == 1
     assert registry.removed == ["fbc_leader_block_hook", "fbc_block_hook"]
     assert t._unsloth_step_cache is None  # cleared only because the hooks are now KNOWN gone
@@ -1246,7 +1246,7 @@ def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(
             pass
 
     t = _Unverifiable()
-    assert maybe_toggle_step_cache(_pipe(t), steps = 8) == TC_FBCACHE
+    assert maybe_toggle_step_cache(_pipe(t), steps=8) == TC_FBCACHE
     assert t._unsloth_step_cache == TC_FBCACHE
 
 
@@ -1260,14 +1260,14 @@ def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
     from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, _FBC_LEADER_BLOCK_HOOK
     from core.inference.diffusion_cache import _first_block_cache_is_hooked
 
-    bare = _types.SimpleNamespace(modules = lambda: [_types.SimpleNamespace()])
+    bare = _types.SimpleNamespace(modules=lambda: [_types.SimpleNamespace()])
     assert _first_block_cache_is_hooked(bare) is False
 
     for name in (_FBC_LEADER_BLOCK_HOOK, _FBC_BLOCK_HOOK):
         block = _types.SimpleNamespace(
-            _diffusers_hook = _types.SimpleNamespace(hooks = {name: object()})
+            _diffusers_hook=_types.SimpleNamespace(hooks={name: object()})
         )
         hooked = _types.SimpleNamespace(
-            modules = lambda block = block: [_types.SimpleNamespace(), block]
+            modules=lambda block=block: [_types.SimpleNamespace(), block]
         )
         assert _first_block_cache_is_hooked(hooked) is True

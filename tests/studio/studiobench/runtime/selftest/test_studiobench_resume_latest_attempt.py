@@ -73,14 +73,14 @@ def _keystroke(cell_id, p95):
 def _work():
     """The real `interleave` over real cells: exactly the list `run()` iterates."""
 
-    cell = Cell(cell_id = make_cell_id("10K", "A0", 0), rung = "10K", rung_tokens = 10_000, rep = 0)
+    cell = Cell(cell_id=make_cell_id("10K", "A0", 0), rung="10K", rung_tokens=10_000, rep=0)
     targets = [
         Target(
-            label = label,
-            ref = label,
-            base_url = f"http://x/{label}",
-            seeder = None,
-            runner = None,
+            label=label,
+            ref=label,
+            base_url=f"http://x/{label}",
+            seeder=None,
+            runner=None,
         )
         for label in ("base", "treatment")
     ]
@@ -108,12 +108,12 @@ def test_a_cell_whose_latest_attempt_failed_is_not_skipped(tmp_path):
     paths = _paths(
         tmp_path,
         [
-            (FIRST, [_cell_row(BASE, "base", completed = True), _keystroke(BASE, 100.0)]),
+            (FIRST, [_cell_row(BASE, "base", completed=True), _keystroke(BASE, 100.0)]),
             (
                 RETRY,
                 [
-                    _cell_row(BASE, "base", completed = False),
-                    _cell_row(TREATMENT, "treatment", completed = True),
+                    _cell_row(BASE, "base", completed=False),
+                    _cell_row(TREATMENT, "treatment", completed=True),
                     _keystroke(TREATMENT, 50.0),
                 ],
             ),
@@ -133,12 +133,12 @@ def test_the_pair_is_therefore_re_run_and_the_run_is_not_a_no_op(tmp_path):
     paths = _paths(
         tmp_path,
         [
-            (FIRST, [_cell_row(BASE, "base", completed = True), _keystroke(BASE, 100.0)]),
+            (FIRST, [_cell_row(BASE, "base", completed=True), _keystroke(BASE, 100.0)]),
             (
                 RETRY,
                 [
-                    _cell_row(BASE, "base", completed = False),
-                    _cell_row(TREATMENT, "treatment", completed = True),
+                    _cell_row(BASE, "base", completed=False),
+                    _cell_row(TREATMENT, "treatment", completed=True),
                     _keystroke(TREATMENT, 50.0),
                 ],
             ),
@@ -161,9 +161,9 @@ def test_a_cell_completed_once_and_never_re_run_is_skipped(tmp_path):
             (
                 FIRST,
                 [
-                    _cell_row(BASE, "base", completed = True),
+                    _cell_row(BASE, "base", completed=True),
                     _keystroke(BASE, 100.0),
-                    _cell_row(TREATMENT, "treatment", completed = True),
+                    _cell_row(TREATMENT, "treatment", completed=True),
                     _keystroke(TREATMENT, 50.0),
                 ],
             )
@@ -184,13 +184,13 @@ def test_a_cell_that_died_and_was_then_re_run_successfully_is_skipped(tmp_path):
     paths = _paths(
         tmp_path,
         [
-            (FIRST, [_cell_row(BASE, "base", completed = False)]),
+            (FIRST, [_cell_row(BASE, "base", completed=False)]),
             (
                 RETRY,
                 [
-                    _cell_row(BASE, "base", completed = True),
+                    _cell_row(BASE, "base", completed=True),
                     _keystroke(BASE, 100.0),
-                    _cell_row(TREATMENT, "treatment", completed = True),
+                    _cell_row(TREATMENT, "treatment", completed=True),
                     _keystroke(TREATMENT, 50.0),
                 ],
             ),
@@ -205,10 +205,10 @@ def test_a_payload_without_session_ids_still_resumes(tmp_path):
     into attempts, and `latest_attempt_rows` keeps it whole rather than losing the run."""
 
     paths = Paths.under(tmp_path / "out")
-    paths.payload_jsonl.parent.mkdir(parents = True, exist_ok = True)
+    paths.payload_jsonl.parent.mkdir(parents=True, exist_ok=True)
     paths.payload_jsonl.write_text(
         '{"row_type": "cell", "cell_id": "r10K.base.rep0", "completed": true}\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     assert _resume_set(paths) == {BASE}

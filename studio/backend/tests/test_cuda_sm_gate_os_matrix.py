@@ -42,7 +42,7 @@ def _smi(rows: str, *, returncode: int = 0):
     """A fake nvidia-smi returning ``rows`` for the compute_cap query."""
 
     def _run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, returncode, stdout = rows, stderr = "")
+        return subprocess.CompletedProcess(cmd, returncode, stdout=rows, stderr="")
 
     return _run
 
@@ -78,12 +78,12 @@ def smi_spy(monkeypatch):
     return calls
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_inherited_visibility(monkeypatch):
     """A box pinning CUDA_VISIBLE_DEVICES would otherwise mask rows out of
     every fake nvidia-smi table below."""
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ def host(monkeypatch):
 def _gate(monkeypatch, *, sms, caps_rows):
     """Run the gate with a given marker coverage and nvidia-smi output."""
     monkeypatch.setattr(
-        LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: sms)
+        LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary=None: sms)
     )
     if caps_rows is None:
         monkeypatch.setattr(subprocess, "run", _no_smi)
@@ -126,7 +126,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
         the marker claims."""
         host(os_key)
         rows = "0, 7.5\n" if vendor == "nvidia" else None
-        error = _gate(monkeypatch, sms = frozenset({86, 89}), caps_rows = rows)
+        error = _gate(monkeypatch, sms=frozenset({86, 89}), caps_rows=rows)
         if vendor == "nvidia":
             assert error and "sm_75" in error, error
         else:
@@ -152,7 +152,7 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
         """Vulkan/CPU/ROCm bundles declare no supported_sms. That invariant is
         why the call site needs no explicit is_vulkan_backend guard."""
         host(os_key)
-        assert _gate(monkeypatch, sms = None, caps_rows = "0, 7.5\n") is None
+        assert _gate(monkeypatch, sms=None, caps_rows="0, 7.5\n") is None
 
 
 class TestTheSmFloorDecision:
@@ -171,27 +171,27 @@ class TestTheSmFloorDecision:
     def test_floor_not_exact_membership(self, sms, cap, refused, monkeypatch):
         """Only the too-old direction is broken: an exact-SM test would refuse
         the legacy sm_50-61 PTX bundle that drives an sm_86 host fine."""
-        error = _gate(monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n")
+        error = _gate(monkeypatch, sms=frozenset(int(s) for s in sms), caps_rows=f"0, {cap}\n")
         assert bool(error) is refused, error
 
     def test_a_mixed_host_passes_on_its_newest_card(self, monkeypatch):
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n1, 8.6\n") is None
 
     def test_every_card_too_old_names_them_all(self, monkeypatch):
-        error = _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 7.0\n")
+        error = _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n1, 7.0\n")
         assert error and "GPU 0 is sm_75" in error and "GPU 1 is sm_70" in error
 
     @pytest.mark.parametrize("rows", ["", "0, N/A\n", "garbage\n", "0\n"])
     def test_unreadable_caps_fail_open(self, rows, monkeypatch):
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = rows) is None
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows=rows) is None
 
     def test_a_failing_probe_fails_open(self, monkeypatch):
         monkeypatch.setattr(
             LlamaCppBackend,
             "_installed_llama_cuda_sms",
-            staticmethod(lambda binary = None: frozenset({86})),
+            staticmethod(lambda binary=None: frozenset({86})),
         )
-        monkeypatch.setattr(subprocess, "run", _smi("0, 7.5\n", returncode = 9))
+        monkeypatch.setattr(subprocess, "run", _smi("0, 7.5\n", returncode=9))
         monkeypatch.setattr(
             LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
         )
@@ -205,23 +205,23 @@ class TestVisibilityMasks:
     def test_a_numeric_mask_hiding_the_old_card_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n1, 8.6\n") is None
 
     def test_a_numeric_mask_hiding_the_new_card_still_refuses(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        error = _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n")
+        error = _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n1, 8.6\n")
         assert error and "GPU 0 is sm_75" in error
 
     def test_an_unordered_numeric_mask_fails_open(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
-        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n") is None
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n") is None
 
     def test_an_empty_mask_hides_everything_and_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n") is None
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n") is None
 
     @pytest.mark.parametrize(
         "mask",
@@ -236,8 +236,8 @@ class TestVisibilityMasks:
         refuses when nothing on the host could run, whichever instance wins."""
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
-        error = _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n")
+        assert _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n1, 8.6\n") is None
+        error = _gate(monkeypatch, sms=frozenset({86}), caps_rows="0, 7.5\n")
         assert error and "sm_75" in error
 
 
@@ -245,6 +245,7 @@ class TestMarkerParsing:
     @pytest.mark.parametrize("raw", [None, [], "86", ["gfx1100"], ["86", "abc"], ["8.6"], [""]])
     def test_unusable_coverage_reads_as_unknown(self, raw, monkeypatch, tmp_path):
         from utils import llama_cpp_freshness as freshness
+
         monkeypatch.setattr(
             freshness,
             "read_install_marker",

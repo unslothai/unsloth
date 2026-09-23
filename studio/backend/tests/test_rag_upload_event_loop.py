@@ -53,9 +53,9 @@ def lease_secret(monkeypatch):
         leases.LEASE_SECRET_ENV,
         base64.urlsafe_b64encode(SECRET).decode("ascii").rstrip("="),
     )
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
     yield
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
 
 
 def _app():
@@ -65,7 +65,7 @@ def _app():
     from routes import rag as rag_routes
 
     app = FastAPI()
-    app.include_router(rag_routes.router, prefix = "/api/rag")
+    app.include_router(rag_routes.router, prefix="/api/rag")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
 
     @app.get("/ping")
@@ -84,25 +84,25 @@ async def _upload_then_ping(path: str, **post_kwargs) -> tuple[httpx.Response, i
         while not done.is_set():
             started = time.perf_counter()
             await asyncio.sleep(POLL_INTERVAL)
-            ping = await client.get("/ping", timeout = 30.0)
+            ping = await client.get("/ping", timeout=30.0)
             assert ping.status_code == 200
             latencies.append(time.perf_counter() - started - POLL_INTERVAL)
 
-    transport = httpx.ASGITransport(app = _app())
-    async with httpx.AsyncClient(transport = transport, base_url = "http://test") as client:
+    transport = httpx.ASGITransport(app=_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         poller = asyncio.ensure_future(poll_ping(client))
         try:
-            response = await client.post(path, timeout = 30.0, **post_kwargs)
+            response = await client.post(path, timeout=30.0, **post_kwargs)
         finally:
             done.set()
             await poller
-    return response, len(latencies), max(latencies, default = 0.0)
+    return response, len(latencies), max(latencies, default=0.0)
 
 
 def _kb_id() -> str:
     conn = rag_db.get_connection()
     try:
-        return store.create_kb(conn, name = "Latency")
+        return store.create_kb(conn, name="Latency")
     finally:
         conn.close()
 
@@ -126,14 +126,14 @@ def _assert_loop_stayed_free(
 
 def test_kb_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion):
     response, served, worst = asyncio.run(
-        _upload_then_ping(f"/api/rag/knowledge-bases/{_kb_id()}/documents", files = _files())
+        _upload_then_ping(f"/api/rag/knowledge-bases/{_kb_id()}/documents", files=_files())
     )
     _assert_loop_stayed_free(response, served, worst, "upload")
 
 
 def test_thread_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion):
     response, served, worst = asyncio.run(
-        _upload_then_ping("/api/rag/threads/T1/documents", files = _files())
+        _upload_then_ping("/api/rag/threads/T1/documents", files=_files())
     )
     _assert_loop_stayed_free(response, served, worst, "upload")
 
@@ -143,7 +143,7 @@ def test_project_upload_leaves_the_event_loop_free(rag_home, blocking_ingestion,
 
     monkeypatch.setattr(studio_db, "get_chat_project", lambda project_id: {"id": project_id})
     response, served, worst = asyncio.run(
-        _upload_then_ping("/api/rag/projects/P1/documents", files = _files())
+        _upload_then_ping("/api/rag/projects/P1/documents", files=_files())
     )
     _assert_loop_stayed_free(response, served, worst, "upload")
 
@@ -154,6 +154,6 @@ def test_native_drop_leaves_the_event_loop_free(
     dropped = tmp_path / "dropped.txt"
     dropped.write_bytes(PAYLOAD)
     response, served, worst = asyncio.run(
-        _upload_then_ping("/api/rag/threads/T1/documents", data = {"nativePathLease": _sign(dropped)})
+        _upload_then_ping("/api/rag/threads/T1/documents", data={"nativePathLease": _sign(dropped)})
     )
     _assert_loop_stayed_free(response, served, worst, "drop")

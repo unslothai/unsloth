@@ -30,7 +30,7 @@ MAX_SOURCES_PER_FAMILY = 10
 _DIGEST_CHARS = 16
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class LogSource:
     id: str
     family: str
@@ -58,6 +58,7 @@ def candidate_roots() -> list[Path]:
 
     try:
         from utils.paths import studio_root
+
         _add(studio_root())
     except Exception:
         pass
@@ -127,7 +128,7 @@ def _family_files(family: str) -> list[Path]:
         except OSError:
             continue
         # Nothing prunes logs/llama-server and one file is written per load ATTEMPT (11,794 on this host), so a filename presort, which tracks time order, leaves a handful to stat. Every family's filename embeds its creation time (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, desktop ms epoch), and realpath + stat on every file cost ~356ms at a 1 Hz poll.
-        entries.sort(key = lambda entry: entry.name, reverse = True)
+        entries.sort(key=lambda entry: entry.name, reverse=True)
         entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
         for entry in entries:
             try:
@@ -144,7 +145,7 @@ def _family_files(family: str) -> list[Path]:
                 continue
             # Keyed on the folded spelling so a case-insensitive volume cannot list one file twice; the first spelling seen is kept, so the id digest stays over the real path.
             found.setdefault(_identity(real), (real, stat.st_mtime))
-    ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
+    ordered = sorted(found.values(), key=lambda item: item[1], reverse=True)
     return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
 
 
@@ -168,13 +169,13 @@ def list_sources() -> list[LogSource]:
             real = str(path)
             sources.append(
                 LogSource(
-                    id = f"{family}:{_digest(real)}",
-                    family = family,
-                    label = path.name,
-                    realpath = real,
-                    size_bytes = stat.st_size,
-                    modified_at = stat.st_mtime,
-                    is_current = _is_current(family, path, newest),
+                    id=f"{family}:{_digest(real)}",
+                    family=family,
+                    label=path.name,
+                    realpath=real,
+                    size_bytes=stat.st_size,
+                    modified_at=stat.st_mtime,
+                    is_current=_is_current(family, path, newest),
                 )
             )
     return sources
@@ -202,7 +203,7 @@ def default_source_id() -> Optional[str]:
         if source.family == "server" and source.is_current:
             return source.id
     # No live session: the newest file across every family, NOT any retained server log, which would open the tab on a previous run while the llama log holding the failure sat one entry down. That is the state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup.
-    return max(sources, key = lambda s: s.modified_at).id
+    return max(sources, key=lambda s: s.modified_at).id
 
 
 def file_logging_disabled() -> bool:

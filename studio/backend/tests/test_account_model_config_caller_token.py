@@ -28,26 +28,26 @@ def config_env(auth_env, monkeypatch):
         "alice", "alice-password", "alice-jwt-secret-for-test-at-least-32-bytes"
     )
     storage.create_initial_user("bob", "bob-password", "bob-jwt-secret-for-test-at-least-32-bytes")
-    client.app.include_router(models.router, prefix = "/api/models")
+    client.app.include_router(models.router, prefix="/api/models")
     monkeypatch.setattr(access, "_public_repos", {})
     calls = []
 
     def repo_info(
         repo_id,
         *,
-        token = None,
+        token=None,
         **kwargs,
     ):
         calls.append(token)
         if token != TOKEN:
             exc = Exception("Repository not found")
-            exc.response = SimpleNamespace(status_code = 404)
+            exc.response = SimpleNamespace(status_code=404)
             raise exc
-        return SimpleNamespace(private = True, gated = False)
+        return SimpleNamespace(private=True, gated=False)
 
     # Stand in only for Hub metadata and model introspection; real HTTP auth,
     # account policy, grants, and authorization checks remain in use.
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=repo_info))
     monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable_for", lambda _: nullcontext())
     monkeypatch.setattr(models, "resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr(models, "load_model_defaults", lambda _: {})
@@ -55,7 +55,7 @@ def config_env(auth_env, monkeypatch):
     monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: False)
     monkeypatch.setattr(model_config, "detect_audio_type_checked", lambda *a, **k: (None, True))
     monkeypatch.setattr(
-        models.ModelConfig, "from_identifier", lambda *a, **k: SimpleNamespace(is_lora = False)
+        models.ModelConfig, "from_identifier", lambda *a, **k: SimpleNamespace(is_lora=False)
     )
     monkeypatch.setattr(models, "_get_max_position_embeddings", lambda _: 4096)
     monkeypatch.setattr(models, "_get_model_size_bytes", lambda *a, **k: 123)
@@ -68,7 +68,7 @@ def test_first_private_model_config_accepts_callers_valid_token(config_env):
     assert run_as(alice, access.model_grants) == set()
     response = client.get(
         f"/api/models/config/{REPO}",
-        headers = {
+        headers={
             **headers("alice"),
             "X-Unsloth-HF-Token": TOKEN,
         },
@@ -90,7 +90,7 @@ def test_missing_or_wrong_token_remains_hidden(config_env, token):
     request_headers = headers("bob")
     if token:
         request_headers["X-Unsloth-HF-Token"] = token
-    assert client.get(f"/api/models/config/{REPO}", headers = request_headers).status_code == 404
+    assert client.get(f"/api/models/config/{REPO}", headers=request_headers).status_code == 404
 
 
 def test_caller_token_does_not_authorize_foreign_local_path(config_env, tmp_path):
@@ -99,8 +99,8 @@ def test_caller_token_does_not_authorize_foreign_local_path(config_env, tmp_path
     foreign.mkdir()
     response = client.get(
         f"/api/models/config/{REPO}",
-        params = {"local_path": str(foreign)},
-        headers = {
+        params={"local_path": str(foreign)},
+        headers={
             **headers("alice"),
             "X-Unsloth-HF-Token": TOKEN,
         },
@@ -114,7 +114,7 @@ def test_owner_and_managed_account_with_grant_can_read_config(config_env):
     for username in ("unsloth", "alice"):
         response = client.get(
             f"/api/models/config/{REPO}",
-            headers = {
+            headers={
                 **headers(username),
                 "X-Unsloth-HF-Token": TOKEN,
             },
@@ -126,8 +126,8 @@ def test_cache_only_selection_still_needs_account_grant(config_env):
     client, _ = config_env
     response = client.get(
         f"/api/models/config/{REPO}",
-        params = {"prefer_local_cache": "true"},
-        headers = {
+        params={"prefer_local_cache": "true"},
+        headers={
             **headers("alice"),
             "X-Unsloth-HF-Token": TOKEN,
         },

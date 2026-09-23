@@ -53,12 +53,12 @@ def _load_models_route(monkeypatch):
     return module
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_trusted_org_cache(monkeypatch):
     """Clear the trusted-org cache and force online mode for the Hub-verify path."""
     clear_cache()
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     yield
     clear_cache()
 
@@ -90,20 +90,20 @@ _BENIGN = {
 def _with_auto_map(files):
     """Patch the gate so auto_map is present and the given files are returned."""
     return (
-        patch.object(consent, "_config_has_auto_map", return_value = True),
-        patch.object(consent, "repo_remote_code_files", return_value = files),
+        patch.object(consent, "_config_has_auto_map", return_value=True),
+        patch.object(consent, "repo_remote_code_files", return_value=files),
     )
 
 
 class TestConsentGate:
     def test_disabled_is_a_noop(self):
-        d = evaluate_remote_code_consent("unsloth/X", trust_remote_code = False)
+        d = evaluate_remote_code_consent("unsloth/X", trust_remote_code=False)
         assert isinstance(d, RemoteCodeDecision)
         assert d.has_remote_code is False and d.blocked is False
 
     def test_no_auto_map_is_noop(self):
-        with patch.object(consent, "_config_has_auto_map", return_value = False):
-            d = evaluate_remote_code_consent("unsloth/Plain", trust_remote_code = True)
+        with patch.object(consent, "_config_has_auto_map", return_value=False):
+            d = evaluate_remote_code_consent("unsloth/Plain", trust_remote_code=True)
         assert d.has_remote_code is False
         assert d.blocked is False
         assert "no-op" in d.reason
@@ -111,20 +111,20 @@ class TestConsentGate:
     def test_load_subdirectory_auto_map_is_scanned(self, tmp_path):
         model = tmp_path / "model"
         llm = model / "LLM"
-        llm.mkdir(parents = True)
+        llm.mkdir(parents=True)
         (llm / "config.json").write_text(
             '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         (llm / "modeling_evil.py").write_text(
             "import subprocess\nsubprocess.Popen(['id'])\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
 
         decision = evaluate_remote_code_consent_for_targets(
             [str(model)],
-            trust_remote_code = True,
-            load_subdirs_by_target = {str(model): ("LLM",)},
+            trust_remote_code=True,
+            load_subdirs_by_target={str(model): ("LLM",)},
         )
 
         assert decision.has_remote_code is True
@@ -139,18 +139,18 @@ class TestConsentGate:
         linked_llm.mkdir()
         (linked_llm / "config.json").write_text(
             '{"auto_map":{"AutoModel":"modeling_evil.Model"}}',
-            encoding = "utf-8",
+            encoding="utf-8",
         )
-        (linked_llm / "modeling_evil.py").write_text("VALUE = 1\n", encoding = "utf-8")
+        (linked_llm / "modeling_evil.py").write_text("VALUE = 1\n", encoding="utf-8")
         try:
-            (model / "LLM").symlink_to(linked_llm, target_is_directory = True)
+            (model / "LLM").symlink_to(linked_llm, target_is_directory=True)
         except OSError as error:
             pytest.skip(f"directory symlinks are unavailable: {error}")
 
         decision = evaluate_remote_code_consent_for_targets(
             [str(model)],
-            trust_remote_code = True,
-            load_subdirs_by_target = {str(model): ("LLM",)},
+            trust_remote_code=True,
+            load_subdirs_by_target={str(model): ("LLM",)},
         )
 
         assert decision.has_remote_code is True
@@ -170,17 +170,17 @@ class TestConsentGate:
         ],
     )
     def test_remote_code_config_paths_reject_escaping_subdirectories(self, subdir):
-        with pytest.raises(ValueError, match = "Invalid remote-code load subdirectory"):
+        with pytest.raises(ValueError, match="Invalid remote-code load subdirectory"):
             remote_code_config_paths((subdir,))
 
     def test_unknown_auto_map_is_scanned_not_skipped(self):
         # Unreadable config (private/gated/offline) is "unknown", not "no code": scan, not no-op.
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = None),
-            patch.object(consent, "repo_remote_code_files", return_value = _HIGH),
+            patch.object(consent, "_config_has_auto_map", return_value=None),
+            patch.object(consent, "repo_remote_code_files", return_value=_HIGH),
         ):
             d = evaluate_remote_code_consent(
-                "private/evil", trust_remote_code = True, trusted_org = False
+                "private/evil", trust_remote_code=True, trusted_org=False
             )
         assert d.has_remote_code is True
         assert d.blocked is True
@@ -189,7 +189,7 @@ class TestConsentGate:
     def test_benign_remote_code_allowed(self):
         a, b = _with_auto_map(_BENIGN)
         with a, b:
-            d = evaluate_remote_code_consent("unsloth/Good", trust_remote_code = True)
+            d = evaluate_remote_code_consent("unsloth/Good", trust_remote_code=True)
         assert d.has_remote_code is True
         assert d.blocked is False
         assert d.fingerprint  # still fingerprinted for pinning
@@ -199,7 +199,7 @@ class TestConsentGate:
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d = evaluate_remote_code_consent(
-                "evil/Model", trust_remote_code = True, trusted_org = False
+                "evil/Model", trust_remote_code=True, trusted_org=False
             )
         assert d.has_remote_code is True
         assert d.blocked is True
@@ -221,7 +221,7 @@ class TestConsentGate:
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d = evaluate_remote_code_consent(
-                "unsloth/DeepSeek-OCR", trust_remote_code = True, trusted_org = True
+                "unsloth/DeepSeek-OCR", trust_remote_code=True, trusted_org=True
             )
         assert d.has_remote_code is True
         assert d.blocked is True
@@ -243,7 +243,7 @@ class TestConsentGate:
         a, b = _with_auto_map(files)
         with a, b:
             d = evaluate_remote_code_consent(
-                "third-party/custom-model", trust_remote_code = True, trusted_org = False
+                "third-party/custom-model", trust_remote_code=True, trusted_org=False
             )
         assert d.blocked is True
         assert d.max_severity == "HIGH"
@@ -254,7 +254,7 @@ class TestConsentGate:
         a, b = _with_auto_map(_CRITICAL)
         with a, b:
             d = evaluate_remote_code_consent(
-                "unsloth/Compromised", trust_remote_code = True, trusted_org = True
+                "unsloth/Compromised", trust_remote_code=True, trusted_org=True
             )
         assert d.blocked is True
         assert d.approvable is False
@@ -268,13 +268,13 @@ class TestConsentGate:
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d1 = evaluate_remote_code_consent(
-                "evil/Model", trust_remote_code = True, trusted_org = False
+                "evil/Model", trust_remote_code=True, trusted_org=False
             )
             d2 = evaluate_remote_code_consent(
                 "evil/Model",
-                trust_remote_code = True,
-                trusted_org = False,
-                approved_fingerprint = d1.fingerprint,
+                trust_remote_code=True,
+                trusted_org=False,
+                approved_fingerprint=d1.fingerprint,
             )
         assert d1.blocked is True
         assert d2.blocked is False
@@ -285,13 +285,13 @@ class TestConsentGate:
         a, b = _with_auto_map(_CRITICAL)
         with a, b:
             d1 = evaluate_remote_code_consent(
-                "evil/Model", trust_remote_code = True, trusted_org = False
+                "evil/Model", trust_remote_code=True, trusted_org=False
             )
             d2 = evaluate_remote_code_consent(
                 "evil/Model",
-                trust_remote_code = True,
-                trusted_org = False,
-                approved_fingerprint = d1.fingerprint,
+                trust_remote_code=True,
+                trusted_org=False,
+                approved_fingerprint=d1.fingerprint,
             )
         assert d1.blocked is True and d1.approvable is False
         assert d2.blocked is True and d2.approvable is False
@@ -302,9 +302,9 @@ class TestConsentGate:
         with a, b:
             d = evaluate_remote_code_consent(
                 "evil/Model",
-                trust_remote_code = True,
-                trusted_org = False,
-                approved_fingerprint = "deadbeef",
+                trust_remote_code=True,
+                trusted_org=False,
+                approved_fingerprint="deadbeef",
             )
         assert d.blocked is True
 
@@ -313,20 +313,20 @@ class TestConsentGate:
         adapter_files = {"tokenization_adapter.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
         base_files = {"modeling_base.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
 
-        def _files(name, hf_token = None):
+        def _files(name, hf_token=None):
             return adapter_files if name == "org/adapter" else base_files
 
         targets = ["org/adapter", "org/base"]
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
-            patch.object(consent, "repo_remote_code_files", side_effect = _files),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
+            patch.object(consent, "repo_remote_code_files", side_effect=_files),
         ):
-            d1 = evaluate_remote_code_consent_for_targets(targets, trust_remote_code = True)
+            d1 = evaluate_remote_code_consent_for_targets(targets, trust_remote_code=True)
             d2 = evaluate_remote_code_consent_for_targets(
-                targets, trust_remote_code = True, approved_fingerprint = d1.fingerprint
+                targets, trust_remote_code=True, approved_fingerprint=d1.fingerprint
             )
             base_only = evaluate_remote_code_consent_for_targets(
-                ["org/base"], trust_remote_code = True
+                ["org/base"], trust_remote_code=True
             )
         assert d1.blocked is True
         assert d1.max_severity == "HIGH"
@@ -341,14 +341,14 @@ class TestConsentGate:
         # code bytes, not the repo-id spelling, so casing must not change it.
         a, b = _with_auto_map(_HIGH)
         with a, b:
-            d1 = evaluate_remote_code_consent_for_targets(["Org/Model"], trust_remote_code = True)
-            d2 = evaluate_remote_code_consent_for_targets(["org/model"], trust_remote_code = True)
+            d1 = evaluate_remote_code_consent_for_targets(["Org/Model"], trust_remote_code=True)
+            d2 = evaluate_remote_code_consent_for_targets(["org/model"], trust_remote_code=True)
         assert d1.fingerprint == d2.fingerprint
         # An approval pinned from one casing unblocks the load under another casing.
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d3 = evaluate_remote_code_consent_for_targets(
-                ["ORG/model"], trust_remote_code = True, approved_fingerprint = d1.fingerprint
+                ["ORG/model"], trust_remote_code=True, approved_fingerprint=d1.fingerprint
             )
         assert d3.blocked is False
         assert d3.reason == "approved by fingerprint"
@@ -357,10 +357,10 @@ class TestConsentGate:
         from utils.security.consent import _fingerprint_target_key
 
         model = tmp_path / "models" / "Foo"
-        model.mkdir(parents = True)
+        model.mkdir(parents=True)
         alias = tmp_path / "model-alias"
         try:
-            alias.symlink_to(model, target_is_directory = True)
+            alias.symlink_to(model, target_is_directory=True)
         except OSError:
             pytest.skip("Symlinks are unavailable on this host")
         monkeypatch.chdir(tmp_path)
@@ -377,7 +377,7 @@ class TestConsentGate:
         from utils.security.consent import _fingerprint_target_key
 
         model = tmp_path / "models" / "Foo"
-        model.mkdir(parents = True)
+        model.mkdir(parents=True)
         windows_path = r"C:\models\Foo"
         monkeypatch.setattr(
             "utils.paths.normalize_path",
@@ -391,19 +391,19 @@ class TestConsentGate:
         model.mkdir()
         alias = tmp_path / "model-alias"
         try:
-            alias.symlink_to(model, target_is_directory = True)
+            alias.symlink_to(model, target_is_directory=True)
         except OSError:
             pytest.skip("Symlinks are unavailable on this host")
 
         a, b = _with_auto_map(_HIGH)
         with a, b:
             preflight = evaluate_remote_code_consent_for_targets(
-                [str(alias)], trust_remote_code = True
+                [str(alias)], trust_remote_code=True
             )
             authoritative = evaluate_remote_code_consent_for_targets(
                 [str(model.resolve())],
-                trust_remote_code = True,
-                approved_fingerprint = preflight.fingerprint,
+                trust_remote_code=True,
+                approved_fingerprint=preflight.fingerprint,
             )
 
         assert preflight.fingerprint == authoritative.fingerprint
@@ -412,17 +412,17 @@ class TestConsentGate:
 
     def test_unscannable_target_fails_closed_for_whole_load(self):
         # If ANY target is present-but-unscannable, the whole load fails closed (non-approvable).
-        def _raise_for_base(name, hf_token = None):
+        def _raise_for_base(name, hf_token=None):
             if name == "org/base":
                 raise RemoteCodeUnscannable("gated")
             return {"modeling_adapter.py": "import torch\n"}
 
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
-            patch.object(consent, "repo_remote_code_files", side_effect = _raise_for_base),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
+            patch.object(consent, "repo_remote_code_files", side_effect=_raise_for_base),
         ):
             d = evaluate_remote_code_consent_for_targets(
-                ["org/adapter", "org/base"], trust_remote_code = True
+                ["org/adapter", "org/base"], trust_remote_code=True
             )
         assert d.blocked is True
         assert d.approvable is False
@@ -430,11 +430,11 @@ class TestConsentGate:
     def test_managed_account_is_refused_before_the_scan(self, monkeypatch):
         from utils.account_context import AccountContext, run_as
 
-        monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising = False)
+        monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising=False)
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
             patch.object(
-                consent, "repo_remote_code_files", return_value = {"m.py": "import torch\n"}
+                consent, "repo_remote_code_files", return_value={"m.py": "import torch\n"}
             ),
             patch.object(consent, "scan_remote_code_files") as scan,
         ):
@@ -442,8 +442,8 @@ class TestConsentGate:
                 AccountContext("b" * 32, "bob"),
                 evaluate_remote_code_consent_for_targets,
                 ["org/model"],
-                trust_remote_code = True,
-                approved_fingerprint = "anything",
+                trust_remote_code=True,
+                approved_fingerprint="anything",
             )
         assert d.blocked is True and d.approvable is False
         assert d.reason == consent.MANAGED_REMOTE_CODE_REFUSAL
@@ -464,18 +464,18 @@ class TestConsentGate:
                 return [{"severity": "MEDIUM", "file": "modeling.py", "check": "large-base64-blob"}]
 
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
-            patch.object(consent, "repo_remote_code_files", return_value = {"m.py": "BLOB = 1\n"}),
-            patch.object(consent, "scan_remote_code_files", return_value = _MediumResult()),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
+            patch.object(consent, "repo_remote_code_files", return_value={"m.py": "BLOB = 1\n"}),
+            patch.object(consent, "scan_remote_code_files", return_value=_MediumResult()),
         ):
             d1 = evaluate_remote_code_consent(
-                "third/medium", trust_remote_code = True, trusted_org = False
+                "third/medium", trust_remote_code=True, trusted_org=False
             )
             d2 = evaluate_remote_code_consent(
                 "third/medium",
-                trust_remote_code = True,
-                trusted_org = False,
-                approved_fingerprint = d1.fingerprint,
+                trust_remote_code=True,
+                trusted_org=False,
+                approved_fingerprint=d1.fingerprint,
             )
         assert d1.blocked is True
         assert d1.approvable is True
@@ -490,13 +490,13 @@ class TestConsentGate:
         a1, b1 = _with_auto_map(_HIGH)
         with a1, b1:
             d1 = evaluate_remote_code_consent(
-                "evil/Model", trust_remote_code = True, trusted_org = False
+                "evil/Model", trust_remote_code=True, trusted_org=False
             )
         tampered = {fn: body + "\n# changed\n"}
         a2, b2 = _with_auto_map(tampered)
         with a2, b2:
             d2 = evaluate_remote_code_consent(
-                "evil/Model", trust_remote_code = True, trusted_org = False
+                "evil/Model", trust_remote_code=True, trusted_org=False
             )
         assert d1.fingerprint != d2.fingerprint  # pinned approval would re-prompt
 
@@ -504,14 +504,14 @@ class TestConsentGate:
         # Code is shipped but could not be fetched/listed (gated/offline/transient), so
         # repo_remote_code_files raises RemoteCodeUnscannable: fail closed, non-approvable.
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
             patch.object(
                 consent,
                 "repo_remote_code_files",
-                side_effect = RemoteCodeUnscannable("gated"),
+                side_effect=RemoteCodeUnscannable("gated"),
             ),
         ):
-            d = evaluate_remote_code_consent("unsloth/Gated", trust_remote_code = True)
+            d = evaluate_remote_code_consent("unsloth/Gated", trust_remote_code=True)
         assert d.has_remote_code is True
         assert d.blocked is True
         assert d.approvable is False
@@ -521,11 +521,11 @@ class TestConsentGate:
         # auto_map declared but the repo ships no executable .py (e.g. a GGUF repo with a vestigial
         # auto_map). Nothing to run, so the load is allowed, not blocked.
         with (
-            patch.object(consent, "_config_has_auto_map", return_value = True),
-            patch.object(consent, "repo_remote_code_files", return_value = {}),
+            patch.object(consent, "_config_has_auto_map", return_value=True),
+            patch.object(consent, "repo_remote_code_files", return_value={}),
         ):
             d = evaluate_remote_code_consent(
-                "unsloth/Llama-3_1-Nemotron-Ultra-253B-v1-GGUF", trust_remote_code = True
+                "unsloth/Llama-3_1-Nemotron-Ultra-253B-v1-GGUF", trust_remote_code=True
             )
         assert d.blocked is False
         assert d.has_remote_code is False
@@ -544,21 +544,21 @@ class TestWorkersWireTheGate:
         ],
     )
     def test_worker_invokes_gate(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8")
         assert "evaluate_remote_code_consent" in src
         assert "remote_code_blocked" in src
         assert ".blocked" in src
 
     def test_mlx_training_path_gates_before_load(self):
         # The Apple-Silicon path returns before run_training_process's gate, so it must scan first.
-        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding="utf-8")
         head = src[: src.index("FastMLXModel.from_pretrained(")]
         assert "evaluate_remote_code_consent" in head
 
     def test_lora_base_model_is_gated(self):
         # Inference + export expand the consent scan to the LoRA base model's code.
         for rel in ("core/inference/worker.py", "core/export/worker.py"):
-            src = (_BACKEND / rel).read_text(encoding = "utf-8")
+            src = (_BACKEND / rel).read_text(encoding="utf-8")
             assert "evaluate_remote_code_consent" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
@@ -571,12 +571,12 @@ class TestWorkersWireTheGate:
             "core/training/worker.py",
             "core/export/worker.py",
         ):
-            src = (_BACKEND / rel).read_text(encoding = "utf-8")
+            src = (_BACKEND / rel).read_text(encoding="utf-8")
             assert "get_base_model_from_lora_identifier" in src, rel
 
     def test_cache_fallback_gates_the_hub_target(self):
         # Dropping the cache pin swaps in the Hub repo, so the scan has to run on the new target.
-        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding="utf-8")
         drops = [
             index
             for index in range(len(src))
@@ -600,7 +600,7 @@ class TestWorkersWireTheGate:
 
     def test_embedding_training_path_gates_before_load(self):
         # The embedding pipeline must run the malware + consent gates before loading, like the other paths.
-        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding="utf-8")
         helper_start = src.index("def _model_load_security_error(")
         helper_end = src.index("\ndef ", helper_start + 1)
         helper = src[helper_start:helper_end]
@@ -625,6 +625,7 @@ class TestCanonicalScannerSource:
     def test_gate_uses_canonical_combination_heuristics(self):
         # A reverse shell is CRITICAL only in the canonical scanner, proving the flat fallback is off.
         from utils.security.remote_code_scan import scan_remote_code_files
+
         r = scan_remote_code_files(_CRITICAL)
         assert r.max_severity == "CRITICAL"
 
@@ -667,13 +668,13 @@ class TestStructuredFindingsForDialog:
 
         a, b = _with_auto_map(_HIGH)
         with a, b:
-            d = preflight_remote_code_consent("evil/Model", trusted_org = False)
+            d = preflight_remote_code_consent("evil/Model", trusted_org=False)
         assert d.has_remote_code is True
         assert d.findings and d.fingerprint  # structured findings for the UI
 
     def test_scan_route_uses_preflight(self):
         src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
         assert "remote-code-scan" in src
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
@@ -686,7 +687,7 @@ class TestStructuredFindingsForDialog:
         adapter,
         base,
         in_cache,
-        seen_targets = None,
+        seen_targets=None,
     ):
         """Call scan_model_remote_code with all network/cache deps stubbed; in_cache(repo)
         decides whether a repo pre-existed in cache (so it is not reported scan-created)."""
@@ -709,19 +710,19 @@ class TestStructuredFindingsForDialog:
                 seen_targets.extend(targets) if seen_targets is not None else None
             )
             or SimpleNamespace(
-                has_remote_code = False,
-                response_payload = lambda: {"has_remote_code": False, "approvable": True},
+                has_remote_code=False,
+                response_payload=lambda: {"has_remote_code": False, "approvable": True},
             ),
         )
         monkeypatch.setattr(security, "security_load_subdirs", lambda *_a, **_k: ())
         monkeypatch.setattr(
             security,
             "evaluate_file_security",
-            lambda *_a, **_k: SimpleNamespace(blocked = False, unsafe_files = []),
+            lambda *_a, **_k: SimpleNamespace(blocked=False, unsafe_files=[]),
         )
         return asyncio.run(
             models_route.scan_model_remote_code(
-                model_name = adapter, hf_token = None, current_subject = "tester"
+                model_name=adapter, hf_token=None, current_subject="tester"
             )
         )
 
@@ -730,7 +731,7 @@ class TestStructuredFindingsForDialog:
         repo, so a decline purges all of them, not just the primary."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
-            monkeypatch, adapter = adapter, base = base, in_cache = lambda _n: False
+            monkeypatch, adapter=adapter, base=base, in_cache=lambda _n: False
         )
         assert payload["scan_created_repos"] == [adapter, base]
         assert payload["created_by_scan"] is True
@@ -739,7 +740,7 @@ class TestStructuredFindingsForDialog:
         """A base the user already had is not scan-created, so a decline purges only the new adapter."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
-            monkeypatch, adapter = adapter, base = base, in_cache = lambda n: n == base
+            monkeypatch, adapter=adapter, base=base, in_cache=lambda n: n == base
         )
         assert payload["scan_created_repos"] == [adapter]
         assert payload["created_by_scan"] is True
@@ -748,7 +749,7 @@ class TestStructuredFindingsForDialog:
         """When only the base is new, created_by_scan is False but the base is still purged via scan_created_repos."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
-            monkeypatch, adapter = adapter, base = base, in_cache = lambda n: n == adapter
+            monkeypatch, adapter=adapter, base=base, in_cache=lambda n: n == adapter
         )
         assert payload["scan_created_repos"] == [base]
         assert payload["created_by_scan"] is False
@@ -760,10 +761,10 @@ class TestStructuredFindingsForDialog:
 
         self._run_scan_route(
             monkeypatch,
-            adapter = model,
-            base = None,
-            in_cache = lambda _n: True,
-            seen_targets = targets,
+            adapter=model,
+            base=None,
+            in_cache=lambda _n: True,
+            seen_targets=targets,
         )
 
         assert targets == [model, companion]
@@ -779,10 +780,10 @@ class TestStructuredFindingsForDialog:
         import utils.security as security
 
         (tmp_path / "config.json").write_text(
-            json.dumps({"model_type": "higgs_audio_v2"}), encoding = "utf-8"
+            json.dumps({"model_type": "higgs_audio_v2"}), encoding="utf-8"
         )
         (tmp_path / "processor_config.json").write_text(
-            json.dumps({"padding": "x" * 1_000_000}), encoding = "utf-8"
+            json.dumps({"padding": "x" * 1_000_000}), encoding="utf-8"
         )
         monkeypatch.setattr(models_route, "is_local_path", lambda *_args: True)
         monkeypatch.setattr(security, "load_scan_target", lambda target, subdirs: (target, subdirs))
@@ -790,9 +791,9 @@ class TestStructuredFindingsForDialog:
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(
                 models_route.scan_model_remote_code(
-                    model_name = str(tmp_path),
-                    hf_token = None,
-                    current_subject = "tester",
+                    model_name=str(tmp_path),
+                    hf_token=None,
+                    current_subject="tester",
                 )
             )
 
@@ -825,10 +826,10 @@ class TestStructuredFindingsForDialog:
         def preflight(targets, **_kwargs):
             preflight_targets.extend(targets)
             return SimpleNamespace(
-                has_remote_code = True,
-                blocked = False,
-                reason = "approval required",
-                response_payload = lambda: {
+                has_remote_code=True,
+                blocked=False,
+                reason="approval required",
+                response_payload=lambda: {
                     "model_name": snapshot,
                     "has_remote_code": True,
                     "approvable": True,
@@ -837,7 +838,7 @@ class TestStructuredFindingsForDialog:
 
         def file_security(target, **_kwargs):
             file_targets.append(target)
-            return SimpleNamespace(blocked = False, unsafe_files = [])
+            return SimpleNamespace(blocked=False, unsafe_files=[])
 
         monkeypatch.setattr(
             models_route,
@@ -870,11 +871,11 @@ class TestStructuredFindingsForDialog:
 
         payload = asyncio.run(
             models_route.scan_model_remote_code(
-                model_name = model_name,
-                hf_token = None,
-                prefer_local_cache = True,
-                model_local_path = local_path,
-                current_subject = "tester",
+                model_name=model_name,
+                hf_token=None,
+                prefer_local_cache=True,
+                model_local_path=local_path,
+                current_subject="tester",
             )
         )
 
@@ -906,7 +907,7 @@ class TestStructuredFindingsForDialog:
             "_model_config_inspection_target",
             # Takes the caller's token too now: an anonymous caller is sent back to the
             # bare repo id rather than a cached snapshot it never authorized.
-            lambda name, prefer_local, path, hf_token = None: inspection_calls.append(
+            lambda name, prefer_local, path, hf_token=None: inspection_calls.append(
                 (name, prefer_local, path)
             )
             or snapshot,
@@ -925,10 +926,10 @@ class TestStructuredFindingsForDialog:
             "preflight_remote_code_consent_for_targets",
             lambda targets, **_kwargs: preflight_targets.extend(targets)
             or SimpleNamespace(
-                has_remote_code = False,
-                blocked = False,
-                reason = "allowed",
-                response_payload = lambda: {
+                has_remote_code=False,
+                blocked=False,
+                reason="allowed",
+                response_payload=lambda: {
                     "has_remote_code": False,
                     "approvable": True,
                 },
@@ -939,20 +940,20 @@ class TestStructuredFindingsForDialog:
             security,
             "evaluate_file_security",
             lambda *_args, **_kwargs: SimpleNamespace(
-                blocked = False,
-                unsafe_files = [],
+                blocked=False,
+                unsafe_files=[],
             ),
         )
 
         payload = asyncio.run(
             models_route.scan_model_remote_code(
-                model_name = model_name,
-                hf_token = None,
-                prefer_local_cache = True,
-                model_local_path = "/cache/models--someone--cached-model",
-                model_snapshot_path = snapshot,
-                model_snapshot_repo_id = actual_model_repo_id,
-                current_subject = "tester",
+                model_name=model_name,
+                hf_token=None,
+                prefer_local_cache=True,
+                model_local_path="/cache/models--someone--cached-model",
+                model_snapshot_path=snapshot,
+                model_snapshot_repo_id=actual_model_repo_id,
+                current_subject="tester",
             )
         )
 
@@ -971,7 +972,7 @@ class TestStructuredFindingsForDialog:
 
         model_name = r"C:\models\adapter"
         normalized_path = tmp_path / "models" / "adapter"
-        normalized_path.mkdir(parents = True)
+        normalized_path.mkdir(parents=True)
         scan_target = str(normalized_path.resolve())
         base_targets = []
         preflight_targets = []
@@ -1001,10 +1002,10 @@ class TestStructuredFindingsForDialog:
             "preflight_remote_code_consent_for_targets",
             lambda targets, **_kwargs: preflight_targets.extend(targets)
             or SimpleNamespace(
-                has_remote_code = True,
-                blocked = True,
-                reason = "approval required",
-                response_payload = lambda: {
+                has_remote_code=True,
+                blocked=True,
+                reason="approval required",
+                response_payload=lambda: {
                     "model_name": scan_target,
                     "has_remote_code": True,
                     "approvable": True,
@@ -1016,14 +1017,14 @@ class TestStructuredFindingsForDialog:
             security,
             "evaluate_file_security",
             lambda target, **_kwargs: file_targets.append(target)
-            or SimpleNamespace(blocked = False, unsafe_files = []),
+            or SimpleNamespace(blocked=False, unsafe_files=[]),
         )
 
         payload = asyncio.run(
             models_route.scan_model_remote_code(
-                model_name = model_name,
-                hf_token = None,
-                current_subject = "tester",
+                model_name=model_name,
+                hf_token=None,
+                current_subject="tester",
             )
         )
 
@@ -1048,7 +1049,7 @@ class TestStructuredFindingsForDialog:
         adapter, base = "someone/lora-adapter", "someone/base-model"
         cached: set = set()  # repos currently present in some HF cache
 
-        def _get_base(name, token = None):
+        def _get_base(name, token=None):
             # Resolving the base downloads the ADAPTER's adapter_config.json first.
             cached.add(adapter)
             return base
@@ -1062,21 +1063,21 @@ class TestStructuredFindingsForDialog:
             security,
             "preflight_remote_code_consent_for_targets",
             lambda *_a, **_k: SimpleNamespace(
-                has_remote_code = True,
-                blocked = False,
-                reason = "allowed: no high-risk patterns",
-                response_payload = lambda: {"has_remote_code": True, "approvable": True},
+                has_remote_code=True,
+                blocked=False,
+                reason="allowed: no high-risk patterns",
+                response_payload=lambda: {"has_remote_code": True, "approvable": True},
             ),
         )
         monkeypatch.setattr(security, "security_load_subdirs", lambda *_a, **_k: ())
         monkeypatch.setattr(
             security,
             "evaluate_file_security",
-            lambda *_a, **_k: SimpleNamespace(blocked = False, unsafe_files = []),
+            lambda *_a, **_k: SimpleNamespace(blocked=False, unsafe_files=[]),
         )
         payload = asyncio.run(
             models_route.scan_model_remote_code(
-                model_name = adapter, hf_token = None, current_subject = "tester"
+                model_name=adapter, hf_token=None, current_subject="tester"
             )
         )
         # The adapter must be purged on decline despite being cached mid-scan.
@@ -1096,7 +1097,7 @@ class TestStructuredFindingsForDialog:
         ],
     )
     def test_fingerprint_threaded_to_worker(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8")
         assert "approved_remote_code_fingerprint" in src
         # The per-user approval cache rides the same path as the fingerprint.
         assert "subject" in src
@@ -1105,9 +1106,9 @@ class TestStructuredFindingsForDialog:
 # is_trusted_org_repo decides auto-enable; it rejects local-path / spoofed names, fails closed.
 
 
-def _fake_hfapi(resolved_id, author = "unsloth"):
+def _fake_hfapi(resolved_id, author="unsloth"):
     api = MagicMock()
-    api.return_value.model_info.return_value = SimpleNamespace(id = resolved_id, author = author)
+    api.return_value.model_info.return_value = SimpleNamespace(id=resolved_id, author=author)
     return api
 
 
@@ -1119,23 +1120,23 @@ class TestIsTrustedOrgRepo:
             assert is_trusted_org_repo("unsloth/DeepSeek-OCR") is True
 
     def test_accepts_genuine_nvidia_repo(self):
-        with patch("huggingface_hub.HfApi", _fake_hfapi("nvidia/Nemotron-H-8B", author = "nvidia")):
+        with patch("huggingface_hub.HfApi", _fake_hfapi("nvidia/Nemotron-H-8B", author="nvidia")):
             assert is_trusted_org_repo("nvidia/Nemotron-H-8B") is True
 
     def test_local_path_spoofs_rejected(self):
         # Names that look trusted after stripping but are local paths.
         for n in ["./unsloth/evil", "/tmp/unsloth/x", "~/unsloth/x", ".\\unsloth\\x"]:
-            assert is_trusted_org_repo(n, verify_remote = False) is False, n
+            assert is_trusted_org_repo(n, verify_remote=False) is False, n
 
     def test_rejects_local_path_even_if_is_local_path_says_so(self):
         # Defensive: a bare "unsloth/x" that resolves as a local dir must fail.
-        with patch("utils.security.trusted_org.is_local_path", return_value = True):
+        with patch("utils.security.trusted_org.is_local_path", return_value=True):
             assert is_trusted_org_repo("unsloth/x") is False
 
     def test_local_dir_shadowing_trusted_name_rejected(self, tmp_path, monkeypatch):
         # A local dir literally named "unsloth/evil" must be rejected before any Hub call, even with remote verify on.
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "unsloth" / "evil").mkdir(parents = True)
+        (tmp_path / "unsloth" / "evil").mkdir(parents=True)
         clear_cache()
         with patch("huggingface_hub.HfApi") as Api:
             assert is_trusted_org_repo("unsloth/evil") is False
@@ -1143,15 +1144,15 @@ class TestIsTrustedOrgRepo:
 
     def test_untrusted_namespaces_rejected(self):
         for n in ["evil/unsloth-clone", "unsloth-evil/x", "nvidiaa/x", "huggingface/x"]:
-            assert is_trusted_org_repo(n, verify_remote = False) is False, n
+            assert is_trusted_org_repo(n, verify_remote=False) is False, n
 
     def test_malformed_names_rejected(self):
         for n in ["", "gpt2", "unsloth", "a/b/c", "/x", "unsloth/", "/unsloth", None]:
-            assert is_trusted_org_repo(n, verify_remote = False) is False, repr(n)
+            assert is_trusted_org_repo(n, verify_remote=False) is False, repr(n)
 
     def test_rejects_when_resolved_owner_is_not_trusted(self):
         # Name says unsloth/ but the Hub resolves it elsewhere -> fail closed.
-        with patch("huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")):
+        with patch("huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author="someoneelse")):
             assert is_trusted_org_repo("unsloth/x") is False
 
     def test_fails_closed_when_hub_raises(self):
@@ -1178,11 +1179,11 @@ class TestIsTrustedOrgRepo:
         api = MagicMock()
         api.return_value.model_info.side_effect = [
             Exception("401 gated"),  # no token -> fails closed
-            SimpleNamespace(id = "unsloth/Private", author = "unsloth"),  # token -> resolves
+            SimpleNamespace(id="unsloth/Private", author="unsloth"),  # token -> resolves
         ]
         with patch("huggingface_hub.HfApi", api):
             assert is_trusted_org_repo("unsloth/Private") is False
-            assert is_trusted_org_repo("unsloth/Private", hf_token = "hf_xyz") is True
+            assert is_trusted_org_repo("unsloth/Private", hf_token="hf_xyz") is True
 
 
 class TestNemotronGateUsesTrustCheck:
@@ -1197,7 +1198,7 @@ class TestNemotronGateUsesTrustCheck:
         ],
     )
     def test_worker_nemotron_block_calls_trust_check(self, rel):
-        src = (_BACKEND / rel).read_text(encoding = "utf-8")
+        src = (_BACKEND / rel).read_text(encoding="utf-8")
         assert "_NEMOTRON_TRUST_SUBSTRINGS" in src
         assert "is_trusted_org_repo(" in src
 
@@ -1210,7 +1211,7 @@ class TestNemotronGateUsesTrustCheck:
             return (
                 any(s in low for s in subs)
                 and (low.startswith("unsloth/") or low.startswith("nvidia/"))
-                and is_trusted_org_repo(name, verify_remote = False)
+                and is_trusted_org_repo(name, verify_remote=False)
             )
 
         with patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
@@ -1283,6 +1284,7 @@ class TestConsentProvider:
     @staticmethod
     def _fn():
         from routes.models import _consent_provider
+
         return _consent_provider
 
     def test_single_hub_id_returns_owner(self):
@@ -1299,7 +1301,7 @@ class TestConsentProvider:
 
     def test_local_path_returns_none(self, tmp_path):
         d = tmp_path / "org" / "model"
-        d.mkdir(parents = True)
+        d.mkdir(parents=True)
         assert self._fn()(str(d), [str(d)]) is None
         assert self._fn()("/home/me/model", ["/home/me/model"]) is None
 
@@ -1329,8 +1331,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             if fn == "config.json":
                 import json
@@ -1344,8 +1346,8 @@ class TestScannerCoversAllExecutableCode:
             raise RuntimeError("download failed")  # the referenced .py cannot be fetched
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", return_value = ["modeling_x.py"]),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", return_value=["modeling_x.py"]),
         ):
             with pytest.raises(RemoteCodeUnscannable):
                 repo_remote_code_files("third/party")
@@ -1355,8 +1357,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1375,8 +1377,8 @@ class TestScannerCoversAllExecutableCode:
             return str(p)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", return_value = []),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", return_value=[]),
         ):
             files = repo_remote_code_files("victim/model")
         assert "evilorg/evilrepo--modeling_evil.py" in files
@@ -1388,8 +1390,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1409,14 +1411,14 @@ class TestScannerCoversAllExecutableCode:
                 raise RuntimeError(f"unexpected fetch {repo}:{fn}")
             return str(p)
 
-        def _list(repo, token = None):
+        def _list(repo, token=None):
             if repo == "evilorg/evilrepo":
                 return ["modeling_evil.py", "helper.py"]
             return []  # victim/model own repo ships no .py (code is all external)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", side_effect = _list),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", side_effect=_list),
         ):
             files = repo_remote_code_files("victim/model")
         assert "evilorg/evilrepo--helper.py" in files  # the imported helper was scanned
@@ -1428,8 +1430,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1448,10 +1450,10 @@ class TestScannerCoversAllExecutableCode:
             return str(p)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "tokenizer_config.json", "processing_paddleocr_vl.py"],
+                return_value=["config.json", "tokenizer_config.json", "processing_paddleocr_vl.py"],
             ),
         ):
             files = repo_remote_code_files("unsloth/PaddleOCR-VL")
@@ -1464,8 +1466,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1481,8 +1483,8 @@ class TestScannerCoversAllExecutableCode:
             )  # modeling_x.py is present but unfetchable
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", return_value = ["config.json", "modeling_x.py"]),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", return_value=["config.json", "modeling_x.py"]),
         ):
             with pytest.raises(RemoteCodeUnscannable):  # present-but-unfetchable -> fail closed
                 repo_remote_code_files("third/party")
@@ -1493,8 +1495,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1524,8 +1526,8 @@ class TestScannerCoversAllExecutableCode:
             return str(p)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", return_value = []),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", return_value=[]),
         ):
             files = repo_remote_code_files("victim/model")
         assert "evilorg/evilrepo--tokenization_evil.py" in files
@@ -1536,8 +1538,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1553,8 +1555,8 @@ class TestScannerCoversAllExecutableCode:
             raise RuntimeError("download failed")  # the external repo's .py is unreachable
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", return_value = []),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", return_value=[]),
         ):
             with pytest.raises(RemoteCodeUnscannable):
                 repo_remote_code_files("victim/model")
@@ -1576,8 +1578,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1597,14 +1599,14 @@ class TestScannerCoversAllExecutableCode:
             # The mis-derived dotted name must never be fetched.
             raise RuntimeError(f"unexpected fetch {repo}:{fn}")
 
-        def _list(repo, token = None):
+        def _list(repo, token=None):
             if repo == "evilorg/evilrepo":
                 return ["pkg/modeling_evil.py"]
             return []  # victim/model ships no own .py
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
-            patch("huggingface_hub.list_repo_files", side_effect = _list),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
+            patch("huggingface_hub.list_repo_files", side_effect=_list),
         ):
             files = repo_remote_code_files("victim/model")
         assert "evilorg/evilrepo--pkg/modeling_evil.py" in files  # real file scanned
@@ -1637,8 +1639,8 @@ class TestScannerCoversAllExecutableCode:
         def _dl(
             repo,
             fn,
-            token = None,
-            cache_dir = None,
+            token=None,
+            cache_dir=None,
         ):
             import json
             import tempfile
@@ -1652,10 +1654,10 @@ class TestScannerCoversAllExecutableCode:
             raise EntryNotFoundError(fn)  # no other config, and modeling_decilm.py is absent
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "model-00001-of-00097.gguf"],
+                return_value=["config.json", "model-00001-of-00097.gguf"],
             ),
         ):
             files = repo_remote_code_files("unsloth/Some-Model-GGUF")
@@ -1672,7 +1674,7 @@ class TestScannerCoversAllExecutableCode:
         (tmp_path / "tokenization_evil.py").write_text(
             "import subprocess\nsubprocess.Popen(['/bin/sh', '-c', 'id'])\n"
         )
-        d = preflight_remote_code_consent(str(tmp_path), trusted_org = False)
+        d = preflight_remote_code_consent(str(tmp_path), trusted_org=False)
         assert d.has_remote_code is True
         assert d.blocked is True
         assert d.fingerprint
@@ -1707,23 +1709,24 @@ class TestScannerCoversAllExecutableCode:
     def test_load_configs_returns_empty_list_when_all_404(self):
         # A remote repo shipping none of the auto_map configs (every fetch 404s) returns [] ("no
         # config-based auto_map"), not None ("unknown"): None would force a false unscannable block.
-        with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
+        with patch("huggingface_hub.hf_hub_download", side_effect=EntryNotFoundError("404")):
             configs = consent._load_remote_code_configs("some/plain-repo")
         assert configs == []
         # And a transient error on a config -> None (unknown -> caller scans).
-        with patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("blip")):
+        with patch("huggingface_hub.hf_hub_download", side_effect=RuntimeError("blip")):
             configs = consent._load_remote_code_configs("some/gated-repo")
         assert configs is None
 
     def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
         # A GGUF-only repo id still hits export paths that run auto_map; only a direct .gguf is inert.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
+
             if filename == "config.json":
                 p = tmp_path / "config.json"
                 p.write_text(
@@ -1733,10 +1736,10 @@ class TestScannerCoversAllExecutableCode:
             raise EntryNotFoundError(filename)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "model-00001-of-00097.gguf"],
+                return_value=["config.json", "model-00001-of-00097.gguf"],
             ),
         ):
             assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is True
@@ -1744,9 +1747,9 @@ class TestScannerCoversAllExecutableCode:
     def test_gguf_only_repo_with_python_is_scanned_and_blocked(self, tmp_path):
         # Regression: the GGUF-only short-circuit must not skip auto_map Python for export loaders.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
@@ -1761,15 +1764,15 @@ class TestScannerCoversAllExecutableCode:
             raise EntryNotFoundError(filename)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "modeling_evil.py", "model.Q4_K_M.gguf"],
+                return_value=["config.json", "modeling_evil.py", "model.Q4_K_M.gguf"],
             ),
         ):
             d = evaluate_remote_code_consent_for_targets(
                 ["evil/GGUF-Only"],
-                trust_remote_code = True,
+                trust_remote_code=True,
             )
 
         assert d.has_remote_code is True
@@ -1780,9 +1783,9 @@ class TestScannerCoversAllExecutableCode:
     def test_transformers_style_repo_auto_map_is_scanned_and_blocked(self, tmp_path):
         # A non-GGUF repo (safetensors/MLX) with auto_map is still scanned and blocked.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
@@ -1798,15 +1801,15 @@ class TestScannerCoversAllExecutableCode:
 
         for weights in (["model.safetensors"], ["weights.npz"]):
             with (
-                patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+                patch("huggingface_hub.hf_hub_download", side_effect=_dl),
                 patch(
                     "huggingface_hub.list_repo_files",
-                    return_value = ["config.json", "modeling_evil.py", *weights],
+                    return_value=["config.json", "modeling_evil.py", *weights],
                 ),
             ):
                 d = evaluate_remote_code_consent_for_targets(
                     ["org/Transformers-Style"],
-                    trust_remote_code = True,
+                    trust_remote_code=True,
                 )
             assert d.has_remote_code is True, weights
             assert d.blocked is True, weights
@@ -1815,16 +1818,16 @@ class TestScannerCoversAllExecutableCode:
 
     def test_direct_gguf_file_reference_has_no_auto_map(self):
         # A direct .gguf file reference (repo id + filename, >=3 segments) is a GGUF load: no remote code, no Hub call.
-        with patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")):
+        with patch("huggingface_hub.hf_hub_download", side_effect=AssertionError("no Hub call")):
             assert consent._config_has_auto_map("org/repo/model.gguf") is False
 
     def test_remote_repo_named_gguf_is_not_suffix_skipped(self):
         # A two-segment repo id whose name ends in ".gguf" is not a direct file reference: it can
         # still ship safetensors + auto_map Python, so it must be scanned.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
@@ -1837,10 +1840,10 @@ class TestScannerCoversAllExecutableCode:
             raise EntryNotFoundError(filename)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "model.safetensors", "model.gguf", "modeling_x.py"],
+                return_value=["config.json", "model.safetensors", "model.gguf", "modeling_x.py"],
             ),
         ):
             # Ships safetensors -> not a GGUF-only repo -> the auto_map gates.
@@ -1850,9 +1853,9 @@ class TestScannerCoversAllExecutableCode:
         # A repo with both .gguf and .safetensors is not treated as GGUF: the safetensors could
         # load via transformers where auto_map runs.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
@@ -1865,10 +1868,10 @@ class TestScannerCoversAllExecutableCode:
             raise EntryNotFoundError(filename)
 
         with (
-            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.hf_hub_download", side_effect=_dl),
             patch(
                 "huggingface_hub.list_repo_files",
-                return_value = ["config.json", "model.safetensors", "model.gguf"],
+                return_value=["config.json", "model.safetensors", "model.gguf"],
             ),
         ):
             assert consent._config_has_auto_map("org/Mixed-Repo") is True
@@ -1877,9 +1880,9 @@ class TestScannerCoversAllExecutableCode:
         # A repo with .gguf + a non-safetensors transformers weight (.bin/.pt/.h5/.onnx/...) is not
         # GGUF-only: transformers can load it and run auto_map, so the gate still applies.
         def _dl(
-            repo_id = None,
-            filename = None,
-            token = None,
+            repo_id=None,
+            filename=None,
+            token=None,
             **kw,
         ):
             import json
@@ -1901,10 +1904,10 @@ class TestScannerCoversAllExecutableCode:
             "model.ckpt",
         ):
             with (
-                patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+                patch("huggingface_hub.hf_hub_download", side_effect=_dl),
                 patch(
                     "huggingface_hub.list_repo_files",
-                    return_value = ["config.json", "modeling_x.py", weight, "model.gguf"],
+                    return_value=["config.json", "modeling_x.py", weight, "model.gguf"],
                 ),
             ):
                 assert consent._config_has_auto_map("org/Mixed-Bin-GGUF") is True, weight
@@ -1918,29 +1921,29 @@ class TestDiscardRemoteCodeDownload:
     @staticmethod
     def _fake_cache(filenames):
         files = [
-            SimpleNamespace(file_name = fn, file_path = f"/snap/{fn}", blob_path = f"/blob/{fn}")
+            SimpleNamespace(file_name=fn, file_path=f"/snap/{fn}", blob_path=f"/blob/{fn}")
             for fn in filenames
         ]
-        rev = SimpleNamespace(commit_hash = "deadbeef", files = files)
-        repo = SimpleNamespace(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
-        return SimpleNamespace(repos = [repo], delete_revisions = MagicMock())
+        rev = SimpleNamespace(commit_hash="deadbeef", files=files)
+        repo = SimpleNamespace(repo_type="model", repo_id="evil/repo", revisions=[rev])
+        return SimpleNamespace(repos=[repo], delete_revisions=MagicMock())
 
     def _run(self, model_name, cache_scans):
         import asyncio
 
         import routes.models as M
 
-        not_loaded = SimpleNamespace(active_model_name = None)
+        not_loaded = SimpleNamespace(active_model_name=None)
         with (
-            patch.object(M, "is_local_path", return_value = model_name.startswith("/")),
-            patch.object(M, "_all_hf_cache_scans", return_value = cache_scans),
-            patch.object(M, "get_inference_backend", return_value = not_loaded),
+            patch.object(M, "is_local_path", return_value=model_name.startswith("/")),
+            patch.object(M, "_all_hf_cache_scans", return_value=cache_scans),
+            patch.object(M, "get_inference_backend", return_value=not_loaded),
             patch(
                 "routes.inference.get_llama_cpp_backend",
-                return_value = SimpleNamespace(is_loaded = False, model_identifier = None),
+                return_value=SimpleNamespace(is_loaded=False, model_identifier=None),
             ),
         ):
-            return asyncio.run(M.discard_remote_code_download(model_name, current_subject = "t"))
+            return asyncio.run(M.discard_remote_code_download(model_name, current_subject="t"))
 
     def test_purges_metadata_only_entry(self):
         cache = self._fake_cache(["config.json", "tokenizer_config.json", "modeling_evil.py"])
@@ -1968,6 +1971,6 @@ class TestDiscardRemoteCodeDownload:
         assert res == {"deleted": False, "reason": "not_cached"}
 
     def test_route_source_reports_created_by_scan(self):
-        src = (_BACKEND / "routes/models.py").read_text(encoding = "utf-8")
+        src = (_BACKEND / "routes/models.py").read_text(encoding="utf-8")
         assert "created_by_scan" in src
         assert "discard-remote-code" in src

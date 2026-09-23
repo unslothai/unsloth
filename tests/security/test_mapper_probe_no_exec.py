@@ -21,7 +21,7 @@ from unsloth.models.mapper import build_mappers
 
 REAL_MAPPER = open(
     __import__("pathlib").Path(loader_utils.__file__).with_name("mapper.py"),
-    encoding = "utf-8",
+    encoding="utf-8",
 ).read()
 
 
@@ -32,8 +32,8 @@ class _Response:
     def __init__(
         self,
         text,
-        status_code = 200,
-        headers = None,
+        status_code=200,
+        headers=None,
     ):
         self.encoding = "utf-8"
         self.status_code = status_code
@@ -41,7 +41,7 @@ class _Response:
         self._body = text.encode("utf-8")
         self._read = False
 
-    def iter_content(self, chunk_size = 1):
+    def iter_content(self, chunk_size=1):
         yield self._body
 
     @property
@@ -50,7 +50,7 @@ class _Response:
         between reads rather than only between whole chunks."""
         return self
 
-    def read1(self, amount = -1):
+    def read1(self, amount=-1):
         if self._read:
             return b""
         self._read = True
@@ -70,7 +70,7 @@ def _serving(body, monkeypatch):
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Response(body))
     if not hasattr(requests, "compat"):
-        monkeypatch.setattr(requests, "compat", types.SimpleNamespace(urljoin = lambda b, u: u))
+        monkeypatch.setattr(requests, "compat", types.SimpleNamespace(urljoin=lambda b, u: u))
     yield
 
 
@@ -150,7 +150,7 @@ def test_a_deeply_nested_body_is_survivable(monkeypatch):
 
 def _byte_cap():
     """The cap as the probe actually spells it, so lowering it cannot desync this."""
-    source = pathlib.Path(loader_utils.__file__).read_text(encoding = "utf-8")
+    source = pathlib.Path(loader_utils.__file__).read_text(encoding="utf-8")
     match = re.search(r"^\s*byte_cap = ([0-9_]+)$", source, re.MULTILINE)
     assert match is not None, "the mapper probe no longer has a byte cap"
     return int(match.group(1).replace("_", ""))
@@ -850,5 +850,5 @@ def test_the_upgrade_notice_fires_for_a_model_only_the_newer_mapper_knows(monkey
     assert staged != REAL_MAPPER, "the source table header moved"
     monkeypatch.setattr(loader_utils, "_env_says_offline", lambda: False)
     with _serving(staged, monkeypatch):
-        with pytest.raises(NotImplementedError, match = "not supported in your current"):
-            loader_utils.get_model_name("vendor/brand-new", load_in_4bit = True)
+        with pytest.raises(NotImplementedError, match="not supported in your current"):
+            loader_utils.get_model_name("vendor/brand-new", load_in_4bit=True)

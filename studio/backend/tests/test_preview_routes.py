@@ -67,7 +67,7 @@ def _sig(ref: str) -> str:
 
 def _make_run(outputs: Path, name: str = "demorun") -> Path:
     run = outputs / name
-    run.mkdir(parents = True)
+    run.mkdir(parents=True)
     (run / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
@@ -112,11 +112,11 @@ def client(tmp_path, monkeypatch, captured):
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
+    app.include_router(preview.router, prefix="/p")
     app.dependency_overrides[preview.get_current_subject] = lambda: "admin"
     app.dependency_overrides[preview.authenticated_without_credential] = lambda: False
     # raise_server_exceptions=False so a 5xx surfaces as a response, not a throw.
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 # ── Page rendering ────────────────────────────────────────────────────────
@@ -165,13 +165,13 @@ def test_page_recovers_from_empty_reply(client):
 
 @pytest.mark.skipif(
     sys.platform == "win32",
-    reason = "'<' is not a legal Windows filename character, so a run dir named a<b cannot "
+    reason="'<' is not a legal Windows filename character, so a run dir named a<b cannot "
     "exist there and the escaping this covers is unreachable",
 )
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
-    _make_run(outputs, name = "a<b")
+    _make_run(outputs, name="a<b")
     _use_test_secret(monkeypatch)
     monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
@@ -179,8 +179,8 @@ def test_page_escapes_title(tmp_path, monkeypatch, captured):
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
-    c = TestClient(app, raise_server_exceptions = False)
+    app.include_router(preview.router, prefix="/p")
+    c = TestClient(app, raise_server_exceptions=False)
 
     # Sign the decoded canonical ref ("a<b"), not the %-encoded path segment.
     r = c.get(f"/p/a%3Cb?k={_sig('a<b')}")
@@ -249,7 +249,7 @@ def test_traversal_and_missing_rejected(client, path):
 def test_chat_traversal_rejected(client):
     r = client.post(
         "/p/..%2f..%2fetc/v1/chat/completions",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code in (400, 404)
 
@@ -276,7 +276,7 @@ def test_asset_path_contained(client, asset):
 def test_chat_payload_sanitized(client, captured):
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {
+        json={
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "function", "function": {"name": "rm", "parameters": {}}}],
             "enable_tools": True,
@@ -331,7 +331,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     # Merged (non-LoRA) checkpoint: no adapter to toggle, so use_adapter -> None.
     outputs = tmp_path / "outputs"
     merged = outputs / "mergedrun"
-    merged.mkdir(parents = True)
+    merged.mkdir(parents=True)
     (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
 
     _use_test_secret(monkeypatch)
@@ -351,11 +351,11 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
-    c = TestClient(app, raise_server_exceptions = False)
+    app.include_router(preview.router, prefix="/p")
+    c = TestClient(app, raise_server_exceptions=False)
     r = c.post(
         f"/p/mergedrun/v1/chat/completions?k={_sig('mergedrun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}], "use_adapter": False},
+        json={"messages": [{"role": "user", "content": "hi"}], "use_adapter": False},
     )
     assert r.status_code == 200
     assert captured["payload"].use_adapter is None
@@ -386,8 +386,8 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
 
     async def _run():
         assert not preview._preview_lock.locked()
-        payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
-        resp = await preview._serve_chat("demorun", None, payload, request = None)
+        payload = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
+        resp = await preview._serve_chat("demorun", None, payload, request=None)
         # Lock must still be held: a second checkpoint must not swap the backend
         # mid-stream.
         assert preview._preview_lock.locked()
@@ -422,7 +422,7 @@ def test_a_video_clip_is_refused_before_the_checkpoint_loads(tmp_path, monkeypat
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     payload = ChatCompletionRequest(
-        messages = [
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -433,7 +433,7 @@ def test_a_video_clip_is_refused_before_the_checkpoint_loads(tmp_path, monkeypat
         ]
     )
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(preview._serve_chat("demorun", None, payload, request = None))
+        asyncio.run(preview._serve_chat("demorun", None, payload, request=None))
     assert excinfo.value.status_code == 400
     assert "Video input" in excinfo.value.detail
     assert loaded == []
@@ -446,7 +446,7 @@ def test_a_video_clip_is_refused_before_the_checkpoint_loads(tmp_path, monkeypat
 def test_chat_without_token_404_and_no_load(client, captured):
     r = client.post(
         "/p/demorun/v1/chat/completions",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 404
     # Verified before any model work: nothing loaded, nothing generated.
@@ -457,7 +457,7 @@ def test_chat_without_token_404_and_no_load(client, captured):
 def test_chat_with_invalid_token_404(client, captured):
     r = client.post(
         "/p/demorun/v1/chat/completions?k=not-a-valid-token",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 404
     assert "load_path" not in captured
@@ -467,7 +467,7 @@ def test_token_for_other_ref_rejected(client, captured):
     # A capability minted for a different ref must not unlock demorun.
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('otherrun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 404
     assert "load_path" not in captured
@@ -486,7 +486,7 @@ def test_checkpoint_route_with_valid_sig(client, captured):
     sig = _sig("demorun/checkpoint-1")
     r = client.post(
         f"/p/demorun/checkpoint-1/v1/chat/completions?k={sig}",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 200
     assert captured["load_path"].endswith("checkpoint-1")
@@ -496,7 +496,7 @@ def test_checkpoint_token_does_not_unlock_bare_run(client, captured):
     # A token minted for the nested checkpoint must not unlock the run ref.
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun/checkpoint-1')}",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 404
     assert "load_path" not in captured
@@ -506,8 +506,8 @@ def test_bearer_token_accepted(client, captured):
     # OpenAI-compatible clients pass the capability as the api_key (Bearer header).
     r = client.post(
         "/p/demorun/v1/chat/completions",
-        headers = {"Authorization": f"Bearer {_sig('demorun')}"},
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": f"Bearer {_sig('demorun')}"},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 200
     assert captured["load_path"].endswith("demorun")
@@ -516,7 +516,7 @@ def test_bearer_token_accepted(client, captured):
 def test_generation_clamp_caps_overrides(client, captured):
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {
+        json={
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 999999,
             "max_completion_tokens": 888888,
@@ -536,7 +536,7 @@ def test_generation_clamp_honors_lower_legacy_max_tokens(client, captured):
     # fields have to carry the lower value.
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
     )
     assert r.status_code == 200
     p = captured["payload"]
@@ -547,7 +547,7 @@ def test_generation_clamp_honors_lower_legacy_max_tokens(client, captured):
 def test_generation_clamp_honors_lower_completion_tokens(client, captured):
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": 32},
+        json={"messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": 32},
     )
     assert r.status_code == 200
     p = captured["payload"]
@@ -563,7 +563,7 @@ def test_chat_blocked_when_sharing_disabled(client, monkeypatch, captured):
     monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
     r = client.post(
         f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 404
     assert "load_path" not in captured
@@ -584,9 +584,9 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
     rl.reset()
     url = f"/p/demorun/v1/chat/completions?k={_sig('demorun')}"
     body = {"messages": [{"role": "user", "content": "hi"}]}
-    assert client.post(url, json = body).status_code == 200
-    assert client.post(url, json = body).status_code == 200
-    r = client.post(url, json = body)
+    assert client.post(url, json=body).status_code == 200
+    assert client.post(url, json=body).status_code == 200
+    r = client.post(url, json=body)
     assert r.status_code == 429
     assert r.headers.get("retry-after")
 
@@ -600,7 +600,7 @@ from core.inference import llama_keepwarm
 from models.inference import LoadRequest
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def reset_admitted_inference():
     with llama_keepwarm._lock:
         llama_keepwarm._admitted_inference = 0
@@ -629,7 +629,7 @@ def fake_slot(slot_state, monkeypatch):
         state["load_kwargs"].append(kwargs)
         if state.get("fail_load"):
             state["ident"] = None
-            raise HTTPException(status_code = 500, detail = "load failed")
+            raise HTTPException(status_code=500, detail="load failed")
         state["ident"] = load_req.model_path
 
     monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
@@ -668,8 +668,8 @@ def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
     async def _run():
         with pytest.raises(HTTPException) as exc:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt"),
-                SimpleNamespace(app = None),
+                LoadRequest(model_path="/outputs/run/ckpt"),
+                SimpleNamespace(app=None),
                 "admin",
             )
         return exc.value
@@ -684,14 +684,14 @@ def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
 def test_preview_does_not_borrow_studio_owned_lora(fake_slot, tmp_path):
     checkpoint = tmp_path / "lora-checkpoint"
     checkpoint.mkdir()
-    (checkpoint / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    (checkpoint / "adapter_config.json").write_text("{}", encoding="utf-8")
     fake_slot["ident"] = str(checkpoint)
 
     async def _run():
         with pytest.raises(HTTPException) as exc:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = str(checkpoint)),
-                SimpleNamespace(app = None),
+                LoadRequest(model_path=str(checkpoint)),
+                SimpleNamespace(app=None),
                 "admin",
             )
         return exc.value
@@ -706,7 +706,7 @@ def test_preview_can_swap_out_prior_preview_model(fake_slot):
     for path in ("/outputs/run/ckpt-a", "/outputs/run/ckpt-b"):
         asyncio.run(
             inference.load_model_for_preview(
-                LoadRequest(model_path = path), SimpleNamespace(app = None), "admin"
+                LoadRequest(model_path=path), SimpleNamespace(app=None), "admin"
             )
         )
     assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
@@ -722,8 +722,8 @@ def test_preview_load_refused_while_image_or_video_owns_gpu(fake_slot, monkeypat
     async def _run():
         with pytest.raises(HTTPException) as exc:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt"),
-                SimpleNamespace(app = None),
+                LoadRequest(model_path="/outputs/run/ckpt"),
+                SimpleNamespace(app=None),
                 "admin",
             )
         return exc.value
@@ -750,8 +750,8 @@ def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
     async def _run():
         with pytest.raises(HTTPException) as excinfo:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt-a"),
-                SimpleNamespace(scope = {"path": "/p/a/v1/chat/completions"}),
+                LoadRequest(model_path="/outputs/run/ckpt-a"),
+                SimpleNamespace(scope={"path": "/p/a/v1/chat/completions"}),
                 "admin",
             )
         return excinfo.value
@@ -773,15 +773,15 @@ def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch
 
     async def _clear_then_fail(load_req, fastapi_request, subject, **kwargs):
         inference._set_preview_resident(None)  # mirror _load_model_impl reclaiming slot
-        raise HTTPException(status_code = 500, detail = "spawn failed")  # A still resident
+        raise HTTPException(status_code=500, detail="spawn failed")  # A still resident
 
     monkeypatch.setattr(inference, "_load_model_impl", _clear_then_fail)
 
     async def _run():
         with pytest.raises(HTTPException) as exc:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt-B"),
-                SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+                LoadRequest(model_path="/outputs/run/ckpt-B"),
+                SimpleNamespace(app=None, scope={"path": "/p/b/v1/chat/completions"}),
                 "admin",
             )
         return exc.value
@@ -805,7 +805,7 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
         cancelled = threading.Event()
         cancelled.set()
         inference._mark_cancelled_json_response_failed(
-            _types.SimpleNamespace(scope = scope), cancelled
+            _types.SimpleNamespace(scope=scope), cancelled
         )
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"{}", "more_body": False})
@@ -843,7 +843,7 @@ def test_cancelled_anthropic_non_streaming_does_not_claim_slot(slot_state):
                 yield "x"
 
         response = await inference._anthropic_plain_non_streaming(
-            _LeavingRequest(), _run_gen, "msg_1", "m", cancel_event = cancel_event
+            _LeavingRequest(), _run_gen, "msg_1", "m", cancel_event=cancel_event
         )
         assert response.status_code == 200
         assert cancel_event.is_set()
@@ -858,6 +858,7 @@ def test_cancelled_anthropic_non_streaming_does_not_claim_slot(slot_state):
 
 def test_queued_preview_does_not_deadlock_studio_switch():
     from core.inference import llama_keepwarm as kw
+
     async def _run():
         _reset_keepwarm_counters()
         kw._admitted_inference = 0
@@ -867,7 +868,7 @@ def test_queued_preview_does_not_deadlock_studio_switch():
         studio_holds_gate = asyncio.Event()
         queued_has_serializer = asyncio.Event()
         await preview._preview_lock.acquire()
-        kw._note_start(is_preview = True)
+        kw._note_start(is_preview=True)
 
         async def _receive():
             return {"type": "http.request", "body": b"", "more_body": False}
@@ -902,7 +903,7 @@ def test_queued_preview_does_not_deadlock_studio_switch():
             try:
                 async with kw.inference_lifecycle_gate():
                     studio_holds_gate.set()
-                    await inference._wait_for_model_switch_idle(current_request_counted = True)
+                    await inference._wait_for_model_switch_idle(current_request_counted=True)
             finally:
                 inference._auto_switch_process_lock.release()
             await send({"type": "http.response.start", "status": 200})
@@ -934,7 +935,7 @@ def test_queued_preview_does_not_deadlock_studio_switch():
 
         preview._preview_lock.release()
         await asyncio.wait_for(queued_has_serializer.wait(), 1)
-        kw._note_end(is_preview = True)
+        kw._note_end(is_preview=True)
 
         await asyncio.wait_for(asyncio.gather(queued_preview, studio_switch), 2)
         assert kw._inflight == 0
@@ -1013,7 +1014,7 @@ def test_preview_rechecks_ownership_after_admitted_count(fake_slot, monkeypatch)
     inference._set_preview_resident("/outputs/run/ckpt-a")
 
     def _finish_studio_request() -> int:
-        thread = threading.Thread(target = inference._set_preview_resident, args = (None,))
+        thread = threading.Thread(target=inference._set_preview_resident, args=(None,))
         thread.start()
         thread.join()
         return 0
@@ -1023,8 +1024,8 @@ def test_preview_rechecks_ownership_after_admitted_count(fake_slot, monkeypatch)
     async def _run():
         with pytest.raises(HTTPException) as excinfo:
             await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt-b"),
-                SimpleNamespace(scope = {"path": "/p/b/v1/chat/completions"}),
+                LoadRequest(model_path="/outputs/run/ckpt-b"),
+                SimpleNamespace(scope={"path": "/p/b/v1/chat/completions"}),
                 "admin",
             )
         return excinfo.value

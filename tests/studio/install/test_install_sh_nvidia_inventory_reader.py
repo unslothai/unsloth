@@ -18,7 +18,7 @@ INSTALL_SH = Path(__file__).resolve().parents[3] / "install.sh"
 
 
 def _reader_source() -> str:
-    text = INSTALL_SH.read_text(encoding = "utf-8")
+    text = INSTALL_SH.read_text(encoding="utf-8")
     m = re.search(r"_nvidia_library_inventory\(\) \{.*?<<'PY'\n(.*?)\nPY\n", text, re.S)
     assert m, "the inline reader was not found"
     return m.group(1)
@@ -41,13 +41,13 @@ def _lib(**symbols):
     return types.SimpleNamespace(**symbols)
 
 
-def _cuda_lib(version = 13010, cap = (8, 9)):
+def _cuda_lib(version=13010, cap=(8, 9)):
     return _lib(
-        cuInit = _Ok(),
-        cuDeviceGetCount = _Ok(1),
-        cuDriverGetVersion = _Ok(version),
-        cuDeviceGet = _Ok(0),
-        cuDeviceGetAttribute = _Attr(cap),
+        cuInit=_Ok(),
+        cuDeviceGetCount=_Ok(1),
+        cuDriverGetVersion=_Ok(version),
+        cuDeviceGet=_Ok(0),
+        cuDeviceGetAttribute=_Attr(cap),
     )
 
 
@@ -70,11 +70,11 @@ def _run(monkeypatch, libraries: dict[str, object]) -> tuple[int, str]:
         raise OSError(f"{name}: cannot open shared object file")
 
     stub = types.SimpleNamespace(
-        CDLL = cdll,
-        c_uint = real_ctypes.c_uint,
-        c_int = real_ctypes.c_int,
-        c_void_p = real_ctypes.c_void_p,
-        byref = real_ctypes.byref,
+        CDLL=cdll,
+        c_uint=real_ctypes.c_uint,
+        c_int=real_ctypes.c_int,
+        c_void_p=real_ctypes.c_void_p,
+        byref=real_ctypes.byref,
     )
     monkeypatch.setitem(sys.modules, "ctypes", stub)
     out = io.StringIO()
@@ -89,7 +89,7 @@ def _run(monkeypatch, libraries: dict[str, object]) -> tuple[int, str]:
 
 def test_the_cuda_driver_api_answers_when_nvml_lacks_the_versioned_symbols(monkeypatch):
     # An older NVML: nvmlInit_v2 is missing, the unversioned nvmlInit exists but nothing else does.
-    nvml = _lib(nvmlInit = _Ok(), nvmlShutdown = _Ok())
+    nvml = _lib(nvmlInit=_Ok(), nvmlShutdown=_Ok())
     code, out = _run(monkeypatch, {"libnvidia-ml.so.1": nvml, "libcuda.so.1": _cuda_lib()})
     assert (code, out) == (0, "13.1 8.9")
 
@@ -124,12 +124,12 @@ def test_no_library_at_all_is_no_inventory(monkeypatch):
 
 def test_nvml_answers_first_when_it_can(monkeypatch):
     nvml = _lib(
-        nvmlInit_v2 = _Ok(),
-        nvmlShutdown = _Ok(),
-        nvmlDeviceGetCount_v2 = _Ok(2),
-        nvmlSystemGetCudaDriverVersion_v2 = _Ok(12080),
-        nvmlDeviceGetHandleByIndex_v2 = _Ok(1),
-        nvmlDeviceGetCudaComputeCapability = _Ok(6, 1),
+        nvmlInit_v2=_Ok(),
+        nvmlShutdown=_Ok(),
+        nvmlDeviceGetCount_v2=_Ok(2),
+        nvmlSystemGetCudaDriverVersion_v2=_Ok(12080),
+        nvmlDeviceGetHandleByIndex_v2=_Ok(1),
+        nvmlDeviceGetCudaComputeCapability=_Ok(6, 1),
     )
     code, out = _run(monkeypatch, {"libnvidia-ml.so.1": nvml, "libcuda.so.1": _cuda_lib()})
     assert (code, out) == (0, "12.8 6.1,6.1")

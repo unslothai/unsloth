@@ -40,8 +40,8 @@ def test_http_cache_preparation_fails_closed_when_blob_directory_is_unreadable(
     repo = "Org/Repo"
     entry = _repo_dir(tmp_path, repo)
     blobs = entry / "blobs"
-    blobs.mkdir(parents = True)
-    (entry / ".transport").write_text("xet", encoding = "utf-8")
+    blobs.mkdir(parents=True)
+    (entry / ".transport").write_text("xet", encoding="utf-8")
     (blobs / "sparse.incomplete").write_bytes(b"x" * 64)
     real_iterdir = Path.iterdir
 
@@ -55,7 +55,7 @@ def test_http_cache_preparation_fails_closed_when_blob_directory_is_unreadable(
     with pytest.raises(stt_sidecar.SttDownloadCacheError):
         stt_sidecar._prepare_stt_cache_for_http(repo, tmp_path)
 
-    assert (entry / ".transport").read_text(encoding = "utf-8") == "xet"
+    assert (entry / ".transport").read_text(encoding="utf-8") == "xet"
     assert (blobs / "sparse.incomplete").is_file()
 
 
@@ -76,7 +76,7 @@ def test_http_cache_preparation_requires_marker_readback(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "canonical_first",
     (False, True),
-    ids = ("alias-first", "canonical-first"),
+    ids=("alias-first", "canonical-first"),
 )
 def test_http_cache_preparation_requires_every_case_variant_marker(
     monkeypatch, tmp_path, canonical_first
@@ -86,11 +86,11 @@ def test_http_cache_preparation_requires_every_case_variant_marker(
     repo = "Org/Repo"
     alias = _repo_dir(tmp_path, "org/repo")
     canonical = _repo_dir(tmp_path, repo)
-    alias.mkdir(parents = True)
+    alias.mkdir(parents=True)
     canonical_blobs = canonical / "blobs"
-    canonical_blobs.mkdir(parents = True)
-    (alias / ".transport").write_text("http", encoding = "utf-8")
-    (canonical / ".transport").write_text("xet", encoding = "utf-8")
+    canonical_blobs.mkdir(parents=True)
+    (alias / ".transport").write_text("http", encoding="utf-8")
+    (canonical / ".transport").write_text("xet", encoding="utf-8")
     partial = canonical_blobs / "sparse.incomplete"
     partial.write_bytes(b"x" * 64)
     ordered_entries = (canonical, alias) if canonical_first else (alias, canonical)
@@ -129,10 +129,10 @@ def test_http_cache_preparation_requires_every_case_variant_marker(
     )
 
     state = stt_ggml_sidecar._GgmlDownloadState()
-    state._run("tiny", None, hub_cache = tmp_path)
+    state._run("tiny", None, hub_cache=tmp_path)
 
     assert spawned == []
-    assert (canonical / ".transport").read_text(encoding = "utf-8") == "xet"
+    assert (canonical / ".transport").read_text(encoding="utf-8") == "xet"
     assert partial.read_bytes() == b"x" * 64
 
 
@@ -140,7 +140,7 @@ def test_http_retry_keeps_its_owned_partial_and_cross_transport_retry_purges_it(
     repo = "Org/Repo"
     entry = _repo_dir(tmp_path, repo)
     blobs = entry / "blobs"
-    blobs.mkdir(parents = True)
+    blobs.mkdir(parents=True)
 
     stt_sidecar._prepare_stt_cache_for_http(repo, tmp_path)
     partial = blobs / "etag.incomplete"
@@ -148,7 +148,7 @@ def test_http_retry_keeps_its_owned_partial_and_cross_transport_retry_purges_it(
     stt_sidecar._prepare_stt_cache_for_http(repo, tmp_path)
     assert partial.stat().st_size == 64
 
-    (entry / ".transport").write_text("xet", encoding = "utf-8")
+    (entry / ".transport").write_text("xet", encoding="utf-8")
     stt_sidecar._prepare_stt_cache_for_http(repo, tmp_path)
     assert not partial.exists()
 
@@ -170,7 +170,7 @@ def test_spawned_stt_worker_is_http_only_and_uses_the_captured_cache(monkeypatch
 
     stt_download_worker.spawn_download(
         ["--repo-id", "Org/Repo", "--filename", "model.bin"],
-        hub_cache = tmp_path,
+        hub_cache=tmp_path,
     )
 
     assert observed["env"]["HF_HUB_CACHE"] == str(tmp_path)
@@ -181,7 +181,7 @@ def test_spawned_stt_worker_is_http_only_and_uses_the_captured_cache(monkeypatch
 
 def test_captured_cache_worker_stays_online_during_temporary_offline_guard(monkeypatch, tmp_path):
     fake_package = tmp_path / "modules" / "huggingface_hub"
-    fake_package.mkdir(parents = True)
+    fake_package.mkdir(parents=True)
     observed_path = tmp_path / "worker-environment.json"
     fake_package.joinpath("__init__.py").write_text(
         """import json
@@ -195,12 +195,12 @@ def hf_hub_download(**kwargs):
             "transformers_offline": os.environ.get("TRANSFORMERS_OFFLINE"),
         }, handle)
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "modules"))
     monkeypatch.setenv("STT_WORKER_ENV_PATH", str(observed_path))
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
 
     from utils.utils import force_hf_offline
 
@@ -208,12 +208,12 @@ def hf_hub_download(**kwargs):
     with force_hf_offline():
         process = stt_download_worker.spawn_download(
             ["--repo-id", "Org/Repo", "--filename", "model.bin"],
-            hub_cache = captured_cache,
+            hub_cache=captured_cache,
         )
         stderr = stt_download_worker.reap_download(process)
 
     assert process.returncode == 0, stderr.decode("utf-8", "replace")
-    assert json.loads(observed_path.read_text(encoding = "utf-8")) == {
+    assert json.loads(observed_path.read_text(encoding="utf-8")) == {
         "hub_cache": str(captured_cache),
         "hub_offline": None,
         "transformers_offline": None,
@@ -250,7 +250,7 @@ def test_selected_file_progress_covers_partial_final_and_windows_snapshot(tmp_pa
     revision = "b" * 40
     entry = _repo_dir(tmp_path, repo)
     blobs = entry / "blobs"
-    blobs.mkdir(parents = True)
+    blobs.mkdir(parents=True)
     partial = blobs / "etag.incomplete"
     partial.write_bytes(b"x" * 40)
     kwargs = {
@@ -267,7 +267,7 @@ def test_selected_file_progress_covers_partial_final_and_windows_snapshot(tmp_pa
     assert stt_sidecar._downloaded_file_bytes(**kwargs) == 40
     (blobs / "etag").unlink()
     snapshot = entry / "snapshots" / revision / "nested"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "model.bin").write_bytes(b"x" * 120)
     assert stt_sidecar._downloaded_file_bytes(**kwargs) == 100
 
@@ -277,7 +277,7 @@ def test_mtmd_progress_counts_only_its_two_exact_files(tmp_path):
     spec = stt_mtmd_sidecar.MTMD_STT_MODELS[model_id]
     entry = _repo_dir(tmp_path, spec.repo)
     blobs = entry / "blobs"
-    blobs.mkdir(parents = True)
+    blobs.mkdir(parents=True)
     (blobs / "main").write_bytes(b"x" * 80)
     (blobs / "mmproj.incomplete").write_bytes(b"x" * 15)
     (blobs / "unrelated").write_bytes(b"x" * 1000)
@@ -317,14 +317,14 @@ def test_mtmd_run_holds_one_owner_and_one_cache_through_final_lookup(monkeypatch
         lambda repo, root: events.append(("prepare", repo, root)),
     )
 
-    def metadata(url, token = None):
+    def metadata(url, token=None):
         name = spec.model_file if spec.model_file in url else spec.mmproj_file
-        return SimpleNamespace(size = 10, etag = name, commit_hash = revision)
+        return SimpleNamespace(size=10, etag=name, commit_hash=revision)
 
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", metadata)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_url",
-        lambda repo, filename, revision = None: f"https://example/{repo}/{filename}?rev={revision}",
+        lambda repo, filename, revision=None: f"https://example/{repo}/{filename}?rev={revision}",
     )
 
     class Process:
@@ -338,9 +338,9 @@ def test_mtmd_run_holds_one_owner_and_one_cache_through_final_lookup(monkeypatch
 
     def spawn(
         args,
-        hf_token = None,
+        hf_token=None,
         *,
-        hub_cache = None,
+        hub_cache=None,
     ):
         events.append(("spawn", args, hub_cache))
         return Process()
@@ -394,7 +394,7 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
     revision_b = "b" * 40
     entry = _repo_dir(tmp_path, repo)
     blobs = entry / "blobs"
-    blobs.mkdir(parents = True)
+    blobs.mkdir(parents=True)
     (blobs / "etag-a.incomplete").write_bytes(b"a" * 25)
     (blobs / "etag-b").write_bytes(b"b" * 100)
     observed = {}
@@ -424,9 +424,9 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
     monkeypatch.setattr(
         "huggingface_hub.get_hf_file_metadata",
         lambda *_args, **_kwargs: SimpleNamespace(
-            size = 100,
-            etag = "etag-a",
-            commit_hash = revision_a,
+            size=100,
+            etag="etag-a",
+            commit_hash=revision_a,
         ),
     )
     monkeypatch.setattr(
@@ -436,9 +436,9 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
 
     def spawn(
         args,
-        hf_token = None,
+        hf_token=None,
         *,
-        hub_cache = None,
+        hub_cache=None,
     ):
         observed["args"] = args
         observed["hub_cache"] = hub_cache
@@ -449,8 +449,8 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
     def lookup(
         model,
         *,
-        hub_cache = None,
-        revision = None,
+        hub_cache=None,
+        revision=None,
     ):
         observed["lookup"] = (model, hub_cache, revision)
         return str(entry / "snapshots" / revision / filename)
@@ -461,7 +461,7 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
     monkeypatch.setattr(
         stt_ggml_sidecar,
         "_write_revision_record",
-        lambda recorded_repo, revision: observed.update(record = (recorded_repo, revision)),
+        lambda recorded_repo, revision: observed.update(record=(recorded_repo, revision)),
     )
 
     state._run(model_id, None)
@@ -487,9 +487,9 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
     )
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
-        lambda **kwargs: observed.update(later_lookup = kwargs) or "/cached/model.bin",
+        lambda **kwargs: observed.update(later_lookup=kwargs) or "/cached/model.bin",
     )
-    assert cached_model_path(model_id, hub_cache = tmp_path) == "/cached/model.bin"
+    assert cached_model_path(model_id, hub_cache=tmp_path) == "/cached/model.bin"
     assert observed["later_lookup"]["revision"] == revision_a
 
 
@@ -513,7 +513,7 @@ def test_ggml_metadata_failure_spawns_nothing_and_leaks_no_owner(monkeypatch, tm
     )
 
     state = stt_ggml_sidecar._GgmlDownloadState()
-    state._run("tiny", None, hub_cache = tmp_path)
+    state._run("tiny", None, hub_cache=tmp_path)
 
     assert events == []
     assert state.status()["error"] == "Download failed for 'tiny'."
@@ -526,10 +526,10 @@ def test_ggml_stale_record_falls_back_to_active_cache_main(monkeypatch, tmp_path
     stale_revision = "a" * 40
     active_revision = "b" * 40
     entry = _repo_dir(tmp_path, repo)
-    (entry / "refs").mkdir(parents = True)
-    (entry / "refs" / "main").write_text(active_revision, encoding = "utf-8")
+    (entry / "refs").mkdir(parents=True)
+    (entry / "refs" / "main").write_text(active_revision, encoding="utf-8")
     cached_file = entry / "snapshots" / active_revision / filename
-    cached_file.parent.mkdir(parents = True)
+    cached_file.parent.mkdir(parents=True)
     cached_file.write_bytes(b"model")
     records = []
 
@@ -540,7 +540,7 @@ def test_ggml_stale_record_falls_back_to_active_cache_main(monkeypatch, tmp_path
         lambda recorded_repo, revision: records.append((recorded_repo, revision)),
     )
 
-    assert stt_ggml_sidecar._cached_model_path(model_id, hub_cache = tmp_path) == str(cached_file)
+    assert stt_ggml_sidecar._cached_model_path(model_id, hub_cache=tmp_path) == str(cached_file)
     assert records == [(repo, active_revision)]
 
 
@@ -550,10 +550,10 @@ def test_mtmd_stale_record_falls_back_to_one_active_cache_revision(monkeypatch, 
     stale_revision = "c" * 40
     active_revision = "d" * 40
     entry = _repo_dir(tmp_path, spec.repo)
-    (entry / "refs").mkdir(parents = True)
-    (entry / "refs" / "main").write_text(active_revision, encoding = "utf-8")
+    (entry / "refs").mkdir(parents=True)
+    (entry / "refs" / "main").write_text(active_revision, encoding="utf-8")
     snapshot = entry / "snapshots" / active_revision
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     model_file = snapshot / spec.model_file
     mmproj_file = snapshot / spec.mmproj_file
     model_file.write_bytes(b"model")
@@ -567,7 +567,7 @@ def test_mtmd_stale_record_falls_back_to_one_active_cache_revision(monkeypatch, 
         lambda recorded_repo, revision: records.append((recorded_repo, revision)),
     )
 
-    assert stt_mtmd_sidecar._cached_model_paths(model_id, hub_cache = tmp_path) == (
+    assert stt_mtmd_sidecar._cached_model_paths(model_id, hub_cache=tmp_path) == (
         str(model_file),
         str(mmproj_file),
     )
@@ -590,7 +590,7 @@ def test_start_captures_the_configured_hub_cache_once(monkeypatch, tmp_path):
     )
 
     state.start("tiny")
-    state._thread.join(timeout = 5)
+    state._thread.join(timeout=5)
 
     assert calls == ["capture"]
     assert observed == [(stt_sidecar.STT_MODELS["tiny"], tmp_path)]
@@ -602,7 +602,7 @@ def test_live_studio_cache_wins_over_the_stale_startup_environment(monkeypatch, 
     monkeypatch.setenv("HF_HUB_CACHE", str(old_cache))
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = new_cache, source = "studio"),
+        lambda: SimpleNamespace(hub_cache=new_cache, source="studio"),
     )
 
     assert stt_sidecar._capture_stt_hub_cache() == new_cache

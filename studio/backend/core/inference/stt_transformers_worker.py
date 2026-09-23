@@ -86,6 +86,7 @@ class _CancelCriteria:
 
 def _raise_if_cancelled(cancel_event) -> None:
     from core.inference.stt_sidecar import SttLoadCancelledError
+
     if cancel_event is not None and cancel_event.is_set():
         raise SttLoadCancelledError("STT model loading was cancelled so training could start.")
 
@@ -94,7 +95,7 @@ def load_whisper(
     snapshot_path: str,
     device: str,
     dtype_name: str,
-    cancel_event = None,
+    cancel_event=None,
 ) -> tuple:
     """Load a Whisper model + processor from the local Hub cache. Child side.
 
@@ -105,12 +106,12 @@ def load_whisper(
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     dtype = getattr(torch, dtype_name, None) or torch.float32
-    processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
+    processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only=True)
     _raise_if_cancelled(cancel_event)
     # use_safetensors forces the pickle-free load path even if a pytorch_model.bin reached the cache; the selector and
     # completeness check exclude them upstream.
     model = WhisperForConditionalGeneration.from_pretrained(
-        snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
+        snapshot_path, torch_dtype=dtype, local_files_only=True, use_safetensors=True
     )
     _raise_if_cancelled(cancel_event)
     model.to(torch.device(device))
@@ -124,7 +125,7 @@ def transcribe_window(
     processor,
     pcm: bytes,
     generate_kwargs: dict,
-    cancel_event = None,
+    cancel_event=None,
 ):
     """Run Whisper over one window of 16 kHz mono float32 PCM. Child side.
 
@@ -134,21 +135,22 @@ def transcribe_window(
     import numpy as np
     import torch
 
-    segment = np.frombuffer(pcm, dtype = np.float32)
+    segment = np.frombuffer(pcm, dtype=np.float32)
     kwargs = dict(generate_kwargs)
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
+
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
     from core.inference.stt_sidecar import _TARGET_SAMPLE_RATE
 
-    inputs = processor(segment, sampling_rate = _TARGET_SAMPLE_RATE, return_tensors = "pt")
+    inputs = processor(segment, sampling_rate=_TARGET_SAMPLE_RATE, return_tensors="pt")
     features = inputs.input_features.to(model.device)
     target_dtype = getattr(model, "dtype", None)
     if target_dtype is not None:
         features = features.to(target_dtype)
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
-    text = processor.batch_decode(generated, skip_special_tokens = True)
+    text = processor.batch_decode(generated, skip_special_tokens=True)
     return text[0] if text else ""
 
 
@@ -182,7 +184,7 @@ def run_stt_worker(
     cmd_queue,
     resp_queue,
     cancel_event,
-    ready_event = None,
+    ready_event=None,
     config: Optional[dict] = None,
 ) -> None:
     """Child entrypoint: hold one Whisper model and answer transcription commands.
@@ -199,9 +201,10 @@ def run_stt_worker(
     _ensure_backend_on_path()
     try:
         from loggers.config import LogConfig
+
         LogConfig.setup_logging(
-            service_name = "unsloth-studio-stt-worker",
-            env = os.getenv("ENVIRONMENT_TYPE", "production"),
+            service_name="unsloth-studio-stt-worker",
+            env=os.getenv("ENVIRONMENT_TYPE", "production"),
         )
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
@@ -219,7 +222,7 @@ def run_stt_worker(
     engine = None
     while True:
         try:
-            command = cmd_queue.get(timeout = 1.0)
+            command = cmd_queue.get(timeout=1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):
@@ -261,6 +264,7 @@ def run_stt_worker(
                 )
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
+
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
                 _send(resp_queue, {"type": "text", "text": text})
             elif kind == "shutdown":
@@ -316,7 +320,7 @@ class WhisperWorker:
         self.device: Optional[str] = None
         # Read by the sidecar the way it read the model's, so an English-only checkpoint still drops the task/language
         # kwargs it rejects.
-        self.generation_config = SimpleNamespace(is_multilingual = None)
+        self.generation_config = SimpleNamespace(is_multilingual=None)
 
     def start(
         self,
@@ -353,16 +357,16 @@ class WhisperWorker:
                 self._process = _CTX.Process(
                     # the shared shim binds the child to this process's lifetime and applies the Hub cache environment
                     # before any import
-                    target = run_without_native_path_secret,
-                    args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
-                    kwargs = {
+                    target=run_without_native_path_secret,
+                    args=("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
+                    kwargs={
                         "cmd_queue": self._cmd_queue,
                         "resp_queue": self._resp_queue,
                         "cancel_event": self._cancel_event,
                         "ready_event": self._ready_event,
                         "config": {},
                     },
-                    daemon = True,
+                    daemon=True,
                 )
                 # Local handle, and started through it: a concurrent teardown can clear
                 # self._process while start() is still returning, and re-reading the
@@ -418,7 +422,7 @@ class WhisperWorker:
                 ) from exc
             raise
         self.device = response.get("device") or device
-        self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
+        self.generation_config = SimpleNamespace(is_multilingual=response.get("is_multilingual"))
 
     def transcribe_window(
         self,
@@ -525,6 +529,7 @@ class WhisperWorker:
                 return False
             try:
                 from utils.process_lifetime import forget_pid
+
                 forget_pid(process.pid)
             except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail an unload
                 logger.debug("Could not forget STT worker pid %s: %s", process.pid, exc)
@@ -564,10 +569,10 @@ class WhisperWorker:
                 if cancel_deadline is None:
                     cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
                 elif time.monotonic() >= cancel_deadline:
-                    self.close(graceful_timeout = 0.0)
+                    self.close(graceful_timeout=0.0)
                     self._raise_cancelled(phase)
             try:
-                response = self._resp_queue.get(timeout = _POLL_SECONDS)
+                response = self._resp_queue.get(timeout=_POLL_SECONDS)
             except _queue.Empty:
                 if not self.is_alive():
                     raise SttWorkerError(self._crash_message(phase))
@@ -575,7 +580,7 @@ class WhisperWorker:
                     if cancel_deadline is not None:
                         # A cancel landing near the end of the timeout is still a cancel: the caller is owed the phase's
                         # own error (409 load, 499 transcription), and a child that ignored it ignores a shutdown.
-                        self.close(graceful_timeout = 0.0)
+                        self.close(graceful_timeout=0.0)
                         self._raise_cancelled(phase)
                     self.close()
                     raise SttWorkerError(
@@ -598,6 +603,7 @@ class WhisperWorker:
             SttLoadCancelledError,
             SttTranscriptionCancelledError,
         )
+
         if phase == "load":
             raise SttLoadCancelledError("STT model loading was cancelled so training could start.")
         raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -639,7 +645,7 @@ class InProcessWhisperEngine:
         self._model = None
         self._processor = None
         self.device: Optional[str] = None
-        self.generation_config = SimpleNamespace(is_multilingual = None)
+        self.generation_config = SimpleNamespace(is_multilingual=None)
 
     def start(
         self,
@@ -657,7 +663,7 @@ class InProcessWhisperEngine:
         generation_config = getattr(model, "generation_config", None)
         is_multilingual = getattr(generation_config, "is_multilingual", None)
         self.generation_config = SimpleNamespace(
-            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None
+            is_multilingual=is_multilingual if isinstance(is_multilingual, bool) else None
         )
         logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
 
@@ -674,6 +680,7 @@ class InProcessWhisperEngine:
         )
         if cancel_event is not None and cancel_event.is_set():
             from core.inference.stt_sidecar import SttTranscriptionCancelledError
+
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         return text
 

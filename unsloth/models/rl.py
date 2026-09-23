@@ -49,6 +49,7 @@ torch_compile_options = {
 # vLLM compatibility shim: TRL expects GuidedDecodingParams even when vLLM does not provide it.
 try:
     import vllm.sampling_params as _unsloth_vllm_sp
+
     if not hasattr(_unsloth_vllm_sp, "GuidedDecodingParams"):
 
         class GuidedDecodingParams:
@@ -78,6 +79,7 @@ except Exception:
 
 try:
     from transformers import __version__ as _transformers_version_raw
+
     transformers_version = Version(_transformers_version_raw)
 except Exception:
     transformers_version = Version("0.0.0")
@@ -156,7 +158,7 @@ def PatchRL(FastLanguageModel):
             def unwrap_model_for_generation(
                 model,
                 accelerator,
-                gather_deepspeed3_params = True,
+                gather_deepspeed3_params=True,
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
                 is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
@@ -171,6 +173,7 @@ def PatchRL(FastLanguageModel):
                         yield accelerator.unwrap_model(model)
                     else:
                         import deepspeed
+
                         with deepspeed.zero.GatheredParameters(model.parameters()):
                             yield accelerator.unwrap_model(model)
                 else:
@@ -212,7 +215,7 @@ def PatchRL(FastLanguageModel):
                 unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
-                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    use_gradient_checkpointing=use_gradient_checkpointing,
                 )
 
     from transformers import Trainer
@@ -262,8 +265,8 @@ def PatchRL(FastLanguageModel):
                     loss, outputs = self.compute_loss(
                         model,
                         inputs,
-                        return_outputs = True,
-                        num_items_in_batch = num_items_in_batch,
+                        return_outputs=True,
+                        num_items_in_batch=num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -276,9 +279,9 @@ def PatchRL(FastLanguageModel):
                 with self.compute_loss_context_manager():
                     tokenized_output = self.processing_class(
                         inputs["prompt"],
-                        padding = True,
-                        truncation = True,
-                        return_tensors = "pt",
+                        padding=True,
+                        truncation=True,
+                        return_tensors="pt",
                     ).to(model.device)
                     outputs = model(**tokenized_output)
                 if isinstance(outputs, dict):
@@ -672,6 +675,7 @@ def _column_names(dataset):
         row = next(iterator, None)
         if single_pass and row is not None:
             import itertools
+
             source = itertools.chain([row], iterator)
     except Exception:
         row = None
@@ -779,6 +783,7 @@ def _is_stream(dataset):
     """Iterable-style, by the same test the DataLoader applies."""
     try:
         from torch.utils.data import IterableDataset
+
         if isinstance(dataset, IterableDataset):
             return True
     except Exception:
@@ -913,7 +918,7 @@ def _sliceable_per_token(
     dataset,
     names,
     cap,
-    probed = None,
+    probed=None,
 ):
     """The token columns whose VALUES can be sliced alongside ``input_ids``. Presence is not enough: an optional column stored as ``token_type_ids = None`` makes the late cap's ``map`` raise (and the broad catch hands back the uncapped split), and a 2-D ``position_ids`` slices on the wrong axis. So judge by a row, as the construction-time truncation does. A row that cannot be read without costing it leaves ``input_ids`` alone."""
     # input_ids first, then a fixed order: `names` is a set, and the map path reads the width off input_ids as it walks this list, so labels first sliced them against nothing.
@@ -1176,8 +1181,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         dataset,
         cap,
         args,
-        drop_unsupervised = True,
-        packs_late = False,
+        drop_unsupervised=True,
+        packs_late=False,
     ):
         # evaluate() caps the split and Transformers then calls get_eval_dataloader, which is also wrapped, so both reach here in one call. Re-capping is destructive over a one-shot stream: each probe reads a row and _CappedStream re-opens the SAME exhausted source.
         if _cap_still_holds(dataset, cap, drop_unsupervised):
@@ -1235,8 +1240,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 
             def _slice_row(
                 example,
-                _cut = cut,
-                _cols = tuple(per_token),
+                _cut=cut,
+                _cols=tuple(per_token),
             ):
                 # Per value, not per column: _sliceable_per_token judges by ONE row, so an optional column that is None three rows later raised inside map and the catch returned the UNCAPPED split.
                 out = {}
@@ -1258,7 +1263,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # A truncated row can end all -100, or with an all-zero mask the collator makes all -100, and such a batch reports a NaN loss. Intersect labels AND every active mask, not one filter each: masks are applied ONTO the labels, so separate filters still pass an all -100 row.
             if supervision:
                 kept = new.filter(
-                    lambda e, c = tuple(supervision): any(
+                    lambda e, c=tuple(supervision): any(
                         all((x != -100) if n == "labels" else x for n, x in zip(c, v))
                         for v in zip(*[e[n] for n in c])
                     )
@@ -1280,8 +1285,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         trainer,
         dataset,
         cap,
-        drop_unsupervised = True,
-        packs_late = False,
+        drop_unsupervised=True,
+        packs_late=False,
     ):
         """Cap a split once per object. ``evaluate()`` runs at every eval step and the scan materialises the whole ``input_ids`` column each time, so keep the answer, keyed on the split object and holding a reference to it so a later split cannot inherit its ``id()``."""
         # Carried onto args because _cap only ever sees those. `is not None` rather than truthiness: False is TRL's answer just as much as True.
@@ -1324,8 +1329,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         trainer,
         given,
         cap,
-        drop_unsupervised = True,
-        packs_late = False,
+        drop_unsupervised=True,
+        packs_late=False,
     ):
         # evaluate(eval_dataset = "validation") picks one split out of a stored dict, and capping the KEY is a no-op, so the split it names reached the collator uncapped.
         if isinstance(given, str):
@@ -1505,7 +1510,7 @@ def _get_num_logits_to_keep(forward_signature, args, kwargs):
     except TypeError:
         logger.debug(
             "Unsloth: Could not bind forward arguments for GRPO hidden-state fallback.",
-            exc_info = True,
+            exc_info=True,
         )
 
     num_logits_to_keep = kwargs.get("num_logits_to_keep", 0) or 0
@@ -1573,7 +1578,7 @@ def _drop_spare_hidden_states(outputs):
         # A frozen or exotic output object is not worth failing the step over; the caller has already taken the layer it needs.
         logger.debug(
             "Unsloth: could not drop spare GRPO hidden states.",
-            exc_info = True,
+            exc_info=True,
         )
 
 
@@ -1743,7 +1748,7 @@ def _backport_vision_dataset_gate(RLTrainer_source):
     return RLTrainer_source
 
 
-def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+def _patch_trl_rl_trainers(trainer_file="grpo_trainer"):
     # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see exceptions from the impl on TRL versions that rename or move classes.
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
@@ -1757,7 +1762,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
 
 
-def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
+def _patch_trl_rl_trainers_impl(trainer_file="grpo_trainer"):
     import trl
     import trl.trainer
 
@@ -2869,34 +2874,34 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     RLTrainer_source = RLTrainer_replacement.format(
-        RLTrainer_name = RLTrainer_name,
-        __RLTrainer_doc__ = __RLTrainer_doc__,
-        RLTrainer_arguments = RLTrainer_arguments,
-        RLTrainer_extra_args = RLTrainer_extra_args,
-        RLTrainer_call_args = RLTrainer_call_args,
-        RLTrainer_kwargs = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
-        RLConfig_name = RLConfig_name,
-        __RLConfig_doc__ = __RLConfig_doc__,
-        RLConfig_arguments = RLConfig_arguments,
-        RLConfig_extra_args = RLConfig_extra_args,
-        RLConfig_call_args = RLConfig_call_args,
-        RLConfig_kwargs = ",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
-        RLConfig_post = RLConfig_post,
-        RLTrainer_extras = RLTrainer_extras,
-        RLTrainer_post = RLTrainer_post,
-        RL_pre = RL_pre,
-        max_seq_length_pre = max_seq_length_pre,
-        max_seq_length_call = max_seq_length_call,
-        max_seq_length_post = max_seq_length_post,
-        selective_log_softmax_code = selective_log_softmax_code,
-        grpo_selective_log_softmax_code = grpo_selective_log_softmax_code,
-        calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
-        create_completion_attention_mask_code = create_completion_attention_mask_code,
-        autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
-        left_pack_padding_code = left_pack_padding_code,
-        align_logprobs_with_mask_code = align_logprobs_with_mask_code,
-        align_completion_tool_mask_code = align_completion_tool_mask_code,
-        sanitize_logprob_code = sanitize_logprob_code,
+        RLTrainer_name=RLTrainer_name,
+        __RLTrainer_doc__=__RLTrainer_doc__,
+        RLTrainer_arguments=RLTrainer_arguments,
+        RLTrainer_extra_args=RLTrainer_extra_args,
+        RLTrainer_call_args=RLTrainer_call_args,
+        RLTrainer_kwargs=",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0 :],
+        RLConfig_name=RLConfig_name,
+        __RLConfig_doc__=__RLConfig_doc__,
+        RLConfig_arguments=RLConfig_arguments,
+        RLConfig_extra_args=RLConfig_extra_args,
+        RLConfig_call_args=RLConfig_call_args,
+        RLConfig_kwargs=",**kwargs"[1 if RLConfig_call_args.endswith(",") else 0 :],
+        RLConfig_post=RLConfig_post,
+        RLTrainer_extras=RLTrainer_extras,
+        RLTrainer_post=RLTrainer_post,
+        RL_pre=RL_pre,
+        max_seq_length_pre=max_seq_length_pre,
+        max_seq_length_call=max_seq_length_call,
+        max_seq_length_post=max_seq_length_post,
+        selective_log_softmax_code=selective_log_softmax_code,
+        grpo_selective_log_softmax_code=grpo_selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code=calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code=create_completion_attention_mask_code,
+        autotune_batch_and_chunks_code=autotune_batch_and_chunks_code,
+        left_pack_padding_code=left_pack_padding_code,
+        align_logprobs_with_mask_code=align_logprobs_with_mask_code,
+        align_completion_tool_mask_code=align_completion_tool_mask_code,
+        sanitize_logprob_code=sanitize_logprob_code,
     )
 
     if RLTrainer_name == "GRPOTrainer":
@@ -2929,7 +2934,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         pattern = r"torch_compile_options\s*=\s*\{[^}]*\}"
 
-        RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
+        RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags=re.DOTALL)
 
         if trl_version >= Version("1.4.0"):
             # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block exists from TRL 1.4.0 through 1.7.x. Anchored on the final ref_param copy so the following enable_input_require_grads() block is not swallowed.
@@ -2944,7 +2949,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
             RLTrainer_source = re.sub(
-                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+                peft_pattern, replacement_comment, RLTrainer_source, flags=re.DOTALL
             )
 
             if trl_version >= Version("1.7.0"):
@@ -2967,7 +2972,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
             RLTrainer_source = re.sub(
-                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+                peft_pattern, replacement_comment, RLTrainer_source, flags=re.DOTALL
             )
 
         elif trl_version >= Version("0.26.0"):
@@ -2981,7 +2986,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 peft_block_pattern,
                 "\n        # TRL PEFT 0.26.0 initialization logic removed on unsloth side.\n",
                 RLTrainer_source,
-                flags = re.DOTALL,
+                flags=re.DOTALL,
             )
 
     # Remove TRL 0.26.0's unconditional bfloat16 cast of trainable params: it ignores the user's dtype and breaks GradScaler with fp16=True. patch_model_and_tokenizer already handles it.
@@ -3037,7 +3042,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _prep_replacement = (
             r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
         )
-        RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count = 1)
+        RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count=1)
 
     # Silence TRL's noisy batch_size=1 + padding-free warning, handling both the original "anihilate" typo and the corrected spelling.
     for _typo in ("anihilate", "annihilate"):
@@ -3077,7 +3082,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         _model_location,
         imports,
-        overwrite = False,
+        overwrite=False,
     )
     patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
     if trainer_file == "grpo_trainer":
@@ -3225,14 +3230,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 commented_lines.append(line)
         return "\n".join(commented_lines)
 
-    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+    init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags=re.DOTALL)
 
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches the first match, .+? the final one.
         replacer = re.findall(
             r"def __init__\(.*?\).*?\:\n",
             init,
-            flags = re.MULTILINE | re.DOTALL,
+            flags=re.MULTILINE | re.DOTALL,
         )
         if len(replacer) != 0:
             replacer = replacer[0]
@@ -3264,20 +3269,20 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     vllm_part = re.findall(
         r"(\n[\s]{8}" r"if (self|args)\.use_vllm\:.*?" r"\n[\s]{8}" "else:\n)",
         init,
-        flags = re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE | re.DOTALL,
     )
 
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         new_vllm_part = re.sub(
-            r"^\s*\#[^\n]*\n?", "", vllm_part, flags = re.MULTILINE
+            r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE
         )  # to also remove whole comment line instead of just starting at #
-        new_vllm_part = re.sub(r"\s*\#.*$", "", new_vllm_part, flags = re.MULTILINE)
+        new_vllm_part = re.sub(r"\s*\#.*$", "", new_vllm_part, flags=re.MULTILINE)
 
         sampling_params = re.findall(
             r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}SamplingParams\(.+?\))",
             new_vllm_part,
-            flags = re.MULTILINE | re.DOTALL,
+            flags=re.MULTILINE | re.DOTALL,
         )
 
         if len(sampling_params) == 1:
@@ -3337,7 +3342,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 vllm_llm_init_pattern,
                 guard_llm_init,
                 new_vllm_part,
-                flags = re.DOTALL,
+                flags=re.DOTALL,
             )
 
         init = init.replace(vllm_part, new_vllm_part)
@@ -3486,7 +3491,7 @@ def patch_trl_disable_gradient_checkpointing():
         return
 
     @contextmanager
-    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs = None):
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs=None):
         yield
 
     _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
@@ -3536,7 +3541,7 @@ def patch_trl_vllm_generation():
     return
 
 
-def PatchFastRL(algorithm = None, FastLanguageModel = None):
+def PatchFastRL(algorithm=None, FastLanguageModel=None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
     # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so downstream inspect.getsource(trl.SFTTrainer) drift detectors see the pristine upstream class.

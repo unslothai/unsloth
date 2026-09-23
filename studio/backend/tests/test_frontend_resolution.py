@@ -22,7 +22,7 @@ _REPO_STUDIO_DIR = _RUN_PY.parent.parent  # studio/
 def _load_helpers_only():
     """Import just the resolver helpers from run.py, skipping server-side
     imports (uvicorn, structlog, etc.)."""
-    source = _RUN_PY.read_text(encoding = "utf-8")
+    source = _RUN_PY.read_text(encoding="utf-8")
     tree = ast.parse(source)
     keep = []
     wanted = {
@@ -41,7 +41,7 @@ def _load_helpers_only():
                 keep.append(node)
         elif isinstance(node, ast.FunctionDef) and node.name in wanted:
             keep.append(node)
-    module = ast.Module(body = keep, type_ignores = [])
+    module = ast.Module(body=keep, type_ignores=[])
     code = compile(module, str(_RUN_PY), "exec")
     ns: dict = {"__file__": str(_RUN_PY), "__name__": "_run_helpers_test"}
     exec(code, ns)
@@ -50,14 +50,14 @@ def _load_helpers_only():
 
 def test_frontend_serving_mode_is_tunnel_only_for_desktop_api_only():
     mode = _load_helpers_only()["_frontend_serving_mode"]
-    assert mode(api_only = False, desktop_owned = False) == (True, False)
-    assert mode(api_only = True, desktop_owned = False) == (False, False)
-    assert mode(api_only = True, desktop_owned = True) == (True, True)
+    assert mode(api_only=False, desktop_owned=False) == (True, False)
+    assert mode(api_only=True, desktop_owned=False) == (False, False)
+    assert mode(api_only=True, desktop_owned=True) == (True, True)
 
 
 def test_resolver_returns_none_when_nothing_exists(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "no_studio"))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, attempted = helpers["_resolve_frontend_path"](tmp_path / "missing")
     assert chosen is None
@@ -66,10 +66,10 @@ def test_resolver_returns_none_when_nothing_exists(tmp_path, monkeypatch):
 
 def test_resolver_picks_first_existing_candidate(tmp_path, monkeypatch):
     dist = tmp_path / "good" / "frontend" / "dist"
-    dist.mkdir(parents = True)
-    (dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "no_studio"))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, attempted = helpers["_resolve_frontend_path"](dist)
     assert chosen == dist
@@ -88,10 +88,10 @@ def test_resolver_falls_back_to_studio_home_site_packages(tmp_path, monkeypatch)
         / "frontend"
         / "dist"
     )
-    sp_dist.mkdir(parents = True)
-    (sp_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    sp_dist.mkdir(parents=True)
+    (sp_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, attempted = helpers["_resolve_frontend_path"](tmp_path / "bogus")
     assert chosen is not None
@@ -104,22 +104,22 @@ def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
     pointing at a cloned repo owning the built dist."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
-    sp.mkdir(parents = True)
+    sp.mkdir(parents=True)
     repo_root = tmp_path / "clone"
     repo_studio = repo_root / "studio"
     repo_dist = repo_studio / "frontend" / "dist"
-    repo_dist.mkdir(parents = True)
-    (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    repo_dist.mkdir(parents=True)
+    (repo_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     # Minimal `__editable___pkg_finder.py` with the MAPPING dict that
     # setuptools' editable install generator writes.
     finder = sp / "__editable___unsloth_0_0_0_finder.py"
     finder.write_text(
         "MAPPING: dict[str, str] = "
         f"{{'studio': {str(repo_studio)!r}, 'unsloth': '/x', 'unsloth_cli': '/y'}}\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, attempted = helpers["_resolve_frontend_path"](tmp_path / "bogus")
     assert chosen is not None
@@ -128,7 +128,7 @@ def test_resolver_falls_back_via_editable_pth(tmp_path, monkeypatch):
 
 def test_iter_candidates_handles_missing_studio_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "nonexistent"))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     # Glob over a non-existent dir is empty; must not raise.
     candidates = helpers["_iter_frontend_fallback_candidates"]()
@@ -142,10 +142,10 @@ def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypat
     sp_dist = (
         studio_home / "unsloth_studio" / "Lib" / "site-packages" / "studio" / "frontend" / "dist"
     )
-    sp_dist.mkdir(parents = True)
-    (sp_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    sp_dist.mkdir(parents=True)
+    (sp_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
     assert chosen is not None
@@ -158,24 +158,24 @@ def test_resolver_does_not_crash_on_non_dict_mapping_literal(tmp_path, monkeypat
     must not AttributeError. The resolver should skip it and keep probing."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
-    sp.mkdir(parents = True)
+    sp.mkdir(parents=True)
     # Bad finder: set literal, not a dict. literal_eval parses it as a set,
     # so any .get() call on it would raise AttributeError.
     (sp / "__editable___bad_0_0_0_finder.py").write_text(
         "MAPPING: dict[str, str] = {'studio', 'unsloth', 'unsloth_cli'}\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     # Good finder, still discovered after the bad one is skipped.
     repo_root = tmp_path / "clone"
     repo_dist = repo_root / "studio" / "frontend" / "dist"
-    repo_dist.mkdir(parents = True)
-    (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    repo_dist.mkdir(parents=True)
+    (repo_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     (sp / "__editable___good_0_0_0_finder.py").write_text(
         f"MAPPING: dict[str, str] = {{'studio': {str(repo_root / 'studio')!r}}}\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
     assert chosen is not None
@@ -187,12 +187,12 @@ def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
     multiple lines must still parse and resolve. Locks in `[^}]*` + re.DOTALL."""
     studio_home = tmp_path / "studio_home"
     sp = studio_home / "unsloth_studio" / "lib" / "python3.13" / "site-packages"
-    sp.mkdir(parents = True)
+    sp.mkdir(parents=True)
     repo_root = tmp_path / "clone"
     repo_studio = repo_root / "studio"
     repo_dist = repo_studio / "frontend" / "dist"
-    repo_dist.mkdir(parents = True)
-    (repo_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")
+    repo_dist.mkdir(parents=True)
+    (repo_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     finder = sp / "__editable___unsloth_0_0_0_finder.py"
     finder.write_text(
         "MAPPING: dict[str, str] = {\n"
@@ -200,10 +200,10 @@ def test_resolver_handles_multiline_mapping_dict(tmp_path, monkeypatch):
         "    'unsloth': '/x',\n"
         "    'unsloth_cli': '/y',\n"
         "}\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     chosen, _ = helpers["_resolve_frontend_path"](tmp_path / "bogus")
     assert chosen is not None
@@ -218,7 +218,7 @@ def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
     import sys
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "no_studio"))
-    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising=False)
     helpers = _load_helpers_only()
     bogus = tmp_path / "no_such_dist"
     _, attempted = helpers["_resolve_frontend_path"](bogus)
@@ -257,7 +257,7 @@ def _run_frontend_mount(*, tunnel_only, resolves):
     branch that decides abort-vs-degrade is exercised where it actually lives."""
     import logging
 
-    tree = ast.parse(_RUN_PY.read_text(encoding = "utf-8"))
+    tree = ast.parse(_RUN_PY.read_text(encoding="utf-8"))
     run_server = next(
         n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server"
     )
@@ -268,7 +268,7 @@ def _run_frontend_mount(*, tunnel_only, resolves):
         and isinstance(n.test, ast.BoolOp)
         and any(isinstance(v, ast.Name) and v.id == "_serve_frontend" for v in n.test.values)
     )
-    code = compile(ast.Module(body = [block], type_ignores = []), str(_RUN_PY), "exec")
+    code = compile(ast.Module(body=[block], type_ignores=[]), str(_RUN_PY), "exec")
     mounted = []
     ns = {
         "frontend_path": Path("/nonexistent/studio/frontend/dist"),
@@ -292,20 +292,20 @@ def _run_frontend_mount(*, tunnel_only, resolves):
 
 def test_missing_frontend_is_fatal_everywhere_but_the_desktop_tunnel_path():
     fatal = _load_helpers_only()["_missing_frontend_is_fatal"]
-    assert fatal(tunnel_only = False) is True
-    assert fatal(tunnel_only = True) is False
+    assert fatal(tunnel_only=False) is True
+    assert fatal(tunnel_only=True) is False
 
 
 def test_desktop_api_only_backend_starts_without_a_packaged_dist():
     """The desktop spawns `studio --api-only` with no --frontend, and its
     installer skips the frontend build, so a missing dist must not abort."""
-    assert _run_frontend_mount(tunnel_only = True, resolves = False) == []
+    assert _run_frontend_mount(tunnel_only=True, resolves=False) == []
 
 
 def test_a_missing_dist_still_aborts_a_web_ui_launch():
-    with pytest.raises(SystemExit, match = "frontend build not found"):
-        _run_frontend_mount(tunnel_only = False, resolves = False)
+    with pytest.raises(SystemExit, match="frontend build not found"):
+        _run_frontend_mount(tunnel_only=False, resolves=False)
 
 
 def test_a_desktop_dist_is_still_mounted_behind_the_tunnel_gate():
-    assert _run_frontend_mount(tunnel_only = True, resolves = True) == [(Path("/dist"), True)]
+    assert _run_frontend_mount(tunnel_only=True, resolves=True) == [(Path("/dist"), True)]

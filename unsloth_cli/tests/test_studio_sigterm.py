@@ -16,7 +16,7 @@ import pytest
 
 from unsloth_cli.commands import studio as studio_mod
 
-STUDIO_SRC = Path(studio_mod.__file__).read_text(encoding = "utf-8")
+STUDIO_SRC = Path(studio_mod.__file__).read_text(encoding="utf-8")
 
 
 def _installs_before_waiting(fn: ast.FunctionDef) -> bool:

@@ -30,9 +30,9 @@ def _seed(
     body: str = "hello\n",
 ) -> Path:
     directory = _home() / "logs" / family_dir
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
-    path.write_text(body, encoding = "utf-8")
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -80,7 +80,7 @@ def test_a_symlink_out_of_the_log_dir_is_not_readable(tmp_path):
     secret = tmp_path / "id_rsa"
     secret.write_text("PRIVATE KEY\n")
     directory = _home() / "logs" / "server"
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     link = directory / "server-20260813-999999-pid1.log"
     try:
         link.symlink_to(secret)
@@ -100,10 +100,10 @@ def test_another_installations_logs_are_not_offered(monkeypatch, tmp_path):
     """With UNSLOTH_STUDIO_HOME set, the runners write under it, so the legacy
     ~/.unsloth/studio belongs to a different install and must stay invisible."""
     legacy = tmp_path / "legacy"
-    (legacy / ".unsloth" / "studio" / "logs" / "diffusion-server").mkdir(parents = True)
+    (legacy / ".unsloth" / "studio" / "logs" / "diffusion-server").mkdir(parents=True)
     (
         legacy / ".unsloth" / "studio" / "logs" / "diffusion-server" / "diffusion-1-port-1.log"
-    ).write_text("someone else's log\n", encoding = "utf-8")
+    ).write_text("someone else's log\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: legacy))
 
     _seed("server", f"server-20260813-101014-pid{os.getpid()}.log")
@@ -142,9 +142,9 @@ def test_a_runtime_log_under_the_other_root_is_still_found(monkeypatch, tmp_path
     does not, so on such an install the two disagree. Scanning one root only
     would lose exactly the logs a failed model load writes."""
     other_home = tmp_path / "legacy-home"
-    (other_home / "logs" / "llama-server").mkdir(parents = True)
+    (other_home / "logs" / "llama-server").mkdir(parents=True)
     stray = other_home / "logs" / "llama-server" / "llama-1765009999-port-9099.log"
-    stray.write_text("child runtime output\n", encoding = "utf-8")
+    stray.write_text("child runtime output\n", encoding="utf-8")
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(
@@ -215,15 +215,15 @@ DESKTOP_FIXTURES = [
 
 
 @pytest.mark.parametrize(
-    "family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES]
+    "family,subdir,name", DESKTOP_FIXTURES, ids=[f[2] for f in DESKTOP_FIXTURES]
 )
 def test_the_desktop_shell_logs_are_offered(family, subdir, name):
     """The Tauri shell writes these beside the Python logs, and backend-*.log is
     the ONLY record when the backend dies before its own file logging starts.
     Without them a user whose app failed to start is told nothing was logged."""
     directory = _home() / subdir if subdir else _home()
-    directory.mkdir(parents = True, exist_ok = True)
-    (directory / name).write_text("desktop output\n", encoding = "utf-8")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_text("desktop output\n", encoding="utf-8")
     sources = debug_log_sources.list_sources()
     assert any(
         s.label == name and s.family == family for s in sources
@@ -232,9 +232,9 @@ def test_the_desktop_shell_logs_are_offered(family, subdir, name):
 
 def test_a_desktop_log_resolves_and_reads_back():
     directory = _home() / "logs"
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / "backend-backend-1786344247254-2-s01.log"
-    path.write_text("the backend died before it could open its own log\n", encoding = "utf-8")
+    path.write_text("the backend died before it could open its own log\n", encoding="utf-8")
     source = next(s for s in debug_log_sources.list_sources() if s.label == path.name)
     assert debug_log_sources.resolve_source_id(source.id) == Path(os.path.realpath(path))
 
@@ -243,8 +243,8 @@ def test_a_python_log_is_not_claimed_by_a_desktop_family():
     """logs/ now has both flat desktop files and the per-family subdirectories,
     so the globs must not overlap."""
     _seed("server", f"server-20260813-101015-pid{os.getpid()}.log")
-    (_home() / "logs").mkdir(parents = True, exist_ok = True)
-    (_home() / "logs" / "backend-backend-1-2-s01.log").write_text("x\n", encoding = "utf-8")
+    (_home() / "logs").mkdir(parents=True, exist_ok=True)
+    (_home() / "logs" / "backend-backend-1-2-s01.log").write_text("x\n", encoding="utf-8")
     by_family = {}
     for source in debug_log_sources.list_sources():
         by_family.setdefault(source.family, []).append(source.label)
@@ -256,9 +256,9 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     """logs/llama-server is never pruned and reaches five figures on a real
     install, while this endpoint is polled once a second."""
     directory = _home() / "logs" / "llama-server"
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     for i in range(400):
-        (directory / f"llama-17660000{i:03d}-port-8080.log").write_text("x\n", encoding = "utf-8")
+        (directory / f"llama-17660000{i:03d}-port-8080.log").write_text("x\n", encoding="utf-8")
 
     real_stat = Path.stat
     calls = {"n": 0}
@@ -289,8 +289,8 @@ def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
     """
     monkeypatch.chdir(tmp_path)
     literal = tmp_path / "~" / "studio"
-    (literal / "logs" / "llama-server").mkdir(parents = True)
-    (literal / "logs" / "llama-server" / "llama-1786000000.log").write_text("x", encoding = "utf-8")
+    (literal / "logs" / "llama-server").mkdir(parents=True)
+    (literal / "logs" / "llama-server" / "llama-1786000000.log").write_text("x", encoding="utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
 
     labels = [source.label for source in debug_log_sources.list_sources()]
@@ -301,13 +301,13 @@ def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_pa
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     server_dir = tmp_path / "logs" / "server"
     llama_dir = tmp_path / "logs" / "llama-server"
-    server_dir.mkdir(parents = True)
-    llama_dir.mkdir(parents = True)
+    server_dir.mkdir(parents=True)
+    llama_dir.mkdir(parents=True)
     # A retained log from a previous run: a pid that is not ours.
     old = server_dir / "server-20260101-000000-pid1.log"
-    old.write_text("previous run\n", encoding = "utf-8")
+    old.write_text("previous run\n", encoding="utf-8")
     newest = llama_dir / "llama-1786000000.log"
-    newest.write_text("the failure\n", encoding = "utf-8")
+    newest.write_text("the failure\n", encoding="utf-8")
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(newest, (2_000_000, 2_000_000))
 
@@ -319,12 +319,12 @@ def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     server_dir = tmp_path / "logs" / "server"
     llama_dir = tmp_path / "logs" / "llama-server"
-    server_dir.mkdir(parents = True)
-    llama_dir.mkdir(parents = True)
+    server_dir.mkdir(parents=True)
+    llama_dir.mkdir(parents=True)
     current = server_dir / f"server-20260101-000000-pid{os.getpid()}.log"
-    current.write_text("this session\n", encoding = "utf-8")
+    current.write_text("this session\n", encoding="utf-8")
     newer = llama_dir / "llama-1786000000.log"
-    newer.write_text("a runner\n", encoding = "utf-8")
+    newer.write_text("a runner\n", encoding="utf-8")
     os.utime(current, (1_000_000, 1_000_000))
     os.utime(newer, (2_000_000, 2_000_000))
 

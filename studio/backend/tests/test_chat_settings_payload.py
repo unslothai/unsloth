@@ -48,7 +48,7 @@ def test_mirrored_settings_round_trip():
         }
     )
 
-    assert payload.model_dump(exclude_unset = True) == {
+    assert payload.model_dump(exclude_unset=True) == {
         "toolsEnabled": True,
         "deepResearchEnabled": False,
         "permissionMode": "ask",
@@ -70,7 +70,7 @@ def test_mirrored_settings_round_trip():
 
 def test_thread_rag_source_keeps_its_shape():
     payload = ChatSettingsPayload.model_validate({"ragSource": {"type": "thread"}})
-    assert payload.model_dump(exclude_unset = True) == {"ragSource": {"type": "thread"}}
+    assert payload.model_dump(exclude_unset=True) == {"ragSource": {"type": "thread"}}
 
 
 def test_rag_source_replaces_rather_than_merges():
@@ -128,12 +128,12 @@ def test_other_nested_settings_still_merge():
 
 def test_unset_fields_stay_out_of_the_merge():
     payload = ChatSettingsPayload.model_validate({"ragTopK": 5})
-    assert payload.model_dump(exclude_unset = True) == {"ragTopK": 5}
+    assert payload.model_dump(exclude_unset=True) == {"ragTopK": 5}
 
 
 def test_max_tool_calls_off_survives_the_payload():
     payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
-    assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
+    assert payload.model_dump(exclude_unset=True) == {"maxToolCallsPerMessage": 0}
 
 
 @pytest.mark.parametrize(
@@ -212,9 +212,9 @@ def test_the_rejection_detail_can_be_rendered_as_json():
     from routes.chat_history import put_settings
 
     with pytest.raises(HTTPException) as excinfo:
-        put_settings({"ragAutoInjectMinScore": float("nan")}, current_subject = "t")
+        put_settings({"ragAutoInjectMinScore": float("nan")}, current_subject="t")
     assert excinfo.value.status_code == 400
-    json.dumps(excinfo.value.detail, allow_nan = False)
+    json.dumps(excinfo.value.detail, allow_nan=False)
 
 
 def test_auto_compact_settings_round_trip():
@@ -225,7 +225,7 @@ def test_auto_compact_settings_round_trip():
             "compactionHeadroomRatio": 0.05,
         }
     )
-    assert payload.model_dump(exclude_unset = True) == {
+    assert payload.model_dump(exclude_unset=True) == {
         "autoCompactEnabled": False,
         "contextPolicy": "rolling",
         "compactionHeadroomRatio": 0.05,
@@ -234,7 +234,7 @@ def test_auto_compact_settings_round_trip():
 
 def test_auto_compact_settings_can_inherit_the_server_policy():
     payload = ChatSettingsPayload.model_validate({"contextPolicy": "inherit"})
-    assert payload.model_dump(exclude_unset = True) == {"contextPolicy": "inherit"}
+    assert payload.model_dump(exclude_unset=True) == {"contextPolicy": "inherit"}
 
 
 def test_compaction_headroom_ratio_is_bounded():
@@ -244,14 +244,14 @@ def test_compaction_headroom_ratio_is_bounded():
 
 def test_a_sampling_seed_survives_the_payload():
     payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": 3407}})
-    assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": 3407}}
+    assert payload.model_dump(exclude_unset=True) == {"inferenceParams": {"seed": 3407}}
 
 
 def test_clearing_the_seed_reaches_the_merge_as_null():
     """A cleared seed is an explicit null, not an omission: the merge overwrites per
     key and never removes one, so an omitted seed would leave the old pin in place."""
     payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": None}})
-    updates = payload.model_dump(exclude_unset = True)
+    updates = payload.model_dump(exclude_unset=True)
     assert updates == {"inferenceParams": {"seed": None}}
 
     merged = _deep_merge_settings({"inferenceParams": {"seed": 3407, "topP": 0.9}}, updates)
@@ -278,4 +278,4 @@ def test_out_of_range_seeds_are_refused(seed):
 @pytest.mark.parametrize("seed", [0, 3407, 2**32 - 2])
 def test_the_whole_uint32_pin_range_is_accepted(seed):
     payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": seed}})
-    assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": seed}}
+    assert payload.model_dump(exclude_unset=True) == {"inferenceParams": {"seed": seed}}

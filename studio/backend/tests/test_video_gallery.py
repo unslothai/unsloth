@@ -17,13 +17,13 @@ import core.inference.video_gallery as gallery
 import pytest
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _tmp_gallery(monkeypatch, tmp_path):
     # Point the gallery at a throwaway root instead of ~/.unsloth/studio.
     monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
 
 
-def _mp4(tag = b"\x00\x00\x00\x18ftypmp42"):
+def _mp4(tag=b"\x00\x00\x00\x18ftypmp42"):
     # Not a real container; the gallery treats the bytes as opaque payload.
     return tag
 
@@ -55,7 +55,7 @@ def test_save_writes_pair_and_round_trips():
     directory = gallery.gallery_dir()
     assert (directory / f"{record['id']}.mp4").is_file()
     sidecar = directory / f"{record['id']}.json"
-    assert json.loads(sidecar.read_text(encoding = "utf-8"))["prompt"] == "a sloth surfing"
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["prompt"] == "a sloth surfing"
 
     listed = gallery.list_videos()
     assert len(listed) == 1
@@ -70,7 +70,7 @@ def test_url_shape():
 
 
 def _save_with_mtime(prompt: str, t: float) -> dict:
-    record = gallery.save(_mp4(), _meta(prompt = prompt, created_at = t))
+    record = gallery.save(_mp4(), _meta(prompt=prompt, created_at=t))
     # Listing orders by mp4 mtime; set it explicitly so a tight test loop can't tie it.
     os.utime(gallery.gallery_dir() / f"{record['id']}.mp4", (t, t))
     return record
@@ -86,13 +86,13 @@ def test_list_paginates_with_limit_offset():
     # 5 videos, newest (t=4) first.
     for i in range(5):
         _save_with_mtime(f"p{i}", float(i))
-    page1 = gallery.list_videos(limit = 2, offset = 0)
-    page2 = gallery.list_videos(limit = 2, offset = 2)
+    page1 = gallery.list_videos(limit=2, offset=0)
+    page2 = gallery.list_videos(limit=2, offset=2)
     assert [r["prompt"] for r in page1] == ["p4", "p3"]
     assert [r["prompt"] for r in page2] == ["p2", "p1"]
     # limit=None still returns everything from the offset.
     assert len(gallery.list_videos()) == 5
-    assert len(gallery.list_videos(offset = 4)) == 1
+    assert len(gallery.list_videos(offset=4)) == 1
 
 
 def test_video_path_rejects_unsafe_ids():
@@ -117,7 +117,7 @@ def test_owned_video_path_serves_only_owned_clips():
     assert gallery.video_path("recording") is not None  # resolvable...
     assert gallery.owned_video_path("recording") is None  # ...but not ours to serve
 
-    ours = gallery.save(_mp4(), _meta(prompt = "ours"))
+    ours = gallery.save(_mp4(), _meta(prompt="ours"))
     assert gallery.owned_video_path(ours["id"]) is not None
     assert gallery.owned_video_path("../../etc/passwd") is None
     assert gallery.owned_video_path("missing") is None
@@ -132,8 +132,8 @@ def test_transcode_refuses_orphan_mp4():
 
 
 def test_delete_removes_both_files():
-    record = gallery.save(_mp4(), _meta(prompt = "a"))
-    gallery.save(_mp4(), _meta(prompt = "b"))
+    record = gallery.save(_mp4(), _meta(prompt="a"))
+    gallery.save(_mp4(), _meta(prompt="b"))
     directory = gallery.gallery_dir()
     assert gallery.delete(record["id"]) is True
     # Both halves of the pair are gone.
@@ -146,7 +146,7 @@ def test_delete_removes_both_files():
 def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
     # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but needs a readable sidecar, so dropping the sidecar first and then failing
     # the mp4 unlink (a Windows lock) would hide a still-present mp4 with no way to retry. Fail the mp4 unlink and assert the video stays listable.
-    record = gallery.save(_mp4(), _meta(prompt = "keep"))
+    record = gallery.save(_mp4(), _meta(prompt="keep"))
     directory = gallery.gallery_dir()
     mp4 = directory / f"{record['id']}.mp4"
     sidecar = directory / f"{record['id']}.json"
@@ -170,8 +170,8 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
 
 
 def test_clear_returns_count():
-    gallery.save(_mp4(), _meta(prompt = "a"))
-    gallery.save(_mp4(), _meta(prompt = "b"))
+    gallery.save(_mp4(), _meta(prompt="a"))
+    gallery.save(_mp4(), _meta(prompt="b"))
     assert gallery.clear() == 2
     assert gallery.list_videos() == []
     # No stray sidecars left behind after a clear.
@@ -182,7 +182,7 @@ def test_clear_preserves_orphan_mp4():
     # An orphan / foreign MP4 is invisible to list_videos; clear must remove the owned pair without destroying it.
     foreign = gallery.gallery_dir() / "recording.mp4"
     foreign.write_bytes(_mp4())
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    gallery.save(_mp4(), _meta(prompt="ours"))
     assert gallery.clear() == 1
     assert foreign.exists()
     assert gallery.list_videos() == []
@@ -200,7 +200,7 @@ def test_list_skips_orphan_mp4_without_sidecar():
     # An MP4 with no readable json sidecar (a hand-dropped file) is not a record.
     orphan = gallery.gallery_dir() / "orphan.mp4"
     orphan.write_bytes(_mp4())
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    gallery.save(_mp4(), _meta(prompt="ours"))
     listed = gallery.list_videos()
     assert [r["prompt"] for r in listed] == ["ours"]
 
@@ -208,8 +208,8 @@ def test_list_skips_orphan_mp4_without_sidecar():
 def test_list_skips_orphan_sidecar_without_mp4():
     # A json sidecar with no MP4 alongside it is never surfaced (listing globs mp4s).
     orphan = gallery.gallery_dir() / "lonely.json"
-    orphan.write_text(json.dumps(_meta(prompt = "no video")), encoding = "utf-8")
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    orphan.write_text(json.dumps(_meta(prompt="no video")), encoding="utf-8")
+    gallery.save(_mp4(), _meta(prompt="ours"))
     listed = gallery.list_videos()
     assert [r["prompt"] for r in listed] == ["ours"]
 
@@ -222,7 +222,7 @@ def test_orphan_mp4_in_window_does_not_drop_valid_videos():
     os.utime(orphan, (300.0, 300.0))
     _save_with_mtime("p1", 200.0)
     # First page of 2 must still return both real videos, not [p1] (orphan eating a slot).
-    page1 = gallery.list_videos(limit = 2, offset = 0)
+    page1 = gallery.list_videos(limit=2, offset=0)
     assert [r["prompt"] for r in page1] == ["p1", "p2"]
 
 
@@ -230,8 +230,8 @@ def test_list_skips_corrupt_sidecar():
     # A sidecar that is not valid JSON is treated as a foreign/orphan mp4 and skipped.
     directory = gallery.gallery_dir()
     (directory / "broken.mp4").write_bytes(_mp4())
-    (directory / "broken.json").write_text("{not json", encoding = "utf-8")
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    (directory / "broken.json").write_text("{not json", encoding="utf-8")
+    gallery.save(_mp4(), _meta(prompt="ours"))
     listed = gallery.list_videos()
     assert [r["prompt"] for r in listed] == ["ours"]
 
@@ -241,7 +241,7 @@ def test_list_skips_invalid_utf8_sidecar():
     directory = gallery.gallery_dir()
     (directory / "badbytes.mp4").write_bytes(_mp4())
     (directory / "badbytes.json").write_bytes(b"\xff\xfe{}")
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    gallery.save(_mp4(), _meta(prompt="ours"))
     assert [r["prompt"] for r in gallery.list_videos()] == ["ours"]
 
 
@@ -249,8 +249,8 @@ def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
     # A hand-dropped MP4 whose sidecar parses but lacks the required recipe keys is hidden by list_videos, so clear must spare it.
     directory = gallery.gallery_dir()
     (directory / "foreign.mp4").write_bytes(_mp4())
-    (directory / "foreign.json").write_text("{}", encoding = "utf-8")
-    gallery.save(_mp4(), _meta(prompt = "ours"))
+    (directory / "foreign.json").write_text("{}", encoding="utf-8")
+    gallery.save(_mp4(), _meta(prompt="ours"))
     assert gallery.clear() == 1
     assert (directory / "foreign.mp4").exists()
 
@@ -260,7 +260,7 @@ def test_delete_refuses_mp4_with_present_but_invalid_sidecar():
     directory = gallery.gallery_dir()
     (directory / "foreign.mp4").write_bytes(_mp4())
     (directory / "foreign.json").write_text(
-        json.dumps({"prompt": "x"}), encoding = "utf-8"
+        json.dumps({"prompt": "x"}), encoding="utf-8"
     )  # partial sidecar (no width/seed/...)
     assert gallery.delete("foreign") is False
     assert (directory / "foreign.mp4").exists()
@@ -275,9 +275,9 @@ def test_valid_callback_paginates_over_accepted_records():
     def _valid(rec):
         return rec.get("prompt") != "BAD"
 
-    page = gallery.list_videos(limit = 2, offset = 0, valid = _valid)
+    page = gallery.list_videos(limit=2, offset=0, valid=_valid)
     assert [r["prompt"] for r in page] == ["g1", "g2"]
-    assert len(gallery.list_videos(limit = 3, offset = 0, valid = _valid)) == 2
+    assert len(gallery.list_videos(limit=3, offset=0, valid=_valid)) == 2
 
 
 def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
@@ -289,7 +289,7 @@ def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
     def _valid(rec):
         return not str(rec.get("prompt", "")).startswith("BAD")
 
-    records = gallery.list_videos(limit = 2, offset = 0, valid = _valid)
+    records = gallery.list_videos(limit=2, offset=0, valid=_valid)
     assert [r["prompt"] for r in records] == ["good"]
 
 
@@ -305,7 +305,7 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
         return real_replace(src, dst, *a, **k)
 
     monkeypatch.setattr(gallery.os, "replace", _replace)
-    with pytest.raises(OSError, match = "simulated sidecar failure"):
+    with pytest.raises(OSError, match="simulated sidecar failure"):
         gallery.save(_mp4(), _meta())
     # No mp4, no sidecar, no temp files -- the whole record was rolled back.
     assert list(gallery.gallery_dir().iterdir()) == []
@@ -323,15 +323,15 @@ def _real_mp4_bytes(
     import io
 
     buf = io.BytesIO()
-    with av.open(buf, "w", format = "mp4") as out:
-        stream = out.add_stream("mpeg4", rate = rate)
+    with av.open(buf, "w", format="mp4") as out:
+        stream = out.add_stream("mpeg4", rate=rate)
         width, height = size if isinstance(size, tuple) else (size, size)
         stream.width = width
         stream.height = height
         stream.pix_fmt = "yuv420p"
         for i in range(frames):
             frame = av.VideoFrame.from_ndarray(
-                np.full((height, width, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+                np.full((height, width, 3), (i * 30) % 256, dtype=np.uint8), format="rgb24"
             )
             for packet in stream.encode(frame):
                 out.mux(packet)
@@ -354,15 +354,15 @@ def _real_mp4_with_audio(
 
     arate = 44100
     buf = io.BytesIO()
-    with av.open(buf, "w", format = "mp4") as out:
-        video = out.add_stream("mpeg4", rate = rate)
+    with av.open(buf, "w", format="mp4") as out:
+        video = out.add_stream("mpeg4", rate=rate)
         video.width = video.height = size
         video.pix_fmt = "yuv420p"
-        audio = out.add_stream("aac", rate = arate)
+        audio = out.add_stream("aac", rate=arate)
         audio.layout = "stereo"
         for i in range(seconds * rate):
             frame = av.VideoFrame.from_ndarray(
-                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+                np.full((size, size, 3), (i * 30) % 256, dtype=np.uint8), format="rgb24"
             )
             for packet in video.encode(frame):
                 out.mux(packet)
@@ -374,11 +374,11 @@ def _real_mp4_with_audio(
                     int(20000 * math.sin(2 * math.pi * 440 * (written + k) / arate))
                     for k in range(count)
                 ],
-                dtype = np.int16,
+                dtype=np.int16,
             )
             # Packed s16 is one interleaved row.
             frame = av.AudioFrame.from_ndarray(
-                np.repeat(tone, 2).reshape(1, count * 2), format = "s16", layout = "stereo"
+                np.repeat(tone, 2).reshape(1, count * 2), format="s16", layout="stereo"
             )
             frame.sample_rate = arate
             frame.pts = written
@@ -408,7 +408,7 @@ def test_webm_export_keeps_the_audio_track():
     assert ("audio", "opus") in kinds
     samples = 0
     with av.open(io.BytesIO(webm)) as container:
-        for frame in container.decode(audio = 0):
+        for frame in container.decode(audio=0):
             samples += frame.samples
     # A full second of 48 kHz audio survived (Opus pads its last 20 ms frame).
     assert samples >= 48000, samples
@@ -431,7 +431,7 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
 
         def add_stream(
             self,
-            codec_name = None,
+            codec_name=None,
             *args,
             **kwargs,
         ):
@@ -451,7 +451,7 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
 
     def _open(
         file,
-        mode = "r",
+        mode="r",
         *args,
         **kwargs,
     ):
@@ -479,7 +479,7 @@ def test_thumbnail_produces_a_webp_from_the_video():
     import io
 
     Image = pytest.importorskip("PIL.Image")
-    record = gallery.save(_real_mp4_bytes(frames = 3, size = 64), _meta())
+    record = gallery.save(_real_mp4_bytes(frames=3, size=64), _meta())
     thumbnail = gallery.thumbnail(record["id"])
 
     assert thumbnail is not None
@@ -493,12 +493,12 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
     import io
 
     Image = pytest.importorskip("PIL.Image")
-    record = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 180)), _meta())
+    record = gallery.save(_real_mp4_bytes(frames=1, size=(320, 180)), _meta())
 
     with Image.open(io.BytesIO(gallery.thumbnail(record["id"]))) as image:
         assert image.size == (192, 108)
 
-    portrait = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 568)), _meta())
+    portrait = gallery.save(_real_mp4_bytes(frames=1, size=(320, 568)), _meta())
     with Image.open(io.BytesIO(gallery.thumbnail(portrait["id"]))) as image:
         assert image.size == (192, 341)
 
@@ -506,7 +506,7 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
 def test_thumbnail_rejects_unowned_and_invalid_videos():
     assert gallery.thumbnail("does-not-exist") is None
     record = gallery.save(_mp4(), _meta())
-    with pytest.raises(RuntimeError, match = "Thumbnail generation failed"):
+    with pytest.raises(RuntimeError, match="Thumbnail generation failed"):
         gallery.thumbnail(record["id"])
 
 
@@ -582,7 +582,7 @@ def test_gif_export_bounds_frames_and_edge(monkeypatch):
     monkeypatch.setattr(vg, "_GIF_MAX_EDGE", 16)
     monkeypatch.setattr(vg, "_GIF_MAX_FRAMES", 4)
 
-    record = gallery.save(_real_mp4_bytes(frames = 24, size = 64, rate = 12), _meta())
+    record = gallery.save(_real_mp4_bytes(frames=24, size=64, rate=12), _meta())
     gif = vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4")
 
     assert gif.startswith(b"GIF8")
@@ -610,7 +610,7 @@ def test_records_carry_default_flags():
 def test_pinned_videos_sort_ahead_of_newer_ones():
     old = _save_with_mtime("old", 100.0)
     _save_with_mtime("new", 200.0)
-    gallery.set_flags(old["id"], pinned = True)
+    gallery.set_flags(old["id"], pinned=True)
     assert [r["prompt"] for r in gallery.list_videos()] == ["old", "new"]
     assert gallery.list_videos()[0]["pinned"] is True
 
@@ -618,33 +618,33 @@ def test_pinned_videos_sort_ahead_of_newer_ones():
 def test_most_recently_pinned_leads_the_pinned_group():
     first = _save_with_mtime("first", 100.0)
     second = _save_with_mtime("second", 200.0)
-    gallery.set_flags(second["id"], pinned = True)
-    gallery.set_flags(first["id"], pinned = True)  # pinned later, so it leads
+    gallery.set_flags(second["id"], pinned=True)
+    gallery.set_flags(first["id"], pinned=True)  # pinned later, so it leads
     assert [r["prompt"] for r in gallery.list_videos()] == ["first", "second"]
 
 
 def test_unpinning_returns_a_video_to_newest_first_order():
     old = _save_with_mtime("old", 100.0)
     _save_with_mtime("new", 200.0)
-    gallery.set_flags(old["id"], pinned = True)
-    gallery.set_flags(old["id"], pinned = False)
+    gallery.set_flags(old["id"], pinned=True)
+    gallery.set_flags(old["id"], pinned=False)
     assert [r["prompt"] for r in gallery.list_videos()] == ["new", "old"]
 
 
 def test_archived_videos_leave_the_default_listing():
     keep = _save_with_mtime("keep", 100.0)
     shelved = _save_with_mtime("shelved", 200.0)
-    gallery.set_flags(shelved["id"], archived = True)
+    gallery.set_flags(shelved["id"], archived=True)
     assert [r["id"] for r in gallery.list_videos()] == [keep["id"]]
-    archived = gallery.list_videos(archived = True)
+    archived = gallery.list_videos(archived=True)
     assert [r["id"] for r in archived] == [shelved["id"]]
     assert archived[0]["archived"] is True
 
 
 def test_restoring_puts_a_video_back_on_the_strip():
     record = _save_with_mtime("a", 100.0)
-    gallery.set_flags(record["id"], archived = True)
-    gallery.set_flags(record["id"], archived = False)
+    gallery.set_flags(record["id"], archived=True)
+    gallery.set_flags(record["id"], archived=False)
     assert [r["id"] for r in gallery.list_videos()] == [record["id"]]
 
 
@@ -652,30 +652,30 @@ def test_archived_videos_do_not_consume_a_page_slot():
     for i in range(4):
         record = _save_with_mtime(f"a{i}", 100.0 + i)
         if i % 2 == 0:
-            gallery.set_flags(record["id"], archived = True)
-    assert [r["prompt"] for r in gallery.list_videos(limit = 2)] == ["a3", "a1"]
-    assert len(gallery.list_videos(limit = 3)) == 2
-    assert [r["prompt"] for r in gallery.list_videos(archived = True)] == ["a2", "a0"]
+            gallery.set_flags(record["id"], archived=True)
+    assert [r["prompt"] for r in gallery.list_videos(limit=2)] == ["a3", "a1"]
+    assert len(gallery.list_videos(limit=3)) == 2
+    assert [r["prompt"] for r in gallery.list_videos(archived=True)] == ["a2", "a0"]
 
 
 def test_pinning_survives_pagination():
     oldest = _save_with_mtime("oldest", 100.0)
     for i in range(1, 4):
         _save_with_mtime(f"a{i}", 100.0 + i)
-    gallery.set_flags(oldest["id"], pinned = True)
-    assert gallery.list_videos(limit = 1, offset = 0)[0]["prompt"] == "oldest"
+    gallery.set_flags(oldest["id"], pinned=True)
+    assert gallery.list_videos(limit=1, offset=0)[0]["prompt"] == "oldest"
 
 
 def test_set_flags_refuses_a_foreign_or_unknown_id():
-    assert gallery.set_flags("does-not-exist", pinned = True) is None
+    assert gallery.set_flags("does-not-exist", pinned=True) is None
     orphan = gallery.gallery_dir() / "orphan.mp4"
     orphan.write_bytes(_mp4())  # no sidecar, so not ours
-    assert gallery.set_flags("orphan", pinned = True) is None
+    assert gallery.set_flags("orphan", pinned=True) is None
 
 
 def test_delete_prunes_the_flag_entry():
     record = _save_with_mtime("a", 100.0)
-    gallery.set_flags(record["id"], pinned = True)
+    gallery.set_flags(record["id"], pinned=True)
     assert gallery.delete(record["id"]) is True
     assert gallery_flags.read(gallery.gallery_dir()) == {}
 
@@ -683,18 +683,18 @@ def test_delete_prunes_the_flag_entry():
 def test_clear_spares_archived_videos():
     active = _save_with_mtime("active", 100.0)
     shelved = _save_with_mtime("shelved", 200.0)
-    gallery.set_flags(shelved["id"], archived = True)
+    gallery.set_flags(shelved["id"], archived=True)
     assert gallery.clear() == 1
-    assert [r["id"] for r in gallery.list_videos(archived = True)] == [shelved["id"]]
+    assert [r["id"] for r in gallery.list_videos(archived=True)] == [shelved["id"]]
     assert set(gallery_flags.read(gallery.gallery_dir())) == {shelved["id"]}
     assert gallery.video_path(active["id"]) is None
 
 
 def test_clear_can_include_archived_videos():
     record = _save_with_mtime("shelved", 100.0)
-    gallery.set_flags(record["id"], archived = True)
-    assert gallery.clear(include_archived = True) == 1
-    assert gallery.list_videos(archived = True) == []
+    gallery.set_flags(record["id"], archived=True)
+    assert gallery.clear(include_archived=True) == 1
+    assert gallery.list_videos(archived=True) == []
     assert gallery_flags.read(gallery.gallery_dir()) == {}
 
 
@@ -702,15 +702,15 @@ def test_flags_are_not_required_sidecar_keys():
     # Flags live in their own store, so a clip written before they existed must still list.
     record = _save_with_mtime("older-schema", 100.0)
     sidecar = gallery.gallery_dir() / f"{record['id']}.json"
-    assert "pinned" not in json.loads(sidecar.read_text(encoding = "utf-8"))
+    assert "pinned" not in json.loads(sidecar.read_text(encoding="utf-8"))
     assert [r["id"] for r in gallery.list_videos()] == [record["id"]]
 
 
 def test_clear_refuses_when_the_flag_store_cannot_be_read():
     # Fail CLOSED: an unreadable store reads as "nothing archived", which would delete the archive.
     record = _save_with_mtime("shelved", 100.0)
-    gallery.set_flags(record["id"], archived = True)
-    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    gallery.set_flags(record["id"], archived=True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding="utf-8")
     with pytest.raises(gallery_flags.FlagsUnavailable):
         gallery.clear()
     assert gallery.video_path(record["id"]) is not None
@@ -718,8 +718,8 @@ def test_clear_refuses_when_the_flag_store_cannot_be_read():
 
 def test_clear_all_still_works_with_an_unreadable_store():
     record = _save_with_mtime("a", 100.0)
-    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
-    assert gallery.clear(include_archived = True) == 1
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding="utf-8")
+    assert gallery.clear(include_archived=True) == 1
     assert gallery.video_path(record["id"]) is None
 
 
@@ -729,8 +729,8 @@ def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
     _save_with_mtime("a", 100.0)
     _save_with_mtime("b", 200.0)
     (gallery.gallery_dir() / ".flags.json").write_text(
-        '{"version": 1, "items": {"a": {"archi', encoding = "utf-8"
+        '{"version": 1, "items": {"a": {"archi', encoding="utf-8"
     )
-    assert gallery.clear(include_archived = True) == 2
+    assert gallery.clear(include_archived=True) == 2
     _save_with_mtime("c", 300.0)
     assert gallery.clear() == 1

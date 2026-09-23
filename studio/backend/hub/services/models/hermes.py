@@ -91,15 +91,15 @@ def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[Lo
         classified = _classify_local_path(
             path,
             "hermes",
-            display_name = staged_model_id(path),
-            updated_at = updated_at,
+            display_name=staged_model_id(path),
+            updated_at=updated_at,
         )
         # The row points at part one and the classifier sizes the one file it was handed;
         # the download is the whole set.
         shards, _complete = colocated_split_shards(path)
         if len(shards) > 1:
             size_bytes = _sum_file_sizes(shards)
-            classified = [row.model_copy(update = {"size_bytes": size_bytes}) for row in classified]
+            classified = [row.model_copy(update={"size_bytes": size_bytes}) for row in classified]
         rows += classified
         if limit is not None and len(rows) >= limit:
             break

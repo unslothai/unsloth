@@ -170,8 +170,8 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
         _url,
         payload,
         _cancel_event,
-        headers = None,
-        first_token_deadline = None,
+        headers=None,
+        first_token_deadline=None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
@@ -179,7 +179,7 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
     def fake_iter_text_cancellable(
         response,
         _cancel_event,
-        first_token_deadline = None,
+        first_token_deadline=None,
     ):
         yield from response.chunks
 
@@ -193,8 +193,8 @@ def _run(backend, **kwargs):
     kwargs.setdefault("max_tool_iterations", 4)
     return list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Show me the HTML inline"}],
-            tools = [_WEB_SEARCH_TOOL],
+            messages=[{"role": "user", "content": "Show me the HTML inline"}],
+            tools=[_WEB_SEARCH_TOOL],
             **kwargs,
         )
     )
@@ -307,9 +307,9 @@ def _run_no_tools(backend, **kwargs):
     """Drives the FINAL generation, the path taken once the tool loop is done."""
     return list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Show me the HTML inline"}],
-            tools = [],
-            max_tool_iterations = 0,
+            messages=[{"role": "user", "content": "Show me the HTML inline"}],
+            tools=[],
+            max_tool_iterations=0,
             **kwargs,
         )
     )
@@ -371,7 +371,7 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
 
     monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
 
-    _run_no_tools(backend, context_overflow = "truncate_oldest")
+    _run_no_tools(backend, context_overflow="truncate_oldest")
 
     assert calls["n"] == 3, "the continuation has to be opened, die, and be retried"
     replayed = payloads[-1]
@@ -417,10 +417,10 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
     ]
     list(
         backend.generate_chat_completion_with_tools(
-            messages = history,
-            tools = [],
-            max_tool_iterations = 0,
-            context_overflow = "truncate_oldest",
+            messages=history,
+            tools=[],
+            max_tool_iterations=0,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -463,11 +463,11 @@ def test_a_respawn_refit_does_not_replay_a_caller_prefill_twice(monkeypatch):
     ]
     list(
         backend.generate_chat_completion_with_tools(
-            messages = prefilled,
-            tools = [],
-            max_tool_iterations = 0,
-            continue_final_message = True,
-            context_overflow = "truncate_oldest",
+            messages=prefilled,
+            tools=[],
+            max_tool_iterations=0,
+            continue_final_message=True,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -501,7 +501,7 @@ def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeyp
 
     monkeypatch.setattr(backend, "_stream_with_retry", flaky_stream)
 
-    _run_no_tools(backend, context_overflow = "truncate_oldest")
+    _run_no_tools(backend, context_overflow="truncate_oldest")
 
     replayed = payloads[-1]
     assert [message["role"] for message in replayed["messages"]] == [
@@ -537,14 +537,14 @@ def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypa
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [
+            messages=[
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": "PREFILL_MARKER here is the start: "},
             ],
-            tools = [],
-            max_tool_iterations = 0,
-            continue_final_message = True,
-            context_overflow = "truncate_oldest",
+            tools=[],
+            max_tool_iterations=0,
+            continue_final_message=True,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -589,14 +589,14 @@ def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [
+            messages=[
                 {"role": "user", "content": "OLD_MARKER what is the weather " + "w" * 3000},
                 {"role": "assistant", "content": "it is sunny " + "s" * 3000},
                 {"role": "user", "content": "QUESTION_MARKER draw the bird"},
             ],
-            tools = [],
-            max_tool_iterations = 0,
-            context_overflow = "truncate_oldest",
+            tools=[],
+            max_tool_iterations=0,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -633,10 +633,10 @@ def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch)
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": question}],
-            tools = [],
-            max_tool_iterations = 0,
-            context_overflow = "truncate_oldest",
+            messages=[{"role": "user", "content": question}],
+            tools=[],
+            max_tool_iterations=0,
+            context_overflow="truncate_oldest",
         )
     )
 
@@ -850,7 +850,7 @@ def test_a_caller_set_max_tokens_is_not_exceeded(monkeypatch):
 
     backend, payloads = _shared_setup_4(monkeypatch)
 
-    _run_no_tools(backend, max_tokens = 100)
+    _run_no_tools(backend, max_tokens=100)
 
     assert len(payloads) == 1, "the caller's output cap was overrun"
 
@@ -868,7 +868,7 @@ def test_a_caller_cap_with_room_left_continues_within_it(monkeypatch):
         payloads,
     )
 
-    events = _run_no_tools(backend, max_tokens = 1000)
+    events = _run_no_tools(backend, max_tokens=1000)
 
     assert len(payloads) == 2
     assert payloads[1]["max_tokens"] == 600, "the retry got a fresh cap, not the remainder"
@@ -880,7 +880,7 @@ def test_max_tokens_equal_to_the_window_is_the_context_wall(monkeypatch):
 
     backend, payloads = _shared_setup_1(monkeypatch)
 
-    _run_no_tools(backend, max_tokens = 4096)
+    _run_no_tools(backend, max_tokens=4096)
 
     assert len(payloads) == 2
 
@@ -913,7 +913,7 @@ def test_the_in_loop_continuation_respects_the_caller_cap(monkeypatch):
 
     backend, payloads = _shared_setup_4(monkeypatch)
 
-    _run(backend, max_tokens = 100)
+    _run(backend, max_tokens=100)
 
     assert len(payloads) == 1, "the caller's output cap was overrun in the loop"
 
@@ -929,7 +929,7 @@ def test_the_in_loop_continuation_spends_the_remainder(monkeypatch):
         payloads,
     )
 
-    _run(backend, max_tokens = 1000)
+    _run(backend, max_tokens=1000)
 
     assert len(payloads) == 2
     assert payloads[1]["max_tokens"] == 600, "the retry got a fresh cap, not the remainder"
@@ -1154,9 +1154,9 @@ def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message(monkeypatc
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Show me the HTML inline"}],
-            tools = [_WEB_SEARCH_TOOL],
-            max_tool_iterations = 3,
+            messages=[{"role": "user", "content": "Show me the HTML inline"}],
+            tools=[_WEB_SEARCH_TOOL],
+            max_tool_iterations=3,
         )
     )
 

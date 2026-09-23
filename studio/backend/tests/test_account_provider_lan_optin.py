@@ -34,15 +34,15 @@ OWNER_LOCAL_MODEL = "owner-local-secret-model"
 BLOCK_PRIVATE_ENV = providers_core._BLOCK_PRIVATE_ENV
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
+    monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising=False)
     # Each test is a fresh installation; in production the home is fixed at startup.
     mpu.forget_cached_setting()
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     for module in (credential_secrets, providers_db, studio_db):
-        monkeypatch.setattr(module, "_schema_ready", set(), raising = False)
+        monkeypatch.setattr(module, "_schema_ready", set(), raising=False)
     monkeypatch.setattr(
         credential_secrets, "get_or_create_credential_encryption_key", lambda: b"k" * 32
     )
@@ -69,7 +69,7 @@ def local_provider():
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target = server.serve_forever, daemon = True).start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}/v1"
     finally:
@@ -90,7 +90,7 @@ def client_for(account):
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[get_current_credential] = lambda: (account.username, None)
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(providers.router, prefix = "/providers")
+    app.include_router(providers.router, prefix="/providers")
     return TestClient(app)
 
 
@@ -106,7 +106,7 @@ def test_managed_account_lists_models_from_a_loopback_provider_when_allowed(loca
     with client_for(ALICE) as client:
         response = client.post(
             "/providers/models",
-            json = {"provider_type": "custom", "base_url": local_provider},
+            json={"provider_type": "custom", "base_url": local_provider},
         )
     assert response.status_code == 200, response.text
     assert [m["id"] for m in response.json()] == [OWNER_LOCAL_MODEL]
@@ -118,7 +118,7 @@ def test_managed_account_saves_a_lan_provider_when_allowed(local_provider):
         for base_url in (local_provider, "http://10.0.0.7:8080/v1", "http://192.168.1.50:11434/v1"):
             created = client.post(
                 "/providers/",
-                json = {
+                json={
                     "provider_type": "custom",
                     "display_name": "LAN",
                     "base_url": base_url,
@@ -132,7 +132,7 @@ def test_default_still_refuses(local_provider):
     with client_for(ALICE) as client:
         response = client.post(
             "/providers/models",
-            json = {"provider_type": "custom", "base_url": local_provider},
+            json={"provider_type": "custom", "base_url": local_provider},
         )
     assert response.status_code == 400, response.text
     assert OWNER_LOCAL_MODEL not in response.text
@@ -144,7 +144,7 @@ def test_turning_it_back_off_refuses_again(local_provider):
         assert (
             client.post(
                 "/providers/models",
-                json = {"provider_type": "custom", "base_url": local_provider},
+                json={"provider_type": "custom", "base_url": local_provider},
             ).status_code
             == 200
         )
@@ -152,7 +152,7 @@ def test_turning_it_back_off_refuses_again(local_provider):
     with client_for(ALICE) as client:
         refused = client.post(
             "/providers/models",
-            json = {"provider_type": "custom", "base_url": local_provider},
+            json={"provider_type": "custom", "base_url": local_provider},
         )
     assert refused.status_code == 400, refused.text
     assert OWNER_LOCAL_MODEL not in refused.text
@@ -164,7 +164,7 @@ def test_owner_is_unaffected_either_way(local_provider):
         with client_for(OWNER) as client:
             listed = client.post(
                 "/providers/models",
-                json = {"provider_type": "custom", "base_url": local_provider},
+                json={"provider_type": "custom", "base_url": local_provider},
             )
             assert listed.status_code == 200, f"allowed={value}: {listed.text}"
 
@@ -188,7 +188,7 @@ def test_cloud_metadata_is_still_refused_with_the_switch_on(metadata_url):
     with client_for(ALICE) as client:
         created = client.post(
             "/providers/",
-            json = {"provider_type": "custom", "display_name": "md", "base_url": metadata_url},
+            json={"provider_type": "custom", "display_name": "md", "base_url": metadata_url},
         )
     assert created.status_code == 400, created.text
     assert "metadata" in created.text.lower(), created.text
@@ -200,7 +200,7 @@ def test_block_private_env_overrides_the_switch_for_a_managed_account(monkeypatc
     with client_for(ALICE) as client:
         created = client.post(
             "/providers/",
-            json = {"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
+            json={"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
         )
     assert created.status_code == 400, created.text
     assert BLOCK_PRIVATE_ENV in created.text
@@ -212,7 +212,7 @@ def test_block_private_env_overrides_the_switch_for_the_owner(monkeypatch, local
     with client_for(OWNER) as client:
         created = client.post(
             "/providers/",
-            json = {"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
+            json={"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
         )
     assert created.status_code == 400, created.text
 
@@ -224,7 +224,7 @@ def test_a_row_saved_while_allowed_is_refused_after_the_switch_is_off(local_prov
     with client_for(ALICE) as client:
         created = client.post(
             "/providers/",
-            json = {"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
+            json={"provider_type": "custom", "display_name": "LAN", "base_url": local_provider},
         )
         assert created.status_code == 201, created.text
         provider_id = created.json()["id"]
@@ -233,7 +233,7 @@ def test_a_row_saved_while_allowed_is_refused_after_the_switch_is_off(local_prov
     with client_for(ALICE) as client:
         used = client.post(
             "/providers/models",
-            json = {"provider_type": "custom", "base_url": local_provider},
+            json={"provider_type": "custom", "base_url": local_provider},
         )
         assert used.status_code == 400, used.text
         # The row itself survives; only its use is refused.

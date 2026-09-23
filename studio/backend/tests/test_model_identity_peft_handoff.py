@@ -37,8 +37,8 @@ _SNAPSHOT = (
 def _loaded_model(**overrides):
     """A transformers-shaped model loaded from a pinned snapshot, pre-PEFT."""
     return SimpleNamespace(
-        config = SimpleNamespace(_name_or_path = _SNAPSHOT),
-        name_or_path = _SNAPSHOT,
+        config=SimpleNamespace(_name_or_path=_SNAPSHOT),
+        name_or_path=_SNAPSHOT,
         **overrides,
     )
 
@@ -67,8 +67,8 @@ def test_config_and_instance_identity_agree_after_restore():
 
 
 def test_restore_is_still_correct_once_the_model_is_wrapped_by_peft():
-    adapter = SimpleNamespace(base_model_name_or_path = _SNAPSHOT)
-    model = _loaded_model(peft_config = {"default": adapter})
+    adapter = SimpleNamespace(base_model_name_or_path=_SNAPSHOT)
+    model = _loaded_model(peft_config={"default": adapter})
 
     restore_hf_cache_repo_identity(model, _SNAPSHOT)
 
@@ -79,15 +79,15 @@ def test_restore_is_still_correct_once_the_model_is_wrapped_by_peft():
 def test_a_repo_mismatch_leaves_the_instance_name_untouched():
     model = _loaded_model()
 
-    assert restore_hf_cache_repo_identity(model, _SNAPSHOT, expected_repo_id = "someone/else") is None
+    assert restore_hf_cache_repo_identity(model, _SNAPSHOT, expected_repo_id="someone/else") is None
     assert model.name_or_path == _SNAPSHOT
 
 
 def test_an_ordinary_local_model_keeps_its_own_name():
     local = "/srv/models/my-finetune"
     model = SimpleNamespace(
-        config = SimpleNamespace(_name_or_path = local),
-        name_or_path = local,
+        config=SimpleNamespace(_name_or_path=local),
+        name_or_path=local,
     )
 
     assert restore_hf_cache_repo_identity(model, local) is None
@@ -96,8 +96,8 @@ def test_an_ordinary_local_model_keeps_its_own_name():
 
 def test_an_existing_hub_id_is_not_rewritten_by_an_unrelated_snapshot():
     model = SimpleNamespace(
-        config = SimpleNamespace(_name_or_path = "org/other-model"),
-        name_or_path = "org/other-model",
+        config=SimpleNamespace(_name_or_path="org/other-model"),
+        name_or_path="org/other-model",
     )
 
     restore_hf_cache_repo_identity(model, _SNAPSHOT)

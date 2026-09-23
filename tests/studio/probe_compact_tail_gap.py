@@ -45,7 +45,7 @@ ENGINES = os.environ.get("PM_ENGINE", "chromium").split(",")
 REPEATS = int(os.environ.get("PM_REPEATS", "3"))
 LABEL = os.environ.get("PM_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", str(TREE / "logs" / "pm_gap")))
-OUT.mkdir(parents = True, exist_ok = True)
+OUT.mkdir(parents=True, exist_ok=True)
 
 NEXT_PAINT = """
 window.__nextPaint = () => new Promise((resolve) =>
@@ -83,21 +83,21 @@ async ([total, settleFrames]) => {
 
 
 def info(m: str) -> None:
-    print(f"[pm-gap] {m}", flush = True)
+    print(f"[pm-gap] {m}", flush=True)
 
 
 def run_engine(pw, engine: str) -> dict:
     browser_type = getattr(pw, engine)
     launch = {"args": chromium_launch_args()} if engine == "chromium" else {}
-    browser = browser_type.launch(headless = True, **launch)
+    browser = browser_type.launch(headless=True, **launch)
     out: dict = {}
     for height in HEIGHTS:
         rounds = []
-        context = browser.new_context(viewport = {"width": 1280, "height": height})
+        context = browser.new_context(viewport={"width": 1280, "height": height})
         context.add_init_script(NEXT_PAINT)
         page = context.new_page()
-        page.goto(PAGE, wait_until = "load", timeout = 180000)
-        page.wait_for_function("() => !!window.__heavyThread", timeout = 120000)
+        page.goto(PAGE, wait_until="load", timeout=180000)
+        page.wait_for_function("() => !!window.__heavyThread", timeout=120000)
         # Named here rather than surfacing as a bare `seedCompactTail is not a function` JS error.
         missing = page.evaluate(
             """() => ["seedCompactTail", "gapMetrics"].filter(
@@ -114,8 +114,8 @@ def run_engine(pw, engine: str) -> dict:
         )
         page.wait_for_function(
             "(n) => window.__heavyThread.messageCount() >= n",
-            arg = plan["messages"],
-            timeout = 180000,
+            arg=plan["messages"],
+            timeout=180000,
         )
         page.wait_for_timeout(3000)
         for r in range(REPEATS):
@@ -162,7 +162,7 @@ def run_engine(pw, engine: str) -> dict:
             )
             if r == 0:
                 (OUT / f"{LABEL}-{engine}-{height}-timeline.json").write_text(
-                    json.dumps(samples, indent = 1), encoding = "utf-8"
+                    json.dumps(samples, indent=1), encoding="utf-8"
                 )
         # First commit, on its own re-open so nothing is settled.
         page.evaluate(
@@ -174,12 +174,12 @@ def run_engine(pw, engine: str) -> dict:
                 while (api.messageCount() === 0) await new Promise(r => requestAnimationFrame(r));
             }"""
         )
-        page.screenshot(path = str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
+        page.screenshot(path=str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
         out[height] = rounds
         # After every height, not once at the end: a browser dying on the tallest viewport used to
         # take every earlier measurement with it.
         (OUT / f"{LABEL}-{engine}-rounds.json").write_text(
-            json.dumps(out, indent = 1), encoding = "utf-8"
+            json.dumps(out, indent=1), encoding="utf-8"
         )
         context.close()
     browser.close()
@@ -189,14 +189,14 @@ def run_engine(pw, engine: str) -> dict:
 def main() -> int:
     vite = start_vite(PORT)
     try:
-        wait_for_smoke_page(PAGE, "smoke-heavy-thread-main.tsx", proc = vite, info = info)
+        wait_for_smoke_page(PAGE, "smoke-heavy-thread-main.tsx", proc=vite, info=info)
         results = {}
         with sync_playwright() as pw:
             for engine in ENGINES:
                 info(f"engine {engine}")
                 results[engine] = run_engine(pw, engine)
         path = OUT / f"{LABEL}-results.json"
-        path.write_text(json.dumps(results, indent = 1), encoding = "utf-8")
+        path.write_text(json.dumps(results, indent=1), encoding="utf-8")
         info(f"wrote {path}")
         for engine, byh in results.items():
             for height, rounds in byh.items():

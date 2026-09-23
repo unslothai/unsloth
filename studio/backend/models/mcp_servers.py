@@ -28,7 +28,7 @@ class McpServerResponse(BaseModel):
     builtin_id: Optional[str] = None
     display_name: str
     url: str
-    headers: dict[str, str] = Field(default_factory = dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     is_enabled: bool = True
     use_oauth: bool = False
     created_at: str
@@ -44,12 +44,12 @@ class McpServerTestRequest(BaseModel):
 class BlenderSettings(BaseModel):
     model_config = {"extra": "forbid"}
 
-    port: int = Field(default = 9876, ge = 1, le = 65535, strict = True)
-    blender_path: StrictStr = Field(default = "", pattern = r"^[^\x00]*$")
+    port: int = Field(default=9876, ge=1, le=65535, strict=True)
+    blender_path: StrictStr = Field(default="", pattern=r"^[^\x00]*$")
 
 
 class BlenderTest(BlenderSettings):
-    consent: bool = Field(default = False, strict = True)
+    consent: bool = Field(default=False, strict=True)
 
 
 class BlenderSetup(BlenderSettings):
@@ -73,7 +73,7 @@ class McpStdioDecodeRequest(BaseModel):
 
 class McpStdioCommand(BaseModel):
     command: StrictStr
-    arguments: list[StrictStr] = Field(default_factory = list)
+    arguments: list[StrictStr] = Field(default_factory=list)
 
 
 class McpStdioEncodeResponse(BaseModel):
@@ -94,6 +94,6 @@ class McpServerImportRequest(BaseModel):
 
 
 class McpServerImportResult(BaseModel):
-    created: list[McpServerResponse] = Field(default_factory = list)
-    skipped: list[str] = Field(default_factory = list)
-    errors: list[str] = Field(default_factory = list)
+    created: list[McpServerResponse] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)

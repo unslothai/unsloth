@@ -85,7 +85,7 @@ _LEGACY_SOURCE = """
 
 
 class _Model:
-    def for_training(self, use_gradient_checkpointing = True):
+    def for_training(self, use_gradient_checkpointing=True):
         pass
 
 
@@ -101,7 +101,7 @@ class _Processor:
 
     def __call__(
         self,
-        text = None,
+        text=None,
         **kwargs,
     ):
         self.seen_image_kwarg = kwargs.get("images", None)
@@ -120,7 +120,7 @@ class _Trainer:
         self.model = _Model()
         self.ref_model = _Model()
         self.args = types.SimpleNamespace(
-            per_device_train_batch_size = 1, per_device_eval_batch_size = 1
+            per_device_train_batch_size=1, per_device_eval_batch_size=1
         )
         self.processing_class = _Processor(processor_output)
         self._completion_ids = completion_ids
@@ -156,10 +156,10 @@ def _run_legacy(processor_output, inputs, completion_ids):
         # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
         # so the guard is handed the trainer and decides at runtime.
         "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
-        "prepare_multimodal_messages": lambda prompt, num_images = 1: prompt.append(num_images),
+        "prepare_multimodal_messages": lambda prompt, num_images=1: prompt.append(num_images),
         # Injected by the same rewrite for the text-only branch; TRL never sees it.
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: torch.zeros(
-            ids.shape[0], dtype = torch.long
+            ids.shape[0], dtype=torch.long
         ),
     }
     exec(compile(textwrap.dedent(patched), "<legacy-trl>", "exec"), namespace)
@@ -173,8 +173,8 @@ def _grid_batch():
     import torch
 
     processor_output = {
-        "input_ids": torch.zeros(2, 5, dtype = torch.long),
-        "attention_mask": torch.ones(2, 5, dtype = torch.long),
+        "input_ids": torch.zeros(2, 5, dtype=torch.long),
+        "attention_mask": torch.ones(2, 5, dtype=torch.long),
         "pixel_values": torch.arange(12).reshape(12, 1).float(),
         "image_grid_thw": torch.tensor([[1, 2, 2], [1, 2, 2], [1, 2, 2]]),
     }
@@ -182,7 +182,7 @@ def _grid_batch():
         {"prompt": "a", "image": ["one", "two"]},
         {"prompt": "b", "image": "three"},
     ]
-    return processor_output, inputs, torch.zeros(2, 3, dtype = torch.long)
+    return processor_output, inputs, torch.zeros(2, 3, dtype=torch.long)
 
 
 def test_the_legacy_no_grad_calls_are_told_how_many_images_each_sample_has():
@@ -223,15 +223,15 @@ def _lfm2vl_batch():
     import torch
 
     processor_output = {
-        "input_ids": torch.zeros(2, 5, dtype = torch.long),
-        "attention_mask": torch.ones(2, 5, dtype = torch.long),
+        "input_ids": torch.zeros(2, 5, dtype=torch.long),
+        "attention_mask": torch.ones(2, 5, dtype=torch.long),
         "pixel_values": torch.arange(5).reshape(5, 1).float(),
         "spatial_shapes": torch.arange(5).reshape(5, 1),
         "pixel_attention_mask": torch.ones(5, 1),
         "num_tiles": [2, 3],
     }
     inputs = [{"prompt": "a", "image": "one"}, {"prompt": "b", "image": "two"}]
-    return processor_output, inputs, torch.zeros(2, 3, dtype = torch.long)
+    return processor_output, inputs, torch.zeros(2, 3, dtype=torch.long)
 
 
 def test_a_legacy_processors_extra_keys_reach_the_no_grad_calls():
@@ -262,11 +262,11 @@ def test_a_text_only_legacy_batch_forwards_nothing_and_saves_nothing():
     import torch
 
     processor_output = {
-        "input_ids": torch.zeros(2, 5, dtype = torch.long),
-        "attention_mask": torch.ones(2, 5, dtype = torch.long),
+        "input_ids": torch.zeros(2, 5, dtype=torch.long),
+        "attention_mask": torch.ones(2, 5, dtype=torch.long),
     }
     inputs = [{"prompt": "a"}, {"prompt": "b"}]
-    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype = torch.long))
+    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype=torch.long))
     for call in trainer.calls:
         assert set(call) <= {"batch_size"}, call
     assert "num_images" not in output, sorted(output)
@@ -279,7 +279,7 @@ def test_the_legacy_token_type_ids_are_widened_over_the_completion():
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()
-    processor_output["token_type_ids"] = torch.ones(2, 5, dtype = torch.long)
+    processor_output["token_type_ids"] = torch.ones(2, 5, dtype=torch.long)
     trainer, output = _run_legacy(processor_output, inputs, completion_ids)
     for call in trainer.calls:
         assert call["token_type_ids"].shape == (2, 8), call["token_type_ids"].shape
@@ -293,7 +293,7 @@ def test_a_legacy_token_type_ids_of_the_wrong_width_is_dropped_not_forwarded():
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()
-    processor_output["token_type_ids"] = torch.ones(2, 9, dtype = torch.long)
+    processor_output["token_type_ids"] = torch.ones(2, 9, dtype=torch.long)
     trainer, output = _run_legacy(processor_output, inputs, completion_ids)
     for call in trainer.calls:
         assert "token_type_ids" not in call, call.keys()
@@ -331,11 +331,11 @@ def _legacy_split_pixel_values_by_grid(batch):
 
     if "image_grid_thw" not in batch or "pixel_values" not in batch:
         return batch
-    lengths = batch["image_grid_thw"].prod(dim = 1).tolist()
+    lengths = batch["image_grid_thw"].prod(dim=1).tolist()
     pixel_values = batch["pixel_values"]
     if sum(lengths) != pixel_values.size(0):
         raise ValueError("Mismatch")
-    return {**batch, "pixel_values": list(torch.split(batch["pixel_values"], lengths, dim = 0))}
+    return {**batch, "pixel_values": list(torch.split(batch["pixel_values"], lengths, dim=0))}
 
 
 def _legacy_unsplit_pixel_values_by_grid(batch):
@@ -344,7 +344,7 @@ def _legacy_unsplit_pixel_values_by_grid(batch):
 
     pixel_values = batch.get("pixel_values")
     if isinstance(pixel_values, list):
-        return {**batch, "pixel_values": torch.cat(pixel_values, dim = 0)}
+        return {**batch, "pixel_values": torch.cat(pixel_values, dim=0)}
     return batch
 
 
@@ -469,12 +469,12 @@ def test_a_text_only_legacy_batch_does_not_pick_up_a_tokenizers_token_type_ids()
     import torch
 
     processor_output = {
-        "input_ids": torch.zeros(2, 5, dtype = torch.long),
-        "attention_mask": torch.ones(2, 5, dtype = torch.long),
-        "token_type_ids": torch.zeros(2, 5, dtype = torch.long),
+        "input_ids": torch.zeros(2, 5, dtype=torch.long),
+        "attention_mask": torch.ones(2, 5, dtype=torch.long),
+        "token_type_ids": torch.zeros(2, 5, dtype=torch.long),
     }
     inputs = [{"prompt": "a"}, {"prompt": "b"}]
-    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype = torch.long))
+    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype=torch.long))
     for call in trainer.calls:
         assert "token_type_ids" not in call, call.keys()
     assert "token_type_ids" not in output, sorted(output)
@@ -486,12 +486,12 @@ def test_an_image_column_with_no_images_in_it_is_a_text_batch():
     import torch
 
     processor_output = {
-        "input_ids": torch.zeros(2, 5, dtype = torch.long),
-        "attention_mask": torch.ones(2, 5, dtype = torch.long),
-        "token_type_ids": torch.zeros(2, 5, dtype = torch.long),
+        "input_ids": torch.zeros(2, 5, dtype=torch.long),
+        "attention_mask": torch.ones(2, 5, dtype=torch.long),
+        "token_type_ids": torch.zeros(2, 5, dtype=torch.long),
     }
     inputs = [{"prompt": "a", "image": None}, {"prompt": "b", "image": None}]
-    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype = torch.long))
+    trainer, output = _run_legacy(processor_output, inputs, torch.zeros(2, 3, dtype=torch.long))
     for call in trainer.calls:
         assert "token_type_ids" not in call, call.keys()
     assert "token_type_ids" not in output, sorted(output)
@@ -505,7 +505,7 @@ def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_drop
 
     processor_output, inputs, completion_ids = _grid_batch()
     # prompt_ids 5 wide, completion 3 wide: an 8 wide untruncated processor copy.
-    processor_output["token_type_ids"] = torch.ones(2, 8, dtype = torch.long)
+    processor_output["token_type_ids"] = torch.ones(2, 8, dtype=torch.long)
     trainer, output = _run_legacy(processor_output, inputs, completion_ids)
     for call in trainer.calls:
         assert "token_type_ids" not in call, call["token_type_ids"].shape

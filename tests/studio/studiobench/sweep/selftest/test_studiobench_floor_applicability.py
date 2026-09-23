@@ -120,7 +120,7 @@ def _write(
 ):
     """Through the REAL Recorder, so the schema and required keys are the producer's."""
     out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     rec = Recorder(out / "payload.jsonl", "sess-" + name)
     rec.emit(dict(meta or _meta()))
     for row in rows:
@@ -174,7 +174,7 @@ METRIC = "reasoning_toggle.close_ms"
 
 def test_the_censored_null_is_marked_unpoolable_in_the_first_place(tmp_path):
     """The precondition, stated so a fix that stopped marking it could not pass the rest."""
-    floors = floor_table.summarise([_null(tmp_path, censored = True)])
+    floors = floor_table.summarise([_null(tmp_path, censored=True)])
     assert floors[METRIC]["poolable"] is False
     assert "censored" in floors[METRIC]["censoring"]
 
@@ -187,8 +187,8 @@ def test_censoring_the_null_tightens_the_floor_it_leaves_behind(tmp_path):
     can only narrow it -- and the pairs removed here are the slow ones, because censoring is what
     happens to a cell that ran out of budget.
     """
-    whole = floor_table.summarise([_null(tmp_path, censored = False)])[METRIC]
-    left = floor_table.summarise([_null(tmp_path, censored = True)])[METRIC]
+    whole = floor_table.summarise([_null(tmp_path, censored=False)])[METRIC]
+    left = floor_table.summarise([_null(tmp_path, censored=True)])[METRIC]
     wide = max(abs(whole["delta_pct"]), whole["spread_pct"])
     tight = max(abs(left["delta_pct"]), left["spread_pct"])
     assert left["n"] < whole["n"], "the censored null kept every pair, so nothing was censored"
@@ -197,14 +197,14 @@ def test_censoring_the_null_tightens_the_floor_it_leaves_behind(tmp_path):
         f"({wide:.1f}%), so this fixture no longer demonstrates the bias"
     )
     # The real numbers: 17.1% left behind against 67.5% over the ladder, a factor of 3.9.
-    assert tight == pytest.approx(17.1, abs = 0.5)
-    assert wide == pytest.approx(67.5, abs = 0.5)
+    assert tight == pytest.approx(17.1, abs=0.5)
+    assert wide == pytest.approx(67.5, abs=0.5)
 
 
 def test_a_censored_floor_cannot_certify_a_measured_result(tmp_path, capsys):
     """The bug. A result measured in full, scored against a floor that is a survivor sample."""
-    floors = floor_table.summarise([_null(tmp_path, censored = True)])
-    survivors = floor_table.render([_result(tmp_path)], "t", floors = floors)
+    floors = floor_table.summarise([_null(tmp_path, censored=True)])
+    survivors = floor_table.render([_result(tmp_path)], "t", floors=floors)
     printed = capsys.readouterr().out
     row = next(line for line in printed.splitlines() if line.strip().startswith(METRIC))
     assert (
@@ -224,8 +224,8 @@ def test_the_result_is_not_labelled_as_the_censored_one(tmp_path, capsys):
     The result's own number is sound here. Marking it `[*]` would tell a reader to distrust a
     figure that is fine, which is its own way of publishing a wrong thing about a number.
     """
-    floors = floor_table.summarise([_null(tmp_path, censored = True)])
-    floor_table.render([_result(tmp_path)], "t", floors = floors)
+    floors = floor_table.summarise([_null(tmp_path, censored=True)])
+    floor_table.render([_result(tmp_path)], "t", floors=floors)
     row = next(
         line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
@@ -234,10 +234,10 @@ def test_the_result_is_not_labelled_as_the_censored_one(tmp_path, capsys):
 
 def test_the_same_result_scores_normally_against_a_whole_floor(tmp_path, capsys):
     """NOT A REFUSAL OF EVERYTHING. Identical result, a null control that censored nothing."""
-    floors = floor_table.summarise([_null(tmp_path, censored = False)])
+    floors = floor_table.summarise([_null(tmp_path, censored=False)])
     # The whole-ladder floor is 67.5%, which this -24.8% result does not clear, so the verdict under it
     # is VOID, itself the point: the censored floor turned a VOID into a `faster`.
-    floor_table.render([_result(tmp_path)], "t", floors = floors)
+    floor_table.render([_result(tmp_path)], "t", floors=floors)
     row = next(
         line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
@@ -247,7 +247,7 @@ def test_the_same_result_scores_normally_against_a_whole_floor(tmp_path, capsys)
 
 def test_a_whole_floor_still_certifies_a_real_effect(tmp_path, capsys):
     """The other half of the non-vacuity check: a large effect over a whole floor still passes."""
-    floors = floor_table.summarise([_null(tmp_path, censored = False)])
+    floors = floor_table.summarise([_null(tmp_path, censored=False)])
     tenfold = tuple((b, b / 10.0) for b, _ in RESULT_100K)
     big = _write(tmp_path, "big", _ladder(tenfold, tenfold, False))
     stats = floor_table.summarise([big])
@@ -288,10 +288,10 @@ def test_an_older_harness_floor_cannot_score_a_newer_payload(tmp_path):
     from tests.studio.studiobench.__main__ import TOOL_VERSION
 
     floors, floor_meta, result = _floor_and_result(
-        tmp_path, _meta(tool_version = "0.1.0"), _meta(tool_version = TOOL_VERSION)
+        tmp_path, _meta(tool_version="0.1.0"), _meta(tool_version=TOOL_VERSION)
     )
     with pytest.raises(SystemExit) as exc:
-        floor_table.render([result], "t", floors = floors, floor_meta = floor_meta)
+        floor_table.render([result], "t", floors=floors, floor_meta=floor_meta)
     assert "tool_version" in str(exc.value)
 
 
@@ -328,10 +328,10 @@ def test_every_comparability_field_stops_a_floor_from_being_applied(tmp_path):
     """
     for field in payload_rules.comparability_fields(_meta()):
         floors, floor_meta, result = _floor_and_result(
-            tmp_path, _meta(), _meta_differing_in(field), tag = field
+            tmp_path, _meta(), _meta_differing_in(field), tag=field
         )
         with pytest.raises(SystemExit) as exc:
-            floor_table.render([result], "t", floors = floors, floor_meta = floor_meta)
+            floor_table.render([result], "t", floors=floors, floor_meta=floor_meta)
         said = str(exc.value)
         assert field in said or field.split("_")[0] in said, (
             f"{field} is part of the comparability key, and a floor differing in it was still "
@@ -342,7 +342,7 @@ def test_every_comparability_field_stops_a_floor_from_being_applied(tmp_path):
 def test_an_identically_configured_run_still_scores(tmp_path, capsys):
     """The refusal must not swallow the ordinary case: same everything, still a verdict."""
     floors, floor_meta, result = _floor_and_result(tmp_path, _meta(), _meta())
-    floor_table.render([result], "t", floors = floors, floor_meta = floor_meta)
+    floor_table.render([result], "t", floors=floors, floor_meta=floor_meta)
     row = next(
         line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)
     )
@@ -355,13 +355,13 @@ def test_a_payload_that_disagrees_with_its_own_headers_is_not_scored(tmp_path):
     out = tmp_path / "two_headers"
     out.mkdir()
     rec = Recorder(out / "payload.jsonl", "sess-two")
-    rec.emit(_meta(tool_version = "0.1.0"))
-    rec.emit(_meta(tool_version = "0.2.0"))
+    rec.emit(_meta(tool_version="0.1.0"))
+    rec.emit(_meta(tool_version="0.2.0"))
     for row in _ladder(RESULT_100K, RESULT_100K, False):
         rec.emit(dict(row))
     rec.close()
     with pytest.raises(SystemExit) as exc:
-        floor_table.render([out / "payload.jsonl"], "t", floors = floors, floor_meta = floor_meta)
+        floor_table.render([out / "payload.jsonl"], "t", floors=floors, floor_meta=floor_meta)
     assert "disagrees with ITSELF" in str(exc.value)
 
 
@@ -375,7 +375,7 @@ def test_a_payload_with_no_run_meta_at_all_is_not_scored(tmp_path):
         rec.emit(dict(row))
     rec.close()
     with pytest.raises(SystemExit) as exc:
-        floor_table.render([out / "payload.jsonl"], "t", floors = floors, floor_meta = floor_meta)
+        floor_table.render([out / "payload.jsonl"], "t", floors=floors, floor_meta=floor_meta)
     assert "no run_meta" in str(exc.value)
 
 
@@ -389,7 +389,7 @@ def test_the_cli_applies_both_guards(tmp_path, capsys):
     `refuse_collisions` behind an unreachable branch, a row type registered nowhere -- so the
     check is driven through `main`, the way a person runs it.
     """
-    _null(tmp_path, censored = True)
+    _null(tmp_path, censored=True)
     _result(tmp_path)
     rc = floor_table.main([str(tmp_path / "result"), "--floor", str(tmp_path / "null_censored")])
     printed = capsys.readouterr().out
@@ -399,13 +399,13 @@ def test_the_cli_applies_both_guards(tmp_path, capsys):
     assert "0 metric(s) cleared all three gates." in printed
 
     older = _write(
-        tmp_path, "older_null", _ladder(NULL_100K, NULL_100K, False), _meta(tool_version = "0.1.0")
+        tmp_path, "older_null", _ladder(NULL_100K, NULL_100K, False), _meta(tool_version="0.1.0")
     )
     newer = _write(
         tmp_path,
         "newer_result",
         _ladder(RESULT_100K, RESULT_100K, False),
-        _meta(tool_version = "0.2.0"),
+        _meta(tool_version="0.2.0"),
     )
     with pytest.raises(SystemExit) as exc:
         floor_table.main([str(newer.parent), "--floor", str(older.parent)])

@@ -79,7 +79,7 @@ def test_glm4_moe_nextn_block_stays_in_target_kv():
     llama-kv-cache.cpp:100 still walks all 47 blocks and allocates KV for the
     nextn block. The estimate must therefore cover 47 layers, not 46.
     """
-    b = _gqa_backend(_nextn_predict_layers = 1)
+    b = _gqa_backend(_nextn_predict_layers=1)
     cells = 4096  # already 256-aligned, so cells == n_ctx at one unified slot
     per_layer = cells * 8 * (128 + 128) * 2
 
@@ -88,7 +88,7 @@ def test_glm4_moe_nextn_block_stays_in_target_kv():
 
 def test_glm4_moe_target_kv_does_not_move_when_the_head_is_declared():
     """Declaring the MTP head must not shrink the target reserve by a layer."""
-    with_nextn = _gqa_backend(_nextn_predict_layers = 1)
+    with_nextn = _gqa_backend(_nextn_predict_layers=1)
     without = _gqa_backend()
 
     missing = without._estimate_kv_cache_bytes(4096, "f16") - with_nextn._estimate_kv_cache_bytes(
@@ -107,7 +107,7 @@ def test_gemma4_assistant_shaped_header_does_not_collapse_to_one_layer():
     separate-drafter call at _mtp_draft_kv_bytes, which sizes a drafter GGUF's
     own KV with this function, and by loading the assistant model directly.
     """
-    b = _gqa_backend(_n_layers = 12, _nextn_predict_layers = 12)
+    b = _gqa_backend(_n_layers=12, _nextn_predict_layers=12)
     cells = 4096
     per_layer = cells * 8 * (128 + 128) * 2
 
@@ -189,7 +189,7 @@ _GQA_FIELDS = {
 }
 
 
-@pytest.mark.parametrize("arch,excludes", ARCH_TRUTH_TABLE, ids = [a for a, _ in ARCH_TRUTH_TABLE])
+@pytest.mark.parametrize("arch,excludes", ARCH_TRUTH_TABLE, ids=[a for a, _ in ARCH_TRUTH_TABLE])
 def test_target_kv_nextn_policy_matches_llama_cpp_per_arch(arch, excludes):
     """One layer of 47 is the whole question; get it right per architecture."""
     b = _backend_from_gguf(arch, {**_GQA_FIELDS, "nextn_predict_layers": 1})
@@ -202,7 +202,7 @@ def test_target_kv_nextn_policy_matches_llama_cpp_per_arch(arch, excludes):
     assert b._estimate_kv_cache_bytes(4096, "f16") == expected
 
 
-@pytest.mark.parametrize("arch,_excludes", ARCH_TRUTH_TABLE, ids = [a for a, _ in ARCH_TRUTH_TABLE])
+@pytest.mark.parametrize("arch,_excludes", ARCH_TRUTH_TABLE, ids=[a for a, _ in ARCH_TRUTH_TABLE])
 def test_no_nextn_key_is_never_reduced(arch, _excludes):
     """Backwards compat: a GGUF with no MTP head is priced exactly as before."""
     b = _backend_from_gguf(arch, dict(_GQA_FIELDS))

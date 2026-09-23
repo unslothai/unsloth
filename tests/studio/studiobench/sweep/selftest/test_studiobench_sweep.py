@@ -48,7 +48,7 @@ def payload(
 ) -> Path:
     """One shard: `pairs[i]` is (base, treatment) for repetition i."""
     out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     meta: dict = {"row_type": "run_meta", "tier": tier}
     if corpus is not None:
         meta["corpus_hash"] = corpus
@@ -57,7 +57,7 @@ def payload(
         rows += cell("100K", "base", f"rep{i}", {"open_close_ms": base})
         rows += cell("100K", "treatment", f"rep{i}", {"open_close_ms": treat})
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
@@ -65,7 +65,7 @@ def verdict(
     tmp_path,
     result_pairs,
     floor_pairs,
-    tier = "standard",
+    tier="standard",
 ) -> str:
     result = F.summarise([payload(tmp_path, "result", result_pairs, tier)])
     floor = F.summarise([payload(tmp_path, "null", floor_pairs, tier)])
@@ -177,13 +177,13 @@ def count_cell(cid: str, chars: float) -> list[dict]:
 
 def count_payload(tmp_path: Path, name: str, pairs: list[tuple[float, float]]) -> Path:
     out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard"}]
     for i, (base, treat) in enumerate(pairs):
         rows += count_cell(f"100K.base.rep{i}", base)
         rows += count_cell(f"100K.treatment.rep{i}", treat)
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
@@ -212,20 +212,20 @@ def test_a_count_that_fell_reads_as_a_loss_and_never_as_faster(tmp_path):
 
 def test_a_count_that_rose_is_reported_but_not_as_a_slowdown(tmp_path):
     stats = F.summarise([count_payload(tmp_path, "r", [(3000.0, 400000.0)] * 4)])
-    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True)
+    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count=True)
     assert v == "gained"
 
 
 def test_an_unchanged_count_is_void_like_any_other_metric_under_the_floor(tmp_path):
     stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 400000.0)] * 4)])
-    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count = True)
+    _f, v = F.verdict_for(stats[COUNT_METRIC], {"delta_pct": 0.0, "spread_pct": 1.0}, is_count=True)
     assert v == "VOID (under floor)"
 
 
 def test_a_lost_invariant_is_printed_and_counted_by_the_table(tmp_path, capsys):
     result = count_payload(tmp_path, "result", [(400000.0, 3000.0)] * 4)
     floors = {COUNT_METRIC: {"delta_pct": 0.0, "spread_pct": 1.0}}
-    survivors = F.render([result], "t", floors = floors)
+    survivors = F.render([result], "t", floors=floors)
     out = capsys.readouterr().out
     assert "LOST (invariant fell)" in out
     # Counted as a finding, not dropped for not being one of the two timing verdicts.
@@ -247,7 +247,7 @@ def test_a_count_on_an_action_that_did_not_run_contributes_nothing(tmp_path):
     out = tmp_path / "z"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {}
 
@@ -268,7 +268,7 @@ def test_a_boolean_count_is_not_harvested_as_a_number(tmp_path):
     out = tmp_path / "w"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     harvested = F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0")
     assert harvested == {"select_all_copy.count.selected_chars": 12.0}
@@ -284,48 +284,48 @@ def test_no_floor_at_all_yields_no_verdict_rather_than_a_pass(tmp_path):
 
 
 def test_pooling_across_tiers_is_refused(tmp_path):
-    fast = payload(tmp_path, "fast", [(1000.0, 900.0)], tier = "fast")
-    standard = payload(tmp_path, "standard", [(1000.0, 900.0)], tier = "standard")
+    fast = payload(tmp_path, "fast", [(1000.0, 900.0)], tier="fast")
+    standard = payload(tmp_path, "standard", [(1000.0, 900.0)], tier="standard")
     with pytest.raises(SystemExit) as exc:
         F.load([fast, standard])
     assert "different tiers" in str(exc.value)
 
 
 def test_scoring_against_a_floor_from_another_tier_is_refused(tmp_path):
-    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, tier = "fast")
+    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, tier="fast")
     with pytest.raises(SystemExit) as exc:
-        F.render([result], "t", floors = {}, floor_tier = "standard")
+        F.render([result], "t", floors={}, floor_tier="standard")
     assert "different films" in str(exc.value)
 
 
 def test_pooling_across_corpora_is_refused(tmp_path):
     # The tier fixes how long the film runs, the corpus hash fixes what is IN it: pooling v1 and
     # v2 payloads reads a corpus change as a performance change.
-    one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus = "aaaa1111")
-    two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus = "bbbb2222")
+    one = payload(tmp_path, "one", [(1000.0, 900.0)], corpus="aaaa1111")
+    two = payload(tmp_path, "two", [(1000.0, 900.0)], corpus="bbbb2222")
     with pytest.raises(SystemExit) as exc:
         F.load([one, two])
     assert "different corpora" in str(exc.value)
 
 
 def test_scoring_against_a_floor_from_another_corpus_is_refused(tmp_path):
-    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, corpus = "bbbb2222")
+    result = payload(tmp_path, "result", [(1000.0, 100.0)] * 4, corpus="bbbb2222")
     with pytest.raises(SystemExit) as exc:
-        F.render([result], "t", floors = {}, floor_corpus = "aaaa1111")
+        F.render([result], "t", floors={}, floor_corpus="aaaa1111")
     assert "different film" in str(exc.value)
 
 
 def test_the_same_corpus_on_both_sides_pools_normally(tmp_path):
-    a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)], corpus = "aaaa1111")
-    b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)], corpus = "aaaa1111")
+    a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)], corpus="aaaa1111")
+    b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)], corpus="aaaa1111")
     pooled, _ = F.load([a, b])
     assert len(pooled["message_menu.open_close_ms"]) == 2
 
 
 def test_a_payload_with_no_corpus_hash_is_not_silently_pooled_with_one_that_has_it(tmp_path):
     # An older payload predating the field reads '?', a different value, not a wildcard.
-    old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus = None)
-    new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus = "bbbb2222")
+    old = payload(tmp_path, "old", [(1000.0, 900.0)], corpus=None)
+    new = payload(tmp_path, "new", [(1000.0, 900.0)], corpus="bbbb2222")
     with pytest.raises(SystemExit) as exc:
         F.load([old, new])
     assert "different corpora" in str(exc.value)
@@ -335,13 +335,13 @@ def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
     # `--resume` into the same --out leaves a second run_meta; one file can then hold a base on
     # the old film and a treatment on the new, and `paired` matches them regardless.
     out = tmp_path / "resumed"
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}]
     rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
     rows += [{"row_type": "run_meta", "tier": "standard", "corpus_hash": "bbbb2222"}]
     rows += cell("100K", "treatment", "rep0", {"open_close_ms": 100.0})
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
     assert F.corpora_of(F.read_rows(path)) == {"aaaa1111", "bbbb2222"}
     with pytest.raises(SystemExit) as exc:
@@ -349,21 +349,21 @@ def test_a_resumed_payload_carrying_two_corpora_is_refused(tmp_path):
     assert "more than one corpus" in str(exc.value)
     # And the floor-vs-result path refuses it too, rather than scoring under the first hash.
     with pytest.raises(SystemExit) as exc:
-        F.render([path], "t", floors = {}, floor_corpus = "aaaa1111")
+        F.render([path], "t", floors={}, floor_corpus="aaaa1111")
     assert "more than one corpus" in str(exc.value)
 
 
 def test_a_payload_with_repeated_headers_on_one_corpus_still_loads(tmp_path):
     # A plain resume, nothing changed: two headers, one hash, no refusal.
     out = tmp_path / "plain"
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     meta = {"row_type": "run_meta", "tier": "standard", "corpus_hash": "aaaa1111"}
     rows: list[dict] = [dict(meta)]
     rows += cell("100K", "base", "rep0", {"open_close_ms": 1000.0})
     rows += [dict(meta)]
     rows += cell("100K", "treatment", "rep0", {"open_close_ms": 900.0})
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
     pooled, _tiers = F.load([path])
     assert pooled["message_menu.open_close_ms"] == [(1000.0, 900.0)]
@@ -385,7 +385,7 @@ def test_an_action_that_did_not_run_contributes_no_timing(tmp_path):
     out = tmp_path / "x"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     records = F.read_rows(out / "payload.jsonl")
     assert F._action_timings(records, "100K.base.rep0") == {}
@@ -406,7 +406,7 @@ def test_an_incomplete_cell_is_not_measured(tmp_path):
     out = tmp_path / "y"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     assert F.cell_metrics(F.read_rows(out / "payload.jsonl")) == {}
 
@@ -440,7 +440,7 @@ def test_an_action_whose_own_assertion_failed_contributes_no_timing(tmp_path):
     out = tmp_path / "e"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {}
 
@@ -463,7 +463,7 @@ def test_an_action_with_no_expectation_recorded_is_still_harvested(tmp_path):
     out = tmp_path / "n"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     assert F._action_timings(F.read_rows(out / "payload.jsonl"), "100K.base.rep0") == {
         "keystroke.p95_ms": 3.0
@@ -472,9 +472,9 @@ def test_an_action_with_no_expectation_recorded_is_still_harvested(tmp_path):
 
 def write(tmp_path: Path, name: str, rows: list[dict]) -> Path:
     out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
@@ -642,10 +642,10 @@ def test_a_resumed_cell_is_measured_from_its_own_attempt_only(tmp_path):
     rows = [
         {"row_type": "run_meta", "tier": "standard", "session_id": "s1"},
         {"row_type": "cell", "cell_id": cid, "completed": False, "session_id": "s1"},
-        frame_window(cid, "action", [5000.0] * 10, 2000.0, session_id = "s1"),
+        frame_window(cid, "action", [5000.0] * 10, 2000.0, session_id="s1"),
         {"row_type": "run_meta", "tier": "standard", "session_id": "s2"},
         {"row_type": "cell", "cell_id": cid, "completed": True, "session_id": "s2"},
-        frame_window(cid, "action", [16.0] * 100, 1600.0, session_id = "s2"),
+        frame_window(cid, "action", [16.0] * 100, 1600.0, session_id="s2"),
     ]
     vals = F.cell_metrics(F.read_rows(write(tmp_path, "r", rows)))[cid]
     assert vals["max_frame_ms"] == 16.0
@@ -735,14 +735,14 @@ def test_an_arm_resumed_into_a_new_session_is_not_paired_with_the_old_one(tmp_pa
     assert F.cell_metrics(F.read_rows(path))["r100K.treatment.rep0"] == {
         "message_menu.open_close_ms": 108.0
     }
-    assert F.paired(F.read_rows(path), shard = "resumed") == {}
+    assert F.paired(F.read_rows(path), shard="resumed") == {}
 
 
 def test_an_arm_resumed_inside_the_same_session_still_pairs(tmp_path):
     # The other direction, so the refusal cannot pass by rejecting every resumed run: two attempts
     # in ONE session still pair normally.
     path = resumed_payload(tmp_path, "same", "s1")
-    assert F.paired(F.read_rows(path), shard = "same") == {
+    assert F.paired(F.read_rows(path), shard="same") == {
         "message_menu.open_close_ms": [(100.0, 108.0)]
     }
 
@@ -751,7 +751,7 @@ def test_a_payload_with_no_session_ids_pairs_exactly_as_before(tmp_path):
     # Pre-session-id payloads resolve both arms to '', so the new key term is inert; refusing them
     # would delete every old reading.
     path = payload(tmp_path, "legacy", [(1000.0, 900.0)])
-    assert F.paired(F.read_rows(path), shard = "legacy") == {
+    assert F.paired(F.read_rows(path), shard="legacy") == {
         "message_menu.open_close_ms": [(1000.0, 900.0)]
     }
 
@@ -1180,9 +1180,9 @@ def test_main_returns_two_when_nothing_matches(tmp_path, capsys):
 def probe_payload(tmp_path: Path, name: str, script: str | None) -> Path:
     """A payload whose run_meta records the external init script that was in the page."""
     path = payload(tmp_path, name, [(1000.0, 900.0)] * 4)
-    rows = [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     rows[0]["probe_init_script"] = script
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
@@ -1208,7 +1208,7 @@ def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
     Reading only the first run_meta scores those cells.
     """
     path = probe_payload(tmp_path, "resumed", None)
-    with path.open("a", encoding = "utf-8") as fh:
+    with path.open("a", encoding="utf-8") as fh:
         fh.write(
             json.dumps(
                 {
@@ -1228,7 +1228,7 @@ def test_a_probe_named_in_a_later_run_meta_is_still_caught(tmp_path):
 def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
     # Two independent records of one fact, so a payload emitting only the gate is still refused.
     path = probe_payload(tmp_path, "gated", None)
-    with path.open("a", encoding = "utf-8") as fh:
+    with path.open("a", encoding="utf-8") as fh:
         fh.write(
             json.dumps(
                 {
@@ -1247,7 +1247,7 @@ def test_a_failed_probe_free_gate_is_enough_on_its_own(tmp_path):
 
 def test_a_passing_probe_free_gate_scores_normally(tmp_path):
     path = probe_payload(tmp_path, "clean_gate", None)
-    with path.open("a", encoding = "utf-8") as fh:
+    with path.open("a", encoding="utf-8") as fh:
         fh.write(
             json.dumps(
                 {
@@ -1318,7 +1318,7 @@ def test_the_composer_click_does_not_set_the_frame_floor(tmp_path):
     out = tmp_path / "click"
     out.mkdir()
     (out / "payload.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
     )
     metrics = F.cell_metrics(F.read_rows(out / "payload.jsonl"))["100K.base.rep0"]
     assert metrics["max_frame_ms"] == 120.0
@@ -1331,7 +1331,7 @@ LOOP_DOC = Path(__file__).resolve().parents[2] / "CONTRIBUTING-perf.md"
 
 def loop_commands() -> list[str]:
     """The commands in the fenced block under `## The loop`, in the order a reader runs them."""
-    block = LOOP_DOC.read_text(encoding = "utf-8").split("## The loop", 1)[1].split("```")[1]
+    block = LOOP_DOC.read_text(encoding="utf-8").split("## The loop", 1)[1].split("```")[1]
     return [
         line.strip()
         for line in block.splitlines()
@@ -1382,7 +1382,7 @@ def liveness_payload(tmp_path: Path, name: str, pairs: list[tuple[float, float |
     `SceneRunner` cell does.
     """
     out = tmp_path / name
-    out.mkdir(parents = True, exist_ok = True)
+    out.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = [{"row_type": "run_meta", "tier": "standard"}]
     for i, (base, treat) in enumerate(pairs):
         for arm, ms in (("base", base), ("treatment", treat)):
@@ -1393,7 +1393,7 @@ def liveness_payload(tmp_path: Path, name: str, pairs: list[tuple[float, float |
             )
             rows.append(action)
     path = out / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
@@ -1477,7 +1477,7 @@ def liveness_commands(commands: list[str]) -> list[str]:
 
 def credentials_prose() -> str:
     """The paragraph between the loop's fenced block and the first numbered section."""
-    body = LOOP_DOC.read_text(encoding = "utf-8").split("## The loop", 1)[1]
+    body = LOOP_DOC.read_text(encoding="utf-8").split("## The loop", 1)[1]
     return body.split("```")[2].split("## 1.")[0]
 
 
@@ -1620,7 +1620,7 @@ def gated_then_resumed(tmp_path: Path, name: str) -> Path:
         },
     ]
     # The refusal must hold on the payload BEFORE the resume, or the test below passes for another reason.
-    assert F.paired(F.read_rows(before), shard = "b") == {}
+    assert F.paired(F.read_rows(before), shard="b") == {}
     return write(tmp_path, name, rows)
 
 
@@ -1639,7 +1639,7 @@ def test_a_superseded_cell_does_not_come_back_when_its_retry_crashes(tmp_path):
     rows = F.read_rows(path)
 
     assert F.cell_metrics(rows) == {}
-    assert F.paired(rows, shard = "gated_resume") == {}
+    assert F.paired(rows, shard="gated_resume") == {}
 
 
 def test_a_resumed_cell_that_is_not_superseded_still_reports_its_reading(tmp_path):
@@ -1661,7 +1661,7 @@ def test_a_resumed_cell_that_is_not_superseded_still_reports_its_reading(tmp_pat
         timed_action("r100K.treatment.rep0", "s1", 90.0),
     ]
     path = write(tmp_path, "unsuperseded", rows)
-    assert F.paired(F.read_rows(path), shard = "unsuperseded") == {
+    assert F.paired(F.read_rows(path), shard="unsuperseded") == {
         "message_menu.open_close_ms": [(100.0, 90.0)]
     }
 

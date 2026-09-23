@@ -29,13 +29,13 @@ class _Result:
     stdout = ""
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
     # Both halves, or a worker takes _run_repair_and_redetect's "install ran" branch on a
     # latch an earlier test left set and re-detects for real against the next test.
     monkeypatch.setattr(mr, "_environment_mutated", False)
-    monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising=False)
     # The self-heal now declines on a --no-torch install, and the answer comes from the
     # manifest of whatever venv these tests happen to run in. Left ambient, four tests below
     # fail inside a GGUF-only Studio venv, which is a real place to run them. Pin it here and
@@ -47,7 +47,7 @@ def _reset_attempt_guard(monkeypatch):
     # against the next test's globals.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            assert join_when_started(thread, timeout = 5), (
+            assert join_when_started(thread, timeout=5), (
                 "an mlx-autorepair worker outlived its test; once these stubs are "
                 "restored it runs the real repair and detection against another test"
             )
@@ -110,8 +110,8 @@ def test_zoo_declared_specifier_reads_the_real_requirement(monkeypatch):
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
     uv = tmp_path / ".local" / "bin" / "uv"
-    uv.parent.mkdir(parents = True)
-    uv.write_text("#!/bin/sh\n", encoding = "utf-8")
+    uv.parent.mkdir(parents=True)
+    uv.write_text("#!/bin/sh\n", encoding="utf-8")
     uv.chmod(0o755)
     monkeypatch.setattr(mr.shutil, "which", lambda _x: None)
     monkeypatch.setattr(mr.Path, "home", lambda: tmp_path)
@@ -141,7 +141,7 @@ def test_constraint_pins_installed_transformers(monkeypatch):
         assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
     finally:
         if path:
-            Path(path).unlink(missing_ok = True)
+            Path(path).unlink(missing_ok=True)
 
 
 def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
@@ -200,7 +200,7 @@ def test_install_requires_prebuilt_wheels(monkeypatch):
 
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(
-        mr.subprocess, "run", lambda cmd, **k: captured.update(cmd = cmd) or _Result()
+        mr.subprocess, "run", lambda cmd, **k: captured.update(cmd=cmd) or _Result()
     )
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
 
@@ -403,7 +403,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     # Join the daemon thread deterministically.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            join_when_started(thread, timeout = 5)
+            join_when_started(thread, timeout=5)
 
     assert repaired["called"] is True
     assert redetected["called"] is True
@@ -429,7 +429,7 @@ def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
         return "/space free/marker.txt".replace(" ", "_")
 
     monkeypatch.setattr(mr, "uv_safe_path", _spy)
-    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    monkeypatch.delenv("UV_OVERRIDE", raising=False)
 
     env = mr._mlx_install_env()
 
@@ -441,7 +441,7 @@ def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
 
 def _fake_venv(tmp_path: Path) -> Path:
     """A venv-shaped directory: uv accepts a root that carries pyvenv.cfg."""
-    (tmp_path / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    (tmp_path / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     (tmp_path / "bin").mkdir()
     return tmp_path
 
@@ -507,7 +507,7 @@ def test_virtual_env_is_not_advertised_as_a_dangling_symlink_recovery():
     unresolved-interpreter error either way. The claim outlived the code and then misled a
     reviewer into asking for the mechanism back, so pin it rather than trusting prose.
     """
-    src = (Path(mr.__file__)).read_text(encoding = "utf-8")
+    src = (Path(mr.__file__)).read_text(encoding="utf-8")
     assert "_uv_python_target" not in src, (
         "_uv_python_target was deleted with the venv-root retry; a reference to it means "
         "the placebo is back or the comment is stale again"
@@ -597,7 +597,7 @@ def _recorded_announcements(monkeypatch):
 def _join_the_repair_worker():
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            assert join_when_started(thread, timeout = 5)
+            assert join_when_started(thread, timeout=5)
 
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
@@ -607,7 +607,7 @@ def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
-    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    redetects = _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
     announced = _recorded_announcements(monkeypatch)
 
     assert mr.start_mlx_autorepair_if_needed() is False
@@ -620,7 +620,7 @@ def test_a_stack_that_is_really_unusable_keeps_its_verdict(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: False)
-    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    redetects = _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
 
     assert mr.start_mlx_autorepair_if_needed() is True
     _join_the_repair_worker()
@@ -633,7 +633,7 @@ def test_a_settled_verdict_that_does_not_blame_mlx_is_left_alone(monkeypatch):
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
 
     for chat_only, reason in ((True, "no_gpu"), (False, None)):
-        redetects = _published_verdict(monkeypatch, chat_only = chat_only, reason = reason)
+        redetects = _published_verdict(monkeypatch, chat_only=chat_only, reason=reason)
         assert mr.start_mlx_autorepair_if_needed() is False
         assert redetects == [], f"re-detected over a {reason!r} verdict"
 
@@ -643,7 +643,7 @@ def test_declining_the_reinstall_does_not_mean_keeping_a_wrong_verdict(monkeypat
     monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
-    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    redetects = _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
 
     assert mr.start_mlx_autorepair_if_needed() is False
     assert len(redetects) == 1
@@ -655,7 +655,7 @@ def test_the_stack_is_measured_once_before_the_decision(monkeypatch, usable):
     "usable" leaves it standing with no reinstall and nothing left to revisit it."""
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: False)
-    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
     probes = []
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: probes.append(1) or usable)
 
@@ -671,7 +671,7 @@ def test_the_overturn_cannot_republish_into_a_stopped_lifespan(monkeypatch):
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
     settled = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON)
 
     def _measure_while_shutdown_lands():
@@ -694,7 +694,7 @@ def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
     announced = _recorded_announcements(monkeypatch)
 
     def _measure_while_shutdown_lands():
@@ -741,7 +741,7 @@ def test_an_opted_out_host_with_nothing_to_overturn_imports_nothing(monkeypatch)
     run and this would be the process's first MLX import, for a reinstall that is opted out."""
     monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    _published_verdict(monkeypatch, chat_only = True, reason = None)
+    _published_verdict(monkeypatch, chat_only=True, reason=None)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: pytest.fail("imported MLX for no one"))
 
     assert mr.start_mlx_autorepair_if_needed() is False
@@ -753,7 +753,7 @@ def test_the_repair_worker_is_scoped_to_the_epoch_read_before_the_measurement(mo
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    _published_verdict(monkeypatch, chat_only=True, reason="mlx_unavailable")
     before = hw.current_detection_epoch()
 
     def _measure_while_shutdown_lands():
@@ -762,7 +762,7 @@ def test_the_repair_worker_is_scoped_to_the_epoch_read_before_the_measurement(mo
 
     monkeypatch.setattr(mr, "mlx_stack_available", _measure_while_shutdown_lands)
     scoped_to = []
-    monkeypatch.setattr(mr, "_run_repair_and_redetect", lambda epoch = None: scoped_to.append(epoch))
+    monkeypatch.setattr(mr, "_run_repair_and_redetect", lambda epoch=None: scoped_to.append(epoch))
 
     assert mr.start_mlx_autorepair_if_needed() is True
     _join_the_repair_worker()

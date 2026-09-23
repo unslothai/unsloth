@@ -42,7 +42,7 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _gh(args: list[str]) -> tuple[int, str, str]:
-    proc = subprocess.run(["gh", *args], capture_output = True, text = True)
+    proc = subprocess.run(["gh", *args], capture_output=True, text=True)
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
@@ -114,11 +114,11 @@ def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
         key = (full, status["context"])
         prior = out.get(key)
         if prior is None:
-            out[key] = dict(status, slugs = list(status.get("slugs") or [status.get("slug")]))
+            out[key] = dict(status, slugs=list(status.get("slugs") or [status.get("slug")]))
             continue
         slugs = prior["slugs"] + list(status.get("slugs") or [status.get("slug")])
         if status["state"] == "failure" and prior["state"] != "failure":
-            out[key] = dict(status, slugs = slugs)
+            out[key] = dict(status, slugs=slugs)
         else:
             prior["slugs"] = slugs
     return [(k[0], s) for k, s in out.items()]
@@ -167,17 +167,17 @@ def post_all(statuses: list[dict], repo: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--result", required = True, help = "collect_result.json from collect.py")
-    ap.add_argument("--out", required = True, help = "where to write posted.json")
-    ap.add_argument("--repo", default = os.environ.get("GITHUB_REPOSITORY", ""))
+    ap.add_argument("--result", required=True, help="collect_result.json from collect.py")
+    ap.add_argument("--out", required=True, help="where to write posted.json")
+    ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     args = ap.parse_args()
     if not args.repo:
         ap.error("--repo (or GITHUB_REPOSITORY) is required")
 
-    data = json.loads(Path(args.result).read_text(encoding = "utf-8"))
+    data = json.loads(Path(args.result).read_text(encoding="utf-8"))
     statuses = data.get("statuses") or []
     outcome = post_all(statuses, args.repo)
-    Path(args.out).write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
+    Path(args.out).write_text(json.dumps(outcome, indent=2), encoding="utf-8")
     if not statuses:
         print("no statuses to post this pass")
     # Red when a verdict could not be delivered: the kernel is kept for the

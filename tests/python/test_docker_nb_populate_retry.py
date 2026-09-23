@@ -29,7 +29,7 @@ TEMPLATE_COMMIT = "a" * 40
 
 behavioural = pytest.mark.skipif(
     any(shutil.which(tool) is None for tool in ("bash", "sha256sum")),
-    reason = "needs bash and sha256sum",
+    reason="needs bash and sha256sum",
 )
 
 
@@ -39,27 +39,27 @@ def _sha256(path: Path) -> str:
 
 def _template(tmp_path: Path) -> Path:
     template = tmp_path / "template"
-    (template / "sub").mkdir(parents = True)
-    (template / "a.ipynb").write_text("A", encoding = "utf-8")
-    (template / "sub" / "b.ipynb").write_text("B", encoding = "utf-8")
-    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding = "utf-8")
+    (template / "sub").mkdir(parents=True)
+    (template / "a.ipynb").write_text("A", encoding="utf-8")
+    (template / "sub" / "b.ipynb").write_text("B", encoding="utf-8")
+    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding="utf-8")
     return template
 
 
 def _run(tmp_path: Path, template: Path, dest: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(SYNC)],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-        env = dict(
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=dict(
             os.environ,
-            UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
-            UNSLOTH_NOTEBOOKS_DIR = str(dest),
+            UNSLOTH_NOTEBOOKS_TEMPLATE=str(template),
+            UNSLOTH_NOTEBOOKS_DIR=str(dest),
             # phase 2 needs a clone; the offline half must retry on its own
-            UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
-            UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
-            UNSLOTH_KEEP_COLAB_INTRO = "1",
+            UNSLOTH_SKIP_NOTEBOOK_REFRESH="1",
+            UNSLOTH_SKIP_NOTEBOOK_VIEW="1",
+            UNSLOTH_KEEP_COLAB_INTRO="1",
         ),
     )
 
@@ -69,7 +69,7 @@ def _state(dest: Path) -> dict:
     if not path.is_file():
         return {}
     out = {}
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         parts = line.split("  ", 1)
         if len(parts) == 2:
             out[parts[1]] = parts[0]
@@ -82,12 +82,12 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     dest = tmp_path / "dest"
     dest.mkdir()
     # a regular file, so the copy into it is ENOTDIR for root too
-    (dest / "sub").write_text("blocked", encoding = "utf-8")
+    (dest / "sub").write_text("blocked", encoding="utf-8")
 
     first = _run(tmp_path, template, dest)
     assert first.returncode == 0, first.stdout + first.stderr
 
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A"
+    assert (dest / "a.ipynb").read_text(encoding="utf-8") == "A"
     assert "a.ipynb" in _state(dest)
     assert "sub/b.ipynb" not in _state(dest), "a copy that failed must not be recorded"
     assert not (dest / ".unsloth_sync_commit").exists(), (
@@ -101,10 +101,10 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     second = _run(tmp_path, template, dest)
     assert second.returncode == 0, second.stdout + second.stderr
 
-    assert (dest / "sub" / "b.ipynb").read_text(encoding = "utf-8") == "B"
+    assert (dest / "sub" / "b.ipynb").read_text(encoding="utf-8") == "B"
     assert _state(dest)["sub/b.ipynb"] == _sha256(dest / "sub" / "b.ipynb")
     assert _state(dest)["a.ipynb"] == _sha256(dest / "a.ipynb")
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (TEMPLATE_COMMIT)
+    assert (dest / ".unsloth_sync_commit").read_text(encoding="utf-8").strip() == (TEMPLATE_COMMIT)
     assert not (dest / ".unsloth_sync_partial").exists()
 
 
@@ -115,18 +115,18 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
     dest.mkdir()
 
     assert _run(tmp_path, template, dest).returncode == 0
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == (TEMPLATE_COMMIT)
+    assert (dest / ".unsloth_sync_commit").read_text(encoding="utf-8").strip() == (TEMPLATE_COMMIT)
     assert not (dest / ".unsloth_sync_partial").exists()
     before = _state(dest)
     assert set(before) == {"a.ipynb", "sub/b.ipynb"}
 
     # a re-run of phase 1 would drop this file's managed record, so an identical
     # state is what proves the block was skipped
-    (dest / "a.ipynb").write_text("edited", encoding = "utf-8")
+    (dest / "a.ipynb").write_text("edited", encoding="utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
     assert _state(dest) == before
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "edited"
+    assert (dest / "a.ipynb").read_text(encoding="utf-8") == "edited"
 
 
 @behavioural
@@ -136,13 +136,13 @@ def test_the_partial_marker_is_not_recorded_as_a_notebook(tmp_path: Path):
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / "sub").write_text("blocked", encoding = "utf-8")
+    (dest / "sub").write_text("blocked", encoding="utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
     assert (dest / ".unsloth_sync_partial").exists()
     assert ".unsloth_sync_partial" not in _state(dest)
 
-    source = SYNC.read_text(encoding = "utf-8")
+    source = SYNC.read_text(encoding="utf-8")
     skip = source[source.index("record_state() {") :]
     skip = skip[: skip.index("printf")]
     assert ".unsloth_sync_partial" in skip
@@ -158,18 +158,18 @@ def test_the_retry_keeps_records_the_refresh_added(tmp_path: Path):
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / "sub").write_text("blocked", encoding = "utf-8")
+    (dest / "sub").write_text("blocked", encoding="utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
     assert (dest / ".unsloth_sync_partial").exists()
 
     # what the refresh does between the two boots
-    (dest / "a.ipynb").write_text("A-v2-from-upstream", encoding = "utf-8")
-    (dest / "remote_only.ipynb").write_text("R", encoding = "utf-8")
+    (dest / "a.ipynb").write_text("A-v2-from-upstream", encoding="utf-8")
+    (dest / "remote_only.ipynb").write_text("R", encoding="utf-8")
     (dest / ".unsloth_sync_state").write_text(
         f"{_sha256(dest / 'a.ipynb')}  a.ipynb\n"
         f"{_sha256(dest / 'remote_only.ipynb')}  remote_only.ipynb\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     (dest / "sub").unlink()
@@ -185,7 +185,7 @@ def test_the_retry_keeps_records_the_refresh_added(tmp_path: Path):
     ), "a notebook that exists only upstream is never walked by the populate loop"
     assert state.get("sub/b.ipynb") == _sha256(dest / "sub" / "b.ipynb")
     assert (dest / "a.ipynb").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     ) == "A-v2-from-upstream", "the retry must not overwrite the newer copy with the baked template"
     assert len(state) == 3, state
 
@@ -197,7 +197,7 @@ def test_a_first_boot_records_only_what_it_populated(tmp_path: Path):
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / "not_ours.ipynb").write_text("N", encoding = "utf-8")
+    (dest / "not_ours.ipynb").write_text("N", encoding="utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
     assert set(_state(dest)) == {"a.ipynb", "sub/b.ipynb"}
@@ -216,13 +216,13 @@ def _restored_run(tmp_path: Path, template: Path, dest: Path, recorded: str, bod
     """State says `recorded` for a.ipynb; `body` is what is on disk, None to delete it."""
     (dest / ".unsloth_sync_state").write_text(
         f"{recorded}  a.ipynb\n{_sha256(template / 'sub' / 'b.ipynb')}  sub/b.ipynb\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (dest / ".unsloth_sync_commit").write_text(UPSTREAM_COMMIT + "\n", encoding = "utf-8")
+    (dest / ".unsloth_sync_commit").write_text(UPSTREAM_COMMIT + "\n", encoding="utf-8")
     if body is None:
         (dest / "a.ipynb").unlink()
     else:
-        (dest / "a.ipynb").write_text(body, encoding = "utf-8")
+        (dest / "a.ipynb").write_text(body, encoding="utf-8")
     return _run(tmp_path, template, dest)
 
 
@@ -235,7 +235,7 @@ def test_a_notebook_restored_backwards_drops_the_sync_marker(tmp_path: Path):
     run = _restored_run(tmp_path, template, dest, "c" * 64, None)
     assert run.returncode == 0, run.stdout + run.stderr
 
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A", "it was restored"
+    assert (dest / "a.ipynb").read_text(encoding="utf-8") == "A", "it was restored"
     assert not (dest / ".unsloth_sync_commit").is_file(), (
         "the marker survived a downgrade, so the refresh exits on remote == last and "
         "the notebook stays on the image's older copy"
@@ -254,8 +254,8 @@ def test_a_restore_that_changes_nothing_keeps_the_marker(tmp_path: Path):
     run = _restored_run(tmp_path, template, dest, _sha256(template / "a.ipynb"), None)
     assert run.returncode == 0, run.stdout + run.stderr
 
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "A"
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT
+    assert (dest / "a.ipynb").read_text(encoding="utf-8") == "A"
+    assert (dest / ".unsloth_sync_commit").read_text(encoding="utf-8").strip() == UPSTREAM_COMMIT
     assert "0 needing a refresh" in run.stdout, run.stdout
 
 
@@ -269,8 +269,8 @@ def test_a_notebook_still_on_disk_is_not_touched(tmp_path: Path):
     run = _restored_run(tmp_path, template, dest, "c" * 64, "MY OWN WORK")
     assert run.returncode == 0, run.stdout + run.stderr
 
-    assert (dest / "a.ipynb").read_text(encoding = "utf-8") == "MY OWN WORK"
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT
+    assert (dest / "a.ipynb").read_text(encoding="utf-8") == "MY OWN WORK"
+    assert (dest / ".unsloth_sync_commit").read_text(encoding="utf-8").strip() == UPSTREAM_COMMIT
 
 
 # --- a stale state staging file the populate cannot truncate --------------------------
@@ -285,7 +285,7 @@ def test_a_stale_unwritable_state_temp_is_not_published_as_our_state(tmp_path: P
     dest = tmp_path / "dest"
     dest.mkdir()
     stale = dest / ".unsloth_sync_state.tmp"
-    stale.write_text("deadbeef  stale.ipynb\n", encoding = "utf-8")
+    stale.write_text("deadbeef  stale.ipynb\n", encoding="utf-8")
     stale.chmod(0o444)
 
     run = _run(tmp_path, template, dest)
@@ -299,7 +299,7 @@ def test_a_stale_unwritable_state_temp_is_not_published_as_our_state(tmp_path: P
         "a.ipynb": _sha256(dest / "a.ipynb"),
         "sub/b.ipynb": _sha256(dest / "sub" / "b.ipynb"),
     }, state
-    assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == TEMPLATE_COMMIT
+    assert (dest / ".unsloth_sync_commit").read_text(encoding="utf-8").strip() == TEMPLATE_COMMIT
     assert not (dest / ".unsloth_sync_partial").exists()
 
 
@@ -343,27 +343,27 @@ def _run_capped(template: Path, dest: Path, max_bytes: int):
 
     return subprocess.run(
         ["bash", str(SYNC)],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-        preexec_fn = _cap,
-        env = dict(
+        capture_output=True,
+        text=True,
+        timeout=300,
+        preexec_fn=_cap,
+        env=dict(
             os.environ,
-            UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
-            UNSLOTH_NOTEBOOKS_DIR = str(dest),
-            UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
-            UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
-            UNSLOTH_KEEP_COLAB_INTRO = "1",
+            UNSLOTH_NOTEBOOKS_TEMPLATE=str(template),
+            UNSLOTH_NOTEBOOKS_DIR=str(dest),
+            UNSLOTH_SKIP_NOTEBOOK_REFRESH="1",
+            UNSLOTH_SKIP_NOTEBOOK_VIEW="1",
+            UNSLOTH_KEEP_COLAB_INTRO="1",
         ),
     )
 
 
 def _many_template(tmp_path: Path, count: int) -> Path:
     template = tmp_path / "template"
-    template.mkdir(parents = True)
+    template.mkdir(parents=True)
     for i in range(count):
-        (template / f"n{i}.ipynb").write_text(f"N{i}", encoding = "utf-8")
-    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding = "utf-8")
+        (template / f"n{i}.ipynb").write_text(f"N{i}", encoding="utf-8")
+    (template / ".unsloth_template_commit").write_text(TEMPLATE_COMMIT + "\n", encoding="utf-8")
     return template
 
 
@@ -441,7 +441,7 @@ def _exempt_lines(lines):
 
 
 def test_every_staged_state_append_is_checked():
-    lines = SYNC.read_text(encoding = "utf-8").splitlines()
+    lines = SYNC.read_text(encoding="utf-8").splitlines()
     exempt = _exempt_lines(lines)
     unchecked = []
     for i, line in enumerate(lines):
@@ -465,7 +465,7 @@ def test_every_record_tmpstate_call_handles_a_failed_write():
     record failure. Counting it is not enough on its own: the truncated state is
     published either way, so the file must also be rolled back or the write retried.
     Every call site has to say which."""
-    lines = SYNC.read_text(encoding = "utf-8").splitlines()
+    lines = SYNC.read_text(encoding="utf-8").splitlines()
     exempt = _exempt_lines(lines)
     bare = []
     for i, line in enumerate(lines):
@@ -486,7 +486,7 @@ def test_every_record_tmpstate_call_handles_a_failed_write():
 
 def test_a_failed_record_can_roll_the_notebook_back():
     """drop_unrecordable must only ever remove OUR copy, never a user edit."""
-    body = SYNC.read_text(encoding = "utf-8")
+    body = SYNC.read_text(encoding="utf-8")
     assert "drop_unrecordable() {" in body
     fn = body[body.index("drop_unrecordable() {") :]
     fn = fn[: fn.index("\n}")]
@@ -498,7 +498,7 @@ def test_a_failed_record_can_roll_the_notebook_back():
 def test_the_marker_advance_is_gated_on_the_failure_counters():
     """The guard above is only worth anything while the counters still hold the
     marker back."""
-    body = SYNC.read_text(encoding = "utf-8")
+    body = SYNC.read_text(encoding="utf-8")
     assert '[ "$failed" -eq 0 ] && [ "$published" -eq 1 ]' in body
     assert '[ "$populate_failed" -eq 0 ]' in body
 
@@ -507,7 +507,7 @@ def test_record_state_is_still_uncalled():
     """The exemption above depends on it. A call site makes its unchecked append live,
     and it has a second problem waiting: its loop is a PIPELINE, so a failure counter
     set inside would not survive the subshell."""
-    body = SYNC.read_text(encoding = "utf-8")
+    body = SYNC.read_text(encoding="utf-8")
     calls = [
         ln.strip()
         for ln in body.splitlines()
@@ -574,7 +574,7 @@ def test_the_restore_loop_does_not_downgrade_the_state_file(tmp_path: Path):
 def test_every_state_writer_stages_beside_the_state_file():
     """mktemp lands in /tmp, a different filesystem from $DEST under the documented
     bind mount, so the publish stops being an atomic same-directory rename."""
-    body = SYNC.read_text(encoding = "utf-8")
+    body = SYNC.read_text(encoding="utf-8")
     assert 'RS_TMP="$STATE.tmp"' in body, "the restore loop must stage beside $STATE"
     assert 'RS_TMP="$(mktemp)"' not in body
 
@@ -582,7 +582,7 @@ def test_every_state_writer_stages_beside_the_state_file():
 def test_the_restore_publish_failure_is_not_silent():
     """Its sibling branch three lines down is loud and drops the marker; this one used
     to swallow the failure while the 'restored N' success message still printed."""
-    body = SYNC.read_text(encoding = "utf-8")
+    body = SYNC.read_text(encoding="utf-8")
     block = body[body.index('mv "$RS_TMP" "$STATE"') :][:600]
     assert "could not be published" in block, block[:200]
     assert 'rm -f "$SYNCED"' in block, block[:200]

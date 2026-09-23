@@ -45,7 +45,7 @@ class _DiscreteProps:
 
 
 def _torch_module(props) -> types.SimpleNamespace:
-    return types.SimpleNamespace(get_device_properties = lambda ordinal: props)
+    return types.SimpleNamespace(get_device_properties=lambda ordinal: props)
 
 
 def _not_hip(monkeypatch) -> None:
@@ -56,7 +56,7 @@ def _not_hip(monkeypatch) -> None:
     classifier correctly declines. Caught on a real gfx1151 runner, not by reading it.
     """
     monkeypatch.setitem(
-        sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = None))
+        sys.modules, "torch", types.SimpleNamespace(version=types.SimpleNamespace(hip=None))
     )
 
 
@@ -220,7 +220,7 @@ def test_an_unsizeable_card_is_still_reported_when_torch_cannot_answer(monkeypat
 def _smi_utilization(
     monkeypatch,
     vram_total_gb,
-    vram_used_gb = None,
+    vram_used_gb=None,
 ) -> dict:
     """nvidia-smi's utilization rows, whose [N/A] memory columns are already None."""
     payload = {
@@ -250,13 +250,13 @@ def _smi_utilization(
 
 def test_monitor_sizes_the_spark_instead_of_showing_unknown(monkeypatch):
     _cuda_host(monkeypatch, _SparkProps())
-    _smi_utilization(monkeypatch, vram_total_gb = None)
+    _smi_utilization(monkeypatch, vram_total_gb=None)
     import psutil
 
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: types.SimpleNamespace(total = 121 * GIB, available = 100 * GIB),
+        lambda: types.SimpleNamespace(total=121 * GIB, available=100 * GIB),
     )
 
     device = hw.get_gpu_utilization()["devices"][0]
@@ -273,7 +273,7 @@ def test_monitor_sizes_the_spark_instead_of_showing_unknown(monkeypatch):
 def test_monitor_leaves_a_readable_card_alone(monkeypatch):
     """A discrete card answers both memory columns, so nothing here may run."""
     _cuda_host(monkeypatch, _DiscreteProps())
-    _smi_utilization(monkeypatch, vram_total_gb = 79.65, vram_used_gb = 12.0)
+    _smi_utilization(monkeypatch, vram_total_gb=79.65, vram_used_gb=12.0)
 
     def _forbidden(*args, **kwargs):
         raise AssertionError("torch inventory consulted for a card nvidia-smi could size")
@@ -288,7 +288,7 @@ def test_monitor_leaves_a_readable_card_alone(monkeypatch):
 def test_monitor_does_not_size_a_discrete_card_smi_could_not_read(monkeypatch):
     """An unreadable DISCRETE card keeps its unknown: host RAM is not its VRAM."""
     _cuda_host(monkeypatch, _DiscreteProps())
-    _smi_utilization(monkeypatch, vram_total_gb = None)
+    _smi_utilization(monkeypatch, vram_total_gb=None)
 
     device = hw.get_gpu_utilization()["devices"][0]
 
@@ -299,7 +299,7 @@ def test_monitor_does_not_size_a_discrete_card_smi_could_not_read(monkeypatch):
 def test_monitor_reconciliation_creates_no_driver_context(monkeypatch):
     """The poll runs every 3-5s; mem_get_info would pin ~612 MiB for the process life."""
     _cuda_host(monkeypatch, _SparkProps())
-    _smi_utilization(monkeypatch, vram_total_gb = None)
+    _smi_utilization(monkeypatch, vram_total_gb=None)
 
     def _forbidden(*args, **kwargs):
         raise AssertionError("the monitor poll reached the occupancy probe")
@@ -318,7 +318,7 @@ def test_a_hip_torch_is_never_read_with_the_cuda_rule(monkeypatch):
     """
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setitem(
-        sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = "6.2.0"))
+        sys.modules, "torch", types.SimpleNamespace(version=types.SimpleNamespace(hip="6.2.0"))
     )
 
     assert hw._cuda_props_are_integrated(_SparkProps(), "cuda") is False
@@ -337,9 +337,9 @@ def _smi_visible_utilization(monkeypatch, rows) -> dict:
 
 
 def _unsized_row(
-    index = 0,
-    ordinal = 0,
-    index_kind = "physical",
+    index=0,
+    ordinal=0,
+    index_kind="physical",
 ) -> dict:
     return {
         "index": index,
@@ -368,7 +368,7 @@ def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: types.SimpleNamespace(total = 121 * GIB, available = 100 * GIB),
+        lambda: types.SimpleNamespace(total=121 * GIB, available=100 * GIB),
     )
 
     device = hw.get_visible_gpu_utilization()["devices"][0]
@@ -390,7 +390,7 @@ def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):
         lambda: {"raw": "GPU-9254a6cb", "numeric_ids": None, "supports_explicit_gpu_ids": False},
     )
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
-    _smi_visible_utilization(monkeypatch, [_unsized_row(index = 0, index_kind = "relative")])
+    _smi_visible_utilization(monkeypatch, [_unsized_row(index=0, index_kind="relative")])
 
     device = hw.get_visible_gpu_utilization()["devices"][0]
 
@@ -514,7 +514,7 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: types.SimpleNamespace(total = 121 * GIB, available = 101 * GIB),
+        lambda: types.SimpleNamespace(total=121 * GIB, available=101 * GIB),
     )
     utilization = {
         "devices": [

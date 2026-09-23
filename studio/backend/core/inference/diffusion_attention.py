@@ -79,6 +79,7 @@ def _cuda_capability() -> Optional[tuple[int, int]]:
     """(major, minor) compute capability of the active CUDA device, or None if unknown."""
     try:
         import torch
+
         if not torch.cuda.is_available():
             return None
         return tuple(torch.cuda.get_device_capability())  # type: ignore[return-value]
@@ -109,6 +110,7 @@ def _is_cuda_nvidia(target: Any) -> bool:
         # Shared with the stub installer: torch.version.hip alone misreads AMD wheels that only tag __version__,
         # dropping aiter and pointing cuDNN/xformers (stubbed there) at a ROCm card.
         from core._torchao_stub import _module_is_rocm
+
         return not _module_is_rocm(torch)
     except Exception:  # noqa: BLE001
         return False
@@ -147,7 +149,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     )
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
     # a degenerate 1-element tensor would not exercise that.
-    q = torch.zeros((1, 2, 8, 64), device = device, dtype = dtype)
+    q = torch.zeros((1, 2, 8, 64), device=device, dtype=dtype)
     available: list[str] = []
     for name, backend in candidates:
         if backend is None:
@@ -348,7 +350,7 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
 
             # include_windows: this is the one resolver that HAS win_amd64 wheels upstream. timeout matches the other
             # probe_torch_wheel_env callers.
-            env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+            env = probe_torch_wheel_env(timeout=30, include_windows=True)
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
@@ -390,6 +392,7 @@ def _pip_requirement(backend: str, package: str) -> str:
         return package
     try:
         from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION as floor
+
         if isinstance(floor, str) and floor.strip():
             return f"sageattention>={floor.strip()}"
     except Exception:  # noqa: BLE001 - older/newer diffusers may not expose it; keep the static pin
@@ -529,9 +532,9 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
                 "--no-deps",
                 package,
             ],
-            capture_output = True,
-            timeout = 600,
-            check = True,
+            capture_output=True,
+            timeout=600,
+            check=True,
         )
         # The import system caches directory listings, so invalidate the finder caches or the next find_spec can miss
         # the new wheel.
@@ -542,7 +545,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
             stderr = getattr(exc, "stderr", None)
             if stderr:
                 if isinstance(stderr, bytes):
-                    stderr = stderr.decode("utf-8", errors = "replace")
+                    stderr = stderr.decode("utf-8", errors="replace")
                 logger.warning(
                     "diffusion.attention: could not install %s; pip failed with: %s",
                     display,
@@ -654,6 +657,7 @@ def _reset_global_backend_to_native(logger: Any) -> None:
             AttentionBackendName,
             _AttentionBackendRegistry,
         )
+
         _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
     except Exception:  # noqa: BLE001 - best-effort; leave the global as-is on any change
         pass
@@ -730,9 +734,9 @@ def _null_mask_processor_cls():
             self,
             attn,
             hidden_states,
-            encoder_hidden_states = None,
-            attention_mask = None,
-            image_rotary_emb = None,
+            encoder_hidden_states=None,
+            attention_mask=None,
+            image_rotary_emb=None,
         ):
             # Fast path only when the pre-hook removed all padding (attn_mask redundant); a constant python bool so
             # torch.compile const-folds the branch (no graph break).
@@ -740,9 +744,9 @@ def _null_mask_processor_cls():
                 return super().__call__(
                     attn,
                     hidden_states,
-                    encoder_hidden_states = encoder_hidden_states,
-                    attention_mask = attention_mask,
-                    image_rotary_emb = image_rotary_emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    image_rotary_emb=image_rotary_emb,
                 )
 
             # Null path = the stock body with the mask block removed and attn_mask=None.
@@ -759,8 +763,9 @@ def _null_mask_processor_cls():
 
             if image_rotary_emb is not None:
                 from diffusers.models.embeddings import apply_rotary_emb
-                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim = 1)
-                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim = 1)
+
+                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
+                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
             if encoder_hidden_states is not None:
                 encoder_query = attn.add_q_proj(encoder_hidden_states)
@@ -776,19 +781,19 @@ def _null_mask_processor_cls():
                 if attn.norm_added_k is not None:
                     encoder_key = attn.norm_added_k(encoder_key)
 
-                query = torch.cat([query, encoder_query], dim = 1)
-                key = torch.cat([key, encoder_key], dim = 1)
-                value = torch.cat([value, encoder_value], dim = 1)
+                query = torch.cat([query, encoder_query], dim=1)
+                key = torch.cat([key, encoder_key], dim=1)
+                value = torch.cat([value, encoder_value], dim=1)
 
             hidden_states = dispatch_attention_fn(
                 query,
                 key,
                 value,
-                attn_mask = None,
-                dropout_p = 0.0,
-                is_causal = False,
-                backend = self._attention_backend,
-                parallel_config = self._parallel_config,
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+                parallel_config=self._parallel_config,
             )
 
             hidden_states = hidden_states.flatten(2, 3)
@@ -821,7 +826,7 @@ def _trim_stream(states, mask):
     if states is None or mask is None or mask.dim() != 2:
         return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
-    keep = mb.any(dim = 0)  # column valid for at least one batch element
+    keep = mb.any(dim=0)  # column valid for at least one batch element
     if not bool(keep.all()):
         states = states[:, keep]
         mask = mask[:, keep]
@@ -971,10 +976,10 @@ def install_hunyuan_attention_trim(
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             pre_handle = None
             try:
-                pre_handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs = True)
+                pre_handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs=True)
                 # always_call: clear the flag even when the forward raises, so an exception can never leave the
                 # null-mask authorisation latched for a later direct forward.
-                post_handle = dit.register_forward_hook(_hunyuan_trim_post_hook, always_call = True)
+                post_handle = dit.register_forward_hook(_hunyuan_trim_post_hook, always_call=True)
                 dit._unsloth_trim_hook = (pre_handle, post_handle)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 if pre_handle is not None:

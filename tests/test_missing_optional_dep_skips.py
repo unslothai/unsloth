@@ -17,6 +17,7 @@ _ABSENT_EXECUTABLE = "unsloth-nonexistent-executable"
 
 def _repo_root():
     import pathlib
+
     return pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -31,7 +32,7 @@ def test_a_missing_system_package_skips_the_module_too():
 
 
 def test_an_installed_package_is_a_no_op():
-    require_python_package("sys", import_name = "sys")
+    require_python_package("sys", import_name="sys")
     require_package("python", sys.executable)
 
 
@@ -55,14 +56,14 @@ def test_the_call_at_module_scope_does_not_kill_the_session(tmp_path, helper, ar
         def test_unreachable():
             raise AssertionError("the module-level skip should have stopped this")
     """),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(module), "-q", "-p", "no:cacheprovider"],
-        capture_output = True,
-        text = True,
-        cwd = str(tmp_path),
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
     )
     output = result.stdout + result.stderr
     assert "INTERNALERROR" not in output, output
@@ -86,8 +87,8 @@ def test_the_standalone_script_path_still_exits():
     """)
     result = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "NO EXIT" not in result.stdout

@@ -28,8 +28,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 from utils.audio_tokens import (
@@ -43,10 +43,10 @@ from utils.hidden_models import is_curated_stt_repo_id, is_curated_tts_repo_id
 
 def _model_dir(tmp_path: Path, name: str, architectures, tokens) -> Path:
     path = tmp_path / name
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     (path / "config.json").write_text(
         json.dumps({"model_type": "llama", "architectures": architectures}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (path / "tokenizer_config.json").write_text(
         json.dumps(
@@ -56,7 +56,7 @@ def _model_dir(tmp_path: Path, name: str, architectures, tokens) -> Path:
                 }
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return path
 
@@ -95,6 +95,7 @@ def test_a_speech_model_is_not_chattable_despite_a_causal_lm_head(tmp_path):
 
 def test_an_ordinary_chat_model_stays_chattable(tmp_path):
     from hub.services.models.common import _local_transformers_can_chat
+
     path = _model_dir(tmp_path, "llama", ["LlamaForCausalLM"], ["<bos>", "<eos>"])
     assert _local_transformers_can_chat(path) is True
 
@@ -121,7 +122,7 @@ def test_whisper_is_not_claimed_by_the_tts_probe(tmp_path):
 def test_a_directory_without_a_tokenizer_is_not_tts(tmp_path):
     path = tmp_path / "bare"
     path.mkdir()
-    (path / "config.json").write_text('{"architectures":["LlamaForCausalLM"]}', encoding = "utf-8")
+    (path / "config.json").write_text('{"architectures":["LlamaForCausalLM"]}', encoding="utf-8")
     assert detect_local_tts_audio_type(path) is None
 
 
@@ -165,17 +166,18 @@ def test_a_curated_tts_repo_row_is_not_chat_loadable(tmp_path):
     fields = _cache_inventory_fields(
         "unsloth/orpheus-3b-0.1-ft-GGUF",
         "gguf",
-        snapshot_path = tmp_path,
+        snapshot_path=tmp_path,
     )
     assert fields["capabilities"]["can_chat"] is False
 
 
 def test_an_ordinary_gguf_repo_row_still_chats(tmp_path):
     from hub.services.models.cache_inventory import _cache_inventory_fields
+
     fields = _cache_inventory_fields(
         "unsloth/gemma-4-E2B-it-GGUF",
         "gguf",
-        snapshot_path = tmp_path,
+        snapshot_path=tmp_path,
     )
     assert fields["capabilities"]["can_chat"] is True
 
@@ -189,7 +191,7 @@ def test_a_lora_over_a_speech_base_is_not_chattable(tmp_path):
     adapter = tmp_path / "my-voice-lora"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
-        json.dumps({"base_model_name_or_path": str(base)}), encoding = "utf-8"
+        json.dumps({"base_model_name_or_path": str(base)}), encoding="utf-8"
     )
 
     assert _local_path_can_chat(adapter) is False
@@ -202,7 +204,7 @@ def test_the_tts_only_flag_clears_can_chat(tmp_path):
     fields = _cache_inventory_fields(
         "someone/my-finetuned-voice",
         "gguf",
-        snapshot_path = tmp_path,
-        tts_only = True,
+        snapshot_path=tmp_path,
+        tts_only=True,
     )
     assert fields["capabilities"]["can_chat"] is False

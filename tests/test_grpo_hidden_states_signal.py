@@ -80,7 +80,7 @@ class _Compiled(_Plain):
 setattr(_Compiled, MARKER, True)
 
 
-def _wrapped(degraded = False):
+def _wrapped(degraded=False):
     """What _install_grpo_hidden_states_forward_wrapper leaves on the model."""
     model = _Plain()
     setattr(model, WRAPPED, True)
@@ -99,12 +99,12 @@ def test_the_compiler_marker_is_a_positive_signal():
 
 def test_the_marker_is_found_through_the_peft_base_model():
     """PEFT: the marker sits on the class the compiler rewrote, not the wrapper."""
-    peft = SimpleNamespace(get_base_model = lambda: _Compiled())
+    peft = SimpleNamespace(get_base_model=lambda: _Compiled())
     assert hidden_states_signal(peft) is True
 
 
 def test_the_marker_is_found_through_the_ddp_module():
-    assert hidden_states_signal(SimpleNamespace(module = _Compiled())) is True
+    assert hidden_states_signal(SimpleNamespace(module=_Compiled())) is True
 
 
 def test_the_trainer_wrapper_is_a_positive_signal():
@@ -116,7 +116,7 @@ def test_a_degraded_trainer_wrapper_is_a_negative_signal():
 
     That is the case the width comparison silently gets wrong.
     """
-    assert hidden_states_signal(_wrapped(degraded = True)) is False
+    assert hidden_states_signal(_wrapped(degraded=True)) is False
 
 
 def test_the_degradation_is_found_through_the_base_model():
@@ -124,7 +124,7 @@ def test_the_degradation_is_found_through_the_base_model():
     base = _Plain()
     setattr(base, WRAPPED, True)
     setattr(base, DEGRADED, True)
-    outer = SimpleNamespace(base_model = base, forward = lambda: None)
+    outer = SimpleNamespace(base_model=base, forward=lambda: None)
     setattr(outer, WRAPPED, True)
     assert hidden_states_signal(outer) is False
 
@@ -133,12 +133,12 @@ def test_a_broken_get_base_model_does_not_escape():
     def _raise():
         raise RuntimeError("no base model here")
 
-    model = SimpleNamespace(get_base_model = _raise)
+    model = SimpleNamespace(get_base_model=_raise)
     assert hidden_states_signal(model) is None
 
 
 def test_a_self_referencing_wrapper_chain_terminates():
-    model = SimpleNamespace(forward = lambda: None)
+    model = SimpleNamespace(forward=lambda: None)
     model.model = model
     assert hidden_states_signal(model) is None
 
@@ -192,7 +192,7 @@ def test_a_square_lm_head_with_a_positive_signal_stays_on_the_hidden_path():
 def test_a_square_lm_head_with_a_negative_signal_takes_the_raw_logits_path():
     """The bug: real logits that are hidden-width because vocab_size == hidden_size."""
     head = _lm_head(12, 12)
-    assert returns_hidden_states(_wrapped(degraded = True), _tensor(12), head) is False
+    assert returns_hidden_states(_wrapped(degraded=True), _tensor(12), head) is False
 
 
 def test_a_negative_signal_cannot_overrule_a_decisive_width_test():
@@ -202,7 +202,7 @@ def test_a_negative_signal_cannot_overrule_a_decisive_width_test():
     log-softmax, whose gather indexes with token ids far past the hidden dim.
     """
     head = _lm_head(17, 8)
-    assert returns_hidden_states(_wrapped(degraded = True), _tensor(8), head) is True
+    assert returns_hidden_states(_wrapped(degraded=True), _tensor(8), head) is True
 
 
 # ── End to end through the shipped padded loop ───────────────────────────────
@@ -218,11 +218,11 @@ def _eager_hidden_states_log_softmax(
     hidden_states,
     lm_head,
     index,
-    chunks = 4,
-    logit_scale_multiply = 0.0,
-    logit_scale_divide = 0.0,
-    logit_softcapping = 0.0,
-    temperature = 1.0,
+    chunks=4,
+    logit_scale_multiply=0.0,
+    logit_scale_divide=0.0,
+    logit_softcapping=0.0,
+    temperature=1.0,
 ):
     logits = hidden_states.to(lm_head.dtype) @ lm_head.t()
     if logit_scale_multiply != 0.0:
@@ -237,14 +237,14 @@ def _eager_hidden_states_log_softmax(
 def _eager_log_softmax(
     logits,
     index,
-    temperature = 1.0,
-    chunks = 4,
+    temperature=1.0,
+    chunks=4,
 ):
     logits = logits.to(torch.float32)
     if temperature != 1.0:
         logits = logits / temperature
     return torch.gather(
-        torch.log_softmax(logits, dim = -1), dim = -1, index = index.unsqueeze(-1)
+        torch.log_softmax(logits, dim=-1), dim=-1, index=index.unsqueeze(-1)
     ).squeeze(-1)
 
 
@@ -255,17 +255,18 @@ def _load_zoo_helpers():
             chunked_hidden_states_selective_log_softmax as zoo_hidden,
             chunked_selective_log_softmax as zoo_raw,
         )
+
         zoo_hidden(
             torch.zeros(1, 2, SQUARE),
             torch.zeros(SQUARE, SQUARE),
-            torch.zeros(1, 2, dtype = torch.long),
+            torch.zeros(1, 2, dtype=torch.long),
             1,
             0.0,
             0.0,
             0.0,
             1.0,
         )
-        zoo_raw(torch.zeros(1, 2, SQUARE), torch.zeros(1, 2, dtype = torch.long), 1.0, 1)
+        zoo_raw(torch.zeros(1, 2, SQUARE), torch.zeros(1, 2, dtype=torch.long), 1.0, 1)
     except Exception:
         return _eager_hidden_states_log_softmax, _eager_log_softmax
     return zoo_hidden, zoo_raw
@@ -292,21 +293,21 @@ class _SquareModel:
 
     def __call__(
         self,
-        input_ids = None,
-        logits_to_keep = None,
+        input_ids=None,
+        logits_to_keep=None,
         **kwargs,
     ):
         hidden = self.embedding[input_ids]
         out = hidden if self.returns_hidden_states else hidden @ self.lm_head.t()
         assert out.shape[-1] == SQUARE  # the whole point: indistinguishable by width
-        return SimpleNamespace(logits = out)
+        return SimpleNamespace(logits=out)
 
 
 def _run_padded_loop(*, returns_hidden_states, signal):
     generator = torch.Generator().manual_seed(20260803)
-    embedding = torch.randn(SQUARE, SQUARE, generator = generator)
-    lm_head = torch.randn(SQUARE, SQUARE, generator = generator)
-    input_ids = torch.randint(0, SQUARE, (BATCH, SEQ), generator = generator)
+    embedding = torch.randn(SQUARE, SQUARE, generator=generator)
+    lm_head = torch.randn(SQUARE, SQUARE, generator=generator)
+    input_ids = torch.randint(0, SQUARE, (BATCH, SEQ), generator=generator)
     model = _SquareModel(embedding, lm_head, returns_hidden_states, signal)
 
     namespace = {
@@ -321,11 +322,11 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": model,
         "unwrapped_model": model,
-        "self": SimpleNamespace(_autocast_dtype = torch.float32),
+        "self": SimpleNamespace(_autocast_dtype=torch.float32),
         "pixel_values": None,
         "lm_head": lm_head,
         "zipped_inputs": [
-            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype = torch.long), {}) for i in range(BATCH)
+            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype=torch.long), {}) for i in range(BATCH)
         ],
         "logits_to_keep": KEEP,
         "max_left_pad": MAX_LEFT_PAD,
@@ -345,9 +346,9 @@ def _reference(embedding, lm_head, input_ids):
     """The only correct answer: one lm_head application, then log-softmax."""
     logits = (embedding[input_ids] @ lm_head.t()).to(torch.float32)
     width = KEEP + MAX_LEFT_PAD
-    predictions = torch.log_softmax(logits, dim = -1)[:, -(width + 1) : -1, :]
+    predictions = torch.log_softmax(logits, dim=-1)[:, -(width + 1) : -1, :]
     targets = input_ids[:, -width:]
-    return torch.gather(predictions, dim = -1, index = targets.unsqueeze(-1)).squeeze(-1)
+    return torch.gather(predictions, dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
 
 
 def test_square_lm_head_raw_logits_are_not_run_through_the_lm_head_twice():
@@ -357,37 +358,37 @@ def test_square_lm_head_raw_logits_are_not_run_through_the_lm_head_twice():
     run just carries on with wrong log probabilities.
     """
     logprobs, embedding, lm_head, input_ids = _run_padded_loop(
-        returns_hidden_states = False, signal = "degraded"
+        returns_hidden_states=False, signal="degraded"
     )
     expected = _reference(embedding, lm_head, input_ids)
     assert logprobs.shape == (BATCH, KEEP + MAX_LEFT_PAD)
-    torch.testing.assert_close(logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_square_lm_head_double_application_is_actually_detectable():
     """Guard against a vacuous assertion above: the wrong answer must differ."""
     generator = torch.Generator().manual_seed(20260803)
-    embedding = torch.randn(SQUARE, SQUARE, generator = generator)
-    lm_head = torch.randn(SQUARE, SQUARE, generator = generator)
-    input_ids = torch.randint(0, SQUARE, (BATCH, SEQ), generator = generator)
+    embedding = torch.randn(SQUARE, SQUARE, generator=generator)
+    lm_head = torch.randn(SQUARE, SQUARE, generator=generator)
+    input_ids = torch.randint(0, SQUARE, (BATCH, SEQ), generator=generator)
     correct = _reference(embedding, lm_head, input_ids)
     doubled = _reference(embedding @ lm_head.t(), lm_head, input_ids)
-    assert not torch.allclose(correct, doubled, rtol = 1e-2, atol = 1e-2)
+    assert not torch.allclose(correct, doubled, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("signal", ["compiled", "wrapped"])
 def test_square_lm_head_hidden_states_still_take_the_fused_path(signal):
     logprobs, embedding, lm_head, input_ids = _run_padded_loop(
-        returns_hidden_states = True, signal = signal
+        returns_hidden_states=True, signal=signal
     )
     expected = _reference(embedding, lm_head, input_ids)
-    torch.testing.assert_close(logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_square_lm_head_without_a_signal_falls_back_to_the_width_test():
     """No marker and no wrapper: unchanged from before, hidden states still work."""
     logprobs, embedding, lm_head, input_ids = _run_padded_loop(
-        returns_hidden_states = True, signal = "none"
+        returns_hidden_states=True, signal="none"
     )
     expected = _reference(embedding, lm_head, input_ids)
-    torch.testing.assert_close(logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(logprobs, expected, rtol=1e-5, atol=1e-5)

@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 async def stream_transcript(transcribe, title: str):
     loop = asyncio.get_running_loop()
-    updates = asyncio.Queue(maxsize = 1)
+    updates = asyncio.Queue(maxsize=1)
     closed = False
     last_update = 0.0
 
@@ -54,7 +54,7 @@ async def stream_transcript(transcribe, title: str):
         yield json.dumps({"type": "progress", "text": ""}) + "\n"
         while not task.done():
             done, _ = await asyncio.wait(
-                {task, pending}, timeout = 5, return_when = asyncio.FIRST_COMPLETED
+                {task, pending}, timeout=5, return_when=asyncio.FIRST_COMPLETED
             )
             if pending in done:
                 yield json.dumps(pending.result()) + "\n"

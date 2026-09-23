@@ -77,14 +77,14 @@ class _Dataset:
 def _trainer():
     """A stand-in carrying only what load_and_format_dataset reads."""
     trainer = SimpleNamespace(
-        should_stop = False,
-        _audio_type = None,
-        is_audio_vlm = False,
-        is_vlm = False,
-        model_name = "org/model",
-        tokenizer = None,
-        _update_progress = lambda **kwargs: None,
-        _resolve_eval_split_from_dataset = lambda dataset: None,
+        should_stop=False,
+        _audio_type=None,
+        is_audio_vlm=False,
+        is_vlm=False,
+        model_name="org/model",
+        tokenizer=None,
+        _update_progress=lambda **kwargs: None,
+        _resolve_eval_split_from_dataset=lambda dataset: None,
     )
     trainer._auto_detect_eval_split_from_hf = _auto_detect_eval.__get__(trainer)
     trainer.load_and_format_dataset = _load_and_format_dataset.__get__(trainer)
@@ -116,13 +116,13 @@ def test_streaming_path_forwards_explicit_token(monkeypatch):
 
     result = _trainer().load_and_format_dataset(
         "org/gated",
-        subset = "en",
-        train_split = "train",
-        eval_split = "validation",
-        dataset_streaming = True,
-        eval_steps = 1,
-        dataset_revision = "dataset-commit",
-        hf_token = "hf_0123456789abcdef",
+        subset="en",
+        train_split="train",
+        eval_split="validation",
+        dataset_streaming=True,
+        eval_steps=1,
+        dataset_revision="dataset-commit",
+        hf_token="hf_0123456789abcdef",
     )
 
     assert result is not None
@@ -150,8 +150,8 @@ def test_eager_path_forwards_explicit_token(monkeypatch):
 
     result = _trainer().load_and_format_dataset(
         "org/gated",
-        dataset_streaming = False,
-        hf_token = "hf_0123456789abcdef",
+        dataset_streaming=False,
+        hf_token="hf_0123456789abcdef",
     )
 
     assert result is not None
@@ -168,11 +168,11 @@ def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
 
     result = _trainer().load_and_format_dataset(
         "org/gated",
-        subset = "en",
-        dataset_streaming = False,
-        eval_steps = 1,
-        dataset_revision = "dataset-commit",
-        hf_token = "hf_0123456789abcdef",
+        subset="en",
+        dataset_streaming=False,
+        eval_steps=1,
+        dataset_revision="dataset-commit",
+        hf_token="hf_0123456789abcdef",
     )
 
     assert result is not None
@@ -201,7 +201,7 @@ def test_token_stays_absent_when_not_provided(monkeypatch):
 
     result = _trainer().load_and_format_dataset(
         "org/dataset",
-        dataset_streaming = True,
+        dataset_streaming=True,
     )
 
     assert result is not None

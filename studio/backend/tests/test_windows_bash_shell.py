@@ -23,7 +23,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 from core.inference import tools
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_bash_cache():
     # Bound before the test so a monkeypatched _windows_bash (a plain lambda,
     # with no cache_clear) does not break teardown.
@@ -66,7 +66,7 @@ def test_windows_falls_back_to_cmd_without_bash(monkeypatch):
 
 def test_prefers_git_for_windows_over_path(monkeypatch, tmp_path):
     git_bash = tmp_path / "Git" / "bin" / "bash.exe"
-    git_bash.parent.mkdir(parents = True)
+    git_bash.parent.mkdir(parents=True)
     git_bash.write_text("")
     _fake_trusted_root(monkeypatch, tmp_path)
     monkeypatch.setattr(os, "environ", {})
@@ -80,7 +80,7 @@ def test_untrusted_path_bash_is_rejected(monkeypatch, tmp_path):
     # _build_safe_env: the command passed the blocklist, then the shell itself is
     # attacker-controlled. cmd is worse to write for but stays trusted.
     scoop_bash = tmp_path / "scoop" / "shims" / "bash.exe"
-    scoop_bash.parent.mkdir(parents = True)
+    scoop_bash.parent.mkdir(parents=True)
     scoop_bash.write_text("")
     _fake_trusted_root(monkeypatch, tmp_path / "Program Files")
     monkeypatch.setattr(os, "environ", {"PATH": str(scoop_bash.parent)})
@@ -92,10 +92,10 @@ def test_trusted_path_bash_behind_an_untrusted_shim_is_found(monkeypatch, tmp_pa
     # shutil.which stops at the first hit, so a user shim early on PATH used to
     # decide the answer for a host that does have a trusted bash.
     shim = tmp_path / "shims" / "bash.exe"
-    shim.parent.mkdir(parents = True)
+    shim.parent.mkdir(parents=True)
     shim.write_text("")
     trusted_dir = tmp_path / "Program Files" / "Git" / "bin"
-    trusted_dir.mkdir(parents = True)
+    trusted_dir.mkdir(parents=True)
     (trusted_dir / "bash.exe").write_text("")
     _fake_trusted_root(monkeypatch, tmp_path / "Program Files")
     monkeypatch.setattr(
@@ -125,7 +125,7 @@ def test_windowsapps_under_program_files_is_still_rejected(monkeypatch, tmp_path
     # A store package installs under Program Files, so the trust check alone
     # would accept the WSL shim there.
     store_bash = tmp_path / "WindowsApps" / "bash.exe"
-    store_bash.parent.mkdir(parents = True)
+    store_bash.parent.mkdir(parents=True)
     store_bash.write_text("")
     _fake_trusted_root(monkeypatch, tmp_path)
     monkeypatch.setattr(os, "environ", {})
@@ -166,7 +166,7 @@ def test_blocklist_still_catches_the_plain_form_under_cmd(monkeypatch):
     assert "rm" in tools._find_blocked_commands("rm -rf x")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason = "Windows shell behaviour")
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows shell behaviour")
 def test_multiline_script_runs_every_line_on_windows():
     # The regression itself: under cmd /c only the first line ran, so the loop
     # body and the redirect were silently dropped.

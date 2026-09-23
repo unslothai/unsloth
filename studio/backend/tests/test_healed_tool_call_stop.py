@@ -47,21 +47,21 @@ WEB_SEARCH = {
 }
 
 
-def _sse(delta = None, finish = None):
+def _sse(delta=None, finish=None):
     choice = {"index": 0, "delta": delta if delta is not None else {}}
     if finish is not None:
         choice["finish_reason"] = finish
-    return "data: " + json.dumps({"choices": [choice]}, ensure_ascii = False)
+    return "data: " + json.dumps({"choices": [choice]}, ensure_ascii=False)
 
 
-_ANSWER_TURN = [_sse({"content": "The answer is 42."}), _sse(finish = "stop"), _DONE]
+_ANSWER_TURN = [_sse({"content": "The answer is 42."}), _sse(finish="stop"), _DONE]
 
 # The call arrives as content, closed tag: the healer promotes it during feed().
 _TEXT_FORM_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),
     _sse({"content": '"arguments": {"query": "42"}}</tool_call>'}),
-    _sse(finish = "stop"),
+    _sse(finish="stop"),
     _DONE,
 ]
 
@@ -72,7 +72,7 @@ _UNTERMINATED_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),
     _sse({"content": '"arguments": {"query": "42"}}'}),
-    _sse(finish = "stop"),
+    _sse(finish="stop"),
     _DONE,
 ]
 
@@ -90,7 +90,7 @@ _STRUCTURED_TURN = [
             ]
         }
     ),
-    _sse(finish = "stop"),
+    _sse(finish="stop"),
     _DONE,
 ]
 
@@ -138,23 +138,23 @@ def _relay(turns, *, ui_events):
         stripper = ServerToolCallStripper()
         generator = stream_with_studio_tools(
             _HealingTransport(turns),
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
             ),
-            policy = ToolLoopPolicy(
-                tools = [WEB_SEARCH],
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
-                bypass_permissions = False,
-                rag_scope = None,
-                on_withheld_tool_call = None if ui_events else stripper.arm,
-                on_provider_turn_end = None if ui_events else stripper.end_turn,
+            policy=ToolLoopPolicy(
+                tools=[WEB_SEARCH],
+                max_calls=25,
+                timeout=300,
+                permission_mode="off",
+                confirm_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
+                on_withheld_tool_call=None if ui_events else stripper.arm,
+                on_provider_turn_end=None if ui_events else stripper.end_turn,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         seen: list[str] = []
         async for line in generator:
@@ -171,7 +171,7 @@ def _relay(turns, *, ui_events):
                 seen.append(owed)
         return seen
 
-    return asyncio.run(asyncio.wait_for(_run(), timeout = 30.0))
+    return asyncio.run(asyncio.wait_for(_run(), timeout=30.0))
 
 
 def _finish_reasons(lines):
@@ -214,7 +214,7 @@ def _text(lines):
     ],
 )
 def test_a_healed_call_does_not_leak_its_turns_stop(loop_env, turns, label):
-    lines = _relay([turns, _ANSWER_TURN], ui_events = False)
+    lines = _relay([turns, _ANSWER_TURN], ui_events=False)
 
     assert loop_env == ["web_search"], f"the tool must actually run ({label})"
     # Exactly one finish_reason, and it arrives last: a client ending on the first one still
@@ -226,7 +226,7 @@ def test_a_healed_call_does_not_leak_its_turns_stop(loop_env, turns, label):
 
 def test_a_structured_call_behaves_the_same_way(loop_env):
     """The shape that already worked, as the reference the healed ones must match."""
-    lines = _relay([_STRUCTURED_TURN, _ANSWER_TURN], ui_events = False)
+    lines = _relay([_STRUCTURED_TURN, _ANSWER_TURN], ui_events=False)
 
     assert loop_env == ["web_search"]
     assert _finish_reasons(lines) == ["stop"]
@@ -235,7 +235,7 @@ def test_a_structured_call_behaves_the_same_way(loop_env):
 
 def test_the_opt_in_stream_still_sees_both_turns_reasons(loop_env):
     """Nothing is withheld from the Studio UI: it reads the cards and needs the real turns."""
-    lines = _relay([_TEXT_FORM_TURN, _ANSWER_TURN], ui_events = True)
+    lines = _relay([_TEXT_FORM_TURN, _ANSWER_TURN], ui_events=True)
 
     assert loop_env == ["web_search"]
     assert _finish_reasons(lines) == ["stop", "stop"]
@@ -244,8 +244,8 @@ def test_the_opt_in_stream_still_sees_both_turns_reasons(loop_env):
 
 def test_a_turn_with_no_call_keeps_its_only_finish_reason(loop_env):
     """The healer is live on every turn here, so the ordinary path must be untouched."""
-    plain = [_sse({"content": "Just an answer."}), _sse(finish = "stop"), _DONE]
-    lines = _relay([plain], ui_events = False)
+    plain = [_sse({"content": "Just an answer."}), _sse(finish="stop"), _DONE]
+    lines = _relay([plain], ui_events=False)
 
     assert loop_env == []
     assert _finish_reasons(lines) == ["stop"]
@@ -266,7 +266,7 @@ def test_a_healed_call_owes_a_terminal_even_with_no_finish_chunk(loop_env):
         _sse({"content": '"arguments": {"query": "42"}}</tool_call>'}),
         _DONE,
     ]
-    lines = _relay([no_finish, [_DONE]], ui_events = False)
+    lines = _relay([no_finish, [_DONE]], ui_events=False)
 
     assert loop_env == ["web_search"], "the tool must actually run"
     assert _finish_reasons(lines) == ["stop"], "a terminal must be minted"
@@ -283,10 +283,10 @@ def test_holding_the_turn_end_does_not_reorder_the_text(loop_env):
     """
     trailing_marker = [
         _sse({"content": "Comparing: "}),
-        _sse({"content": "the value <to"}, finish = "stop"),
+        _sse({"content": "the value <to"}, finish="stop"),
         _DONE,
     ]
-    lines = _relay([trailing_marker], ui_events = False)
+    lines = _relay([trailing_marker], ui_events=False)
 
     assert loop_env == [], "no tool call in this stream"
     assert _text(lines) == "Comparing: the value <to"
@@ -299,10 +299,10 @@ def test_the_opt_in_stream_keeps_that_order_too(loop_env):
     """The reordering happened inside the loop, upstream of the stripper, so it hit both."""
     trailing_marker = [
         _sse({"content": "Comparing: "}),
-        _sse({"content": "the value <to"}, finish = "stop"),
+        _sse({"content": "the value <to"}, finish="stop"),
         _DONE,
     ]
-    lines = _relay([trailing_marker], ui_events = True)
+    lines = _relay([trailing_marker], ui_events=True)
 
     assert _text(lines) == "Comparing: the value <to"
 
@@ -334,10 +334,10 @@ def test_the_next_turns_legacy_call_keeps_its_own_reason(loop_env):
     legacy_offer = [
         _sse({"content": "now yours: "}),
         _sse({"function_call": {"name": "caller_tool", "arguments": '{"x":1}'}}),
-        _sse(finish = "function_call"),
+        _sse(finish="function_call"),
         _DONE,
     ]
-    lines = _relay([server_call_then_done, legacy_offer], ui_events = False)
+    lines = _relay([server_call_then_done, legacy_offer], ui_events=False)
 
     assert loop_env == ["web_search"], "only the server call runs; the legacy one is the caller's"
     assert "function_call" in _text(lines) or any(
@@ -354,8 +354,8 @@ def test_a_truncated_turn_keeps_its_reason(loop_env):
     would leave the caller with none at all.
     """
     truncated = list(_TEXT_FORM_TURN)
-    truncated[-2] = _sse(finish = "length")
-    lines = _relay([truncated, _ANSWER_TURN], ui_events = False)
+    truncated[-2] = _sse(finish="length")
+    lines = _relay([truncated, _ANSWER_TURN], ui_events=False)
 
     assert loop_env == [], "a truncated call must not run"
     assert _finish_reasons(lines) == ["length"]

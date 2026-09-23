@@ -39,7 +39,7 @@ from core.training.diffusion_train_common import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _not_rocm(monkeypatch):
     """Pin the ROCm gate off: every case here describes an NVIDIA capability tier.
 
@@ -108,7 +108,7 @@ def test_select_lora_targets_explicit_override_wins():
     assert _select_lora_targets(override, _FLUX_TARGETS) == override
     # The default request path (config carrying the generic default) reaches the spec.
     cfg = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+        base_model="black-forest-labs/FLUX.1-dev", data_dir="d", output_dir="o"
     ).normalized()
     assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
     assert (
@@ -134,34 +134,34 @@ def test_prequant_heuristic(repo, expected):
 def test_zimage_rejects_fp16_before_loading():
     # bf16-only families must refuse an explicit fp16 request up front (no model load).
     cfg = DiffusionLoraConfig(
-        base_model = "Tongyi-MAI/Z-Image-Turbo",
-        data_dir = "does-not-exist",
-        output_dir = "o",
-        mixed_precision = "fp16",
+        base_model="Tongyi-MAI/Z-Image-Turbo",
+        data_dir="does-not-exist",
+        output_dir="o",
+        mixed_precision="fp16",
     )
-    with pytest.raises(ValueError, match = "bf16"):
+    with pytest.raises(ValueError, match="bf16"):
         run_dit_lora_training(cfg)
 
 
 def test_flux2_rejects_fp16_before_loading():
     # Both FLUX.2 variants resolve from their repo names and are bf16-only, so an explicit fp16 fails in normalized(). Klein's base is ungated, exercising the guard directly.
     ok = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.2-klein-4B", data_dir = "d", output_dir = "o"
+        base_model="black-forest-labs/FLUX.2-klein-4B", data_dir="d", output_dir="o"
     ).normalized()
     assert ok.resolved_family == "flux.2-klein"
     assert (
-        DiffusionLoraConfig(base_model = "black-forest-labs/FLUX.2-dev", data_dir = "d", output_dir = "o")
+        DiffusionLoraConfig(base_model="black-forest-labs/FLUX.2-dev", data_dir="d", output_dir="o")
         .normalized()
         .resolved_family
         == "flux.2-dev"
     )
     cfg = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.2-klein-4B",
-        data_dir = "does-not-exist",
-        output_dir = "o",
-        mixed_precision = "fp16",
+        base_model="black-forest-labs/FLUX.2-klein-4B",
+        data_dir="does-not-exist",
+        output_dir="o",
+        mixed_precision="fp16",
     )
-    with pytest.raises(ValueError, match = "bf16"):
+    with pytest.raises(ValueError, match="bf16"):
         run_dit_lora_training(cfg)
 
 
@@ -173,7 +173,7 @@ def test_flux2_bases_pass_the_trusted_base_gate():
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-9B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-4B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-dev")
-    with pytest.raises(ValueError, match = "untrusted"):
+    with pytest.raises(ValueError, match="untrusted"):
         _assert_trusted_base_model("someone/random-flux2-finetune")
 
 
@@ -192,7 +192,7 @@ def test_zimage_offers_the_undistilled_base_the_upstream_recipe_trains_on():
         "Tongyi-MAI/Z-Image",
     )
     _assert_trusted_base_model("Tongyi-MAI/Z-Image")
-    with pytest.raises(ValueError, match = "untrusted"):
+    with pytest.raises(ValueError, match="untrusted"):
         _assert_trusted_base_model("someone/random-z-image-finetune")
     # The upstream script's target list; the family spec must already match it.
     assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0")
@@ -206,6 +206,7 @@ def test_every_train_base_is_deployable_as_an_inference_pipeline():
     # _is_trusted_diffusion_repo, so an advertised training base failing that gate makes Deploy 400 for every adapter.
     from core.inference.diffusion import _is_trusted_diffusion_repo
     from core.inference.diffusion_families import _FAMILIES
+
     for fam in _FAMILIES:
         if not fam.trainable:
             continue
@@ -220,11 +221,11 @@ def test_gated_access_requires_token():
     assert "black-forest-labs/flux.1-dev" in _GATED_TRAIN_REPOS
     assert "black-forest-labs/flux.2-dev" in _GATED_TRAIN_REPOS
     # No token -> clear, actionable error before any download.
-    with pytest.raises(ValueError, match = "gated"):
+    with pytest.raises(ValueError, match="gated"):
         _assert_gated_access("black-forest-labs/FLUX.1-dev", None)
-    with pytest.raises(ValueError, match = "gated"):
+    with pytest.raises(ValueError, match="gated"):
         _assert_gated_access("black-forest-labs/FLUX.1-dev", "   ")
-    with pytest.raises(ValueError, match = "gated"):
+    with pytest.raises(ValueError, match="gated"):
         _assert_gated_access("black-forest-labs/FLUX.2-dev", None)
     # With a token, or for a non-gated repo, it is a no-op.
     _assert_gated_access("black-forest-labs/FLUX.1-dev", "hf_realtoken")
@@ -243,7 +244,7 @@ def test_the_gate_lets_a_local_clone_named_like_a_gated_repo_through(monkeypatch
     local = "black-forest-labs/FLUX.1-dev"
     assert local.lower() in _GATED_TRAIN_REPOS, "precondition: the name is gated"
     monkeypatch.chdir(tmp_path)
-    (tmp_path / local).mkdir(parents = True)
+    (tmp_path / local).mkdir(parents=True)
 
     _assert_gated_access(local, None)
 
@@ -265,14 +266,14 @@ def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
     monkeypatch.setattr(
         diffusion_families,
         "prefer_ungated_mirror",
-        lambda base, token = None: "unsloth/FLUX.1-dev"
+        lambda base, token=None: "unsloth/FLUX.1-dev"
         if base.lower() == "black-forest-labs/flux.1-dev"
         else base,
     )
     cfg = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev",
-        data_dir = str(tmp_path / "empty"),  # the next step after the gate, so it stops here
-        output_dir = str(tmp_path / "out"),
+        base_model="black-forest-labs/FLUX.1-dev",
+        data_dir=str(tmp_path / "empty"),  # the next step after the gate, so it stops here
+        output_dir=str(tmp_path / "out"),
     )
     with pytest.raises(Exception):  # noqa: B017, PT011 -- the dataset, not the gate
         run_dit_lora_training(cfg)
@@ -283,7 +284,7 @@ def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
     # mirror_repo has to go too: a token-less run overrides the cache preference on any repo
     # the mirror table covers, so stubbing only the preference would still redirect.
     seen.clear()
-    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token=None: base)
     monkeypatch.setattr(diffusion_families, "mirror_repo", lambda base: None)
     with pytest.raises(Exception):  # noqa: B017, PT011
         run_dit_lora_training(cfg)
@@ -349,10 +350,11 @@ def test_family_train_infos_sdxl_supports_compile_without_precision_modes(
 def _linear(
     in_features,
     out_features,
-    bias = False,
+    bias=False,
 ):
     import torch.nn as nn
-    return nn.Linear(in_features, out_features, bias = bias)
+
+    return nn.Linear(in_features, out_features, bias=bias)
 
 
 def test_mx_module_filter_accepts_dense_block_linear():
@@ -362,7 +364,7 @@ def test_mx_module_filter_accepts_dense_block_linear():
 
 def test_mx_module_filter_skips_biased_linear():
     # The torchao 0.17 MX training path drops the bias, so an mxfp8'd biased FROZEN linear would corrupt the base output the LoRA regresses against.
-    assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
+    assert _mx_module_filter(_linear(3072, 3072, bias=True), "blocks.0.ff.up") is False
 
 
 def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
@@ -370,8 +372,8 @@ def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
-    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
-    with pytest.raises(ValueError, match = "Blackwell"):
+    cfg = types.SimpleNamespace(base_precision="mxfp8", mixed_precision="bf16", base_model="x")
+    with pytest.raises(ValueError, match="Blackwell"):
         _resolve_base_precision(cfg, None, "cuda")
 
 
@@ -379,7 +381,7 @@ def test_resolve_base_precision_explicit_mxfp8_ok_on_blackwell(monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (10, 0))
-    cfg = types.SimpleNamespace(base_precision = "mxfp8", mixed_precision = "bf16", base_model = "x")
+    cfg = types.SimpleNamespace(base_precision="mxfp8", mixed_precision="bf16", base_model="x")
     assert _resolve_base_precision(cfg, None, "cuda") == "mxfp8"
 
 
@@ -405,13 +407,13 @@ def test_mx_module_filter_rejects_non_linear():
 
 def test_should_compile_auto_mxfp8_on_cuda():
     # auto compiles the dense speed modes on cuda; int8 stays eager (torchao subclass); an explicit "off" wins over the mode.
-    cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
-    assert _should_compile(cfg, False, "cuda", base_precision = "mxfp8") is True
-    assert _should_compile(cfg, False, "cuda", base_precision = "int8") is False
+    cfg = DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o")
+    assert _should_compile(cfg, False, "cuda", base_precision="mxfp8") is True
+    assert _should_compile(cfg, False, "cuda", base_precision="int8") is False
     off = DiffusionLoraConfig(
-        base_model = "b", data_dir = "d", output_dir = "o", compile_transformer = "off"
+        base_model="b", data_dir="d", output_dir="o", compile_transformer="off"
     )
-    assert _should_compile(off, False, "cuda", base_precision = "mxfp8") is False
+    assert _should_compile(off, False, "cuda", base_precision="mxfp8") is False
 
 
 def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
@@ -443,10 +445,10 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
             calls["recipe"] = recipe
             return "cfg-0.17"
 
-    fake_config = SimpleNamespace(MXFP8TrainingOpConfig = _OpConfig, MXFP8TrainingRecipe = _Recipe)
+    fake_config = SimpleNamespace(MXFP8TrainingOpConfig=_OpConfig, MXFP8TrainingRecipe=_Recipe)
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
     monkeypatch.setitem(
-        sys.modules, "torchao.prototype.moe_training", SimpleNamespace(config = fake_config)
+        sys.modules, "torchao.prototype.moe_training", SimpleNamespace(config=fake_config)
     )
     monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", fake_config)
     assert _mxfp8_training_config() == "cfg-0.17"

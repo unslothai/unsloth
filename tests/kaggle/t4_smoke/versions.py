@@ -67,13 +67,14 @@ def import_version(module: str):
     built for installs cleanly and raises on import, and that is the finding.
     """
     import importlib
+
     try:
         return getattr(importlib.import_module(module), "__version__", "unknown")
     except BaseException as exc:  # noqa: BLE001
         return f"IMPORT FAILED: {type(exc).__name__}: {str(exc)[:200]}"
 
 
-def resolved_versions(packages = GOAL_PACKAGES, *, import_check = ()) -> dict:
+def resolved_versions(packages=GOAL_PACKAGES, *, import_check=()) -> dict:
     """``{package: {"installed": ..., "imported": ...}}`` for the goal list.
 
     ``import_check`` names the subset worth paying an import for: importing
@@ -113,7 +114,7 @@ def load_pins(path) -> dict:
     from pathlib import Path
 
     pins: dict = {}
-    text = Path(path).read_text(encoding = "utf-8")
+    text = Path(path).read_text(encoding="utf-8")
     for line in text.splitlines():
         line = line.split("#", 1)[0].strip()
         if not line:
@@ -160,9 +161,9 @@ def pin_failures(pins: dict, resolved: dict) -> list[str]:
 
 def versions_for_pins(
     pins: dict,
-    packages = GOAL_PACKAGES,
+    packages=GOAL_PACKAGES,
     *,
-    import_check = (),
+    import_check=(),
 ) -> dict:
     """``resolved_versions`` over the goal list AND everything ``pins`` names.
 
@@ -173,4 +174,4 @@ def versions_for_pins(
     held perfectly.
     """
     ordered = list(packages) + [name for name in pins if name not in packages]
-    return resolved_versions(tuple(ordered), import_check = import_check)
+    return resolved_versions(tuple(ordered), import_check=import_check)

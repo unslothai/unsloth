@@ -26,15 +26,15 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(access, "_resident_accounts", {})
-    monkeypatch.setattr(access, "_resident_components", {}, raising = False)
+    monkeypatch.setattr(access, "_resident_components", {}, raising=False)
     monkeypatch.setattr(access, "_prior_resident_accounts", {})
-    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising = False)
-    monkeypatch.setattr(access, "_uncommitted_components", {}, raising = False)
+    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising=False)
+    monkeypatch.setattr(access, "_uncommitted_components", {}, raising=False)
     monkeypatch.setattr(gpu_arbiter, "_owner", "diffusion")
     monkeypatch.setattr(gpu_arbiter, "_owner_account", ALICE.account_id)
     monkeypatch.setattr(gpu_arbiter, "_prior_account", None)
@@ -42,7 +42,7 @@ def isolated(monkeypatch, tmp_path):
 
 
 def _failing_backend(monkeypatch):
-    backend = SdCppDiffusionBackend(engine = None)
+    backend = SdCppDiffusionBackend(engine=None)
     monkeypatch.setattr(
         SdCppDiffusionBackend,
         "_resolve_backend",
@@ -51,8 +51,8 @@ def _failing_backend(monkeypatch):
         ),
     )
     # Alice's native pipeline is what stays resident through the failure.
-    backend._state = types.SimpleNamespace(repo_id = "org/alice-model")
-    backend._loading = _SdLoading(repo_id = "org/bob-model", base_repo = "")
+    backend._state = types.SimpleNamespace(repo_id="org/alice-model")
+    backend._loading = _SdLoading(repo_id="org/bob-model", base_repo="")
     return backend
 
 
@@ -66,12 +66,12 @@ def test_failed_native_load_returns_gpu_residency_to_the_displaced_account(monke
     run_as(
         BOB,
         lambda: backend._run_load(
-            repo_id = "org/bob-model",
-            gguf_filename = "flux1-dev-Q4_K_M.gguf",
-            base = "",
-            fam = None,
-            hf_token = None,
-            _load_token = backend._load_token,
+            repo_id="org/bob-model",
+            gguf_filename="flux1-dev-Q4_K_M.gguf",
+            base="",
+            fam=None,
+            hf_token=None,
+            _load_token=backend._load_token,
         ),
     )
 
@@ -89,12 +89,12 @@ def test_failed_native_cpu_load_leaves_a_released_arbiter_alone(monkeypatch):
     run_as(
         BOB,
         lambda: backend._run_load(
-            repo_id = "org/bob-model",
-            gguf_filename = "flux1-dev-Q4_K_M.gguf",
-            base = "",
-            fam = None,
-            hf_token = None,
-            _load_token = backend._load_token,
+            repo_id="org/bob-model",
+            gguf_filename="flux1-dev-Q4_K_M.gguf",
+            base="",
+            fam=None,
+            hf_token=None,
+            _load_token=backend._load_token,
         ),
     )
     assert gpu_arbiter.current_owner() is None

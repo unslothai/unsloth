@@ -71,10 +71,10 @@ print("IMPORT_MAIN_CLEAN")
 def _run(snippet: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", snippet],
-        cwd = str(_BACKEND_DIR),
-        capture_output = True,
-        text = True,
-        timeout = 900,
+        cwd=str(_BACKEND_DIR),
+        capture_output=True,
+        text=True,
+        timeout=900,
     )
 
 
@@ -138,7 +138,7 @@ def _module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
 def test_module_scope_does_not_import_the_seed_plugin(rel_path: str, banned: str):
     """The runtime guards above pass vacuously wherever the plugin is not installed,
     which is most CI jobs. This one reads the source, so it holds either way."""
-    tree = ast.parse((_BACKEND_DIR / rel_path).read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND_DIR / rel_path).read_text(encoding="utf-8"))
     offenders = [
         node.lineno
         for node in _module_scope_imports(tree)
@@ -193,7 +193,7 @@ def test_detection_sets_are_built_once_under_concurrency():
             barrier.wait()
             results.append(mc._detection_sets())
 
-        threads = [threading.Thread(target = worker) for _ in range(8)]
+        threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
@@ -227,7 +227,7 @@ def test_hardware_is_detected_once_under_concurrency():
             barrier.wait()
             hw.ensure_hardware_detected()
 
-        threads = [threading.Thread(target = worker) for _ in range(8)]
+        threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
@@ -241,7 +241,7 @@ def test_hardware_is_detected_once_under_concurrency():
 def test_warm_starts_once_and_honours_the_kill_switch(monkeypatch):
     from utils import torch_warmup
 
-    monkeypatch.setattr(torch_warmup, "_thread", None, raising = False)
+    monkeypatch.setattr(torch_warmup, "_thread", None, raising=False)
     monkeypatch.setenv(torch_warmup.DISABLE_ENV_VAR, "1")
     assert torch_warmup.start_background_warm() is False
     assert torch_warmup.warm_status()["started"] is False
@@ -282,8 +282,8 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
     def boom():
         raise RuntimeError("stage exploded")
 
-    monkeypatch.setattr(torch_warmup, "_thread", None, raising = False)
-    monkeypatch.delenv(torch_warmup.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.setattr(torch_warmup, "_thread", None, raising=False)
+    monkeypatch.delenv(torch_warmup.DISABLE_ENV_VAR, raising=False)
     monkeypatch.setattr(torch_warmup, "_STAGES", (("boom", boom), ("after", lambda: None)))
     assert torch_warmup.start_background_warm() is True
     assert torch_warmup.join_background_warm(60) is True
@@ -361,7 +361,7 @@ def _offloaded_nodes(func: ast.AST) -> set[int]:
 
 @pytest.mark.parametrize("rel_path, func_name, callee", _OFFLOAD_REQUIRED)
 def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, callee):
-    source = (_BACKEND_DIR / rel_path).read_text(encoding = "utf-8")
+    source = (_BACKEND_DIR / rel_path).read_text(encoding="utf-8")
     func = _find_function(ast.parse(source), func_name)
     assert isinstance(func, ast.AsyncFunctionDef), (
         f"{rel_path}:{func_name} is no longer `async def`; this guard assumes it runs on "

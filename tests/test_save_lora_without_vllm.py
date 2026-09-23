@@ -37,7 +37,7 @@ _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_
 
 
 def _patch_function():
-    tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
+    tree = ast.parse(_UTILS.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "patch_peft_fast_inference":
             return node
@@ -72,12 +72,12 @@ def _outside_the_guard(function):
     which is exactly `save_lora` now.
     """
     return ast.Module(
-        body = [
+        body=[
             node
             for node in function.body
             if not (isinstance(node, ast.If) and "vllm_engine" in ast.unparse(node.test))
         ],
-        type_ignores = [],
+        type_ignores=[],
     )
 
 
@@ -157,9 +157,9 @@ def _peft_case(**lora_kwargs):
     peft = pytest.importorskip("peft")
     model = peft.get_peft_model(
         transformers.AutoModelForCausalLM.from_pretrained(
-            "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
+            "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype=torch.float16
         ),
-        peft.LoraConfig(r = 8, target_modules = ["q_proj", "v_proj"], **lora_kwargs),
+        peft.LoraConfig(r=8, target_modules=["q_proj", "v_proj"], **lora_kwargs),
     )
     return model
 
@@ -179,7 +179,7 @@ def _saved_keys(model, save, tmp_path, name):
         {"use_dora": True},
         {"use_dora": True, "modules_to_save": ["lm_head"]},
     ],
-    ids = ["plain", "modules_to_save", "dora", "dora_and_modules_to_save"],
+    ids=["plain", "modules_to_save", "dora", "dora_and_modules_to_save"],
 )
 def test_the_adapter_save_keeps_everything_peft_would_keep(tmp_path, lora_kwargs):
     """The Zoo helper filters to `.lora_A.`/`.lora_B.` before PEFT selects, so
@@ -206,18 +206,18 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     peft = pytest.importorskip("peft")
     from unsloth.models._utils import save_lora_adapter
 
-    model = _peft_case(use_dora = True, modules_to_save = ["lm_head"])
+    model = _peft_case(use_dora=True, modules_to_save=["lm_head"])
     directory = tmp_path / "roundtrip"
     save_lora_adapter(model, str(directory))
     base = transformers.AutoModelForCausalLM.from_pretrained(
-        "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
+        "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype=torch.float16
     )
     # Say the device: peft.utils.other.infer_device() answers "cuda" off
     # torch.cuda.is_available(), which tests/_zoo_aggressive_cuda_spoof.py spoofs True.
     reloaded = peft.PeftModel.from_pretrained(
         base,
         str(directory),
-        torch_device = "cuda" if has_real_accelerator() and torch.cuda.is_available() else "cpu",
+        torch_device="cuda" if has_real_accelerator() and torch.cuda.is_available() else "cpu",
     )
     assert reloaded is not None
 

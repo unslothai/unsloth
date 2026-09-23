@@ -22,16 +22,16 @@ def shared_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     cache = tmp_path / "hub-cache"
-    (cache / "models--public--model" / "snapshots" / "rev").mkdir(parents = True)
-    (cache / "models--private--model" / "snapshots" / "rev").mkdir(parents = True)
-    (cache / "datasets--public--set" / "snapshots" / "rev").mkdir(parents = True)
+    (cache / "models--public--model" / "snapshots" / "rev").mkdir(parents=True)
+    (cache / "models--private--model" / "snapshots" / "rev").mkdir(parents=True)
+    (cache / "datasets--public--set" / "snapshots" / "rev").mkdir(parents=True)
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(cache))
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [cache])
     monkeypatch.setattr(account_access, "model_grants", lambda: set())
     monkeypatch.setattr(
         account_access,
         "repo_is_public",
-        lambda repo_id, repo_type = "model": not repo_id.startswith("private/"),
+        lambda repo_id, repo_type="model": not repo_id.startswith("private/"),
     )
     return cache
 
@@ -82,14 +82,14 @@ def test_the_dataset_picker_can_read_a_visible_cached_dataset(shared_cache):
     from hub.services.datasets import local_options
 
     visible = LocalDatasetOptionsRequest(
-        dataset_name = "public/set",
-        local_path = _snapshot(shared_cache, "datasets", "public/set"),
+        dataset_name="public/set",
+        local_path=_snapshot(shared_cache, "datasets", "public/set"),
     )
     run_as(ALICE, local_options.local_dataset_options, visible)
 
     hidden = LocalDatasetOptionsRequest(
-        dataset_name = "private/set",
-        local_path = _snapshot(shared_cache, "datasets", "private/set"),
+        dataset_name="private/set",
+        local_path=_snapshot(shared_cache, "datasets", "private/set"),
     )
     with pytest.raises(HTTPException) as exc:
         run_as(ALICE, local_options.local_dataset_options, hidden)
@@ -146,10 +146,10 @@ def test_a_cache_fallback_after_a_refused_remote_probe_needs_a_grant(
     def refused(
         model_name,
         hf_token,
-        load_in_4bit = True,
-        is_embedding = False,
+        load_in_4bit=True,
+        is_embedding=False,
     ):
-        raise HTTPException(status_code = 422, detail = {"code": "hf_model_access_denied"})
+        raise HTTPException(status_code=422, detail={"code": "hf_model_access_denied"})
 
     monkeypatch.setattr(training, "_remote_untrainable_model_format", refused)
     from core.training import training as core_training
@@ -160,14 +160,14 @@ def test_a_cache_fallback_after_a_refused_remote_probe_needs_a_grant(
         lambda model_name, local_path: _snapshot(shared_cache, "models", model_name),
     )
     monkeypatch.setattr(
-        training, "_has_trainable_local_weights", lambda *a, **k: True, raising = False
+        training, "_has_trainable_local_weights", lambda *a, **k: True, raising=False
     )
     request = TrainingStartRequest(
-        model_name = repo,
-        dataset_name = "public/set",
-        hf_token = "x",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
+        model_name=repo,
+        dataset_name="public/set",
+        hf_token="x",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
     )
     if expected is None:
         result = run_as(ALICE, training._reject_untrainable_model_request, request)

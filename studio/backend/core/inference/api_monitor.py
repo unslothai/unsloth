@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 from collections import deque
+from dataclasses import dataclass
+from typing import Any, Optional, Callable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -198,6 +200,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
+    provider_type: Optional[str] = None
     # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared)
     kind: str = "request"
     event: Optional[str] = None
@@ -320,6 +323,7 @@ class ApiMonitor:
         self._hidden_shared: dict[tuple[str, str], set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self.on_finish: Optional[Callable[[ApiMonitorEntry], None]] = None
         self._callback_condition = threading.Condition(self._lock)
         self._enabled = enabled
         self._terminal_callback = terminal_callback
@@ -373,6 +377,7 @@ class ApiMonitor:
         prompt: str,
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
+        provider_type: Optional[str] = None,
         via_api_key: bool = False,
     ) -> str:
         if not self._enabled:
@@ -392,6 +397,7 @@ class ApiMonitor:
             via_api_key = via_api_key,
             started_monotonic = time.monotonic(),
             context_length = context_length,
+            provider_type = provider_type,
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -810,6 +816,8 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+
+        finished_entry = None
         notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -831,6 +839,16 @@ class ApiMonitor:
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            finished_entry = entry
+
+        if finished_entry is not None and self.on_finish is not None:
+            try:
+                self.on_finish(finished_entry)
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
             notification = self._terminal_notification_locked(entry)
         self._notify_terminal(notification)
 
@@ -851,6 +869,7 @@ class ApiMonitor:
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
+        failed_entry = None
         notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -862,6 +881,25 @@ class ApiMonitor:
                     entry.error = _trim(error, 1000)
                     _advance_updated_at(entry)
                 return
+            now = time.time()
+            entry.status = "error"
+            entry.error = _trim(error, 1000)
+            entry.updated_at = now
+            entry.finished_at = now
+            entry.finished_monotonic = time.monotonic()
+            self._entries.remove(entry)
+            self._entries.appendleft(entry)
+            self._trim_terminal_locked()
+            failed_entry = entry
+
+        if failed_entry is not None and self.on_finish is not None:
+            try:
+                self.on_finish(failed_entry)
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
             self._fail_locked(entry, error)
             notification = self._terminal_notification_locked(entry)
         self._notify_terminal(notification)

@@ -29,7 +29,7 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
         body += struct.pack("<I", 8)  # STRING vtype
         body += struct.pack("<Q", len(vb)) + vb
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(header + body)
     return path
 
@@ -37,7 +37,7 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 def _touch(path: Path) -> Path:
     """A headerless GGUF: selection falls to the filename, but non-empty since zero bytes now
     means an interrupted download."""
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\0" * 32)
     return path
 
@@ -105,7 +105,7 @@ def test_search_root_walk_still_works(tmp_path: Path):
     snapshot = tmp_path / "snapshot"
     weight = _touch(snapshot / "BF16" / "Qwen3.5-9B-BF16.gguf")
     mmproj = _touch(snapshot / "Qwen3.5-9B-BF16-mmproj.gguf")
-    result = detect_mmproj_file(str(weight), search_root = str(snapshot))
+    result = detect_mmproj_file(str(weight), search_root=str(snapshot))
     assert result == str(mmproj.resolve())
 
 
@@ -371,12 +371,12 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
     weights = tmp_path / "weights"
     sibling = tmp_path / "companion"
     weights.mkdir()
-    (sibling / "vision").mkdir(parents = True)
+    (sibling / "vision").mkdir(parents=True)
     weight = _touch(weights / "Model-Q4_K_M.gguf")
     projector = _touch(sibling / "vision" / "mmproj-Model-F16.gguf")
-    assert detect_mmproj_file(str(weight), search_root = str(sibling)) is None
+    assert detect_mmproj_file(str(weight), search_root=str(sibling)) is None
     assert detect_mmproj_file(
-        str(weight), search_root = str(sibling), allow_disjoint_search_root = True
+        str(weight), search_root=str(sibling), allow_disjoint_search_root=True
     ) == str(projector.resolve())
 
 
@@ -396,7 +396,7 @@ def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_pat
     _touch(snapshot / "UD-IQ1_S" / "mmproj-UD-IQ1_S.gguf")
 
     assert detect_mmproj_file(
-        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+        str(weight), search_root=str(snapshot), allow_disjoint_search_root=True
     ) == str(mine.resolve())
 
 
@@ -412,7 +412,7 @@ def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: 
     _touch(snapshot / "UD-IQ1_S" / "mmproj-vision-model-UD-Q4_K_XL-F16.gguf")
 
     assert detect_mmproj_file(
-        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+        str(weight), search_root=str(snapshot), allow_disjoint_search_root=True
     ) == str(root_level.resolve())
 
 

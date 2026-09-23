@@ -59,8 +59,8 @@ class HandoffVideoBackend:
 
     def cancel_generate(
         self,
-        expected_video_id = None,
-        expected_account = None,
+        expected_video_id=None,
+        expected_account=None,
     ):
         if expected_account is not None and self.job_account != expected_account:
             return False
@@ -68,14 +68,14 @@ class HandoffVideoBackend:
         return True
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    monkeypatch.setattr(video, "_generation_account", None, raising = False)
+    monkeypatch.setattr(video, "_generation_account", None, raising=False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
     monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
@@ -93,18 +93,19 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
 def _install(monkeypatch, backend):
     import core.inference.video as video_module
+
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
 
 
 def test_cancel_does_not_follow_a_reservation_that_changed_hands(monkeypatch):
     """BOB reserves after ALICE's cancel passed authorization; BOB's render must survive."""
-    backend = HandoffVideoBackend(hand_off = True)
+    backend = HandoffVideoBackend(hand_off=True)
     _install(monkeypatch, backend)
 
     with _client(ALICE) as client:
@@ -117,7 +118,7 @@ def test_cancel_does_not_follow_a_reservation_that_changed_hands(monkeypatch):
 
 def test_cancel_still_stops_the_requesting_accounts_own_job(monkeypatch):
     """No handoff: the ordinary cancel keeps working."""
-    backend = HandoffVideoBackend(hand_off = False)
+    backend = HandoffVideoBackend(hand_off=False)
     _install(monkeypatch, backend)
 
     with _client(ALICE) as client:

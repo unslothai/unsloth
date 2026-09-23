@@ -26,24 +26,24 @@ class OAuthStartRequest(BaseModel):
 
 
 class OAuthCompleteRequest(BaseModel):
-    callback_url: str = Field(..., min_length = 1, max_length = 8192)
+    callback_url: str = Field(..., min_length=1, max_length=8192)
 
 
 def _provider(provider_id: str) -> dict:
     row = providers_db.get_provider(provider_id)
     if row is None:
-        raise HTTPException(status_code = 404, detail = "Provider not found")
+        raise HTTPException(status_code=404, detail="Provider not found")
     if row["provider_type"] != "openai_codex":
         raise HTTPException(
-            status_code = 400, detail = "This provider does not use ChatGPT authorization."
+            status_code=400, detail="This provider does not use ChatGPT authorization."
         )
     return row
 
 
 def _safe_error(exc: Exception) -> HTTPException:
     if isinstance(exc, codex_auth.CodexAuthError):
-        return HTTPException(status_code = 400, detail = str(exc))
-    return HTTPException(status_code = 502, detail = "ChatGPT authorization failed. Please retry.")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=502, detail="ChatGPT authorization failed. Please retry.")
 
 
 def _bundle_persister(credential: tuple, marker: str):
@@ -130,7 +130,7 @@ async def complete_oauth(
         raise _safe_error(exc) from exc
 
 
-@router.delete("/{provider_id}/oauth/flows/{flow_id}", status_code = 204)
+@router.delete("/{provider_id}/oauth/flows/{flow_id}", status_code=204)
 async def cancel_oauth(
     provider_id: str,
     flow_id: str,
@@ -174,7 +174,7 @@ async def list_subscription_models(
     try:
         token, account_id = await codex_auth.resolve_access(provider_id)
         models = await codex_client.list_subscription_models(
-            provider_id, token, account_id, force = refresh
+            provider_id, token, account_id, force=refresh
         )
     except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
         # Say it in the answer rather than through a 401: the client's authFetch reads every 401 as an expired
@@ -182,15 +182,15 @@ async def list_subscription_models(
         # as needing reauthorization, so a source the picker does not treat as authoritative carries the signal.
         logger.info(
             "openai_codex.model_list_reauthorization_required",
-            provider_id = provider_id,
-            error_type = type(exc).__name__,
+            provider_id=provider_id,
+            error_type=type(exc).__name__,
         )
         return {"models": curated, "source": "reauthorization_required"}
     except Exception as exc:
         logger.warning(
             "openai_codex.model_list_failed",
-            provider_id = provider_id,
-            error_type = type(exc).__name__,
+            provider_id=provider_id,
+            error_type=type(exc).__name__,
         )
         return {"models": curated, "source": "curated"}
     # Only listed slugs are offered, but every slug the plan returned is reported so the
@@ -207,7 +207,7 @@ async def list_subscription_models(
     }
 
 
-@router.delete("/{provider_id}/oauth", status_code = 204)
+@router.delete("/{provider_id}/oauth", status_code=204)
 async def delete_oauth(
     provider_id: str,
     credential: tuple = Depends(get_current_credential),

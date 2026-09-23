@@ -66,6 +66,7 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
         return True
     try:
         from hub.utils.resumable_partials import _ProbeUnavailable, can_restore_partials
+
         try:
             return can_restore_partials(hub_cache)
         except _ProbeUnavailable:
@@ -73,9 +74,10 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
             return False
     except Exception:  # noqa: BLE001 - no restoration is just the stock answer
         from loggers import get_logger
+
         get_logger(__name__).debug(
             "Resumable-partial restoration unavailable; partials stay unresumable.",
-            exc_info = True,
+            exc_info=True,
         )
         return False
 
@@ -84,6 +86,7 @@ def invalidate_partial_resumability() -> None:
     """Re-decide resumability, for when the cache moves to another filesystem. The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so it cannot be carried over from the old root."""
     try:
         from hub.utils.resumable_partials import invalidate_probe_cache
+
         invalidate_probe_cache()
     except Exception:  # noqa: BLE001 - nothing to invalidate is not an error
         pass
@@ -107,7 +110,7 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     except Exception:  # noqa: BLE001 - no filelock at all means no opinion
         return False
     try:
-        with FileLock(str(lock_path), timeout = 0):
+        with FileLock(str(lock_path), timeout=0):
             return False
     except Timeout:
         return True
@@ -153,7 +156,7 @@ def hf_cache_root(
     root = root or get_hf_cache_paths().hub_cache
     if create:
         try:
-            root.mkdir(parents = True, exist_ok = True)
+            root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return None
         return root
@@ -260,7 +263,7 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         get_compressed_file_size = kernel32.GetCompressedFileSizeW
         get_compressed_file_size.argtypes = [
             wintypes.LPCWSTR,
@@ -299,7 +302,7 @@ def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
         snapshots = [entry for entry in snapshots_dir.iterdir() if entry.is_dir()]
         if not snapshots:
             return None
-        return max(snapshots, key = snapshot_selection_key)
+        return max(snapshots, key=snapshot_selection_key)
     except OSError:
         return None
 
@@ -308,9 +311,9 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
     if not ref or ref in {".", ".."} or Path(ref).name != ref or PureWindowsPath(ref).name != ref:
         return None
     try:
-        repo_root = repo_dir.resolve(strict = True)
-        refs = (repo_root / "refs").resolve(strict = True)
-        ref_path = (refs / ref).resolve(strict = True)
+        repo_root = repo_dir.resolve(strict=True)
+        refs = (repo_root / "refs").resolve(strict=True)
+        ref_path = (refs / ref).resolve(strict=True)
         if (
             not same_existing_path(refs.parent, repo_root)
             or not refs.is_dir()
@@ -319,7 +322,7 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
             or ref_path.stat().st_size > 256
         ):
             return None
-        commit = ref_path.read_text(encoding = "utf-8").strip()
+        commit = ref_path.read_text(encoding="utf-8").strip()
     except (OSError, RuntimeError, UnicodeError):
         return None
     if (
@@ -331,10 +334,10 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
     ):
         return None
     try:
-        snapshots = (repo_root / "snapshots").resolve(strict = True)
+        snapshots = (repo_root / "snapshots").resolve(strict=True)
         if not same_existing_path(snapshots.parent, repo_root) or not snapshots.is_dir():
             return None
-        snapshot = (snapshots / commit).resolve(strict = True)
+        snapshot = (snapshots / commit).resolve(strict=True)
         snapshot.relative_to(snapshots)
     except (OSError, RuntimeError, ValueError):
         return None
@@ -347,7 +350,7 @@ def validated_repo_cache_path(
     if not local_path or not repo_id:
         return None
     try:
-        resolved = Path(local_path).expanduser().resolve(strict = True)
+        resolved = Path(local_path).expanduser().resolve(strict=True)
         expected = target_dir_name(repo_type, repo_id)
         repo_dir = next(
             (
@@ -359,8 +362,8 @@ def validated_repo_cache_path(
         )
         if repo_dir is None:
             return None
-        allowed_roots = [root.resolve(strict = True) for root in hf_cache_roots() if root.exists()]
-        repo_dir = repo_dir.resolve(strict = True)
+        allowed_roots = [root.resolve(strict=True) for root in hf_cache_roots() if root.exists()]
+        repo_dir = repo_dir.resolve(strict=True)
         if not any(same_existing_path(repo_dir.parent, root) for root in allowed_roots):
             return None
         resolved.relative_to(repo_dir)
@@ -383,7 +386,7 @@ def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
     private snapshot may itself contain a directory named ``models--foo--bar``.
     """
     try:
-        resolved = Path(path).expanduser().resolve(strict = True)
+        resolved = Path(path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         return None
     scan_errors: list = []
@@ -397,7 +400,7 @@ def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
             resolved_roots = []
             for root in hf_cache_roots(scan_errors):
                 try:
-                    resolved_roots.append(root.resolve(strict = True))
+                    resolved_roots.append(root.resolve(strict=True))
                 except (OSError, RuntimeError):
                     scan_errors.append(root)
         return resolved_roots
@@ -456,7 +459,7 @@ def repo_cache_has_usable_snapshot(
     directory counts as usable: the guard's own failure must not open the path it guards.
     """
     scan_errors: list = []
-    for repo_dir in iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors):
+    for repo_dir in iter_repo_cache_dirs(repo_type, repo_id, scan_errors=scan_errors):
         snapshots = repo_dir / "snapshots"
         try:
             revisions = list(snapshots.iterdir()) if snapshots.is_dir() else []
@@ -509,7 +512,7 @@ def latest_snapshot_from_cache_path(
                 return True
             return any((path / name).is_file() for name in metadata_filenames)
 
-        snapshots = (repo_dir / "snapshots").resolve(strict = True)
+        snapshots = (repo_dir / "snapshots").resolve(strict=True)
         if not same_existing_path(snapshots.parent, repo_dir) or not snapshots.is_dir():
             return None
         if not same_existing_path(selected, repo_dir):
@@ -523,7 +526,7 @@ def latest_snapshot_from_cache_path(
             return str(pinned)
         for path in snapshots.iterdir():
             try:
-                candidate = path.resolve(strict = True)
+                candidate = path.resolve(strict=True)
             except (OSError, RuntimeError):
                 continue
             if (
@@ -534,7 +537,7 @@ def latest_snapshot_from_cache_path(
                 candidates.append(candidate)
         if not candidates:
             return None
-        candidates.sort(key = snapshot_selection_key, reverse = True)
+        candidates.sort(key=snapshot_selection_key, reverse=True)
         return str(candidates[0].resolve())
     except Exception:
         return None
@@ -566,7 +569,7 @@ def iter_repo_cache_dirs(
 ) -> Iterator[Path]:
     """Cache dirs for this repo, skipping a root that cannot be listed. ``scan_errors`` collects those skips: suppressing them is right for every caller that only wants the dirs, but hydration reads "no dirs" as "the cache was wiped and this persisted job can be retired", and a root that raised EACCES or EIO is not evidence of that. A caller that passes a list can tell the two apart."""
     target = target_dir_name(repo_type, repo_id)
-    for root in hf_cache_roots(scan_errors = scan_errors):
+    for root in hf_cache_roots(scan_errors=scan_errors):
         try:
             for entry in root.iterdir():
                 if entry.name.lower() == target:
@@ -586,7 +589,7 @@ def iter_destructive_repo_cache_dirs(
     target = repo_cache_dir_name(repo_type, repo_id)
     folded_target = target.lower()
     if root is not None:
-        scoped = hf_cache_root(root = root)
+        scoped = hf_cache_root(root=root)
         bases = [scoped] if scoped is not None else []
     else:
         bases = hf_cache_roots()
@@ -613,7 +616,7 @@ def iter_active_repo_cache_dirs(
     root: Optional[Path] = None,
     scan_errors: Optional[list] = None,
 ) -> Iterator[Path]:
-    root = hf_cache_root(root = root, scan_errors = scan_errors)
+    root = hf_cache_root(root=root, scan_errors=scan_errors)
     if root is None:
         return
     target = target_dir_name(repo_type, repo_id)
@@ -637,23 +640,24 @@ def preferred_repo_cache_dirs(
 ) -> list[Path]:
     # iter_active_repo_cache_dirs already matches case-insensitively, so the canonical name below is only ever a placeholder for a repo dir that is not there yet.
     active_entries = list(
-        iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root, scan_errors = scan_errors)
+        iter_active_repo_cache_dirs(repo_type, repo_id, root=active_root, scan_errors=scan_errors)
     )
     if active_entries:
         return active_entries
     if force_active:
         # A running or cancelling job writes into the active root and nowhere else, so its progress may only be read from there: hf_cache_root returns None for a root not yet created, and falling through would read a previous cache's completed copy as this run's progress.
-        root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()
+        root = hf_cache_root(root=active_root) or active_root or _configured_hub_cache()
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
             return [root / canonical]
-    return list(iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors))
+    return list(iter_repo_cache_dirs(repo_type, repo_id, scan_errors=scan_errors))
 
 
 def _configured_hub_cache() -> Optional[Path]:
     # Path()-wrapped: the setting is typed Path, but a caller handing back a str would turn `root / name` into a TypeError that surfaces as an empty progress reading.
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         configured = get_hf_cache_paths().hub_cache
         return Path(configured) if configured else None
     except Exception:
@@ -673,7 +677,7 @@ def has_active_incomplete_blobs(
     *,
     root: Optional[Path] = None,
 ) -> bool:
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root=root):
         if repo_cache_dir_has_incomplete_blobs(entry):
             return True
     return False
@@ -691,8 +695,8 @@ def _prune_empty_dirs(root: Path) -> bool:
     try:
         dirs = sorted(
             (path for path in root.rglob("*") if path.is_dir()),
-            key = lambda path: len(path.parts),
-            reverse = True,
+            key=lambda path: len(path.parts),
+            reverse=True,
         )
     except OSError:
         dirs = []
@@ -715,7 +719,7 @@ def purge_partial_repo(
     root: Optional[Path] = None,
 ) -> bool:
     removed = False
-    for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
+    for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root=root):
         blobs_dir = entry / "blobs"
         if blobs_dir.is_dir():
             for blob in blobs_dir.iterdir():
@@ -737,7 +741,7 @@ def purge_repo_cache_dirs(
     root: Optional[Path] = None,
 ) -> bool:
     removed = False
-    for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
+    for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root=root):
         try:
             if entry.is_symlink() or not entry.is_dir():
                 continue
@@ -753,9 +757,9 @@ def scoped_delete_root(repo_type: str, repo_id: str, cache_path: Optional[str]) 
     from utils.hf_cache_settings import get_hf_cache_paths
 
     if not cache_path:
-        return Path(get_hf_cache_paths().hub_cache).resolve(strict = False)
+        return Path(get_hf_cache_paths().hub_cache).resolve(strict=False)
     try:
-        resolved = Path(cache_path).expanduser().resolve(strict = False)
+        resolved = Path(cache_path).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         return None
     expected = repo_cache_dir_name(repo_type, repo_id).lower()
@@ -769,8 +773,8 @@ def scoped_delete_root(repo_type: str, repo_id: str, cache_path: Optional[str]) 
     )
     if repo_dir is None:
         return None
-    allowed = {r.resolve(strict = False) for r in hf_cache_roots()}
-    root = repo_dir.parent.resolve(strict = False)
+    allowed = {r.resolve(strict=False) for r in hf_cache_roots()}
+    root = repo_dir.parent.resolve(strict=False)
     return root if root in allowed else None
 
 
@@ -782,7 +786,7 @@ def resolve_delete_target_root(
         return scoped_delete_root(repo_type, repo_id, cache_path)
     from utils.hf_cache_settings import get_hf_cache_paths
 
-    active = Path(get_hf_cache_paths().hub_cache).resolve(strict = False)
+    active = Path(get_hf_cache_paths().hub_cache).resolve(strict=False)
     roots = list(owner_roots)
     if active in roots:
         return active
@@ -795,14 +799,16 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
     """Extend snapshot filenames with the subdirectories a load actually reads. Spark-TTS / BiCodec keep the trainable model under ``<snapshot>/LLM``, so such a snapshot carries no root-level ``config.json`` and no root-level weights, and every cache probe that decides "is this snapshot usable" has to agree on that, or the snapshot resolves in one place and is rejected in the next: the start preflight, the worker's revalidation and the provenance attester each get their own answer. Detection can raise offline or for a gated repo, so a failure degrades to root-only. Asked offline on purpose: every caller here is deciding whether a cache already on disk is usable, which was pure filesystem work before this helper existed, and letting it reach the hub would put a network round trip, with no timeout, in front of local snapshot resolution. The subdir layout is a property of the cached snapshot, so the local answer is the correct one here."""
     try:
         from utils.security import security_load_subdirs
-        subdirs = security_load_subdirs(model_name, local_files_only = True)
+
+        subdirs = security_load_subdirs(model_name, local_files_only=True)
     except Exception:
         # Degrading to root-only is fail-closed at every caller, but a real cache permission or corruption fault then reaches the user as "your cached model isn't cached" with no clue why.
         from loggers import get_logger
+
         get_logger(__name__).debug(
             "Load-subdir detection failed for %s; using root only.",
             model_name,
-            exc_info = True,
+            exc_info=True,
         )
         return names
     if not subdirs:

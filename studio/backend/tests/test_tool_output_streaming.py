@@ -37,7 +37,7 @@ def _shared_setup_1(events, gen, release):
 
 def _shared_setup_2(baseline, code, target):
     _os.remove(target)
-    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    streamed = _python_exec(code, timeout=60, output_callback=lambda _t: None)
     assert streamed == baseline
     assert _os.path.isfile(target)
 
@@ -115,7 +115,7 @@ def _run_stream(invoke, **kwargs):
 def test_result_returned_verbatim_without_output():
     events, result = _run_stream(
         lambda _cb: "final result",
-        tool_name = "web_search",
+        tool_name="web_search",
     )
     assert result == "final result"
     assert [e for e in events if e["type"] == "tool_output"] == []
@@ -127,7 +127,7 @@ def test_incremental_output_streams_as_tool_output_events():
         callback("line 2\n")
         return "line 1\nline 2\n"
 
-    events, result = _run_stream(tool, tool_name = "python", tool_call_id = "call_1")
+    events, result = _run_stream(tool, tool_name="python", tool_call_id="call_1")
     assert result == "line 1\nline 2\n"
     outputs = [e for e in events if e["type"] == "tool_output"]
     assert outputs, "expected tool_output events"
@@ -140,14 +140,14 @@ def test_heartbeats_emitted_while_tool_blocks():
     release = threading.Event()
 
     def tool(_cb):
-        release.wait(timeout = 5)
+        release.wait(timeout=5)
         return "done"
 
     gen = stream_tool_execution(
         tool,
-        tool_name = "web_search",
-        heartbeat_interval_s = 0.04,
-        poll_interval_s = 0.02,
+        tool_name="web_search",
+        heartbeat_interval_s=0.04,
+        poll_interval_s=0.02,
     )
     events = []
     result = None
@@ -169,9 +169,9 @@ def test_output_resets_heartbeat_pacing():
 
     events, result = _run_stream(
         tool,
-        tool_name = "python",
-        heartbeat_interval_s = 10.0,
-        poll_interval_s = 0.02,
+        tool_name="python",
+        heartbeat_interval_s=10.0,
+        poll_interval_s=0.02,
     )
     assert result == "ok"
     assert [e for e in events if e["type"] == "heartbeat"] == []
@@ -181,7 +181,7 @@ def test_tool_exception_propagates_after_stream():
     def tool(_cb):
         raise RuntimeError("boom")
 
-    gen = stream_tool_execution(tool, tool_name = "python")
+    gen = stream_tool_execution(tool, tool_name="python")
     try:
         while True:
             next(gen)
@@ -198,9 +198,9 @@ def test_output_before_worker_raises_is_preserved():
         time.sleep(0.02)
         raise RuntimeError("late boom")
 
-    gen = stream_tool_execution(tool, tool_name = "python", poll_interval_s = 0.01)
+    gen = stream_tool_execution(tool, tool_name="python", poll_interval_s=0.01)
     events = []
-    with pytest.raises(RuntimeError, match = "late boom"):
+    with pytest.raises(RuntimeError, match="late boom"):
         while True:
             events.append(next(gen))
     streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
@@ -216,22 +216,22 @@ def test_generator_close_cancels_observing_tool():
 
     def tool(_cb):
         started.set()
-        cancel_event.wait(timeout = 5)  # cancel-observing: unblocks on cancel
+        cancel_event.wait(timeout=5)  # cancel-observing: unblocks on cancel
         returned.set()
         return "cancelled cleanly"
 
     gen = stream_tool_execution(
         tool,
-        tool_name = "web_search",
-        cancel_event = cancel_event,
-        heartbeat_interval_s = 0.02,
-        poll_interval_s = 0.01,
+        tool_name="web_search",
+        cancel_event=cancel_event,
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.01,
     )
     next(gen)  # prime the worker; returns a heartbeat while the tool blocks
-    assert started.wait(timeout = 2)
+    assert started.wait(timeout=2)
     gen.close()  # GeneratorExit -> sets cancel_event, then bounded join
     assert cancel_event.is_set()
-    assert returned.wait(timeout = 2)  # the tool actually observed cancellation
+    assert returned.wait(timeout=2)  # the tool actually observed cancellation
 
 
 def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
@@ -242,15 +242,15 @@ def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
 
     def tool(_cb):
         # Ignores cancel_event; stands in for a web_search/MCP call that never polls it.
-        release.wait(timeout = 30)
+        release.wait(timeout=30)
         return "slow"
 
     gen = stream_tool_execution(
         tool,
-        tool_name = "web_search",
-        cancel_event = threading.Event(),
-        heartbeat_interval_s = 0.02,
-        poll_interval_s = 0.01,
+        tool_name="web_search",
+        cancel_event=threading.Event(),
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.01,
     )
     next(gen)
     started = time.monotonic()
@@ -270,8 +270,8 @@ def test_cancel_event_not_set_on_clean_finish():
 
     events, result = _run_stream(
         tool,
-        tool_name = "python",
-        cancel_event = cancel_event,
+        tool_name="python",
+        cancel_event=cancel_event,
     )
     assert result == "ok"
     assert not cancel_event.is_set()
@@ -294,16 +294,16 @@ def test_no_worker_thread_leak_under_repeated_close(monkeypatch):
     for _ in range(60):
         cancel_event = threading.Event()
 
-        def tool(_cb, _ev = cancel_event):
-            _ev.wait(timeout = 5)
+        def tool(_cb, _ev=cancel_event):
+            _ev.wait(timeout=5)
             return "done"
 
         gen = stream_tool_execution(
             tool,
-            tool_name = "soak",
-            cancel_event = cancel_event,
-            heartbeat_interval_s = 0.02,
-            poll_interval_s = 0.01,
+            tool_name="soak",
+            cancel_event=cancel_event,
+            heartbeat_interval_s=0.02,
+            poll_interval_s=0.01,
         )
         next(gen)
         gen.close()  # sets cancel_event -> tool returns -> worker exits
@@ -322,7 +322,7 @@ def test_streamed_output_is_capped_but_result_is_not():
         callback(big)
         return big
 
-    events, result = _run_stream(tool, tool_name = "python")
+    events, result = _run_stream(tool, tool_name="python")
     assert result == big  # final result untouched by the stream cap
     streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
     assert len(streamed) < len(big)
@@ -348,9 +348,9 @@ def test_heartbeats_continue_while_capped_output_flows():
     watchdog.start()
     gen = stream_tool_execution(
         tool,
-        tool_name = "python",
-        heartbeat_interval_s = 0.04,
-        poll_interval_s = 0.02,
+        tool_name="python",
+        heartbeat_interval_s=0.04,
+        poll_interval_s=0.02,
     )
     events = []
     result = None
@@ -381,7 +381,7 @@ def test_drain_queue_bounds_the_over_cap_batch():
     for _ in range(5000):  # 5 MB queued ahead of the drain
         q.put(chunk)
     q.put(sentinel)
-    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = 100)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars=100)
     assert hit_sentinel is True
     # At most cap + one chunk is joined, not the full 5 MB backlog.
     assert len(text) <= 100 + len(chunk)
@@ -406,7 +406,7 @@ def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
         q.put(huge)
         q.put("more")
         q.put(sentinel)
-        text, hit_sentinel = _drain_queue(q, sentinel, max_chars = cap)
+        text, hit_sentinel = _drain_queue(q, sentinel, max_chars=cap)
         assert hit_sentinel is True
         assert len(text) == 1
         assert huge.startswith(text)
@@ -416,7 +416,7 @@ def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
     q = _queue.Queue()
     q.put(huge)
     q.put(sentinel)
-    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = 100)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars=100)
     assert len(text) == 101
     assert text == huge[:101]
 
@@ -433,7 +433,7 @@ def test_drain_queue_unbounded_joins_everything():
     for i in range(3):
         q.put(f"c{i}")
     q.put(sentinel)
-    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = None)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars=None)
     assert hit_sentinel is True
     assert text == "c0c1c2"
 
@@ -448,7 +448,7 @@ def test_over_cap_crossing_batch_streams_capped_output():
             callback(chunk)
         return "final"
 
-    events, result = _run_stream(tool, tool_name = "python")
+    events, result = _run_stream(tool, tool_name="python")
     assert result == "final"
     streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
     assert len(streamed) <= TOOL_OUTPUT_STREAM_MAX_CHARS + len(
@@ -463,9 +463,9 @@ _PY_CODE = "for i in range(5):\n    print('row', i)\n"
 
 
 def test_python_exec_result_identical_with_streaming():
-    baseline = _python_exec(_PY_CODE, timeout = 60)
+    baseline = _python_exec(_PY_CODE, timeout=60)
     chunks: list[str] = []
-    streamed = _python_exec(_PY_CODE, timeout = 60, output_callback = chunks.append)
+    streamed = _python_exec(_PY_CODE, timeout=60, output_callback=chunks.append)
     assert streamed == baseline
     assert "".join(chunks) == "".join(f"row {i}\n" for i in range(5))
 
@@ -485,7 +485,7 @@ def test_python_exec_streams_lines_incrementally():
             first_seen_at.append(time.monotonic())
 
     started = time.monotonic()
-    result = _python_exec(code, timeout = 60, output_callback = on_chunk)
+    result = _python_exec(code, timeout=60, output_callback=on_chunk)
     finished = time.monotonic()
     assert "first" in result and "second" in result
     assert first_seen_at, "callback never invoked"
@@ -510,9 +510,9 @@ def test_python_exec_unflushed_print_streams_live_and_result_identical():
         if not first_seen_at:
             first_seen_at.append(time.monotonic())
 
-    baseline = _python_exec(code, timeout = 60)
+    baseline = _python_exec(code, timeout=60)
     started = time.monotonic()
-    streamed = _python_exec(code, timeout = 60, output_callback = on_chunk)
+    streamed = _python_exec(code, timeout=60, output_callback=on_chunk)
     finished = time.monotonic()
     assert streamed == baseline
     assert "progress" in streamed and "done" in streamed
@@ -523,16 +523,16 @@ def test_python_exec_unflushed_print_streams_live_and_result_identical():
 
 def test_python_exec_error_exit_identical_with_streaming():
     code = "print('before')\nraise SystemExit(3)\n"
-    baseline = _python_exec(code, timeout = 60)
-    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    baseline = _python_exec(code, timeout=60)
+    streamed = _python_exec(code, timeout=60, output_callback=lambda _t: None)
     assert streamed == baseline
     assert streamed.startswith("Exit code 3:")
 
 
 def test_python_exec_timeout_message_identical_with_streaming():
     code = "import time\ntime.sleep(30)\n"
-    baseline = _python_exec(code, timeout = 1)
-    streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
+    baseline = _python_exec(code, timeout=1)
+    streamed = _python_exec(code, timeout=1, output_callback=lambda _t: None)
     assert streamed == baseline == "Execution timed out after 1 seconds."
 
 
@@ -540,8 +540,8 @@ def test_python_exec_timeout_keeps_output_already_printed():
     # The run printed a progress line before it overran the timeout. That text was
     # captured; it must reach the model instead of only the status line.
     code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
-    baseline = _python_exec(code, timeout = 1)
-    streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
+    baseline = _python_exec(code, timeout=1)
+    streamed = _python_exec(code, timeout=1, output_callback=lambda _t: None)
     assert streamed == baseline
     assert "progress" in baseline
     assert baseline.endswith("Execution timed out after 1 seconds.")
@@ -549,8 +549,8 @@ def test_python_exec_timeout_keeps_output_already_printed():
 
 def test_bash_exec_timeout_keeps_output_already_printed():
     command = "echo progress; sleep 30"
-    baseline = _bash_exec(command, timeout = 1)
-    streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    baseline = _bash_exec(command, timeout=1)
+    streamed = _bash_exec(command, timeout=1, output_callback=lambda _t: None)
     assert streamed == baseline
     assert "progress" in baseline
     assert baseline.endswith("Execution timed out after 1 seconds.")
@@ -562,7 +562,7 @@ def test_python_exec_timeout_still_says_so_when_the_output_printed_a_marker():
     from core.inference.tool_loop_controller import strip_result_for_model
 
     code = "print('__RAG_SOURCES__:[]')\nimport time\ntime.sleep(30)\n"
-    result = _python_exec(code, timeout = 1)
+    result = _python_exec(code, timeout=1)
 
     assert result.endswith("Execution timed out after 1 seconds.")
     assert "__RAG_SOURCES__:[]" in result
@@ -572,7 +572,7 @@ def test_python_exec_timeout_still_says_so_when_the_output_printed_a_marker():
 def test_bash_exec_timeout_still_says_so_when_the_output_printed_a_marker():
     from core.inference.tool_loop_controller import strip_result_for_model
 
-    result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout = 1)
+    result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout=1)
 
     assert result.endswith("Execution timed out after 1 seconds.")
     assert "__RAG_SOURCES__:[]" in result
@@ -586,7 +586,7 @@ def test_a_truncated_timeout_card_does_not_repeat_the_output():
     # truncated timeout renders its stdout twice. Asserted on the shape the frontend
     # matches on, so a future reordering of this branch fails here rather than in a card.
     code = "print('x' * 200000)\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
-    result = _python_exec(code, timeout = 1)
+    result = _python_exec(code, timeout=1)
 
     assert "\n\n... (truncated" in result, "not truncated, so nothing was measured"
     body = result.split("\n\n... (truncated")[0]
@@ -597,15 +597,15 @@ def test_python_exec_callback_errors_do_not_break_execution():
     def bad_callback(_text: str) -> None:
         raise ValueError("observer bug")
 
-    result = _python_exec("print('ok')", timeout = 60, output_callback = bad_callback)
+    result = _python_exec("print('ok')", timeout=60, output_callback=bad_callback)
     assert result.strip() == "ok"
 
 
 def test_bash_exec_result_identical_with_streaming():
     command = "echo one; echo two"
-    baseline = _bash_exec(command, timeout = 60)
+    baseline = _bash_exec(command, timeout=60)
     chunks: list[str] = []
-    streamed = _bash_exec(command, timeout = 60, output_callback = chunks.append)
+    streamed = _bash_exec(command, timeout=60, output_callback=chunks.append)
     assert streamed == baseline
     assert "".join(chunks) == "one\ntwo\n"
 
@@ -615,9 +615,9 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
     # errors="replace", so the streaming reader thread cannot die on the
     # UnicodeDecodeError readline raises, and both paths return the same replaced text.
     command = "printf 'ok\\377bad\\n'"  # \377 = 0xFF, invalid UTF-8
-    baseline = _bash_exec(command, timeout = 60)
+    baseline = _bash_exec(command, timeout=60)
     chunks: list[str] = []
-    streamed = _bash_exec(command, timeout = 60, output_callback = chunks.append)
+    streamed = _bash_exec(command, timeout=60, output_callback=chunks.append)
     assert streamed == baseline
     assert not baseline.startswith("Execution error")
     assert "ok" in baseline and "bad" in baseline
@@ -631,7 +631,7 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
-    result = _bash_exec(command, timeout = None, output_callback = chunks.append)
+    result = _bash_exec(command, timeout=None, output_callback=chunks.append)
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)
@@ -645,12 +645,12 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    result = _bash_exec(command, timeout=1, output_callback=lambda _t: None)
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     # The NON-streaming path (communicate() + _kill_process_tree) short-circuits
     # once the reaped leader has exited, so a stdout-holding grandchild survives
@@ -659,12 +659,12 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
-    result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
+    result = _bash_exec(command, timeout=1)  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
@@ -674,7 +674,7 @@ def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
         "print('parent-done')\n"
         "import time; time.sleep(30)\n"
     )
-    result = _python_exec(code, timeout = 1)  # no output_callback -> communicate path
+    result = _python_exec(code, timeout=1)  # no output_callback -> communicate path
     assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -687,22 +687,22 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
 
     from core.inference.tools import _drain_process_output
 
-    monkeypatch.delattr(os, "getpgid", raising = False)
-    monkeypatch.delattr(os, "killpg", raising = False)
+    monkeypatch.delattr(os, "getpgid", raising=False)
+    monkeypatch.delattr(os, "killpg", raising=False)
     monkeypatch.setattr(os, "name", "nt")
 
     proc = _sp.Popen(
         [sys.executable, "-c", "print('ok-no-pgid')"],
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
+        stdout=_sp.PIPE,
+        stderr=_sp.STDOUT,
+        text=True,
     )
     output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
     assert not timed_out
     assert "ok-no-pgid" in output
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_captured_group_survives_fast_leader_reap(tmp_path):
     # Capture the group after spawn, reap the leader first (as a polling cancel
     # watcher would), then drain: the pre-captured pgid must still reap the
@@ -715,22 +715,22 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     gate = tmp_path / "gate"
     proc = _sp.Popen(
         ["bash", "-c", f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"],
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
-        preexec_fn = os.setsid,
+        stdout=_sp.PIPE,
+        stderr=_sp.STDOUT,
+        text=True,
+        preexec_fn=os.setsid,
     )
     pgid = _capture_process_group(proc)
     assert pgid is not None
     proc.wait()  # reap the leader before draining
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out = _drain_process_output(proc, 0.5, None, pgid=pgid)
     assert timed_out
     assert "parent-done" in output
     _assert_grandchild_was_killed(gate, sentinel)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     # Once the leader exits the cancel watcher (which loops on proc.poll()) is gone,
     # so the finite-timeout drain itself must honor cancellation: a mid-drain
@@ -756,10 +756,10 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
             f"( while [ ! -f '{gate}' ]; do echo tick; sleep 0.2; done; "
             f"touch '{sentinel}' ) & echo parent-done",
         ],
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
-        preexec_fn = os.setsid,
+        stdout=_sp.PIPE,
+        stderr=_sp.STDOUT,
+        text=True,
+        preexec_fn=os.setsid,
     )
     pgid = _capture_process_group(proc)
     assert pgid is not None
@@ -771,7 +771,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid=pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
@@ -780,7 +780,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     _assert_grandchild_was_killed(gate, sentinel)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, monkeypatch):
     # The proc.wait() timeout branch normally kills the group via _kill_process_tree.
     # But the leader can exit before _kill_process_tree samples its pgid, which then
@@ -800,15 +800,15 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     # grandchild holds stdout and would touch the sentinel unless the group is killed.
     proc = _sp.Popen(
         ["bash", "-c", f"( {_gated_grandchild_sh(gate, sentinel)} ) & sleep 30"],
-        stdout = _sp.PIPE,
-        stderr = _sp.STDOUT,
-        text = True,
-        preexec_fn = os.setsid,
+        stdout=_sp.PIPE,
+        stderr=_sp.STDOUT,
+        text=True,
+        preexec_fn=os.setsid,
     )
     pgid = _capture_process_group(proc)
     assert pgid is not None
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out = _drain_process_output(proc, 0.5, None, pgid=pgid)
     assert timed_out
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -840,9 +840,9 @@ def _run_gguf_tool_turn(monkeypatch, fake_execute_tool):
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run it"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "run it"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
         )
     )
     return events, payloads
@@ -857,7 +857,7 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
     def streaming_tool(
         name,
         arguments,
-        output_callback = None,
+        output_callback=None,
         **_kwargs,
     ):
         if output_callback is not None:
@@ -899,7 +899,7 @@ def test_gguf_loop_emits_tool_output_between_start_and_end(monkeypatch):
     def streaming_tool(
         name,
         arguments,
-        output_callback = None,
+        output_callback=None,
         **_kwargs,
     ):
         if output_callback is not None:
@@ -947,7 +947,7 @@ from core.inference.tools import (
 
 
 def test_truncate_notice_is_neutral_and_mentions_workdir():
-    out = _truncate("y" * 50, limit = 10)
+    out = _truncate("y" * 50, limit=10)
     assert out.startswith("y" * 10)
     assert "truncated" in out and "50 chars total" in out
     assert "persist in the working directory" in out
@@ -956,7 +956,7 @@ def test_truncate_notice_is_neutral_and_mentions_workdir():
     assert "the user was shown the full output" not in out
     assert "shown" not in out
     # Under the limit: untouched.
-    assert _truncate("short", limit = 10) == "short"
+    assert _truncate("short", limit=10) == "short"
 
 
 def test_truncated_result_identical_and_notice_neutral_with_streaming():
@@ -964,8 +964,8 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
     # output_callback (the streaming vs non-streaming invariant a mode-dependent
     # notice would break) and must not claim the user was shown the full output.
     code = f"print('x' * {_MAX_OUTPUT_CHARS + 5000})"
-    baseline = _python_exec(code, timeout = 60)
-    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    baseline = _python_exec(code, timeout=60)
+    streamed = _python_exec(code, timeout=60, output_callback=lambda _t: None)
     assert streamed == baseline
     assert "truncated" in baseline
     assert "the user was shown the full output" not in baseline
@@ -973,7 +973,7 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
 
 
 def test_result_cap_env_override(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", raising=False)
     assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
     monkeypatch.setenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", "50000")
     assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 50000
@@ -1101,7 +1101,7 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
     )
     target = _os.path.join(get_sandbox_workdir(), fname)
     try:
-        baseline = _python_exec(code, timeout = 60)
+        baseline = _python_exec(code, timeout=60)
         assert _os.path.isfile(target), baseline
         with open(target) as f:
             assert f.read() == "hello remap"
@@ -1125,7 +1125,7 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
     )
     target = _os.path.join(get_sandbox_workdir(), fname)
     try:
-        baseline = _python_exec(code, timeout = 60)
+        baseline = _python_exec(code, timeout=60)
         assert _os.path.isfile(target), baseline
         with open(target) as f:
             assert f.read() == "pathlib remap"
@@ -1152,7 +1152,7 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
     )
     target = _os.path.join(get_sandbox_workdir(), fname)
     try:
-        baseline = _python_exec(code, timeout = 60)
+        baseline = _python_exec(code, timeout=60)
         assert _os.path.isfile(target), baseline
         with open(target) as f:
             assert f.read() == "hello fallback"
@@ -1170,10 +1170,10 @@ def test_python_exec_unremapped_mnt_data_failure_gets_hint():
     import re as _re
 
     code = "import os\nos.listdir('/mnt/data/nonexistent_dir_xyz')\n"
-    baseline = _python_exec(code, timeout = 60)
+    baseline = _python_exec(code, timeout=60)
     assert "FileNotFoundError" in baseline
     assert "working directory is writable" in baseline
-    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    streamed = _python_exec(code, timeout=60, output_callback=lambda _t: None)
 
     # Normalize each run's random temp filename (byte-identity is per-execution).
     def normalize(text: str) -> str:
@@ -1183,17 +1183,17 @@ def test_python_exec_unremapped_mnt_data_failure_gets_hint():
 
 
 def test_bash_exec_missing_path_hint():
-    baseline = _bash_exec("cat /mnt/data/definitely_missing.txt", timeout = 60)
+    baseline = _bash_exec("cat /mnt/data/definitely_missing.txt", timeout=60)
     assert "No such file or directory" in baseline
     assert "working directory is writable" in baseline
     streamed = _bash_exec(
-        "cat /mnt/data/definitely_missing.txt", timeout = 60, output_callback = lambda _t: None
+        "cat /mnt/data/definitely_missing.txt", timeout=60, output_callback=lambda _t: None
     )
     assert streamed == baseline
 
 
 def test_bash_exec_local_failure_gets_no_hint():
-    result = _bash_exec("cat definitely_missing_local_file.txt", timeout = 60)
+    result = _bash_exec("cat definitely_missing_local_file.txt", timeout=60)
     assert "No such file or directory" in result
     assert "working directory is writable" not in result
 
@@ -1222,7 +1222,7 @@ def test_producer_queue_is_bounded_under_tight_print_loop(monkeypatch):
             callback("x")
         return "done"
 
-    events, result = _run_stream(tool, tool_name = "python")
+    events, result = _run_stream(tool, tool_name="python")
     assert result == "done"
     # At most cap + 1 chars enter the queue, so 1-char items cannot exceed that
     # regardless of consumer lag.
@@ -1246,9 +1246,9 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
     watchdog.start()
     gen = stream_tool_execution(
         tool,
-        tool_name = "python",
-        heartbeat_interval_s = 0.04,
-        poll_interval_s = 0.02,
+        tool_name="python",
+        heartbeat_interval_s=0.04,
+        poll_interval_s=0.02,
     )
     events = []
     result = None
@@ -1269,15 +1269,15 @@ def test_accepts_output_callback_signature_detection():
     def legacy(
         name,
         arguments,
-        cancel_event = None,
-        timeout = None,
+        cancel_event=None,
+        timeout=None,
     ):
         return "ok"
 
     def modern(
         name,
         arguments,
-        output_callback = None,
+        output_callback=None,
     ):
         return "ok"
 
@@ -1291,7 +1291,7 @@ def test_accepts_output_callback_signature_detection():
     assert accepts_output_callback(len) is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
     # NON-streaming cancellation: the leader exits at once while a grandchild holds
     # stdout. The cancel watcher loops on the leader's poll() and is gone, so before
@@ -1305,7 +1305,7 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     timer.start()
     started = time.monotonic()
     try:
-        result = _bash_exec(command, cancel_event = cancel_event, timeout = 30)
+        result = _bash_exec(command, cancel_event=cancel_event, timeout=30)
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
@@ -1313,7 +1313,7 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     _assert_grandchild_was_killed(gate, sentinel)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
     gate = tmp_path / "gate"
@@ -1327,7 +1327,7 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     timer.start()
     started = time.monotonic()
     try:
-        result = _python_exec(code, cancel_event = cancel_event, timeout = 30)
+        result = _python_exec(code, cancel_event=cancel_event, timeout=30)
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5

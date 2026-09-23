@@ -24,7 +24,7 @@ STRIP_PATH = REPO_ROOT / "docker" / "unsloth_nb_strip_colab.py"
 INTRO = 'To run this, press "*Runtime*" and press "*Run all*" on a **free** Tesla T4 Google Colab instance!\n'
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def strip():
     assert STRIP_PATH.is_file(), f"missing {STRIP_PATH}"
     spec = importlib.util.spec_from_file_location("unsloth_nb_strip_race", STRIP_PATH)
@@ -45,7 +45,7 @@ def notebook(*sources):
 
 
 def write(path: Path, nb) -> None:
-    path.write_text(json.dumps(nb, indent = 1, ensure_ascii = False) + "\n", encoding = "utf-8")
+    path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def racing(strip, tmp_path: Path):
         out = real_dump(obj, fp, *args, **kwargs)
         if state["save"] is not None and state["fired"] == 0:
             state["fired"] = 1
-            Path(state["path"]).write_text(state["save"], encoding = "utf-8")  # Ctrl+S
+            Path(state["path"]).write_text(state["save"], encoding="utf-8")  # Ctrl+S
         return out
 
     strip.json.dump = dump
@@ -72,12 +72,12 @@ def test_a_save_during_the_cleanup_is_not_overwritten(strip, racing, tmp_path: P
     write(path, notebook([INTRO, "\n", "# Llama\n"]))
 
     edited = notebook([INTRO, "\n", "# Llama\n", "\n", "my own notes, saved from JupyterLab\n"])
-    racing["save"] = json.dumps(edited, indent = 1, ensure_ascii = False) + "\n"
+    racing["save"] = json.dumps(edited, indent=1, ensure_ascii=False) + "\n"
     racing["path"] = str(path)
 
     strip.strip_notebook(str(path))
 
-    on_disk = json.loads(path.read_text(encoding = "utf-8"))
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk == edited, (
         "the user's save landed after strip_notebook read the file and was "
         "overwritten by the cleaned copy of the OLD content; the sync contract "
@@ -96,17 +96,17 @@ def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
     write(path, notebook([INTRO, "\n", "# Llama\n"]))
     before = strip._sha256(str(path))
     state = tmp_path / ".unsloth_sync_state"
-    state.write_text(f"{before}  Llama.ipynb\n", encoding = "utf-8")
+    state.write_text(f"{before}  Llama.ipynb\n", encoding="utf-8")
 
     edited = notebook([INTRO, "\n", "# Llama\n", "\n", "my own notes\n"])
-    racing["save"] = json.dumps(edited, indent = 1, ensure_ascii = False) + "\n"
+    racing["save"] = json.dumps(edited, indent=1, ensure_ascii=False) + "\n"
     racing["path"] = str(path)
 
     strip.migrate(str(state), str(dest))
 
-    recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
+    recorded = state.read_text(encoding="utf-8").split("  ", 1)[0]
     on_disk = strip._sha256(str(path))
-    assert json.loads(path.read_text(encoding = "utf-8")) == edited
+    assert json.loads(path.read_text(encoding="utf-8")) == edited
     assert recorded != on_disk, (
         "a file the user saved during the cleanup must NOT end up recorded as "
         "managed-and-pristine, or the next refresh overwrites it too"
@@ -119,7 +119,7 @@ def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: P
     write(path, copy.deepcopy(original))
 
     assert strip.strip_notebook(str(path)) is True
-    cleaned = json.loads(path.read_text(encoding = "utf-8"))
+    cleaned = json.loads(path.read_text(encoding="utf-8"))
     assert cleaned["cells"][0]["source"] == ["# Llama\n"]
     assert strip.strip_notebook(str(path)) is False  # idempotent
 
@@ -134,7 +134,7 @@ def racing_after_replace(strip, tmp_path: Path):
         out = real_replace(src, dst, *args, **kwargs)
         if state["save"] is not None and state["fired"] == 0 and str(dst) == state["path"]:
             state["fired"] = 1
-            Path(state["path"]).write_text(state["save"], encoding = "utf-8")  # Ctrl+S
+            Path(state["path"]).write_text(state["save"], encoding="utf-8")  # Ctrl+S
         return out
 
     strip.os.replace = replace
@@ -154,10 +154,10 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
     write(path, notebook([INTRO, "\n", "# Llama\n"]))
     before = strip._sha256(str(path))
     state = tmp_path / ".unsloth_sync_state"
-    state.write_text(f"{before}  Llama.ipynb\n", encoding = "utf-8")
+    state.write_text(f"{before}  Llama.ipynb\n", encoding="utf-8")
 
     edited = notebook([INTRO, "\n", "# Llama\n", "\n", "saved right after the replace\n"])
-    racing_after_replace["save"] = json.dumps(edited, indent = 1, ensure_ascii = False) + "\n"
+    racing_after_replace["save"] = json.dumps(edited, indent=1, ensure_ascii=False) + "\n"
     racing_after_replace["path"] = str(path)
 
     strip.migrate(str(state), str(dest))
@@ -165,8 +165,8 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
     assert (
         racing_after_replace["fired"] == 1
     ), "the window was never exercised; this test would pass vacuously"
-    recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
-    assert json.loads(path.read_text(encoding = "utf-8")) == edited
+    recorded = state.read_text(encoding="utf-8").split("  ", 1)[0]
+    assert json.loads(path.read_text(encoding="utf-8")) == edited
     assert recorded != strip._sha256(
         str(path)
     ), "the user's own save was recorded as the cleaned, sync-owned version"
@@ -179,11 +179,11 @@ def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path
     path = dest / "Llama.ipynb"
     write(path, notebook([INTRO, "\n", "# Llama\n"]))
     state = tmp_path / ".unsloth_sync_state"
-    state.write_text(f"{strip._sha256(str(path))}  Llama.ipynb\n", encoding = "utf-8")
+    state.write_text(f"{strip._sha256(str(path))}  Llama.ipynb\n", encoding="utf-8")
 
     strip.migrate(str(state), str(dest))
 
-    recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
+    recorded = state.read_text(encoding="utf-8").split("  ", 1)[0]
     assert recorded == strip._sha256(str(path))
 
 
@@ -209,7 +209,7 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
                 "nbformat_minor": 5,
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     os.chmod(nb_path, 0o640)
     before = _stat.S_IMODE(os.stat(nb_path).st_mode)
@@ -218,4 +218,4 @@ def test_cleanup_keeps_the_notebooks_owner_and_mode(strip, tmp_path: Path):
     assert strip.strip_notebook(str(nb_path)) is True
     after = _stat.S_IMODE(os.stat(nb_path).st_mode)
     assert after == before, f"cleanup changed the mode {oct(before)} -> {oct(after)}"
-    assert "To run this" not in nb_path.read_text(encoding = "utf-8")
+    assert "To run this" not in nb_path.read_text(encoding="utf-8")

@@ -146,7 +146,7 @@ def test_overrides() -> None:
     check("overrides.json exists", os.path.isfile(path))
     if not os.path.isfile(path):
         return
-    with open(path, encoding = "utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         d = json.load(f)  # raises, so invalid JSON fails CI
     themes = d.get("@jupyterlab/apputils-extension:themes", {})
     check(
@@ -181,7 +181,7 @@ def test_labext_and_branding() -> None:
     pkg = os.path.join(LABEXT, "package.json")
     check("labext package.json exists", os.path.isfile(pkg))
     if os.path.isfile(pkg):
-        with open(pkg, encoding = "utf-8") as f:
+        with open(pkg, encoding="utf-8") as f:
             p = json.load(f)
         check("labext name unsloth-jupyterlab", p.get("name") == "unsloth-jupyterlab")
         check("labext themePath set", bool(p.get("jupyterlab", {}).get("themePath")))
@@ -190,7 +190,7 @@ def test_labext_and_branding() -> None:
     if os.path.isdir(src_dir):
         for fn in sorted(os.listdir(src_dir)):
             if fn.endswith(".ts"):
-                with open(os.path.join(src_dir, fn), encoding = "utf-8") as f:
+                with open(os.path.join(src_dir, fn), encoding="utf-8") as f:
                     all_src += f.read() + "\n"
     for plug in [
         "unsloth-jupyterlab:theme",
@@ -202,7 +202,7 @@ def test_labext_and_branding() -> None:
     ]:
         check(f"plugin present: {plug}", plug in all_src)
     index = os.path.join(src_dir, "index.ts")
-    index_src = open(index, encoding = "utf-8").read() if os.path.isfile(index) else ""
+    index_src = open(index, encoding="utf-8").read() if os.path.isfile(index) else ""
     check("outputSelect wired in index.ts", "outputSelectPlugin" in index_src)
     check("uiChrome wired in index.ts", "uiChromePlugin" in index_src)
     check("right activity bar hidden", "jp-mod-right" in all_src and "display: none" in all_src)
@@ -214,7 +214,7 @@ def test_labext_and_branding() -> None:
         "isConnected" in all_src and "jp-mod-active" in all_src,
     )
     login = os.path.join(JUPYTER, "login.html")
-    login_src = open(login, encoding = "utf-8").read() if os.path.isfile(login) else ""
+    login_src = open(login, encoding="utf-8").read() if os.path.isfile(login) else ""
     check("login.html branded", "unsloth-login-card" in login_src)
     check(
         "login.html uses sloth stickers",

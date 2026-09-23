@@ -85,8 +85,8 @@ def _setup_log_capture(resp_queue: Any) -> None:
     os.close(w_err)
 
     try:
-        sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
-        sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
+        sys.stdout = os.fdopen(1, "w", buffering=1, encoding="utf-8", errors="replace")
+        sys.stderr = os.fdopen(2, "w", buffering=1, encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -116,7 +116,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                         break
                 if nl < 0:
                     break
-                line = bytes(buf[:nl]).decode("utf-8", errors = "replace")
+                line = bytes(buf[:nl]).decode("utf-8", errors="replace")
                 del buf[: nl + 1]
                 if not line:
                     continue
@@ -142,7 +142,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                     {
                         "type": "log",
                         "stream": stream_name,
-                        "line": bytes(buf).decode("utf-8", errors = "replace"),
+                        "line": bytes(buf).decode("utf-8", errors="replace"),
                         "ts": time.time(),
                     }
                 )
@@ -150,16 +150,16 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 pass
 
     t_out = account_thread(
-        target = _reader,
-        args = (r_out, "stdout", saved_out_fd),
-        daemon = True,
-        name = "export-log-stdout",
+        target=_reader,
+        args=(r_out, "stdout", saved_out_fd),
+        daemon=True,
+        name="export-log-stdout",
     )
     t_err = account_thread(
-        target = _reader,
-        args = (r_err, "stderr", saved_err_fd),
-        daemon = True,
-        name = "export-log-stderr",
+        target=_reader,
+        args=(r_err, "stderr", saved_err_fd),
+        daemon=True,
+        name="export-log-stderr",
     )
     t_out.start()
     t_err.start()
@@ -178,7 +178,7 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 
 @contextlib.contextmanager
-def _offline_window_if_unreachable(step = "loading"):
+def _offline_window_if_unreachable(step="loading"):
     """Force HF offline for a network-touching step (transformers version activation, or the
     load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
     env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
@@ -192,6 +192,7 @@ def _offline_window_if_unreachable(step = "loading"):
     force_ctx = None
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
@@ -203,6 +204,7 @@ def _offline_window_if_unreachable(step = "loading"):
             if "huggingface_hub" in sys.modules:
                 try:
                     from unsloth.models.loader_utils import _force_hf_offline
+
                     force_ctx = _force_hf_offline()
                     force_ctx.__enter__()  # sets env + in-process flags + resets sessions
                 except Exception:
@@ -240,7 +242,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
 
     checkpoint_path = cmd["checkpoint_path"]
     # The preflight helpers read the policy off the token, so rebuild it once here.
-    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
+    hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token=cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
@@ -271,7 +273,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
             # Genuine first-party Hub repo only (not a local/spoof name starting
             # with "unsloth/"); authenticated so private repos resolve.
-            and is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
+            and is_trusted_org_repo(checkpoint_path, hf_token=hf_token)
         ):
             trust_remote_code = True
             logger.info(
@@ -310,8 +312,8 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     for target in security_targets:
         _fs = evaluate_file_security(
             target,
-            hf_token = hf_token,
-            load_subdirs = consent_load_subdirs[target],
+            hf_token=hf_token,
+            load_subdirs=consent_load_subdirs[target],
         )
         if _fs.blocked:
             _send_response(
@@ -335,11 +337,11 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         # Scan adapter + base as one combined unit, pinned by a single fingerprint.
         _rc = evaluate_remote_code_consent_for_targets(
             security_targets,
-            hf_token = hf_token,
-            trust_remote_code = True,
-            approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
-            subject = cmd.get("subject"),
-            load_subdirs_by_target = consent_load_subdirs,
+            hf_token=hf_token,
+            trust_remote_code=True,
+            approved_fingerprint=cmd.get("approved_remote_code_fingerprint"),
+            subject=cmd.get("subject"),
+            load_subdirs_by_target=consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -370,12 +372,12 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
         success, message = backend.load_checkpoint(
-            checkpoint_path = checkpoint_path,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            trust_remote_code = trust_remote_code,
-            hf_token = hf_token,
-            base_model = base_model,
+            checkpoint_path=checkpoint_path,
+            max_seq_length=max_seq_length,
+            load_in_4bit=load_in_4bit,
+            trust_remote_code=trust_remote_code,
+            hf_token=hf_token,
+            base_model=base_model,
         )
 
         _send_response(
@@ -398,7 +400,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": "loaded",
                 "success": False,
                 "message": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -430,42 +432,42 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     try:
         if export_type == "merged":
             success, message, output_path = backend.export_merged_model(
-                save_directory = cmd.get("save_directory", ""),
-                format_type = cmd.get("format_type", "16-bit (FP16)"),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
-                compressed_method = cmd.get("compressed_method"),
+                save_directory=cmd.get("save_directory", ""),
+                format_type=cmd.get("format_type", "16-bit (FP16)"),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
+                compressed_method=cmd.get("compressed_method"),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
-                save_directory = cmd.get("save_directory", ""),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
-                base_model_id = cmd.get("base_model_id"),
+                save_directory=cmd.get("save_directory", ""),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
+                base_model_id=cmd.get("base_model_id"),
             )
         elif export_type == "gguf":
             success, message, output_path = backend.export_gguf(
-                save_directory = cmd.get("save_directory", ""),
-                quantization_method = cmd.get("quantization_method", "Q4_K_M"),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                imatrix_file = cmd.get("imatrix_file"),
-                private = cmd.get("private", False),
+                save_directory=cmd.get("save_directory", ""),
+                quantization_method=cmd.get("quantization_method", "Q4_K_M"),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                imatrix_file=cmd.get("imatrix_file"),
+                private=cmd.get("private", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
-                save_directory = cmd.get("save_directory", ""),
-                push_to_hub = cmd.get("push_to_hub", False),
-                repo_id = cmd.get("repo_id"),
-                hf_token = cmd.get("hf_token"),
-                private = cmd.get("private", False),
-                gguf = cmd.get("gguf", False),
-                gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
+                save_directory=cmd.get("save_directory", ""),
+                push_to_hub=cmd.get("push_to_hub", False),
+                repo_id=cmd.get("repo_id"),
+                hf_token=cmd.get("hf_token"),
+                private=cmd.get("private", False),
+                gguf=cmd.get("gguf", False),
+                gguf_outtype=cmd.get("gguf_outtype", "q8_0"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
@@ -489,7 +491,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 "success": False,
                 "message": str(exc),
                 "output_path": None,
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -553,9 +555,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     allow_progress_bars()
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-export-worker",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
-        quiet_progress_bars = False,
+        service_name="unsloth-studio-export-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
+        quiet_progress_bars=False,
     )
 
     checkpoint_path = config["checkpoint_path"]
@@ -569,7 +571,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         # whoever exports next. The caller's own travels as an argument instead.
         apply_token_to_child_env(os.environ, False)
 
-    with _offline_window_if_unreachable(step = "activating transformers"):
+    with _offline_window_if_unreachable(step="activating transformers"):
         try:
             # Plain token: _load_config_json refuses the hub cache for the sentinel, so
             # offline a cached model falls to the default sidecar. Anonymity here is the
@@ -581,7 +583,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                 {
                     "type": "error",
                     "error": f"Failed to activate transformers version: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 },
             )
@@ -590,6 +592,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
+
         gate_torch_compile_on_windows(logger)
 
     # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent). No-op off Windows ROCm. Must run
@@ -629,7 +632,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             {
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -649,7 +652,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             {
                 "type": "error",
                 "error": f"Failed to initialize export backend: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             },
         )
@@ -659,7 +662,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     while True:
         try:
-            cmd = cmd_queue.get(timeout = 1.0)
+            cmd = cmd_queue.get(timeout=1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):
@@ -725,13 +728,13 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                 )
 
         except Exception as exc:
-            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info=True)
             _send_response(
                 resp_queue,
                 {
                     "type": "error",
                     "error": f"Command '{cmd_type}' failed: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 },
             )

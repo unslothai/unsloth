@@ -351,6 +351,7 @@ def _smoke_cache_device_key(device: str) -> str:
         return device
     try:
         import torch
+
         return f"cuda:{torch.cuda.current_device()}"
     except Exception:  # noqa: BLE001 -- an unreadable index falls back to the un-indexed key
         return device
@@ -404,6 +405,7 @@ def _is_consumer_gpu(device: Any = None) -> bool:
         import re
 
         import torch
+
         name = torch.cuda.get_device_name(device).upper()
     except Exception:  # noqa: BLE001 - no torch / no device -> assume consumer
         return True
@@ -564,7 +566,7 @@ def _module_quantised_marker(module: Any) -> Optional[str]:
     if getattr(config, "quantization_config", None) is not None:
         return "its checkpoint declares a quantization_config"
     try:
-        for param in module.parameters(recurse = True):
+        for param in module.parameters(recurse=True):
             name = str(getattr(param, "dtype", "")).rsplit(".", 1)[-1]
             if name not in _DENSE_PARAM_DTYPE_NAMES:
                 return f"its weights are stored as {name}, not dense bfloat16"
@@ -593,6 +595,7 @@ def transformer_is_quantised(module: Any) -> bool:
     """Whether any Linear weight has been replaced by a torchao tensor subclass."""
     try:
         import torch
+
         for sub in module.modules():
             if not isinstance(sub, torch.nn.Linear):
                 continue
@@ -622,6 +625,7 @@ def dense_transformer_supported(target: Any) -> bool:
         return False
     try:
         import torch
+
         return getattr(target, "dtype", None) is torch.bfloat16
     except Exception:
         return False
@@ -668,7 +672,7 @@ def select_transformer_quant_scheme(
     if requested != TQ_AUTO:
         if _family_denied(family, requested):
             return None
-        return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
+        return requested if _scheme_supported(requested, device, unproven_ok=unproven_ok) else None
     cap = _capability()
     if cap is None:
         return None
@@ -704,7 +708,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     # halves of that decision belong to the load, not to a row.
     from .diffusion_speed import compile_eligible
 
-    if not compile_eligible(target, is_gguf = False, family = None):
+    if not compile_eligible(target, is_gguf=False, family=None):
         return False
     # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
@@ -769,6 +773,7 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
 def _capability() -> Optional[tuple[int, int]]:
     try:
         import torch
+
         major, minor = torch.cuda.get_device_capability()
         return (int(major), int(minor))
     except Exception:
@@ -784,6 +789,7 @@ def _scheme_supported(
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     try:
         import torch
+
         if not torch.cuda.is_available():
             return False
         if scheme == TQ_FP8 and not hasattr(torch, "float8_e4m3fn"):
@@ -814,7 +820,7 @@ def _scheme_supported(
                             return unproven_ok
                         # The child ran the same probe. Missing entries still fall through below.
                         return table[scheme]
-    return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
+    return _smoke_probe(scheme, device, unproven_ok=unproven_ok)
 
 
 # Long enough for a cold interpreter to import torch and torchao and run every probe (measured 3.9 s on a B200 host,
@@ -878,9 +884,9 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             # The same entrypoint the inference worker is spawned through: it scrubs the lease secret from the child
             # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
             proc = ctx.Process(
-                target = run_without_native_path_secret,
-                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
-                daemon = True,
+                target=run_without_native_path_secret,
+                args=(__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                daemon=True,
             )
             proc.start()
         # Adopted like every other spawn site: the bind above is the CHILD arming PDEATHSIG, which is Linux only, and
@@ -915,7 +921,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     try:
         while True:
             try:
-                table = queue.get(timeout = 0.5)
+                table = queue.get(timeout=0.5)
                 break
             except Exception:  # noqa: BLE001 - Empty, or a queue torn down under us
                 pass
@@ -923,7 +929,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 # A put lands through a feeder thread, so it can still be in flight when the child has already exited;
                 # one blocking look before calling it a loss.
                 try:
-                    table = queue.get(timeout = 1.0)
+                    table = queue.get(timeout=1.0)
                 except Exception:  # noqa: BLE001 - the child really did die empty
                     table = None
                 break
@@ -978,6 +984,7 @@ def _adopt_probe_pid(pid: Optional[int]) -> None:
     startup can both reach it. Best-effort: a probe must not fail over its bookkeeping."""
     try:
         from utils.process_lifetime import adopt_pid
+
         adopt_pid(pid)
     except Exception:  # noqa: BLE001
         pass
@@ -986,6 +993,7 @@ def _adopt_probe_pid(pid: Optional[int]) -> None:
 def _forget_probe_pid(pid: Optional[int]) -> None:
     try:
         from utils.process_lifetime import forget_pid
+
         forget_pid(pid)
     except Exception:  # noqa: BLE001
         pass
@@ -1016,7 +1024,7 @@ def _close_probe_child(proc: Any, queue: Any) -> bool:
     for stop, wait in ((lambda: proc.terminate(), 5.0), (lambda: proc.kill(), 3.0)):
         if not _probe_child_alive(proc):
             break
-        for step in (stop, lambda: proc.join(timeout = wait)):
+        for step in (stop, lambda: proc.join(timeout=wait)):
             try:
                 step()
             except Exception:  # noqa: BLE001
@@ -1032,6 +1040,7 @@ def _close_probe_child(proc: Any, queue: Any) -> bool:
 
     if _probe_child_alive(proc):
         import logging
+
         logging.getLogger(__name__).error(
             "diffusion.transformer_quant: probe child pid=%s survived terminate and kill; "
             "keeping its lifetime record so the shutdown sweep can still reach it",
@@ -1052,6 +1061,7 @@ def _select_probe_card(device: str) -> None:
         return
     try:
         import torch
+
         torch.cuda.set_device(int(ordinal))
     except Exception:  # noqa: BLE001 -- an unselectable index still probes, on the default card
         pass
@@ -1125,10 +1135,10 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
         import torch
         from torchao.quantization import quantize_
 
-        lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
-        quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
+        lin = torch.nn.Linear(512, 512, bias=False).to(device=device, dtype=torch.bfloat16)
+        quantize_(lin, _make_quant_config(scheme), filter_fn=make_filter_fn(0))
         # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
-        x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        x = torch.randn(32, 512, device=device, dtype=torch.bfloat16)
         x[16:] = 0
         with torch.no_grad():
             out = lin(x)
@@ -1145,6 +1155,7 @@ def _is_out_of_memory(exc: BaseException) -> bool:
     is the backstop (a CUDA OOM surfaced through another wrapper still says "out of memory")."""
     try:
         import torch
+
         named = tuple(
             t
             for t in (
@@ -1244,14 +1255,16 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 from torchao.quantization.quantize_.common.kernel_preference import (
                     KernelPreference,
                 )
+
                 fp8_kwargs["kernel_preference"] = KernelPreference.TORCH
             except Exception:  # noqa: BLE001 - enum moved: keep the library default
                 pass
         try:
             from torchao.float8 import Float8MMConfig
+
             return _quiet_config(
                 Float8DynamicActivationFloat8WeightConfig,
-                mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
+                mm_config=Float8MMConfig(use_fast_accum=_resolve_fast_accum(fast_accum)),
                 **fp8_kwargs,
             )
         except Exception:  # noqa: BLE001 - older torchao without the explicit mm knob
@@ -1262,17 +1275,18 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
         try:
-            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig, use_triton_kernel = False)
+            return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig, use_triton_kernel=False)
         except TypeError:  # older torchao without the knob
             return _quiet_config(NVFP4DynamicActivationNVFP4WeightConfig)
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
+
         try:
             return _quiet_config(
                 MXDynamicActivationMXWeightConfig,
-                activation_dtype = torch.float8_e4m3fn,
-                weight_dtype = torch.float8_e4m3fn,
+                activation_dtype=torch.float8_e4m3fn,
+                weight_dtype=torch.float8_e4m3fn,
             )
         except (TypeError, AttributeError):
             # TypeError: older torchao without the explicit dtype knobs. AttributeError: a torch build without
@@ -1306,6 +1320,7 @@ def make_filter_fn(
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
             import torch
+
             if not isinstance(module, torch.nn.Linear):
                 return False
         except Exception:
@@ -1326,6 +1341,7 @@ def make_filter_fn(
                 return False
         if require_bf16:
             import torch
+
             weight = getattr(module, "weight", None)
             if weight is None or weight.dtype != torch.bfloat16:
                 return False
@@ -1349,7 +1365,7 @@ def quantize_transformer(
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
     True/False force it."""
-    scheme = select_transformer_quant_scheme(target, mode, family = family)
+    scheme = select_transformer_quant_scheme(target, mode, family=family)
     if scheme is None:
         return None
     transformer = getattr(pipe, "transformer", None)
@@ -1367,18 +1383,18 @@ def quantize_transformer(
         divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
         quantize_(
             transformer,
-            _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(
+            _make_quant_config(scheme, fast_accum=fast_accum),
+            filter_fn=make_filter_fn(
                 min_features,
-                exclude_name_tokens = exclude,
-                require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
-                require_divisible = divisible,
+                exclude_name_tokens=exclude,
+                require_bf16=scheme in _REQUIRE_BF16_SCHEMES,
+                require_divisible=divisible,
             ),
         )
         # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
         # caller loads GGUF.
-        apply_small_m_padding(transformer, scheme, family, logger = logger)
+        apply_small_m_padding(transformer, scheme, family, logger=logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort

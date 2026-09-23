@@ -36,7 +36,7 @@ def store(monkeypatch):
     """An in-memory app_settings."""
     values: dict = {}
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback = None: values.get(key, fallback)
+        studio_db, "get_app_setting", lambda key, fallback=None: values.get(key, fallback)
     )
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda updates: values.update(updates) or values
@@ -89,7 +89,7 @@ def client(store):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_route_reports_the_mode_and_what_auto_would_do(client):
@@ -101,10 +101,10 @@ def test_route_reports_the_mode_and_what_auto_would_do(client):
 
 
 def test_route_saves_a_choice(client, store):
-    body = client.put("/download-transport", json = {"mode": "http"}).json()
+    body = client.put("/download-transport", json={"mode": "http"}).json()
     assert body["mode"] == "http"
     assert store[transport_settings.DOWNLOAD_TRANSPORT_SETTING_KEY] == "http"
 
 
 def test_route_rejects_an_unknown_transport(client):
-    assert client.put("/download-transport", json = {"mode": "ftp"}).status_code == 422
+    assert client.put("/download-transport", json={"mode": "ftp"}).status_code == 422

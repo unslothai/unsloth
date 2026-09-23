@@ -35,11 +35,11 @@ def _fake_getch(keys):
 def _read(
     monkeypatch,
     keys,
-    prompt = "P: ",
+    prompt="P: ",
 ):
     monkeypatch.setattr(tp, "_getch", _fake_getch(keys))
     out = io.StringIO()
-    value = tp._read_password(prompt, out = out)
+    value = tp._read_password(prompt, out=out)
     return value, out.getvalue()
 
 
@@ -87,13 +87,13 @@ def test_reader_ignores_other_control_chars(monkeypatch):
 def test_reader_ctrl_c_raises_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(tp, "_getch", _fake_getch(list("ab") + ["\x03"]))
     with pytest.raises(KeyboardInterrupt):
-        tp._read_password("P: ", out = io.StringIO())
+        tp._read_password("P: ", out=io.StringIO())
 
 
 def test_reader_ctrl_d_on_empty_raises_eof(monkeypatch):
     monkeypatch.setattr(tp, "_getch", _fake_getch(["\x04"]))
     with pytest.raises(EOFError):
-        tp._read_password("P: ", out = io.StringIO())
+        tp._read_password("P: ", out=io.StringIO())
 
 
 def test_reader_ctrl_d_mid_input_is_ignored(monkeypatch):
@@ -133,7 +133,7 @@ def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
         return src()
 
     monkeypatch.setattr(tp, "_getch", _getch_recording)
-    value = tp._read_password("P: ", out = io.StringIO())
+    value = tp._read_password("P: ", out=io.StringIO())
     assert value == "s3cr3t!!"
     assert events == ["enter", "exit"]
 
@@ -145,17 +145,17 @@ def _run_loop(
     monkeypatch,
     keys,
     *,
-    min_length = 8,
-    current = "bootstrap-pw",
+    min_length=8,
+    current="bootstrap-pw",
 ):
     monkeypatch.setattr(tp, "_getch", _fake_getch(keys))
     out = io.StringIO()
     applied = []
     ok = tp.prompt_for_password_change(
-        min_length = min_length,
-        is_current_password = lambda pw: pw == current,
-        apply_change = applied.append,
-        out = out,
+        min_length=min_length,
+        is_current_password=lambda pw: pw == current,
+        apply_change=applied.append,
+        out=out,
     )
     return ok, applied, out.getvalue()
 
@@ -185,7 +185,7 @@ def test_loop_success_applies_once(monkeypatch):
             "long-enough-pw",
             "long-enough-pw",
             "at least 8 characters",
-            id = "loop_short_password_reprompts",
+            id="loop_short_password_reprompts",
         ),
         pytest.param(
             "has space pw",
@@ -193,7 +193,7 @@ def test_loop_success_applies_once(monkeypatch):
             "long-enough-pw",
             "long-enough-pw",
             "contain spaces",
-            id = "loop_password_with_inner_space_reprompts",
+            id="loop_password_with_inner_space_reprompts",
         ),
         pytest.param(
             "bootstrap-pw",
@@ -201,7 +201,7 @@ def test_loop_success_applies_once(monkeypatch):
             "fresh-password",
             "fresh-password",
             "must differ",
-            id = "loop_rejects_current_password",
+            id="loop_rejects_current_password",
         ),
     ],
 )
@@ -277,10 +277,10 @@ def test_loop_min_length_counts_code_points(monkeypatch):
 def test_should_prompt_matrix(tunnel, requires, stdin_tty, stderr_tty, expected):
     assert (
         tp.should_prompt_password_change(
-            tunnel_will_start = tunnel,
-            requires_change = requires,
-            stdin_isatty = stdin_tty,
-            stderr_isatty = stderr_tty,
+            tunnel_will_start=tunnel,
+            requires_change=requires,
+            stdin_isatty=stdin_tty,
+            stderr_isatty=stderr_tty,
         )
         is expected
     )
@@ -294,7 +294,7 @@ def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
     err = io.StringIO()
     monkeypatch.setattr(tp, "_getch", _fake_getch(list("abc") + [""]))
     with pytest.raises(EOFError):
-        tp._read_password("New password: ", out = err)
+        tp._read_password("New password: ", out=err)
 
 
 # ── resolve_supplied_password: non-interactive --password / env / stdin ──
@@ -303,9 +303,9 @@ def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
 def test_resolve_supplied_password_literal_value_and_note(monkeypatch):
     import io
 
-    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising=False)
     out = io.StringIO()
-    assert tp.resolve_supplied_password("hunter2pw", out = out) == "hunter2pw"
+    assert tp.resolve_supplied_password("hunter2pw", out=out) == "hunter2pw"
     # A literal value warns that it is visible in the process list / history.
     assert "process list" in out.getvalue()
 
@@ -313,7 +313,7 @@ def test_resolve_supplied_password_literal_value_and_note(monkeypatch):
 def test_resolve_supplied_password_stdin(monkeypatch):
     import io
 
-    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO("from-stdin-pw\n"))
     assert tp.resolve_supplied_password("-") == "from-stdin-pw"
 
@@ -321,7 +321,7 @@ def test_resolve_supplied_password_stdin(monkeypatch):
 def test_resolve_supplied_password_stdin_empty_is_none(monkeypatch):
     import io
 
-    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert tp.resolve_supplied_password("-") is None
 
@@ -334,8 +334,9 @@ def test_resolve_supplied_password_env(monkeypatch):
 
 def test_resolve_supplied_password_literal_beats_env(monkeypatch):
     import io
+
     monkeypatch.setenv(tp.SUPPLIED_PASSWORD_ENV, "env-secret-pw")
-    assert tp.resolve_supplied_password("cli-wins-pw", out = io.StringIO()) == "cli-wins-pw"
+    assert tp.resolve_supplied_password("cli-wins-pw", out=io.StringIO()) == "cli-wins-pw"
 
 
 def test_resolve_supplied_password_stdin_beats_env(monkeypatch):
@@ -348,7 +349,7 @@ def test_resolve_supplied_password_stdin_beats_env(monkeypatch):
 
 
 def test_resolve_supplied_password_off_by_default(monkeypatch):
-    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising=False)
     assert tp.resolve_supplied_password("") is None
     assert tp.resolve_supplied_password(None) is None
 
@@ -362,13 +363,14 @@ def test_resolve_supplied_password_off_by_default(monkeypatch):
 
 def test_a_raw_exposed_bind_prompts_when_a_terminal_is_attached():
     from auth.terminal_prompt import should_prompt_password_change
+
     assert (
         should_prompt_password_change(
-            tunnel_will_start = False,
-            bind_is_exposed = True,
-            requires_change = True,
-            stdin_isatty = True,
-            stderr_isatty = True,
+            tunnel_will_start=False,
+            bind_is_exposed=True,
+            requires_change=True,
+            stdin_isatty=True,
+            stderr_isatty=True,
         )
         is True
     )
@@ -383,14 +385,15 @@ def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
     -H 0.0.0.0) are often logged into by reading. They keep the deadline instead.
     """
     from auth.terminal_prompt import should_prompt_password_change
+
     for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
         assert (
             should_prompt_password_change(
-                tunnel_will_start = False,
-                bind_is_exposed = True,
-                requires_change = True,
-                stdin_isatty = stdin_tty,
-                stderr_isatty = stderr_tty,
+                tunnel_will_start=False,
+                bind_is_exposed=True,
+                requires_change=True,
+                stdin_isatty=stdin_tty,
+                stderr_isatty=stderr_tty,
             )
             is False
         )
@@ -399,13 +402,14 @@ def test_a_raw_exposed_bind_stays_silent_without_a_terminal():
 def test_a_loopback_launch_is_untouched():
     """Plain `unsloth studio` must be completely unaffected."""
     from auth.terminal_prompt import should_prompt_password_change
+
     assert (
         should_prompt_password_change(
-            tunnel_will_start = False,
-            bind_is_exposed = False,
-            requires_change = True,
-            stdin_isatty = True,
-            stderr_isatty = True,
+            tunnel_will_start=False,
+            bind_is_exposed=False,
+            requires_change=True,
+            stdin_isatty=True,
+            stderr_isatty=True,
         )
         is False
     )
@@ -413,13 +417,14 @@ def test_a_loopback_launch_is_untouched():
 
 def test_an_already_changed_password_never_prompts():
     from auth.terminal_prompt import should_prompt_password_change
+
     assert (
         should_prompt_password_change(
-            tunnel_will_start = True,
-            bind_is_exposed = True,
-            requires_change = False,
-            stdin_isatty = True,
-            stderr_isatty = True,
+            tunnel_will_start=True,
+            bind_is_exposed=True,
+            requires_change=False,
+            stdin_isatty=True,
+            stderr_isatty=True,
         )
         is False
     )
@@ -428,12 +433,13 @@ def test_an_already_changed_password_never_prompts():
 def test_the_default_keeps_old_callers_tunnel_only():
     """bind_is_exposed defaults False, so an old caller behaves as before."""
     from auth.terminal_prompt import should_prompt_password_change
+
     assert (
         should_prompt_password_change(
-            tunnel_will_start = False,
-            requires_change = True,
-            stdin_isatty = True,
-            stderr_isatty = True,
+            tunnel_will_start=False,
+            requires_change=True,
+            stdin_isatty=True,
+            stderr_isatty=True,
         )
         is False
     )
@@ -457,11 +463,11 @@ def test_the_prompt_banner_does_not_claim_the_internet_for_a_lan_bind(monkeypatc
     out = io.StringIO()
     # The read aborts immediately; fine, the banner is written before any read.
     terminal_prompt.prompt_for_password_change(
-        min_length = 8,
-        is_current_password = lambda _c: False,
-        apply_change = lambda _p: None,
-        out = out,
-        exposure = "on every network interface",
+        min_length=8,
+        is_current_password=lambda _c: False,
+        apply_change=lambda _p: None,
+        out=out,
+        exposure="on every network interface",
     )
     text = out.getvalue()
     assert "on every network interface" in text

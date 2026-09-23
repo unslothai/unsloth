@@ -26,9 +26,9 @@ from core.inference.diffusion_krea2 import (
 
 def test_remap_rope_parameters_copies_5x_values():
     cfg = SimpleNamespace(
-        rope_scaling = None,
-        rope_theta = 1000000.0,
-        rope_parameters = {
+        rope_scaling=None,
+        rope_theta=1000000.0,
+        rope_parameters={
             "mrope_interleaved": True,
             "mrope_section": [24, 20, 20],
             "rope_theta": 5000000,
@@ -48,12 +48,12 @@ def test_remap_rope_parameters_copies_5x_values():
 def test_remap_rope_parameters_noop_on_5x_runtime_or_plain_4x_config():
     # rope_scaling already parsed (a 5.x runtime exposing the alias): untouched.
     parsed = {"rope_type": "default", "mrope_section": [1, 2, 3]}
-    cfg = SimpleNamespace(rope_scaling = parsed, rope_theta = 7.0, rope_parameters = {"x": 1})
+    cfg = SimpleNamespace(rope_scaling=parsed, rope_theta=7.0, rope_parameters={"x": 1})
     remap_rope_parameters(cfg)
     assert cfg.rope_scaling is parsed
     assert cfg.rope_theta == 7.0
     # No rope_parameters at all (a plain 4.x-exported config): untouched.
-    cfg = SimpleNamespace(rope_scaling = None, rope_theta = 7.0)
+    cfg = SimpleNamespace(rope_scaling=None, rope_theta=7.0)
     remap_rope_parameters(cfg)
     assert cfg.rope_scaling is None
 
@@ -67,9 +67,9 @@ def test_load_model_index_from_local_path(tmp_path):
 
 
 def test_load_model_index_wraps_truncated_local_json(tmp_path):
-    (tmp_path / "model_index.json").write_text('{"patch_size":', encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text('{"patch_size":', encoding="utf-8")
 
-    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+    with pytest.raises(ValueError, match=r"model_index\.json.*local model directory") as exc_info:
         _load_model_index(str(tmp_path))
 
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
@@ -78,7 +78,7 @@ def test_load_model_index_wraps_truncated_local_json(tmp_path):
 def test_load_model_index_wraps_invalid_utf8(tmp_path):
     (tmp_path / "model_index.json").write_bytes(b'\xff{"patch_size": 2}')
 
-    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+    with pytest.raises(ValueError, match=r"model_index\.json.*local model directory") as exc_info:
         _load_model_index(str(tmp_path))
 
     assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
@@ -95,10 +95,10 @@ def test_load_model_index_accepts_utf8_bom(tmp_path):
 )
 def test_load_model_index_rejects_non_object_json(tmp_path, payload):
     # All of these parsed and reached the caller, which then died on ``.get`` one frame away.
-    (tmp_path / "model_index.json").write_text(payload, encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text(payload, encoding="utf-8")
 
     with pytest.raises(
-        ValueError, match = r"model_index\.json.*must contain a JSON object"
+        ValueError, match=r"model_index\.json.*must contain a JSON object"
     ) as exc_info:
         _load_model_index(str(tmp_path))
 
@@ -108,7 +108,7 @@ def test_load_model_index_rejects_non_object_json(tmp_path, payload):
 def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
     # Present but unreadable (0600, EIO, a Windows AV lock): the OSError used to be swallowed and
     # re-reported as "not found". Faulted at the read because chmod is a no-op as root.
-    (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding="utf-8")
     original = Path.read_text
 
     def _deny(self, *args, **kwargs):
@@ -118,7 +118,7 @@ def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "read_text", _deny)
 
-    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+    with pytest.raises(ValueError, match=r"model_index\.json.*local model directory") as exc_info:
         _load_model_index(str(tmp_path))
 
     assert isinstance(exc_info.value.__cause__, PermissionError)
@@ -127,19 +127,19 @@ def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
 def test_load_model_index_wraps_a_nesting_bomb(monkeypatch, tmp_path):
     # Valid JSON and valid UTF-8, so neither guard above sees it; the parser blows the stack.
     # Faulted directly because the depth is not portable: 3.14 parses what 3.10-3.13 reject.
-    (tmp_path / "model_index.json").write_text('{"a": 1}', encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text('{"a": 1}', encoding="utf-8")
     monkeypatch.setattr(
         json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError("too deep"))
     )
 
-    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+    with pytest.raises(ValueError, match=r"model_index\.json.*local model directory") as exc_info:
         _load_model_index(str(tmp_path))
 
     assert isinstance(exc_info.value.__cause__, RecursionError)
 
 
 def test_load_model_index_missing_local_file(tmp_path):
-    with pytest.raises(FileNotFoundError, match = r"model_index\.json not found in local model dir"):
+    with pytest.raises(FileNotFoundError, match=r"model_index\.json not found in local model dir"):
         _load_model_index(str(tmp_path))
 
 
@@ -147,13 +147,13 @@ def test_load_model_index_wraps_malformed_hub_cache_content(monkeypatch, tmp_pat
     import huggingface_hub
 
     downloaded = tmp_path / "downloaded-model_index.json"
-    downloaded.write_text('{"patch_size":', encoding = "utf-8")
+    downloaded.write_text('{"patch_size":', encoding="utf-8")
     monkeypatch.setattr(
         huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: str(downloaded)
     )
 
-    with pytest.raises(ValueError, match = r"model_index\.json.*Hub/cache") as exc_info:
-        _load_model_index("krea/Krea-2-Turbo", local_files_only = True)
+    with pytest.raises(ValueError, match=r"model_index\.json.*Hub/cache") as exc_info:
+        _load_model_index("krea/Krea-2-Turbo", local_files_only=True)
 
     assert str(downloaded) in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
@@ -181,17 +181,17 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 
         def from_pretrained(self, repo_id, **kwargs):
             captured.setdefault("components", {})[self.tag] = (repo_id, kwargs)
-            return SimpleNamespace(tag = self.tag)
+            return SimpleNamespace(tag=self.tag)
 
     def _pipeline_ctor(**kwargs):
         captured["pipeline"] = kwargs
         return SimpleNamespace(**kwargs)
 
     fake_diffusers = SimpleNamespace(
-        FlowMatchEulerDiscreteScheduler = _FromPretrained("scheduler"),
-        AutoencoderKLQwenImage = _FromPretrained("vae"),
-        Krea2Transformer2DModel = _FromPretrained("transformer"),
-        Krea2Pipeline = _pipeline_ctor,
+        FlowMatchEulerDiscreteScheduler=_FromPretrained("scheduler"),
+        AutoencoderKLQwenImage=_FromPretrained("vae"),
+        Krea2Transformer2DModel=_FromPretrained("transformer"),
+        Krea2Pipeline=_pipeline_ctor,
     )
     monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
     monkeypatch.setattr(
@@ -199,17 +199,17 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
         # Hand-written fakes with EXACT signatures, so they have to follow the production one:
         # load_krea2_pipeline now passes local_files_only down to every component load.
         lambda repo_id,
-        hf_token = None,
-        local_files_only = False,
-        check_cancelled = None: SimpleNamespace(tag = "tokenizer"),
+        hf_token=None,
+        local_files_only=False,
+        check_cancelled=None: SimpleNamespace(tag="tokenizer"),
     )
     monkeypatch.setattr(
         "core.inference.diffusion_krea2.load_krea2_text_encoder",
         lambda repo_id,
         dtype,
-        hf_token = None,
-        local_files_only = False,
-        check_cancelled = None: SimpleNamespace(tag = "text_encoder"),
+        hf_token=None,
+        local_files_only=False,
+        check_cancelled=None: SimpleNamespace(tag="text_encoder"),
     )
 
     pipe = load_krea2_pipeline(str(tmp_path), "bf16")
@@ -220,15 +220,15 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
     assert captured["pipeline"]["text_encoder_select_layers"] == [2, 5, 8]
     assert pipe.transformer.tag == "transformer"
     # A prebuilt transformer (single-file/quant path) must be used as-is.
-    prebuilt = SimpleNamespace(tag = "prebuilt")
-    pipe = load_krea2_pipeline(str(tmp_path), "bf16", transformer = prebuilt)
+    prebuilt = SimpleNamespace(tag="prebuilt")
+    pipe = load_krea2_pipeline(str(tmp_path), "bf16", transformer=prebuilt)
     assert pipe.transformer is prebuilt
 
 
 def test_a_corrupt_index_is_rejected_before_any_component_is_built(monkeypatch, tmp_path):
     """A few KB against the ~35 GB it configures, so it is read first. Read last, a clear message
     still costs a full load to reach, which is most of what the opaque traceback cost."""
-    (tmp_path / "model_index.json").write_text('{"_class_name": "Krea2Pipe', encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text('{"_class_name": "Krea2Pipe', encoding="utf-8")
 
     built: list = []
 
@@ -238,28 +238,28 @@ def test_a_corrupt_index_is_rejected_before_any_component_is_built(monkeypatch, 
 
         def from_pretrained(self, repo_id, **kwargs):
             built.append(self.tag)
-            return SimpleNamespace(tag = self.tag)
+            return SimpleNamespace(tag=self.tag)
 
     monkeypatch.setitem(
         sys.modules,
         "diffusers",
         SimpleNamespace(
-            FlowMatchEulerDiscreteScheduler = _Records("scheduler"),
-            AutoencoderKLQwenImage = _Records("vae"),
-            Krea2Transformer2DModel = _Records("transformer"),
-            Krea2Pipeline = lambda **kwargs: SimpleNamespace(**kwargs),
+            FlowMatchEulerDiscreteScheduler=_Records("scheduler"),
+            AutoencoderKLQwenImage=_Records("vae"),
+            Krea2Transformer2DModel=_Records("transformer"),
+            Krea2Pipeline=lambda **kwargs: SimpleNamespace(**kwargs),
         ),
     )
     monkeypatch.setattr(
         "core.inference.diffusion_krea2.load_krea2_tokenizer",
-        lambda repo_id, hf_token = None, local_files_only = False: built.append("tokenizer"),
+        lambda repo_id, hf_token=None, local_files_only=False: built.append("tokenizer"),
     )
     monkeypatch.setattr(
         "core.inference.diffusion_krea2.load_krea2_text_encoder",
-        lambda repo_id, dtype, hf_token = None, local_files_only = False: built.append("text_encoder"),
+        lambda repo_id, dtype, hf_token=None, local_files_only=False: built.append("text_encoder"),
     )
 
-    with pytest.raises(ValueError, match = r"model_index\.json"):
+    with pytest.raises(ValueError, match=r"model_index\.json"):
         load_krea2_pipeline(str(tmp_path), "bf16")
 
     assert built == []
@@ -272,9 +272,9 @@ def test_load_krea2_pipeline_requires_krea_capable_diffusers(monkeypatch):
     # On diffusers < 0.39 (no Krea2Pipeline) the loader must fail fast with the upgrade hint, not a bare AttributeError mid-load.
     import pytest
 
-    fake = SimpleNamespace(__version__ = "0.38.0")
+    fake = SimpleNamespace(__version__="0.38.0")
     monkeypatch.setitem(sys.modules, "diffusers", fake)
-    with pytest.raises(RuntimeError, match = "0.39"):
+    with pytest.raises(RuntimeError, match="0.39"):
         load_krea2_pipeline("krea/Krea-2-Turbo", "bf16")
 
 
@@ -353,8 +353,8 @@ def test_krea2_collate_and_forward_roundtrip():
     spec = _SPECS["krea-2"]
     # Two fixed-length embed entries collate to a plain concat with the mask batched.
     entries = [
-        (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype = torch.int64)),
-        (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype = torch.int64)),
+        (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype=torch.int64)),
+        (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype=torch.int64)),
     ]
     pe_b, mask_b = spec.collate(entries, "cpu", torch.float32)
     assert pe_b.shape == (2, 8, 12, 16)

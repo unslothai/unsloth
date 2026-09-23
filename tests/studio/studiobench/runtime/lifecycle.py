@@ -120,12 +120,12 @@ class StudioAuth:
     #: Called with `self` after the token is replaced. The browser context seeds its localStorage
     #: from a SNAPSHOT of these values, so whoever owns that context re-seeds it here.
     on_rotate: Optional[Callable[["StudioAuth"], None]] = None
-    rotations: int = field(default = 0, init = False)
+    rotations: int = field(default=0, init=False)
     #: Turned off the first time a FRESH token still reads as expiring, which means the `exp` this
     #: process reads and the server's clock do not agree. See `rotate`.
-    proactive: bool = field(default = True, init = False)
+    proactive: bool = field(default=True, init=False)
     #:The last `on_rotate` failure, kept rather than raised. See `rotate`.
-    hook_error: Optional[str] = field(default = None, init = False)
+    hook_error: Optional[str] = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         if self.expires_at is None:
@@ -208,12 +208,12 @@ def auth_request_json(
     """
     bearer = auth.token()
     try:
-        return request_json(url, method = method, body = body, token = bearer, timeout = timeout)
+        return request_json(url, method=method, body=body, token=bearer, timeout=timeout)
     except HttpError as exc:
         if exc.status != 401:
             raise
     auth.rotate()
-    return request_json(url, method = method, body = body, token = auth.access_token, timeout = timeout)
+    return request_json(url, method=method, body=body, token=auth.access_token, timeout=timeout)
 
 
 @dataclass
@@ -233,7 +233,7 @@ class ProviderSeed:
     base_url: str
     models: list[str]
     api_key: str
-    id: str = field(default_factory = lambda: uuid.uuid4().hex[:16])
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
 
     def as_provider_entry(self) -> dict:
         return {
@@ -251,11 +251,11 @@ def pacer_provider(
     api_key: str = "sb-local",
 ) -> ProviderSeed:
     return ProviderSeed(
-        provider_type = "custom",
-        name = "studiobench pacer",
-        base_url = base_url,
-        models = models,
-        api_key = api_key,
+        provider_type="custom",
+        name="studiobench pacer",
+        base_url=base_url,
+        models=models,
+        api_key=api_key,
     )
 
 
@@ -288,15 +288,15 @@ def register_provider(base_url: str, auth: StudioAuth, provider: ProviderSeed) -
                 auth_request_json(
                     auth,
                     f"{base_url.rstrip('/')}/api/providers/{row['id']}",
-                    method = "DELETE",
+                    method="DELETE",
                 )
             except HttpError:
                 pass
     created = auth_request_json(
         auth,
         f"{base_url.rstrip('/')}/api/providers/",
-        method = "POST",
-        body = {
+        method="POST",
+        body={
             "provider_type": provider.provider_type,
             "display_name": provider.name,
             "base_url": provider.base_url,
@@ -323,6 +323,7 @@ def external_checkpoint_id(provider: ProviderSeed, model_id: str) -> str:
     `unsloth_chat_last_external_checkpoint`, in the format `buildExternalModelId` produces.
     """
     from urllib.parse import quote
+
     return f"external::{provider.id}::{quote(model_id, safe = '')}"
 
 
@@ -351,9 +352,9 @@ def request_json(
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data = data, headers = headers, method = method)
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise HttpError(exc.code, exc.read().decode("utf-8", "replace"), url) from exc
@@ -364,7 +365,7 @@ def wait_for_healthz(base_url: str, timeout_s: float = 180.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{base_url}/healthz", timeout = 3) as r:
+            with urllib.request.urlopen(f"{base_url}/healthz", timeout=3) as r:
                 if r.status == 200:
                     return True
         except Exception:  # noqa: BLE001
@@ -385,12 +386,12 @@ def _run(
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
-        cwd = cwd,
-        env = {**os.environ, **(env or {})},
-        check = check,
-        timeout = timeout,
-        text = True,
-        capture_output = True,
+        cwd=cwd,
+        env={**os.environ, **(env or {})},
+        check=check,
+        timeout=timeout,
+        text=True,
+        capture_output=True,
     )
 
 
@@ -407,23 +408,23 @@ def checkout_ref(repo: Path, ref: str) -> str:
     So the ref is fetched and then resolved locally: `FETCH_HEAD` when the fetch could name it,
     `origin/<ref>` when it is a branch, and the ref itself when it is already an object here.
     """
-    fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd = repo, check = False)
+    fetched = _run(["git", "fetch", "--tags", "origin", ref], cwd=repo, check=False)
     if fetched.returncode != 0:
         # A ref the remote will not serve by name (an old server, or `ref^1`, a local expression). Fetch
         # everything and resolve it here.
-        _run(["git", "fetch", "--tags", "origin"], cwd = repo, check = False)
+        _run(["git", "fetch", "--tags", "origin"], cwd=repo, check=False)
     candidates = [] if fetched.returncode != 0 else ["FETCH_HEAD"]
     candidates += [f"origin/{ref}", ref]
     for candidate in candidates:
         got = _run(
             ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
-            cwd = repo,
-            check = False,
+            cwd=repo,
+            check=False,
         )
         commit = got.stdout.strip()
         if got.returncode == 0 and commit:
-            _run(["git", "checkout", "--force", "--detach", commit], cwd = repo)
-            _run(["git", "reset", "--hard", commit], cwd = repo)
+            _run(["git", "checkout", "--force", "--detach", commit], cwd=repo)
+            _run(["git", "reset", "--hard", commit], cwd=repo)
             return commit
     raise RuntimeError(
         f"{ref!r} could not be resolved in {repo}: it is not a branch, a tag or a commit this "
@@ -445,7 +446,7 @@ def install_studio(
     reuse_clone: bool = True,
 ) -> StudioInstall:
     home = Path(home).resolve()
-    home.mkdir(parents = True, exist_ok = True)
+    home.mkdir(parents=True, exist_ok=True)
     repo = (repo or (home.parent / f"{home.name}_repo")).resolve()
     if not (reuse_clone and (repo / ".git").exists()):
         if repo.exists():
@@ -461,11 +462,11 @@ def install_studio(
         raise FileNotFoundError(f"install.sh missing at {install_sh}")
     _run(
         ["bash", str(install_sh), "--local"],
-        cwd = repo,
-        env = {"UNSLOTH_STUDIO_HOME": str(home)},
-        timeout = INSTALL_TIMEOUT_S,
+        cwd=repo,
+        env={"UNSLOTH_STUDIO_HOME": str(home)},
+        timeout=INSTALL_TIMEOUT_S,
     )
-    return StudioInstall(home = home, repo = repo, branch = branch, commit = commit)
+    return StudioInstall(home=home, repo=repo, branch=branch, commit=commit)
 
 
 def _find_unsloth_bin(install: StudioInstall) -> str:
@@ -491,13 +492,13 @@ def _read_bootstrap_password(home: Path, log_path: Path, deadline: float) -> Opt
     while time.time() < deadline:
         try:
             if boot_file.exists():
-                secret = boot_file.read_text(errors = "ignore").strip()
+                secret = boot_file.read_text(errors="ignore").strip()
                 if secret:
                     return secret
         except OSError:
             pass
         if log_path.exists():
-            m = _PW_RE.search(log_path.read_text(errors = "ignore"))
+            m = _PW_RE.search(log_path.read_text(errors="ignore"))
             if m:
                 return m.group(1).strip().strip(".,")
         time.sleep(0.5)
@@ -524,7 +525,7 @@ def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]
     deadline = time.time() + max(0.0, timeout_s)
     while True:
         try:
-            out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check = False).stdout.strip()
+            out = _run(["pgrep", "-f", f"unsloth studio.*-p {port}"], check=False).stdout.strip()
         except Exception:  # noqa: BLE001
             return None
         if out:
@@ -586,7 +587,7 @@ def launch_studio(
             "Unsloth a previous --keep-studio run left behind) or pass --port."
         )
     log_path = Path(log_path).resolve()
-    log_path.parent.mkdir(parents = True, exist_ok = True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("")
     bin_path = _find_unsloth_bin(install)
     env = {"UNSLOTH_STUDIO_HOME": str(install.home), **(extra_env or {})}
@@ -602,10 +603,10 @@ def launch_studio(
     ]
     subprocess.Popen(
         cmd,
-        env = {**os.environ, **env},
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.DEVNULL,
-        start_new_session = True,
+        env={**os.environ, **env},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     install.port = port
     install.bootstrap_password = _read_bootstrap_password(
@@ -645,16 +646,16 @@ BENCH_PASSWORD = "studiobench-Passw0rd!"
 def login(base_url: str, username: str, password: str) -> StudioAuth:
     body = request_json(
         f"{base_url}/api/auth/login",
-        method = "POST",
-        body = {"username": username, "password": password},
+        method="POST",
+        body={"username": username, "password": password},
     )
     return StudioAuth(
-        access_token = body["access_token"],
-        refresh_token = body.get("refresh_token", ""),
-        base_url = base_url,
-        username = username,
-        password = password,
-        expires_at = jwt_expiry(body["access_token"]),
+        access_token=body["access_token"],
+        refresh_token=body.get("refresh_token", ""),
+        base_url=base_url,
+        username=username,
+        password=password,
+        expires_at=jwt_expiry(body["access_token"]),
     )
 
 
@@ -696,23 +697,23 @@ def authenticate(
             f"previous studiobench run would have rotated to. Last error: {last}"
         )
     try:
-        status = request_json(f"{base_url}/api/auth/status", token = auth.access_token) or {}
+        status = request_json(f"{base_url}/api/auth/status", token=auth.access_token) or {}
     except HttpError:
         status = {}
     if status.get("requires_password_change"):
         body = request_json(
             f"{base_url}/api/auth/change-password",
-            method = "POST",
-            token = auth.access_token,
-            body = {"current_password": password, "new_password": new_password},
+            method="POST",
+            token=auth.access_token,
+            body={"current_password": password, "new_password": new_password},
         )
         auth = StudioAuth(
-            access_token = body["access_token"],
-            refresh_token = body.get("refresh_token", ""),
-            base_url = base_url,
-            username = username,
-            password = new_password,
-            expires_at = jwt_expiry(body["access_token"]),
+            access_token=body["access_token"],
+            refresh_token=body.get("refresh_token", ""),
+            base_url=base_url,
+            username=username,
+            password=new_password,
+            expires_at=jwt_expiry(body["access_token"]),
         )
     return auth
 

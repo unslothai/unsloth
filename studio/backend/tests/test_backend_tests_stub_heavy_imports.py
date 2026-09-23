@@ -90,7 +90,7 @@ def _needs_heavy(names: set[str]) -> bool:
     return any(n == h or n.startswith(f"{h}.") for n in names for h in _HEAVY_PACKAGES)
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _heavy_backend_modules() -> frozenset[str]:
     """Backend modules unimportable unless unsloth/unsloth_zoo/trl are installed.
 
@@ -103,7 +103,7 @@ def _heavy_backend_modules() -> frozenset[str]:
         if rel.parts[0] in _SKIP_TOP_LEVEL:
             continue
         try:
-            tree = _parse(path.read_text(encoding = "utf-8"))
+            tree = _parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):  # not this guard's job to report
             continue
         name = _module_name(path)
@@ -234,7 +234,7 @@ def _heavy_import_lines(tree: ast.Module, heavy: frozenset[str]) -> list[int]:
         for node in _reachable_import_time_nodes(statement):
             if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in guarded:
                 continue
-            if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
+            if _module_scope_imports(ast.Module(body=[node], type_ignores=[]), "") & heavy:
                 lines.append(node.lineno)
     return sorted(lines)
 
@@ -421,7 +421,7 @@ def _can_exit_early(node: ast.AST, flags: dict[str, bool] | None = None) -> bool
     """
     flags = flags or {}
     if isinstance(node, ast.If) and _constant_test(node) is None:
-        if _true_when_imported(node.test, flags, allow_variable_key = True) is True:
+        if _true_when_imported(node.test, flags, allow_variable_key=True) is True:
             return any(_can_exit_early(child, flags) for child in node.orelse)
         return any(_can_exit_early(child, flags) for child in [*node.body, *node.orelse])
     if isinstance(node, ast.Try) and _probes_availability(node):
@@ -442,7 +442,7 @@ def _helper_nodes_entered(helper: ast.AST):
     import. A plain function has no such split and runs to the end. Unreachable and
     merely-optional branches are dropped for the reason in ``_certain_nodes``.
     """
-    stop = min((node.lineno for node in _own_yields(helper)), default = None)
+    stop = min((node.lineno for node in _own_yields(helper)), default=None)
     for statement in getattr(helper, "body", []):
         if stop is not None and statement.lineno >= stop:
             break
@@ -518,7 +518,7 @@ def _true_when_imported(
     accepted that too until this told the two apart.
     """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        inner = _true_when_imported(node.operand, flags, allow_variable_key = allow_variable_key)
+        inner = _true_when_imported(node.operand, flags, allow_variable_key=allow_variable_key)
         return None if inner is None else not inner
     if isinstance(node, ast.Name):
         return flags.get(node.id)
@@ -711,7 +711,7 @@ def _offenders() -> list[str]:
     return [
         path.name
         for path in sorted(_TESTS_DIR.glob("test_*.py"))
-        if _is_offender(path.read_text(encoding = "utf-8"), heavy)
+        if _is_offender(path.read_text(encoding="utf-8"), heavy)
     ]
 
 
@@ -1038,7 +1038,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
         id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
     }
     reachable = {id(node) for node in _reachable_nodes(tree)}
-    end = max((statement.lineno for statement in tree.body), default = 0) + 1
+    end = max((statement.lineno for statement in tree.body), default=0) + 1
     # A call inside a def is deferred only if nothing runs that def during import. Where
     # the module body calls it, the body runs at collection like any other import-time
     # statement, and the end-of-module boundary would let a stub installed BELOW the call
@@ -1189,7 +1189,7 @@ def _importorskip_offenders() -> list[str]:
     offenders: list[str] = []
     for path in sorted(_TESTS_DIR.glob("test_*.py")):
         try:
-            tree = _parse(path.read_text(encoding = "utf-8"))
+            tree = _parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
         if _importorskip_offence(tree, heavy):

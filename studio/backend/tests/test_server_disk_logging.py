@@ -104,7 +104,7 @@ class TestNormalizeStandardStreams:
     def test_runs_before_the_logger_import(self):
         # structlog binds `from sys import stdout` at import time, so normalizing
         # after the loggers import leaves None captured forever.
-        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding="utf-8")
         call = "\n_normalize_standard_streams()"
         assert call in src, "run.py never calls _normalize_standard_streams()"
         assert src.index(call) < src.index("\nfrom loggers import get_logger")
@@ -118,8 +118,8 @@ class TestSetupServerDiskLogging:
     def test_creates_log_and_enables_faulthandler(self, monkeypatch, tmp_path):
         import faulthandler
 
-        monkeypatch.delenv("UNSLOTH_STUDIO_NO_FILE_LOG", raising = False)
-        monkeypatch.delenv("PYTHONFAULTHANDLER", raising = False)
+        monkeypatch.delenv("UNSLOTH_STUDIO_NO_FILE_LOG", raising=False)
+        monkeypatch.delenv("PYTHONFAULTHANDLER", raising=False)
         # Both resolution paths (utils.paths.studio_root and the env
         # fallback) honor UNSLOTH_STUDIO_HOME, so this redirects the log dir.
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -138,7 +138,7 @@ class TestSetupServerDiskLogging:
             print("tee-capture-marker")
             sys.stdout.flush()
             assert "tee-capture-marker" in Path(log_path).read_text(
-                encoding = "utf-8", errors = "replace"
+                encoding="utf-8", errors="replace"
             )
         finally:
             sys.stdout, sys.stderr = orig_out, orig_err
@@ -146,7 +146,7 @@ class TestSetupServerDiskLogging:
                 faulthandler.disable()
 
     def test_run_server_wires_logging_before_main_import(self):
-        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding="utf-8")
         call_idx = src.index("_setup_server_disk_logging()", src.index("def run_server"))
         main_import_idx = src.index("from main import app", src.index("def run_server"))
         assert call_idx < main_import_idx, (
@@ -165,7 +165,7 @@ class TestSetupServerDiskLogging:
         goes missing from the session log. Configure after it and the whole session,
         starting with the first line, renders one way into both.
         """
-        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding="utf-8")
         body = src.index("def run_server")
         tee_idx = src.index("_setup_server_disk_logging()", body)
         setup_idx = src.index("LogConfig.setup_logging(", body)
@@ -188,7 +188,7 @@ class TestSetupServerDiskLogging:
         """
         import ast
 
-        tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8"))
+        tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding="utf-8"))
         offenders = []
         for node in tree.body:  # module scope only
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("loggers."):
@@ -208,7 +208,7 @@ class TestSetupServerDiskLogging:
         log handle. An embedder that catches this ``SystemExit`` keeps all of it, and its
         next ``run_server()`` call nests a second tee, writing every line twice.
         """
-        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding="utf-8")
         body = src.index("def run_server")
         reject_idx = src.index("--secure requires the Cloudflare tunnel", body)
         # Anchor on the assignment, not the bare name: a comment mentioning the call
@@ -221,10 +221,11 @@ class TestSetupServerDiskLogging:
 
     def test_a_rejected_flag_combination_leaves_the_streams_alone(self):
         import run as run_mod
+
         orig_out, orig_err = sys.stdout, sys.stderr
         try:
             with pytest.raises(SystemExit):
-                run_mod.run_server(secure = True, cloudflare = False, silent = True)
+                run_mod.run_server(secure=True, cloudflare=False, silent=True)
             assert sys.stdout is orig_out
             assert sys.stderr is orig_err
         finally:

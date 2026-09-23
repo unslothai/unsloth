@@ -54,7 +54,7 @@ def _post_multipart_binary(client: TestClient):
     # A multipart upload to a JSON-body route: the shape that produced the 500.
     # FastAPI reads the body, fails to coerce it to the model, and puts the raw
     # bytes in the error's "input".
-    return client.post("/api/thing", files = {"file": ("audio.wav", _BINARY, "audio/wav")})
+    return client.post("/api/thing", files={"file": ("audio.wav", _BINARY, "audio/wav")})
 
 
 def test_binary_body_returns_422_not_500():
@@ -70,13 +70,13 @@ def test_response_does_not_echo_the_body():
 
 
 def test_valid_body_still_passes():
-    resp = _client().post("/api/thing", json = {"audio": "abc"})
+    resp = _client().post("/api/thing", json={"audio": "abc"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
 
 
 def test_a_normal_validation_error_still_names_the_field():
-    resp = _client().post("/api/thing", json = {"wrong": 1})
+    resp = _client().post("/api/thing", json={"wrong": 1})
     assert resp.status_code == 422
     body = resp.json()
     detail = body["detail"]
@@ -173,7 +173,7 @@ def test_non_finite_numbers_do_not_break_json():
         {"type": "x", "loc": ("body", "lr"), "msg": "bad", "input": float("inf")},
     ]
     safe = safe_validation_errors(errors)
-    json.dumps(jsonable_encoder(safe), allow_nan = False)
+    json.dumps(jsonable_encoder(safe), allow_nan=False)
 
 
 def test_the_number_of_errors_is_capped():
@@ -226,4 +226,4 @@ def test_a_lone_surrogate_can_still_be_encoded():
     safe = safe_validation_errors(errors)
     import json
 
-    json.dumps(jsonable_encoder(safe), ensure_ascii = False).encode("utf-8")
+    json.dumps(jsonable_encoder(safe), ensure_ascii=False).encode("utf-8")

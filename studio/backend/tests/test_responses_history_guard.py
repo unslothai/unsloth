@@ -15,7 +15,7 @@ from utils.api_errors import install_api_error_handlers
 @pytest.fixture
 def responses_client():
     app = FastAPI()
-    app.include_router(inference.router, prefix = "/v1")
+    app.include_router(inference.router, prefix="/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-owner"
     install_api_error_handlers(app)
 
@@ -41,9 +41,9 @@ def responses_client():
 def test_history_reference_is_rejected_before_any_processing(
     monkeypatch, responses_client, stream, history_param, history_reference
 ):
-    normalise = Mock(side_effect = AssertionError("normalization reached"))
-    switch = AsyncMock(side_effect = AssertionError("model switch reached"))
-    generate = AsyncMock(side_effect = AssertionError("generation reached"))
+    normalise = Mock(side_effect=AssertionError("normalization reached"))
+    switch = AsyncMock(side_effect=AssertionError("model switch reached"))
+    generate = AsyncMock(side_effect=AssertionError("generation reached"))
     monkeypatch.setattr(inference, "_normalise_responses_input", normalise)
     monkeypatch.setattr(inference, "_maybe_auto_switch_model", switch)
     monkeypatch.setattr(inference, "_responses_stream", generate)
@@ -51,7 +51,7 @@ def test_history_reference_is_rejected_before_any_processing(
 
     response = responses_client.post(
         "/v1/responses",
-        json = {
+        json={
             "model": "different/model",
             "input": "What was my project code?",
             history_param: history_reference,
@@ -103,7 +103,7 @@ def test_full_history_without_history_reference_preserves_dispatch(
 
     response = responses_client.post(
         "/v1/responses",
-        json = {
+        json={
             "input": history,
             "stream": stream,
             **previous,

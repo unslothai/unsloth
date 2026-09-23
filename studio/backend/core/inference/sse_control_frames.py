@@ -114,7 +114,7 @@ def sanitize_provider_sse_line(line: str) -> str | None:
     if not any(key in cleaned for key in _SUBSTANTIVE_KEYS):
         # A pure control frame with the control stripped out is an empty envelope.
         return None
-    return "data: " + json.dumps(cleaned, separators = (",", ":"))
+    return "data: " + json.dumps(cleaned, separators=(",", ":"))
 
 
 def _sse_payload(line: str) -> dict[str, Any] | None:
@@ -215,7 +215,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     payload = {**payload, "choices": kept_choices}
     if not _choices_say_anything(kept_choices) and "usage" not in payload:
         return None
-    return "data: " + json.dumps(payload, separators = (",", ":"))
+    return "data: " + json.dumps(payload, separators=(",", ":"))
 
 
 def _line_offers_tool_call(line: str) -> bool:
@@ -302,7 +302,7 @@ class ServerToolCallStripper:
 
     def strip(self, line: str) -> str | None:
         pending = self._pending_call or _line_offers_tool_call(line)
-        out = strip_server_executed_tool_call(line, pending_call = pending)
+        out = strip_server_executed_tool_call(line, pending_call=pending)
         ends_turn = _line_ends_turn(line)
         # Turn closed: whatever the loop does next opens a turn whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
@@ -345,7 +345,7 @@ class ServerToolCallStripper:
         self._owes_finish = False
         payload = dict(self._last_envelope or {})
         payload["choices"] = [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-        return "data: " + json.dumps(payload, separators = (",", ":"))
+        return "data: " + json.dumps(payload, separators=(",", ":"))
 
 
 def _line_ends_turn(line: str) -> bool:

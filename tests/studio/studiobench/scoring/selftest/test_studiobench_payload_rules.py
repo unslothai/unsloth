@@ -394,7 +394,7 @@ def test_the_harness_records_the_host_it_ran_on():
 
     from tests.studio.studiobench import __main__ as sb_main
 
-    source = Path(sb_main.__file__).read_text(encoding = "utf-8")
+    source = Path(sb_main.__file__).read_text(encoding="utf-8")
     assert "platform.node()" in source, (
         "run_meta does not record the host, so the `node` field of the comparability key is None "
         "on every payload and cannot separate two machines"
@@ -425,6 +425,7 @@ def test_a_run_from_before_the_settling_fix_is_not_comparable_with_one_from_afte
 def test_the_shipping_tool_version_is_the_settled_one():
     """The bump has to be on the constant the harness actually stamps, not only in a fixture."""
     from tests.studio.studiobench.__main__ import TOOL_VERSION
+
     assert TOOL_VERSION != "0.1.0", (
         "TOOL_VERSION still reads 0.1.0, so every payload written after the settling fix carries "
         "the same comparability key as one written before it, and `--compare` reports the two as "
@@ -456,10 +457,10 @@ def test_the_key_is_stable_for_identical_runs():
 def test_the_key_moves_with_the_engine_and_the_tier():
     base = _meta("ac9d5d8e")
     assert payload_rules.comparability_key(base) != payload_rules.comparability_key(
-        _meta("ac9d5d8e", engine = "webkit")
+        _meta("ac9d5d8e", engine="webkit")
     )
     assert payload_rules.comparability_key(base) != payload_rules.comparability_key(
-        _meta("ac9d5d8e", tier = "standard")
+        _meta("ac9d5d8e", tier="standard")
     )
 
 
@@ -626,11 +627,11 @@ def test_compare_reads_an_interrupted_payload_instead_of_raising(tmp_path, capsy
     corpus = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
     rows = [json.dumps(_meta(corpus)), json.dumps({"row_type": "cell", "cell_id": "r100K.A0.rep0"})]
     whole = tmp_path / "whole.jsonl"
-    whole.write_text("\n".join(rows) + "\n", encoding = "utf-8")
+    whole.write_text("\n".join(rows) + "\n", encoding="utf-8")
     torn = tmp_path / "torn.jsonl"
     torn.write_text(
         "\n".join(rows) + "\n" + json.dumps({"row_type": "cell", "cell_id": "r100K"})[:18],
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     assert main(["--compare", str(torn), str(whole)]) == 0

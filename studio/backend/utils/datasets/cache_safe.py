@@ -75,7 +75,7 @@ def _disable_hf_symlinks_for_process() -> None:
 
 def studio_datasets_cache() -> str:
     path = cache_root() / "hf-datasets"
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
 

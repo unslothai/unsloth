@@ -79,8 +79,8 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
 
         check_dataset_for_missing_videos(
             examples,
-            raise_error = True,
-            checked = self._checked_video_paths,
+            raise_error=True,
+            checked=self._checked_video_paths,
         )
 
         if formatting_func is None:
@@ -226,7 +226,7 @@ _VISION_DATASET_KEYS = frozenset(
 )
 
 
-def _is_vlm_config(config, model_types = ()) -> bool:
+def _is_vlm_config(config, model_types=()) -> bool:
     if any(
         hasattr(config, attr)
         for attr in ("vision_config", "img_processor", "image_token_index", "projector_config")
@@ -259,7 +259,7 @@ def _is_vlm_config(config, model_types = ()) -> bool:
     )
 
 
-def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
+def _is_vision_dataset(dataset, *, unknown_is_vision=False) -> bool:
     if dataset is None:
         return False
     column_names = getattr(dataset, "column_names", None)
@@ -269,13 +269,13 @@ def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return unknown_is_vision
 
 
-def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
+def _is_vision_eval_dataset(dataset, *, unknown_is_vision=False) -> bool:
     if isinstance(dataset, dict):
         return any(
-            _is_vision_dataset(split, unknown_is_vision = unknown_is_vision)
+            _is_vision_dataset(split, unknown_is_vision=unknown_is_vision)
             for split in dataset.values()
         )
-    return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
+    return _is_vision_dataset(dataset, unknown_is_vision=unknown_is_vision)
 
 
 _HYBRID_CONFIG_MARKERS = (
@@ -319,6 +319,7 @@ def _mixed_adapter_wrappers():
     """
     try:
         from peft import PeftMixedModel
+
         return ((PeftMixedModel, ("base_model", "model")),)
     except Exception:
         return ()
@@ -430,6 +431,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
+
             resolved = getattr(transformers, architecture, None)
         except Exception:
             resolved = None
@@ -502,6 +504,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
             continue
         try:
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
             return get_class_from_dynamic_module(reference, model_name, **forward)
         except Exception:
             continue
@@ -677,10 +680,10 @@ def _create_unsloth_optimizer(
     model,
     optimizer_cls,
     optimizer_kwargs,
-    embedding_lr = 5e-5,
-    require_embedding_match = False,
-    weight_decay = 0.0,
-    decay_parameter_names = None,
+    embedding_lr=5e-5,
+    require_embedding_match=False,
+    weight_decay=0.0,
+    decay_parameter_names=None,
 ):
     lr = optimizer_kwargs["lr"]
     # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
@@ -747,10 +750,10 @@ def _create_unsloth_optimizer(
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     _install_legacy_resume(
         optimizer,
-        legacy_params = list(param_groups["non_embeddings"].values())
+        legacy_params=list(param_groups["non_embeddings"].values())
         + list(param_groups["embeddings"].values()),
-        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
-        group_roles = group_roles,
+        legacy_sizes=(len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        group_roles=group_roles,
     )
     return optimizer
 
@@ -911,7 +914,7 @@ def _super_create_optimizer_takes_model():
 
 
 class UnslothTrainer(SFTTrainer):
-    def create_optimizer(self, model = None):
+    def create_optimizer(self, model=None):
         # The prepared model's parameters, not self.model's, are the ones to own under FSDP.
         target_model = model if model is not None else self.model
 
@@ -921,7 +924,7 @@ class UnslothTrainer(SFTTrainer):
             return self._create_q_galore_optimizer(
                 q_galore_config,
                 embedding_lr,
-                model = target_model,
+                model=target_model,
             )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
@@ -937,16 +940,16 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
-                require_embedding_match = model is not None,
-                weight_decay = self.args.weight_decay,
-                decay_parameter_names = self.get_decay_parameter_names(target_model),
+                require_embedding_match=model is not None,
+                weight_decay=self.args.weight_decay,
+                decay_parameter_names=self.get_decay_parameter_names(target_model),
             )
         return self.optimizer
 
     def create_scheduler(
         self,
         num_training_steps: int,
-        optimizer = None,
+        optimizer=None,
     ):
         scheduler = super().create_scheduler(num_training_steps, optimizer)
         return _install_legacy_scheduler_resume(scheduler, optimizer or self.optimizer)
@@ -954,8 +957,8 @@ class UnslothTrainer(SFTTrainer):
     def _create_q_galore_optimizer(
         self,
         config: "QGaloreConfig",
-        embedding_lr = None,
-        model = None,
+        embedding_lr=None,
+        model=None,
     ):
         """Build the Q-GaLore optimizer from a QGaloreConfig. ``model`` defaults to self.model."""
         if model is None:
@@ -971,21 +974,21 @@ class UnslothTrainer(SFTTrainer):
 
         param_groups = make_q_galore_param_groups(
             model,
-            lr = lr,
-            weight_decay = weight_decay,
-            rank = config.rank,
-            update_proj_gap = config.update_proj_gap,
-            scale = config.scale,
-            proj_quant = config.proj_quant,
-            proj_quant_group_size = config.proj_quant_group_size,
-            proj_quant_n_bit = config.proj_quant_n_bit,
-            weight_quant = config.weight_quant,
-            stochastic_round = config.stochastic_round,
-            weight_group_size = config.weight_group_size,
-            cos_threshold = config.cos_threshold,
-            gamma_proj = config.gamma_proj,
-            queue_size = config.queue_size,
-            target_modules = config.target_modules,
+            lr=lr,
+            weight_decay=weight_decay,
+            rank=config.rank,
+            update_proj_gap=config.update_proj_gap,
+            scale=config.scale,
+            proj_quant=config.proj_quant,
+            proj_quant_group_size=config.proj_quant_group_size,
+            proj_quant_n_bit=config.proj_quant_n_bit,
+            weight_quant=config.weight_quant,
+            stochastic_round=config.stochastic_round,
+            weight_group_size=config.weight_group_size,
+            cos_threshold=config.cos_threshold,
+            gamma_proj=config.gamma_proj,
+            queue_size=config.queue_size,
+            target_modules=config.target_modules,
         )
 
         if not any("rank" in group for group in param_groups):
@@ -1037,18 +1040,18 @@ class UnslothTrainer(SFTTrainer):
 
         self.optimizer = QGaLoreAdamW8bit(
             param_groups,
-            lr = lr,
-            weight_decay = weight_decay,
-            betas = (self.args.adam_beta1, self.args.adam_beta2),
-            eps = self.args.adam_epsilon,
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=(self.args.adam_beta1, self.args.adam_beta2),
+            eps=self.args.adam_epsilon,
         )
 
         if config.weight_quant:
             QGaLoreAdamW8bit.init_weight_quantization(
                 model,
                 param_groups,
-                group_size = config.weight_group_size,
-                stochastic = config.stochastic_round,
+                group_size=config.weight_group_size,
+                stochastic=config.stochastic_round,
             )
             # Pre-hooks dequantize INT8 weights to float before each forward, letting the optimizer free float
             # weight memory between steps.
@@ -1153,8 +1156,8 @@ def _ensure_warnings_issued(model):
 def _route_unknown_trainer_kwargs(
     config_class,
     unknown,
-    notify = None,
-    already_supplied = None,
+    notify=None,
+    already_supplied=None,
 ):
     """Split names neither side declares into `(to_config, to_trainer)` using
     `rl_config_compat`'s rename/retire policy, which otherwise only runs when a
@@ -1281,7 +1284,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             migrated, unroutable = _route_unknown_trainer_kwargs(
                 config_class,
                 unknown_kwargs,
-                already_supplied = set(additional_config_kwargs),
+                already_supplied=set(additional_config_kwargs),
             )
             additional_config_kwargs.update(migrated)
             trainer_kwargs.update(unroutable)
@@ -1345,7 +1348,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_vlm = _is_vlm_config(model_config, model_types)
                 is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
             hybrid_target = (
-                SimpleNamespace(config = model_config)
+                SimpleNamespace(config=model_config)
                 if isinstance(model, str) and model_config is not None
                 else model
             )
@@ -1374,8 +1377,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             data_collator is None
             and not is_processor
             and (
-                _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
-                or _is_vision_eval_dataset(eval_dataset, unknown_is_vision = is_vlm)
+                _is_vision_dataset(train_dataset, unknown_is_vision=is_vlm)
+                or _is_vision_eval_dataset(eval_dataset, unknown_is_vision=is_vlm)
             )
         )
 

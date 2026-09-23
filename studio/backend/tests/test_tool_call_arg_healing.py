@@ -46,14 +46,14 @@ _TRUNCATED = '{"path":"flappy-bird.html","old_string":"","new_string":"<!DOCTYPE
     ],
 )
 def test_a_single_string_tool_still_heals(tool_name, key):
-    coerced = coerce_tool_arguments("some text", heal = True, tool_name = tool_name)
+    coerced = coerce_tool_arguments("some text", heal=True, tool_name=tool_name)
     assert coerced.healed is True
     assert coerced.arguments == {key: "some text"}
 
 
 @pytest.mark.parametrize("tool_name", ["edit_file", "mcp__server__tool", ""])
 def test_a_tool_with_no_single_string_argument_is_not_healed(tool_name):
-    coerced = coerce_tool_arguments(_TRUNCATED, heal = True, tool_name = tool_name)
+    coerced = coerce_tool_arguments(_TRUNCATED, heal=True, tool_name=tool_name)
     assert _heal_arg_key(tool_name) is None
     assert coerced.healed is False
     assert coerced.arguments == {UNPARSED_ARGUMENTS_KEY: _TRUNCATED}
@@ -62,8 +62,8 @@ def test_a_tool_with_no_single_string_argument_is_not_healed(tool_name):
 def test_valid_json_is_never_healed():
     coerced = coerce_tool_arguments(
         '{"path":"a.py","edits":[{"old_string":"a","new_string":"b"}]}',
-        heal = True,
-        tool_name = "edit_file",
+        heal=True,
+        tool_name="edit_file",
     )
     assert coerced.healed is False
     assert coerced.arguments["path"] == "a.py"
@@ -71,9 +71,9 @@ def test_valid_json_is_never_healed():
 
 def test_the_model_is_told_the_arguments_were_cut_off():
     """Naming the real fault is what makes the retry the right one."""
-    coerced = coerce_tool_arguments(_TRUNCATED, heal = True, tool_name = "edit_file")
+    coerced = coerce_tool_arguments(_TRUNCATED, heal=True, tool_name="edit_file")
 
-    result = execute_tool("edit_file", coerced.arguments, session_id = "t")
+    result = execute_tool("edit_file", coerced.arguments, session_id="t")
 
     assert result.startswith("Error:")
     assert "edit_file" in result
@@ -84,9 +84,9 @@ def test_the_model_is_told_the_arguments_were_cut_off():
 
 
 def test_unparseable_but_complete_arguments_are_not_called_truncated():
-    coerced = coerce_tool_arguments("not json at all", heal = True, tool_name = "edit_file")
+    coerced = coerce_tool_arguments("not json at all", heal=True, tool_name="edit_file")
 
-    result = execute_tool("edit_file", coerced.arguments, session_id = "t")
+    result = execute_tool("edit_file", coerced.arguments, session_id="t")
 
     assert "not valid JSON" in result
     assert "cut off" not in result
@@ -100,7 +100,7 @@ def test_a_healable_tool_still_reaches_the_tool_not_the_guard():
     `test_broken_json_is_not_healed_even_for_a_single_string_tool`, and what belongs here
     is the bare string healing actually exists for.
     """
-    coerced = coerce_tool_arguments("print('hi')", heal = True, tool_name = "python")
+    coerced = coerce_tool_arguments("print('hi')", heal=True, tool_name="python")
 
     assert UNPARSED_ARGUMENTS_KEY not in coerced.arguments
     assert coerced.arguments == {"code": "print('hi')"}
@@ -116,7 +116,7 @@ def test_broken_json_is_not_healed_even_for_a_single_string_tool():
     as the PROGRAM, and the model then read its own file back as `{"code":"html = ...` and
     spent the rest of the turn convinced the sandbox had mangled its content.
     """
-    coerced = coerce_tool_arguments(_TRUNCATED_PYTHON, heal = True, tool_name = "python")
+    coerced = coerce_tool_arguments(_TRUNCATED_PYTHON, heal=True, tool_name="python")
 
     assert coerced.healed is False
     assert coerced.arguments == {UNPARSED_ARGUMENTS_KEY: _TRUNCATED_PYTHON}
@@ -145,7 +145,7 @@ def test_text_that_merely_opens_with_a_brace_still_heals(raw):
     """
     assert _looks_like_broken_json(raw) is False
 
-    coerced = coerce_tool_arguments(raw, heal = True, tool_name = "web_search")
+    coerced = coerce_tool_arguments(raw, heal=True, tool_name="web_search")
 
     assert coerced.healed is True
     assert coerced.arguments == {"query": raw}
@@ -171,7 +171,7 @@ def test_text_that_merely_opens_with_a_brace_still_heals(raw):
 def test_a_call_that_ran_out_of_input_is_never_healed(raw):
     assert _looks_like_broken_json(raw) is True
 
-    coerced = coerce_tool_arguments(raw, heal = True, tool_name = "web_search")
+    coerced = coerce_tool_arguments(raw, heal=True, tool_name="web_search")
 
     assert coerced.healed is False
     assert coerced.arguments == {UNPARSED_ARGUMENTS_KEY: raw}
@@ -179,12 +179,13 @@ def test_a_call_that_ran_out_of_input_is_never_healed(raw):
 
 def _decision_for(raw: str):
     from core.inference.tool_loop_controller import ToolCallDecision
-    coerced = coerce_tool_arguments(raw, heal = True, tool_name = "edit_file")
+
+    coerced = coerce_tool_arguments(raw, heal=True, tool_name="edit_file")
     return ToolCallDecision(
-        action = "execute",
-        tool_name = "edit_file",
-        arguments = coerced.arguments,
-        tool_call_id = "call_0",
+        action="execute",
+        tool_name="edit_file",
+        arguments=coerced.arguments,
+        tool_call_id="call_0",
     )
 
 
@@ -254,10 +255,10 @@ def test_a_readable_call_is_unaffected_at_both_boundaries():
     from core.inference.tool_loop_controller import ToolCallDecision
 
     decision = ToolCallDecision(
-        action = "execute",
-        tool_name = "edit_file",
-        arguments = {"path": "a.py", "edits": []},
-        tool_call_id = "call_0",
+        action="execute",
+        tool_name="edit_file",
+        arguments={"path": "a.py", "edits": []},
+        tool_call_id="call_0",
     )
 
     assert decision.unparsed_fragment is None
@@ -270,16 +271,16 @@ def test_a_readable_call_is_unaffected_at_both_boundaries():
 
 def test_a_genuine_bare_string_still_heals():
     """The case healing exists for: one argument sent as a string instead of an object."""
-    coerced = coerce_tool_arguments("print(1 + 1)", heal = True, tool_name = "python")
+    coerced = coerce_tool_arguments("print(1 + 1)", heal=True, tool_name="python")
 
     assert coerced.healed is True
     assert coerced.arguments == {"code": "print(1 + 1)"}
 
 
 def test_the_model_is_told_python_arguments_were_cut_off():
-    coerced = coerce_tool_arguments(_TRUNCATED_PYTHON, heal = True, tool_name = "python")
+    coerced = coerce_tool_arguments(_TRUNCATED_PYTHON, heal=True, tool_name="python")
 
-    result = execute_tool("python", coerced.arguments, session_id = "t")
+    result = execute_tool("python", coerced.arguments, session_id="t")
 
     assert "could not be read" in result
     assert "cut off" in result
@@ -308,9 +309,9 @@ def test_an_mcp_tool_with_one_string_argument_is_healed_from_the_request_schemas
     """
     coerced = coerce_tool_arguments(
         "quarterly report",
-        heal = True,
-        tool_name = "mcp__notes__search",
-        tool_schemas = [_MCP_TOOL],
+        heal=True,
+        tool_name="mcp__notes__search",
+        tool_schemas=[_MCP_TOOL],
     )
 
     assert coerced.healed is True
@@ -321,12 +322,12 @@ def test_the_request_schemas_are_not_cached_across_chats():
     """One chat's MCP server must not decide another chat's healing."""
     coerce_tool_arguments(
         "quarterly report",
-        heal = True,
-        tool_name = "mcp__notes__search",
-        tool_schemas = [_MCP_TOOL],
+        heal=True,
+        tool_name="mcp__notes__search",
+        tool_schemas=[_MCP_TOOL],
     )
 
-    coerced = coerce_tool_arguments("quarterly report", heal = True, tool_name = "mcp__notes__search")
+    coerced = coerce_tool_arguments("quarterly report", heal=True, tool_name="mcp__notes__search")
 
     assert coerced.healed is False
 
@@ -335,9 +336,9 @@ def test_a_truncated_mcp_call_is_still_not_healed():
     """Knowing the key must not resurrect the defect the guard was added for."""
     coerced = coerce_tool_arguments(
         _TRUNCATED,
-        heal = True,
-        tool_name = "mcp__notes__search",
-        tool_schemas = [_MCP_TOOL],
+        heal=True,
+        tool_name="mcp__notes__search",
+        tool_schemas=[_MCP_TOOL],
     )
 
     assert coerced.healed is False
@@ -347,7 +348,7 @@ def test_a_truncated_mcp_call_is_still_not_healed():
 def test_the_controller_hands_its_own_tools_to_the_healer():
     from core.inference.tool_loop_controller import ToolLoopController  # noqa: PLC0415
 
-    controller = ToolLoopController(tools = [_MCP_TOOL])
+    controller = ToolLoopController(tools=[_MCP_TOOL])
 
     decision = controller.prepare_call(
         {

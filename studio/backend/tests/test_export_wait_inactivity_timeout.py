@@ -32,16 +32,16 @@ def waiting_orchestrator(monkeypatch):
 
     from core.export import orchestrator as orchestrator_module
 
-    clock = types.SimpleNamespace(now = 0.0)
+    clock = types.SimpleNamespace(now=0.0)
     # Swap the module reference, not `time.monotonic` itself: patching the attribute would hand the
     # frozen clock to every other thread in the process for the length of the test.
-    fake_time = types.SimpleNamespace(monotonic = lambda: clock.now, time = real_time.time)
+    fake_time = types.SimpleNamespace(monotonic=lambda: clock.now, time=real_time.time)
     monkeypatch.setattr(orchestrator_module, "time", fake_time)
 
     orch = orchestrator_module.ExportOrchestrator()
     script: list = []
 
-    def fake_read(timeout = None):
+    def fake_read(timeout=None):
         # A real read blocks for at most the timeout it was given, so charge the clock the same.
         clock.now += min(READ_SECONDS, timeout) if timeout is not None else READ_SECONDS
         return script.pop(0) if script else None
@@ -61,7 +61,7 @@ def test_a_worker_that_keeps_logging_survives_past_the_timeout(waiting_orchestra
     )
     script.append({"type": "export_merged_done", "path": "/out/model"})
 
-    resp = orch._wait_response("export_merged_done", timeout = TIMEOUT)
+    resp = orch._wait_response("export_merged_done", timeout=TIMEOUT)
 
     assert resp["type"] == "export_merged_done"
     assert clock.now > TIMEOUT, "the fixture must run the wait past the timeout to be meaningful"
@@ -74,7 +74,7 @@ def test_a_status_message_also_resets_the_deadline(waiting_orchestrator) -> None
     )
     script.append({"type": "export_gguf_done", "path": "/out/model.gguf"})
 
-    assert orch._wait_response("export_gguf_done", timeout = TIMEOUT)["type"] == "export_gguf_done"
+    assert orch._wait_response("export_gguf_done", timeout=TIMEOUT)["type"] == "export_gguf_done"
     assert clock.now > TIMEOUT
 
 
@@ -82,7 +82,7 @@ def test_a_quiet_worker_still_times_out(waiting_orchestrator) -> None:
     orch, clock, _script = waiting_orchestrator
 
     with pytest.raises(RuntimeError):
-        orch._wait_response("export_merged_done", timeout = TIMEOUT)
+        orch._wait_response("export_merged_done", timeout=TIMEOUT)
 
     assert clock.now < TIMEOUT * 2, "a quiet wait must end near the timeout, not run on"
 
@@ -101,8 +101,8 @@ def test_max_wait_caps_a_chatty_wait(waiting_orchestrator) -> None:
         ]
     )
 
-    with pytest.raises(RuntimeError, match = "gave up after"):
-        orch._wait_response("cleanup_done", timeout = TIMEOUT, max_wait = TIMEOUT)
+    with pytest.raises(RuntimeError, match="gave up after"):
+        orch._wait_response("cleanup_done", timeout=TIMEOUT, max_wait=TIMEOUT)
 
     assert clock.now < TIMEOUT * 2, "the cap must hold regardless of how much the worker prints"
     assert script, "the wait must give up with the worker still talking, not drain the script"
@@ -120,7 +120,7 @@ def test_cleanup_passes_a_hard_cap(monkeypatch) -> None:
     monkeypatch.setattr(
         orch,
         "_wait_response",
-        lambda expected_type, timeout = None, max_wait = None: (
+        lambda expected_type, timeout=None, max_wait=None: (
             seen.append((timeout, max_wait)) or {"success": True}
         ),
     )
@@ -149,7 +149,7 @@ def test_a_multi_quant_export_is_allowed_to_stay_silent_for_the_whole_batch(monk
 
     seen: list = []
 
-    def record(expected_type, timeout = None):
+    def record(expected_type, timeout=None):
         seen.append(timeout)
         return {"success": True, "message": "", "output_path": None}
 

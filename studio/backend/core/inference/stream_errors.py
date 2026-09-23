@@ -105,9 +105,9 @@ def stream_error_from_chunk(chunk: Any) -> Optional[LlamaStreamError]:
     starvation = is_kv_starvation(message)
     return LlamaStreamError(
         describe_stream_error(message),
-        server_message = message or None,
-        kv_starvation = starvation,
-        context_oversize = is_context_oversize(message),
+        server_message=message or None,
+        kv_starvation=starvation,
+        context_oversize=is_context_oversize(message),
     )
 
 

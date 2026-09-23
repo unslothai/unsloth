@@ -32,7 +32,7 @@ SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 GET_FUNCTION_SOURCE = PACKAGE_ROOT / "tests" / "studio_setup_ps1" / "Get-FunctionSource.ps1"
 
 requires_pwsh = pytest.mark.skipif(
-    shutil.which("pwsh") is None, reason = "pwsh is required to run the setup.ps1 printer"
+    shutil.which("pwsh") is None, reason="pwsh is required to run the setup.ps1 printer"
 )
 
 
@@ -51,11 +51,11 @@ def _usable_bash():
     try:
         probe = subprocess.run(
             [exe, "-c", "printf ok"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            errors = "replace",
-            timeout = 60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -64,7 +64,7 @@ def _usable_bash():
 
 BASH = _usable_bash()
 requires_bash = pytest.mark.skipif(
-    BASH is None, reason = "a working bash is required to run the setup.sh printer"
+    BASH is None, reason="a working bash is required to run the setup.sh printer"
 )
 
 # 2.0 is where missing-property reads turn fatal; 3.0 and Latest keep that rule.
@@ -146,8 +146,8 @@ _CASES = [
     ("backend_ansi", _with_backend("\x1b[31mrocm\x1b[0m"), _BASE_LINE),
     ("backend_nul", _with_backend("rocm\x00x"), _BASE_LINE),
     # -ccontains, so a case-folded key is ignored by both rather than only by Python.
-    ("backend_key_uppercase", _marker(BACKEND = "vulkan"), _BASE_LINE),
-    ("backend_key_mixed_case", _marker(Backend = "vulkan"), _BASE_LINE),
+    ("backend_key_uppercase", _marker(BACKEND="vulkan"), _BASE_LINE),
+    ("backend_key_mixed_case", _marker(Backend="vulkan"), _BASE_LINE),
     (
         "no_tag_key",
         json.dumps({"published_repo": "unslothai/llama.cpp", "release_tag": "b10715-mix"}),
@@ -177,7 +177,7 @@ _CASES = [
     ("missing_release_tag", json.dumps({"published_repo": "r/l", "backend": "rocm"}), ""),
     (
         "extra_unknown_keys",
-        _marker(backend = "rocm", future_key = {"a": [1, 2]}),
+        _marker(backend="rocm", future_key={"a": [1, 2]}),
         _BASE_LINE + " -- rocm backend",
     ),
     ("malformed_json", "{not json at all", ""),
@@ -203,9 +203,9 @@ _KNOWN_TWIN_DIVERGENCES = frozenset(_PS1_EXPECTED_OVERRIDES) | frozenset(_HISTOR
 def marker_dir(tmp_path):
     def _write(raw):
         install_dir = tmp_path / "llama.cpp"
-        install_dir.mkdir(exist_ok = True)
+        install_dir.mkdir(exist_ok=True)
         if raw is not None:
-            (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(raw, encoding = "utf-8")
+            (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(raw, encoding="utf-8")
         return install_dir
 
     return _write
@@ -234,13 +234,13 @@ if ($null -ne $result) {{ [Console]::Out.Write($result) }}
 
 def _run_ps1_printer(install_dir, strict_mode):
     script = _PS_HARNESS.format(
-        get_function_source = f"'{GET_FUNCTION_SOURCE}'",
-        setup_ps1 = f"'{SETUP_PS1}'",
+        get_function_source=f"'{GET_FUNCTION_SOURCE}'",
+        setup_ps1=f"'{SETUP_PS1}'",
     )
     # -File, not -Command: param() only binds named args from a file, and strict mode has
     # to sit in the CALLER's scope.
     script_path = Path(install_dir).parent / f"drive_{strict_mode.replace('.', '_')}.ps1"
-    script_path.write_text(script, encoding = "utf-8")
+    script_path.write_text(script, encoding="utf-8")
     # run_pwsh, not subprocess.run: this file spawns one pwsh per parametrisation, and under
     # `-n 4` the workers shared one PowerShell startup cache. A torn cache kills the interpreter
     # before it reaches the script, and surfaces here as a FileLoadException instead of a
@@ -259,12 +259,12 @@ def _run_ps1_printer(install_dir, strict_mode):
             "-StrictMode",
             strict_mode,
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = 120,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
     )
     return proc
 
@@ -280,45 +280,45 @@ installed_llama_prebuilt_release "$_INSTALL_DIR"
 
 
 def _sliced_sh_function(tmp_path):
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     start = text.index("installed_llama_prebuilt_release() {")
     end = text.index("\n}\n", start) + len("\n}\n")
     body = text[start:end]
     assert "UNSLOTH_PREBUILT_INFO.json" in body, "sliced the wrong block out of setup.sh"
     assert body.count("<<'PY'") == 1, "expected exactly one heredoc in the sliced block"
     path = tmp_path / "installed_release_fn.sh"
-    path.write_text(body, encoding = "utf-8")
+    path.write_text(body, encoding="utf-8")
     return path
 
 
 def _run_sh_printer(install_dir, tmp_path):
     func_file = _sliced_sh_function(tmp_path)
     script = tmp_path / "drive.sh"
-    script.write_text(_SH_HARNESS, encoding = "utf-8")
+    script.write_text(_SH_HARNESS, encoding="utf-8")
     # The sliced function shells out to `python`; pin it to the test interpreter.
     shim_dir = tmp_path / "shim"
-    shim_dir.mkdir(exist_ok = True)
+    shim_dir.mkdir(exist_ok=True)
     shim = shim_dir / "python"
-    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding = "utf-8")
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     env = dict(os.environ)
     env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
     proc = subprocess.run(
         [BASH, str(script), str(func_file), str(install_dir)],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        env = env,
-        timeout = 120,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=120,
     )
     return proc
 
 
 @requires_pwsh
 @pytest.mark.parametrize("strict_mode", STRICT_MODES)
-@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids = _IDS)
+@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids=_IDS)
 def test_ps1_printer(marker_dir, strict_mode, case_id, raw, expected):
     expected = _PS1_EXPECTED_OVERRIDES.get(case_id, expected)
     install_dir = marker_dir(raw)
@@ -363,7 +363,7 @@ def test_ps1_printer_never_evaluates_the_marker(marker_dir, payload):
 
 
 @requires_bash
-@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids = _IDS)
+@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids=_IDS)
 def test_sh_printer(marker_dir, tmp_path, case_id, raw, expected):
     install_dir = marker_dir(raw)
     proc = _run_sh_printer(install_dir, tmp_path)
@@ -385,7 +385,7 @@ def test_sh_printer_never_evaluates_the_marker(marker_dir, tmp_path, payload):
 
 @requires_pwsh
 @requires_bash
-@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids = _IDS)
+@pytest.mark.parametrize(("case_id", "raw", "expected"), _CASES, ids=_IDS)
 def test_the_two_printers_agree(marker_dir, tmp_path, case_id, raw, expected):
     """Byte-for-byte parity. Without it the twins drift and nobody notices."""
     if case_id in _KNOWN_TWIN_DIVERGENCES:
@@ -606,7 +606,7 @@ _HISTORICAL_MARKERS = {
 def test_every_historical_marker_shape_on_ps1(marker_dir, strict_mode, shape_id):
     payload, expected = _HISTORICAL_MARKERS[shape_id]
     expected = _HISTORICAL_PS1_OVERRIDES.get(shape_id, expected)
-    install_dir = marker_dir(json.dumps(payload, indent = 2) + "\n")
+    install_dir = marker_dir(json.dumps(payload, indent=2) + "\n")
     proc = _run_ps1_printer(install_dir, strict_mode)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == "", f"{shape_id} under {strict_mode}: {proc.stderr!r}"
@@ -617,7 +617,7 @@ def test_every_historical_marker_shape_on_ps1(marker_dir, strict_mode, shape_id)
 @pytest.mark.parametrize("shape_id", sorted(_HISTORICAL_MARKERS))
 def test_every_historical_marker_shape_on_sh(marker_dir, tmp_path, shape_id):
     payload, expected = _HISTORICAL_MARKERS[shape_id]
-    install_dir = marker_dir(json.dumps(payload, indent = 2) + "\n")
+    install_dir = marker_dir(json.dumps(payload, indent=2) + "\n")
     proc = _run_sh_printer(install_dir, tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.rstrip("\n") == expected, shape_id
@@ -630,14 +630,14 @@ def test_every_historical_marker_shape_agrees(marker_dir, tmp_path, shape_id):
     if shape_id in _KNOWN_TWIN_DIVERGENCES:
         pytest.skip("documented pre-existing divergence; see the dedicated test")
     payload, _expected = _HISTORICAL_MARKERS[shape_id]
-    install_dir = marker_dir(json.dumps(payload, indent = 2) + "\n")
+    install_dir = marker_dir(json.dumps(payload, indent=2) + "\n")
     ps1 = _run_ps1_printer(install_dir, "Latest")
     sh = _run_sh_printer(install_dir, tmp_path)
     assert ps1.stdout == sh.stdout.rstrip("\n"), shape_id
 
 
 def test_the_ps1_guard_checks_property_existence():
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     start = text.index("function Get-InstalledLlamaPrebuiltRelease")
     body = text[start : text.index("\nfunction ", start + 1)]
     assert "PSObject.Properties.Name -ccontains 'backend'" in body, (
@@ -648,12 +648,12 @@ def test_the_ps1_guard_checks_property_existence():
 
 def test_both_printers_share_one_backend_shape_rule():
     shape = "[A-Za-z0-9._+-]{1,32}"
-    assert shape in SETUP_PS1.read_text(encoding = "utf-8")
-    assert shape in SETUP_SH.read_text(encoding = "utf-8")
+    assert shape in SETUP_PS1.read_text(encoding="utf-8")
+    assert shape in SETUP_SH.read_text(encoding="utf-8")
 
 
 def test_the_sh_printer_only_accepts_a_string():
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     assert (
         "isinstance(_backend_raw, str)" in text
     ), "str() on a non-string diverges from the PowerShell twin"

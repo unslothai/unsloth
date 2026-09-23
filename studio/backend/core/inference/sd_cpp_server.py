@@ -143,6 +143,7 @@ def _has_ancestor(
     pid-reuse cycle cannot loop."""
     try:
         import psutil
+
         proc = psutil.Process(pid)
         for _ in range(max_depth):
             proc = proc.parent()
@@ -170,7 +171,7 @@ class SdCppServer:
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
-        self._tail: deque[str] = deque(maxlen = 200)
+        self._tail: deque[str] = deque(maxlen=200)
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
@@ -178,7 +179,7 @@ class SdCppServer:
         # Set during a generation so the stdout drain feeds the step-progress callback.
         self._step_listener: Optional[Callable[[str], None]] = None
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
-        self._client = httpx.Client(timeout = 30.0, trust_env = False)
+        self._client = httpx.Client(timeout=30.0, trust_env=False)
         self._scratch_dir: Optional[str] = None
         self._stopped = False
         atexit.register(self.stop)
@@ -231,19 +232,19 @@ class SdCppServer:
             self._abort.clear()
             port = self._find_free_port()
             # empty scratch dir for sd-server's LoRA/upscaler/embeddings scans (errors if missing)
-            self._scratch_dir = tempfile.mkdtemp(prefix = "sdcpp_dirs_")
+            self._scratch_dir = tempfile.mkdtemp(prefix="sdcpp_dirs_")
             cmd = build_sd_cpp_server_command(
                 self.binary,
                 files,
-                host = self.host,
-                port = port,
-                vae_format = vae_format,
-                offload = list(offload or []),
-                native_speed = native_speed,
-                threads = threads,
-                scratch_dir = self._scratch_dir,
-                verbose = True,  # sd-server prints the per-step sampling lines we parse
-                extra_args = list(extra_args or []),
+                host=self.host,
+                port=port,
+                vae_format=vae_format,
+                offload=list(offload or []),
+                native_speed=native_speed,
+                threads=threads,
+                scratch_dir=self._scratch_dir,
+                verbose=True,  # sd-server prints the per-step sampling lines we parse
+                extra_args=list(extra_args or []),
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:
@@ -253,7 +254,7 @@ class SdCppServer:
             else:
                 logger.info(
                     "starting sd-server: %s",
-                    _sd_cpp_command_summary(cmd, default_mode = "server"),
+                    _sd_cpp_command_summary(cmd, default_mode="server"),
                 )
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
@@ -277,12 +278,12 @@ class SdCppServer:
                 try:
                     proc = subprocess.Popen(
                         cmd,
-                        stdout = subprocess.PIPE,
-                        stderr = subprocess.STDOUT,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        env = run_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        env=run_env,
                         **windows_hidden_subprocess_kwargs(),
                         **child_popen_kwargs(),
                     )
@@ -300,7 +301,7 @@ class SdCppServer:
                     logger.info("shutdown began during the spawn; killing the new sd-server")
                     try:
                         proc.kill()
-                        proc.wait(timeout = 5)
+                        proc.wait(timeout=5)
                     except Exception:  # noqa: BLE001 - the reap is best-effort
                         pass
                     # Only drop the record once the child is confirmed gone. If the kill
@@ -323,12 +324,12 @@ class SdCppServer:
                 spawned.set()
                 self._drain_stdout(proc)
                 try:
-                    proc.wait(timeout = 5)
+                    proc.wait(timeout=5)
                 except Exception:  # noqa: BLE001
                     pass
 
             self._stdout_thread = threading.Thread(
-                target = _own_process, daemon = True, name = "sd-server-owner"
+                target=_own_process, daemon=True, name="sd-server-owner"
             )
             self._stdout_thread.start()
             spawned.wait()
@@ -336,7 +337,7 @@ class SdCppServer:
                 self._dispose()
                 raise RuntimeError(f"failed to spawn sd-server: {self._spawn_error}")
             if not self._wait_ready(startup_timeout):
-                tail = _diagnostic_tail(self._tail, keep = 30)
+                tail = _diagnostic_tail(self._tail, keep=30)
                 aborted = self._abort.is_set()
                 self._kill_locked()
                 self._dispose()
@@ -366,7 +367,7 @@ class SdCppServer:
                 logger.error("sd-server exited early during load (code %s)", code)
                 return False
             try:
-                if self._client.get(url, timeout = 2.0).status_code == 200 and self._port_is_ours():
+                if self._client.get(url, timeout=2.0).status_code == 200 and self._port_is_ours():
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
@@ -395,7 +396,7 @@ class SdCppServer:
         except Exception:  # noqa: BLE001 -- optional dependency
             return True
         try:
-            for conn in psutil.net_connections(kind = "inet"):
+            for conn in psutil.net_connections(kind="inet"):
                 laddr = getattr(conn, "laddr", None)
                 if not laddr or getattr(laddr, "port", None) != self.port:
                     continue
@@ -485,7 +486,7 @@ class SdCppServer:
         except Exception:  # noqa: BLE001
             pass
         if self._scratch_dir:
-            shutil.rmtree(self._scratch_dir, ignore_errors = True)
+            shutil.rmtree(self._scratch_dir, ignore_errors=True)
             self._scratch_dir = None
 
     def _kill_locked(self) -> None:
@@ -495,12 +496,12 @@ class SdCppServer:
         pid = proc.pid
         try:
             proc.terminate()
-            proc.wait(timeout = 5)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             logger.warning("sd-server did not exit on SIGTERM; killing")
             try:
                 proc.kill()
-                proc.wait(timeout = 5)
+                proc.wait(timeout=5)
             except Exception:  # noqa: BLE001 -- best-effort teardown
                 pass
         except Exception as exc:  # noqa: BLE001
@@ -510,7 +511,7 @@ class SdCppServer:
             self._process = None
             self.port = None
             if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout = 2)
+                self._stdout_thread.join(timeout=2)
                 self._stdout_thread = None
 
     def img_gen(
@@ -541,7 +542,7 @@ class SdCppServer:
         try:
             try:
                 resp = self._client.post(
-                    f"{self.base_url}{_IMG_GEN_PATH}", json = payload, timeout = submit_timeout
+                    f"{self.base_url}{_IMG_GEN_PATH}", json=payload, timeout=submit_timeout
                 )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
                 raise RuntimeError(self._died_message("img_gen submit", exc)) from exc
@@ -591,7 +592,7 @@ class SdCppServer:
                     self.stop()
                     raise RuntimeError(f"sd-server generation timed out after {total_timeout}s")
                 try:
-                    jr = self._client.get(f"{self.base_url}{_JOBS_PATH}/{job_id}", timeout = 10.0)
+                    jr = self._client.get(f"{self.base_url}{_JOBS_PATH}/{job_id}", timeout=10.0)
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                     time.sleep(poll_interval)
                     continue
@@ -632,7 +633,7 @@ class SdCppServer:
     def cancel(self, job_id: str) -> None:
         """Best-effort native cancel of an in-flight job."""
         try:
-            self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout = 5.0)
+            self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout=5.0)
         except Exception:  # noqa: BLE001 -- cancel is best-effort
             pass
 
@@ -643,7 +644,7 @@ class SdCppServer:
         images = result.get("images") if isinstance(result, dict) else None
         items = [it for it in images if isinstance(it, dict)] if isinstance(images, list) else []
         out: list[bytes] = []
-        for item in sorted(items, key = lambda d: d.get("index", 0)):
+        for item in sorted(items, key=lambda d: d.get("index", 0)):
             b64 = item.get("b64_json")
             if not b64:
                 continue

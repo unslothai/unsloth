@@ -49,47 +49,52 @@ _FAMILIES: dict[str, dict[str, Any]] = {
 
 _CONFIGS: dict[str, dict[str, Any]] = {
     # bit-exact reference: everything off / native / dense
-    "reference": dict(te = "none", speed = "off", attn = "native", cache = "off"),
+    "reference": dict(te="none", speed="off", attn="native", cache="off"),
     # non-compile floor: eager patches + attention auto-upgrade
-    "eager": dict(te = "none", speed = "eager", attn = "auto", cache = "off"),
+    "eager": dict(te="none", speed="eager", attn="auto", cache="off"),
     # default dense tier (regional compile), uncached
-    "compile": dict(te = "none", speed = "default", attn = "auto", cache = "off"),
+    "compile": dict(te="none", speed="default", attn="auto", cache="off"),
     # max tier (max-autotune regional compile + TF32 + fused QKV), uncached
-    "speedmax": dict(te = "none", speed = "max", attn = "auto", cache = "off"),
+    "speedmax": dict(te="none", speed="max", attn="auto", cache="off"),
     # default tier + FBCache (the auto path for 20+ step schedules)
-    "fbcache": dict(te = "none", speed = "default", attn = "auto", cache = "fbcache"),
+    "fbcache": dict(te="none", speed="default", attn="auto", cache="fbcache"),
     # FBCache without compile: isolates the cache's drift from the compile floor
-    "fbcache_eager": dict(te = "none", speed = "eager", attn = "auto", cache = "fbcache"),
+    "fbcache_eager": dict(te="none", speed="eager", attn="auto", cache="fbcache"),
     # TE quant isolation on the bit-exact stack: the conditioning perturbation ALONE
-    "te_fp8dyn": dict(te = "fp8_dynamic", speed = "off", attn = "native", cache = "off"),
-    "te_fp8": dict(te = "fp8", speed = "off", attn = "native", cache = "off"),
+    "te_fp8dyn": dict(te="fp8_dynamic", speed="off", attn="native", cache="off"),
+    "te_fp8": dict(te="fp8", speed="off", attn="native", cache="off"),
 }
 
 
 def _sync() -> None:
     import torch
+
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
 
 def _reset_peak() -> None:
     import torch
+
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
 
 def _alloc_gb() -> float:
     import torch
+
     return torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
 
 
 def _peak_gb() -> float:
     import torch
+
     return torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
 
 
 def _empty() -> None:
     import torch
+
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -106,11 +111,12 @@ def _lpips_alex(ref_arr, arr) -> Optional[float]:
 
         fn = _LP.get("fn")
         if fn is None:
-            fn = lpips.LPIPS(net = "alex", verbose = False).eval()
+            fn = lpips.LPIPS(net="alex", verbose=False).eval()
             _LP["fn"] = fn
 
         def _t(a):
             import torch as _torch
+
             return _torch.from_numpy(a).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
 
         with torch.no_grad():
@@ -133,15 +139,17 @@ def _import_diffusers():
 def _target():
     """Stand-in for DiffusionDeviceTarget: what the real lever functions read."""
     import torch
+
     return types.SimpleNamespace(
-        device = "cuda",
-        dtype = torch.bfloat16,
-        supports_default_torch_compile = True,
+        device="cuda",
+        dtype=torch.bfloat16,
+        supports_default_torch_compile=True,
     )
 
 
 def _find_family(name: str):
     from core.inference.diffusion_families import _FAMILIES as ALL
+
     for fam in ALL:
         if fam.name == name:
             return fam
@@ -155,7 +163,7 @@ def _apply_levers(
     fam_obj,
     no_epc: bool = False,
     unarm_cache: bool = False,
-    logger = None,
+    logger=None,
 ) -> dict:
     """Apply the configured levers with the loader's own argument values, in the loader's order (diffusion.py): TE quant, attention, step cache, eager patches, speed."""
     from core.inference.diffusion_precision import quantize_text_encoders
@@ -180,21 +188,21 @@ def _apply_levers(
     if cfg["te"] != "none":
         # Returns (mode, reason, status) now; this bench only reports the mode that engaged.
         engaged["te"] = quantize_text_encoders(
-            pipe, tgt, mode = cfg["te"], family = fam_obj.name, logger = logger
+            pipe, tgt, mode=cfg["te"], family=fam_obj.name, logger=logger
         ).mode
 
     speed_mode = cfg["speed"]
     engaged["attn"] = apply_attention_backend(
         pipe,
         select_attention_backend(
-            tgt, None if cfg["attn"] == "auto" else cfg["attn"], speed_active = speed_mode != "off"
+            tgt, None if cfg["attn"] == "auto" else cfg["attn"], speed_active=speed_mode != "off"
         ),
-        logger = logger,
+        logger=logger,
     )
 
     if cfg["cache"] != "off":
         engaged["cache"] = apply_step_cache(
-            pipe, mode = cfg["cache"], quant_active = False, logger = logger
+            pipe, mode=cfg["cache"], quant_active=False, logger=logger
         )
 
     if speed_mode != "off":
@@ -207,15 +215,16 @@ def _apply_levers(
     engaged["speed_optims"] = apply_speed_optims(
         pipe,
         tgt,
-        is_gguf = False,
-        family = fam_obj,
-        speed_mode = speed_mode,
-        cache_active = engaged["cache"] is not None,
-        offload_active = False,
+        is_gguf=False,
+        family=fam_obj,
+        speed_mode=speed_mode,
+        cache_active=engaged["cache"] is not None,
+        offload_active=False,
     )
 
     if no_epc:
         import torch
+
         cfg_ind = getattr(getattr(torch, "_inductor", None), "config", None)
         if cfg_ind is not None and hasattr(cfg_ind, "emulate_precision_casts"):
             cfg_ind.emulate_precision_casts = False
@@ -258,6 +267,7 @@ def _generate(
     call_params = {}
     try:
         import inspect
+
         call_params = inspect.signature(pipe.__call__).parameters
     except (TypeError, ValueError):
         pass
@@ -301,21 +311,21 @@ def _generate(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description = __doc__.splitlines()[0])
-    ap.add_argument("--family", required = True, choices = sorted(_FAMILIES))
-    ap.add_argument("--config", required = True, choices = sorted(_CONFIGS))
-    ap.add_argument("--steps", type = int, default = None, help = "override the family default")
-    ap.add_argument("--size", type = int, default = 1024)
-    ap.add_argument("--seed", type = int, default = 42)
-    ap.add_argument("--out", default = "outputs/image_speedmem")
-    ap.add_argument("--no-epc", action = "store_true")
-    ap.add_argument("--unarm-cache", action = "store_true")
-    ap.add_argument("--tag", default = None, help = "output row name (default: config name)")
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--family", required=True, choices=sorted(_FAMILIES))
+    ap.add_argument("--config", required=True, choices=sorted(_CONFIGS))
+    ap.add_argument("--steps", type=int, default=None, help="override the family default")
+    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out", default="outputs/image_speedmem")
+    ap.add_argument("--no-epc", action="store_true")
+    ap.add_argument("--unarm-cache", action="store_true")
+    ap.add_argument("--tag", default=None, help="output row name (default: config name)")
     args = ap.parse_args()
 
     import logging
 
-    logging.basicConfig(level = logging.INFO, format = "%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger("image_speedmem")
 
     fam_spec = _FAMILIES[args.family]
@@ -334,7 +344,7 @@ def main() -> None:
         steps = args.steps
 
     out_dir = Path(args.out) / args.family
-    out_dir.mkdir(parents = True, exist_ok = True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     ref_npz = out_dir / f"ref_seed{args.seed}_st{steps}_{args.size}.npz"
 
     logger.info(
@@ -349,16 +359,16 @@ def main() -> None:
 
     _reset_peak()
     t0 = time.perf_counter()
-    pipe = diffusers.DiffusionPipeline.from_pretrained(fam_spec["repo"], torch_dtype = torch.bfloat16)
+    pipe = diffusers.DiffusionPipeline.from_pretrained(fam_spec["repo"], torch_dtype=torch.bfloat16)
     load_s = time.perf_counter() - t0
 
     engaged = _apply_levers(
         pipe,
         cfg,
-        fam_obj = fam_obj,
-        no_epc = args.no_epc,
-        unarm_cache = args.unarm_cache,
-        logger = logger,
+        fam_obj=fam_obj,
+        no_epc=args.no_epc,
+        unarm_cache=args.unarm_cache,
+        logger=logger,
     )
     pipe.to("cuda")
     weights_gb = _alloc_gb()
@@ -368,17 +378,17 @@ def main() -> None:
     _generate(
         pipe,
         fam_obj,
-        steps = steps,
-        guidance = guidance,
-        size = args.size,
-        seed = args.seed + 1000,
-        limit = 1,
+        steps=steps,
+        guidance=guidance,
+        size=args.size,
+        seed=args.seed + 1000,
+        limit=1,
     )
     warmup_s = time.perf_counter() - wt0
 
     _reset_peak()
     arrs, total_s, med_step_ms, step_times = _generate(
-        pipe, fam_obj, steps = steps, guidance = guidance, size = args.size, seed = args.seed
+        pipe, fam_obj, steps=steps, guidance=guidance, size=args.size, seed=args.seed
     )
     gen_peak = _peak_gb()
 
@@ -418,8 +428,8 @@ def main() -> None:
         "lpips_vs_ref_mean": round(sum(lpips_vals) / len(lpips_vals), 4) if lpips_vals else None,
         "lpips_vs_ref_per_prompt": [round(v, 4) for v in lpips_vals] or None,
     }
-    (out_dir / f"{tag}.json").write_text(json.dumps(row, indent = 2, default = str))
-    print(json.dumps(row, indent = 2, default = str))
+    (out_dir / f"{tag}.json").write_text(json.dumps(row, indent=2, default=str))
+    print(json.dumps(row, indent=2, default=str))
 
     del pipe
     _empty()

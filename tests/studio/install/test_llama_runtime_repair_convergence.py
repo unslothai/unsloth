@@ -132,7 +132,7 @@ def fingerprint(root: Path) -> str:
 
 
 def probe(root: Path, host) -> tuple[bool, str] | None:
-    return ILP.installed_runtime_health(root, host = host)
+    return ILP.installed_runtime_health(root, host=host)
 
 
 # ---------------------------------------------------------------------------
@@ -170,35 +170,35 @@ def current_marker(host, backend: str) -> dict:
         "llama_backend": None,
     }
     marker["install_fingerprint"] = ILP.expected_install_fingerprint(
-        llama_tag = marker["tag"],
-        release_tag = marker["release_tag"],
-        choice = _choice(marker, kind),
-        approved_checksums = _checksums(marker),
+        llama_tag=marker["tag"],
+        release_tag=marker["release_tag"],
+        choice=_choice(marker, kind),
+        approved_checksums=_checksums(marker),
     )
     return marker
 
 
 def _choice(marker: dict, install_kind: str):
     return ILP.AssetChoice(
-        repo = marker["published_repo"],
-        tag = marker["tag"],
-        name = marker["asset"],
-        url = f"https://example.invalid/{marker['asset']}",
-        source_label = marker["source"],
-        install_kind = install_kind,
-        bundle_profile = marker["bundle_profile"],
-        runtime_line = marker["runtime_line"],
-        coverage_class = marker["coverage_class"],
-        expected_sha256 = marker["asset_sha256"],
-        runtime_name = marker["runtime_asset"],
+        repo=marker["published_repo"],
+        tag=marker["tag"],
+        name=marker["asset"],
+        url=f"https://example.invalid/{marker['asset']}",
+        source_label=marker["source"],
+        install_kind=install_kind,
+        bundle_profile=marker["bundle_profile"],
+        runtime_line=marker["runtime_line"],
+        coverage_class=marker["coverage_class"],
+        expected_sha256=marker["asset_sha256"],
+        runtime_name=marker["runtime_asset"],
     )
 
 
 def _checksums(marker: dict):
     return ILP.ApprovedReleaseChecksums(
-        repo = marker["published_repo"],
-        release_tag = marker["release_tag"],
-        upstream_tag = marker["tag"],
+        repo=marker["published_repo"],
+        release_tag=marker["release_tag"],
+        upstream_tag=marker["tag"],
     )
 
 
@@ -208,11 +208,11 @@ def current_plan(host, backend: str) -> tuple[object, dict]:
     kind = "macos-arm64" if platform == "macos" else _INSTALL_KIND[(platform, backend)]
     marker = current_marker(host, backend)
     plan = ILP.InstallReleasePlan(
-        requested_tag = "latest",
-        llama_tag = marker["tag"],
-        release_tag = marker["release_tag"],
-        attempts = [_choice(marker, kind)],
-        approved_checksums = _checksums(marker),
+        requested_tag="latest",
+        llama_tag=marker["tag"],
+        release_tag=marker["release_tag"],
+        attempts=[_choice(marker, kind)],
+        approved_checksums=_checksums(marker),
     )
     return plan, marker
 
@@ -221,7 +221,7 @@ def install_fresh_prebuilt(root: Path, host, backend: str) -> None:
     """Replace ``root`` with what ``activate_install_tree`` leaves behind for this cell."""
     if root.exists():
         shutil.rmtree(root)
-    MF.build_tree(root, host = host, marker = current_marker(host, backend), backend = backend)
+    MF.build_tree(root, host=host, marker=current_marker(host, backend), backend=backend)
 
 
 def install_fresh_source_build(root: Path, host) -> None:
@@ -234,7 +234,7 @@ def install_fresh_source_build(root: Path, host) -> None:
     """
     if root.exists():
         shutil.rmtree(root)
-    MF.build_tree(root, host = host, marker = None, backend = "cpu")
+    MF.build_tree(root, host=host, marker=None, backend="cpu")
 
 
 # ---------------------------------------------------------------------------
@@ -315,12 +315,12 @@ def online_repair(root: Path, host, backend: str) -> str:
         # probe, so a keep could hand the probe a tree it then rejects.
         ILP.sync_marker_selection(
             root,
-            choice = plan.attempts[0],
-            backend_request = "auto",
-            persist_force_cpu = False,
-            persist_llama_backend = None,
-            ggml_tree = None,
-            rocm_gfx = None,
+            choice=plan.attempts[0],
+            backend_request="auto",
+            persist_force_cpu=False,
+            persist_llama_backend=None,
+            ggml_tree=None,
+            rocm_gfx=None,
         )
         return "kept"
     install_fresh_prebuilt(root, host, backend)
@@ -410,17 +410,17 @@ def build_damaged(
     marker: dict,
     damage,
     *,
-    corrupt = False,
+    corrupt=False,
 ) -> Path:
     """A complete tree of this cell, then ``damage`` applied to it.
 
     ``corrupt`` also replaces the marker with bytes that do not parse, the axis worth crossing
     with every other damage rather than testing on its own.
     """
-    MF.build_tree(root, host = host, marker = marker, backend = backend)
+    MF.build_tree(root, host=host, marker=marker, backend=backend)
     runtime = MF._runtime_dir(root, host)
     if corrupt:
-        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding = "utf-8")
+        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding="utf-8")
     if damage == "@tree":
         shutil.rmtree(root)
     elif damage == "@runtime-dir":
@@ -428,9 +428,9 @@ def build_damaged(
     elif damage == "@marker":
         (root / "UNSLOTH_PREBUILT_INFO.json").unlink()
     elif damage == "@corrupt-marker":
-        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding = "utf-8")
+        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding="utf-8")
     elif damage == "@corrupt-marker+library":
-        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding = "utf-8")
+        (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{not json", encoding="utf-8")
         platform = _platform_of(host)
         (runtime / MF._SHARED_PAYLOAD[platform][0]).unlink()
     elif isinstance(damage, tuple):
@@ -445,7 +445,7 @@ def build_damaged(
 # The online model
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_the_online_repair_reaches_a_fixed_point_from_every_damaged_tree(
     tmp_path, cell, host, backend, shape
 ):
@@ -462,7 +462,7 @@ def test_the_online_repair_reaches_a_fixed_point_from_every_damaged_tree(
         assert cycles <= 1, f"{cell}/{label}: took {cycles} repairs ({trail})"
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_the_online_keep_never_rewrites_the_marker_into_a_tree_it_then_rejects(
     tmp_path, cell, host, backend, shape
 ):
@@ -483,7 +483,7 @@ def test_the_online_keep_never_rewrites_the_marker_into_a_tree_it_then_rejects(
 # The offline model, install_prebuilt for real
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_the_offline_python_repair_never_keeps_a_tree_the_probe_rejects(
     tmp_path, offline, cell, host, backend, shape
 ):
@@ -500,14 +500,14 @@ def test_the_offline_python_repair_never_keeps_a_tree_the_probe_rejects(
         verdict = probe(root, host)
         if verdict is None or verdict[0]:
             continue
-        action = offline_repair(root, host, offline, shell_stage = False)
+        action = offline_repair(root, host, offline, shell_stage=False)
         assert action != "python-kept", (
             f"REPAIR LOOP: {cell}/{label} is rejected by installed_runtime_health "
             f"({verdict[1]}) and kept unchanged by the offline branch of install_prebuilt"
         )
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_the_offline_repair_terminates_once_the_source_build_actually_runs(
     tmp_path, offline, cell, host, backend, shape
 ):
@@ -524,7 +524,7 @@ def test_the_offline_repair_terminates_once_the_source_build_actually_runs(
         outcome, cycles, trail = run_cycle(
             root,
             host,
-            lambda tree: offline_repair(tree, host, offline, shell_stage = False),
+            lambda tree: offline_repair(tree, host, offline, shell_stage=False),
         )
         assert outcome in {
             "converged",
@@ -545,11 +545,11 @@ def test_both_shells_gate_their_reuse_shortcut_on_the_same_check():
     """
     root = Path(__file__).resolve().parents[3]
 
-    shell = (root / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    shell = (root / "studio" / "setup.sh").read_text(encoding="utf-8")
     assert "--check-existing-install" in shell
     assert "_LLAMA_REUSE_EXISTING" in shell, "setup.sh lost its reuse gate"
 
-    ps1 = (root / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    ps1 = (root / "studio" / "setup.ps1").read_text(encoding="utf-8")
     assert "function Test-LlamaTreeStillHealthy" in ps1, "setup.ps1 lost its reuse gate"
     assert (
         "--check-existing-install" in ps1
@@ -570,7 +570,7 @@ def test_the_windows_build_plan_asks_the_same_question_as_its_reuse_shortcut():
     shortcut, a tree the shortcut refused left that predicate false, so a prebuilt-only box
     reached the rebuild the refusal forces with no cmake and no Visual Studio toolchain.
     Both now read ``$CanReuseLlamaBuild``, and it is computed once, above the plan."""
-    ps1 = (Path(__file__).resolve().parents[3] / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    ps1 = (Path(__file__).resolve().parents[3] / "studio" / "setup.ps1").read_text(encoding="utf-8")
     assert ps1.index("$CanReuseLlamaBuild = ") < ps1.index("$WillBuildLlamaFromSource = ")
     assert (
         "$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild" in ps1
@@ -598,12 +598,12 @@ def test_the_offline_repair_terminates_with_the_shell_rebuild_skip_in_place(tmp_
     outcome, cycles, trail = run_cycle(
         root,
         host,
-        lambda tree: offline_repair(tree, host, offline, shell_stage = True),
+        lambda tree: offline_repair(tree, host, offline, shell_stage=True),
     )
     assert outcome == "converged", f"{outcome} after {cycles} repairs ({trail})"
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_no_damaged_tree_survives_the_shell_rebuild_skip(
     tmp_path, offline, cell, host, backend, shape
 ):
@@ -627,7 +627,7 @@ def test_no_damaged_tree_survives_the_shell_rebuild_skip(
         outcome, cycles, trail = run_cycle(
             root,
             host,
-            lambda tree: offline_repair(tree, host, offline, shell_stage = True),
+            lambda tree: offline_repair(tree, host, offline, shell_stage=True),
         )
         assert outcome in {"converged", "aborted"}, f"{cell}/{label}: {outcome} ({trail})"
         assert cycles <= 1, f"{cell}/{label}: {cycles} repairs ({trail})"
@@ -637,7 +637,7 @@ def test_no_damaged_tree_survives_the_shell_rebuild_skip(
 # The cases the report has to keep apart from a loop
 
 
-@pytest.mark.parametrize(("host_id", "host"), HOSTS, ids = [h[0] for h in HOSTS])
+@pytest.mark.parametrize(("host_id", "host"), HOSTS, ids=[h[0] for h in HOSTS])
 def test_a_runtime_quarantined_again_after_every_repair_is_not_a_code_loop(tmp_path, host_id, host):
     """Antivirus that re-quarantines after each repair never converges, and must not read as
     the bug above. The distinguisher is progress, not convergence: every repair here replaces
@@ -698,7 +698,7 @@ def test_the_two_kinds_of_missing_marker_stay_apart(tmp_path):
     assert ILP._existing_install_runs(corrupt, host) is True
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_grading_an_unparseable_marker_keeps_the_no_stricter_invariant(
     tmp_path, cell, host, backend, shape
 ):
@@ -712,7 +712,7 @@ def test_grading_an_unparseable_marker_keeps_the_no_stricter_invariant(
     for label, damage in damage_modes(host, backend, marker):
         if damage in _MARKER_DAMAGES:
             continue
-        root = build_damaged(tmp_path / label, host, backend, marker, damage, corrupt = True)
+        root = build_damaged(tmp_path / label, host, backend, marker, damage, corrupt=True)
         verdict = probe(root, host)
         if verdict is None or verdict[0]:
             continue
@@ -722,7 +722,7 @@ def test_grading_an_unparseable_marker_keeps_the_no_stricter_invariant(
         )
 
 
-@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids=CELL_IDS)
 def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
     tmp_path, offline, cell, host, backend, shape
 ):
@@ -739,7 +739,7 @@ def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
             continue
         for model, repair in (
             ("online", lambda tree: online_repair(tree, host, backend)),
-            ("offline", lambda tree: offline_repair(tree, host, offline, shell_stage = False)),
+            ("offline", lambda tree: offline_repair(tree, host, offline, shell_stage=False)),
         ):
             root = build_damaged(
                 tmp_path / f"{model}-{label}",
@@ -747,7 +747,7 @@ def test_grading_an_unparseable_marker_still_terminates_on_every_cell(
                 backend,
                 marker,
                 damage,
-                corrupt = True,
+                corrupt=True,
             )
             outcome, cycles, trail = run_cycle(root, host, repair)
             assert outcome in {

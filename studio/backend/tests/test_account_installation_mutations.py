@@ -14,7 +14,7 @@ from utils.account_context import AccountContext, OWNER, bind_account, reset_acc
 ALICE = AccountContext("a" * 32, "alice")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def multi_user(monkeypatch):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     yield
@@ -37,11 +37,13 @@ def _client(account, build):
 
 def _llama_app(app):
     from routes import llama
-    app.include_router(llama.router, prefix = "/api/llama")
+
+    app.include_router(llama.router, prefix="/api/llama")
 
 
 def _shutdown_route():
     import main
+
     for route in main.app.routes:
         if getattr(route, "path", None) == "/api/shutdown" and "POST" in getattr(
             route, "methods", ()
@@ -71,10 +73,10 @@ def test_a_managed_account_cannot_replace_the_installation_executables(monkeypat
     monkeypatch.setattr(llama_routes, "start_backend_switch", llama_cpp_update.start_backend_switch)
 
     with _client(ALICE, _llama_app) as client:
-        assert client.post(path, json = payload).status_code == 403
+        assert client.post(path, json=payload).status_code == 403
     assert started == []
     with _client(OWNER, _llama_app) as client:
-        assert client.post(path, json = payload).status_code == 200
+        assert client.post(path, json=payload).status_code == 200
     assert started
 
 
@@ -93,13 +95,13 @@ def test_a_managed_account_cannot_replace_the_transformers_sidecar(monkeypatch):
     from routes import inference
 
     def _inference_app(app):
-        app.include_router(inference.studio_router, prefix = "/api/inference")
+        app.include_router(inference.studio_router, prefix="/api/inference")
 
     swaps = []
     monkeypatch.setattr(
-        inference, "try_begin_sidecar_swap", lambda *a, **k: swaps.append(1), raising = False
+        inference, "try_begin_sidecar_swap", lambda *a, **k: swaps.append(1), raising=False
     )
     with _client(ALICE, _inference_app) as client:
-        response = client.post("/api/inference/install-latest-transformers", json = {})
+        response = client.post("/api/inference/install-latest-transformers", json={})
     assert response.status_code == 403
     assert swaps == []

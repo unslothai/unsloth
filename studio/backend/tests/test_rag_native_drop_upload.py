@@ -21,15 +21,15 @@ from utils.paths import rag_uploads_root
 SECRET = b"n" * 32
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _lease_secret(monkeypatch):
     monkeypatch.setenv(
         leases.LEASE_SECRET_ENV,
         base64.urlsafe_b64encode(SECRET).decode("ascii").rstrip("="),
     )
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
     yield
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
 
 
 def _b64(raw: bytes) -> str:
@@ -39,11 +39,11 @@ def _b64(raw: bytes) -> str:
 def _sign(
     path,
     *,
-    operation = "attach",
-    path_kind = "attachment",
-    identity_options = None,
-    nonce = None,
-    secret = SECRET,
+    operation="attach",
+    path_kind="attachment",
+    identity_options=None,
+    nonce=None,
+    secret=SECRET,
 ):
     """Mint the grant Rust would sign for a dropped file."""
     st = os.stat(path)
@@ -74,11 +74,11 @@ def _sign(
 
 def _doc(
     tmp_path,
-    name = "notes.txt",
-    body = "alpha bravo charlie",
+    name="notes.txt",
+    body="alpha bravo charlie",
 ):
     path = tmp_path / name
-    path.write_text(body, encoding = "utf-8")
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -90,14 +90,14 @@ def test_signed_drop_is_copied_into_the_uploads_root(rag_home, tmp_path):
     assert content_hash == hashlib.sha256(source.read_bytes()).hexdigest()
     # Copied, not referenced: ingestion must not read from wherever the user dragged from.
     assert os.path.realpath(stored_path) != os.path.realpath(source)
-    with open(stored_path, encoding = "utf-8") as handle:
+    with open(stored_path, encoding="utf-8") as handle:
         assert handle.read() == "alpha bravo charlie"
 
 
 def test_forged_signature_is_rejected(rag_home, tmp_path):
     source = _doc(tmp_path)
     with pytest.raises(HTTPException) as excinfo:
-        _save_native_path_upload(_sign(source, secret = b"z" * 32))
+        _save_native_path_upload(_sign(source, secret=b"z" * 32))
     assert excinfo.value.status_code == 400
 
 
@@ -115,20 +115,20 @@ def test_grant_for_another_purpose_is_rejected(rag_home, tmp_path, kwargs):
 
 
 def test_unsupported_extension_is_rejected(rag_home, tmp_path):
-    source = _doc(tmp_path, name = "payload.exe", body = "MZ")
+    source = _doc(tmp_path, name="payload.exe", body="MZ")
     with pytest.raises(HTTPException):
         _save_native_path_upload(_sign(source))
 
 
 def test_empty_file_is_rejected(rag_home, tmp_path):
-    source = _doc(tmp_path, body = "")
+    source = _doc(tmp_path, body="")
     with pytest.raises(HTTPException) as excinfo:
         _save_native_path_upload(_sign(source))
     assert excinfo.value.status_code == 400
 
 
 def test_native_drop_uses_the_shared_size_limit(rag_home, tmp_path, monkeypatch):
-    source = _doc(tmp_path, body = "x" * 4096)
+    source = _doc(tmp_path, body="x" * 4096)
     monkeypatch.setattr(config, "MAX_UPLOAD_BYTES", 1024)
 
     with pytest.raises(HTTPException) as excinfo:
@@ -150,28 +150,28 @@ def test_grant_is_single_use(rag_home, tmp_path):
 def test_document_folder_grant_binds_identity_but_allows_content_changes(tmp_path):
     folder = tmp_path / "documents"
     folder.mkdir()
-    lease = _sign(folder, operation = "link-documents", path_kind = "document-folder")
-    (folder / "new.txt").write_text("new content", encoding = "utf-8")
+    lease = _sign(folder, operation="link-documents", path_kind="document-folder")
+    (folder / "new.txt").write_text("new content", encoding="utf-8")
 
     grant = leases.verify_native_path_lease(
         lease,
-        operation = "link-documents",
-        expected_kind = "document-folder",
-        expected_path_type = "directory",
+        operation="link-documents",
+        expected_kind="document-folder",
+        expected_path_type="directory",
     )
 
     assert grant.canonical_path == folder
 
-    replaced_lease = _sign(folder, operation = "link-documents", path_kind = "document-folder")
+    replaced_lease = _sign(folder, operation="link-documents", path_kind="document-folder")
     old_folder = tmp_path / "old-documents"
     folder.rename(old_folder)
     folder.mkdir()
-    with pytest.raises(leases.NativePathLeaseError, match = "changed"):
+    with pytest.raises(leases.NativePathLeaseError, match="changed"):
         leases.verify_native_path_lease(
             replaced_lease,
-            operation = "link-documents",
-            expected_kind = "document-folder",
-            expected_path_type = "directory",
+            operation="link-documents",
+            expected_kind="document-folder",
+            expected_path_type="directory",
         )
 
 
@@ -187,34 +187,34 @@ def test_grant_uses_the_identity_exposed_by_its_python_runtime(
     accepted[matching_index] = current
     lease = _sign(
         folder,
-        operation = "link-documents",
-        path_kind = "document-folder",
-        identity_options = accepted,
+        operation="link-documents",
+        path_kind="document-folder",
+        identity_options=accepted,
     )
     rejected = [other, other]
     rejected[1 - matching_index] = current
     rejected_lease = _sign(
         folder,
-        operation = "link-documents",
-        path_kind = "document-folder",
-        identity_options = rejected,
+        operation="link-documents",
+        path_kind="document-folder",
+        identity_options=rejected,
     )
     monkeypatch.setattr(leases, "_WINDOWS_STAT_USES_FILE_ID_INFO", uses_extended_identity)
 
     grant = leases.verify_native_path_lease(
         lease,
-        operation = "link-documents",
-        expected_kind = "document-folder",
-        expected_path_type = "directory",
+        operation="link-documents",
+        expected_kind="document-folder",
+        expected_path_type="directory",
     )
 
     assert (grant.device_id, grant.file_id) == current
-    with pytest.raises(leases.NativePathLeaseError, match = "changed"):
+    with pytest.raises(leases.NativePathLeaseError, match="changed"):
         leases.verify_native_path_lease(
             rejected_lease,
-            operation = "link-documents",
-            expected_kind = "document-folder",
-            expected_path_type = "directory",
+            operation="link-documents",
+            expected_kind="document-folder",
+            expected_path_type="directory",
         )
 
 

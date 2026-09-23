@@ -87,15 +87,16 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def browser():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         yield b
@@ -104,13 +105,13 @@ def browser():
 
 @pytest.fixture()
 def page(browser):
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     pg.set_content(FIXTURE)
     # `add_script_tag` after the content, not `add_init_script` before it: Playwright's
     # `set_content` does not always run init scripts, and the symptom is `window.__sb` simply not
     # existing, which reads like a broken instrument.
-    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     yield pg
     pg.close()
 
@@ -356,10 +357,10 @@ def _capture_arm(
     ordinals: str,
     suffix: str = "",
 ) -> dict:
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     pg.set_content(_arm_html(ordinals, suffix))
-    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     try:
         _watch(pg)
         return _capture(pg)
@@ -369,10 +370,10 @@ def _capture_arm(
 
 def _thread_digests(browser, ordinals: str) -> dict:
     """The WHOLE-DOCUMENT structural digest of the same page, per message."""
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     pg.set_content(_arm_html(ordinals))
-    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     try:
         got = pg.evaluate("() => window.__sb.parity.capture()")
         return {row["i"]: row["digest"] for row in got["messages"]}
@@ -401,6 +402,7 @@ def test_ordinals_on_the_row_wrapper_are_unaffected_as_they_always_were(browser)
     """The other permitted placement, which was never inside the message's subtree and so was never
     part of the defect. It must stay comparable."""
     from studiobench.analysis import parity as P
+
     assert (
         P.compare_visible(_capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_row"))[
             "verdict"
@@ -415,7 +417,7 @@ def test_a_real_rendering_difference_is_still_caught(browser):
     from studiobench.analysis import parity as P
 
     verdict = P.compare_visible(
-        _capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_message", suffix = " (v2)")
+        _capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_message", suffix=" (v2)")
     )
     assert verdict["verdict"] == P.DIFFER, verdict
 
@@ -461,10 +463,10 @@ REBUILD_FIXTURE = """
 
 
 def _rebuild_page(browser):
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     pg.set_content(REBUILD_FIXTURE)
-    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     return pg
 
 
@@ -510,7 +512,7 @@ def test_a_real_difference_after_a_rebuild_is_still_caught(browser):
     from studiobench.analysis import parity as P
 
     verdict = P.compare_visible(
-        _capture_after_rebuild(browser), _capture_arm(browser, "on_the_row", suffix = " (v2)")
+        _capture_after_rebuild(browser), _capture_arm(browser, "on_the_row", suffix=" (v2)")
     )
     assert verdict["verdict"] == P.DIFFER, verdict
 
@@ -558,10 +560,10 @@ def test_a_row_that_publishes_its_ordinal_costs_no_document_read_at_all(browser)
     """A windowed arm mounts rows continuously as it scrolls, and it is the arm that would pay
     most for a document read per batch. It publishes `aria-posinset`, which is read first and
     answers the question outright, so it never reaches the position index."""
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     pg.set_content(FIXTURE)
-    pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     try:
         _count_document_queries(pg)
         _watch(pg)
@@ -647,11 +649,11 @@ def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
     MATCH while a visible row went uncompared.
     """
 
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     try:
         pg.set_content(RECYCLE_FIXTURE)
-        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+        pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
         _watch(pg)
         pg.evaluate("() => window.__churn()")
         pg.wait_for_timeout(150)
@@ -703,11 +705,11 @@ def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
     childList records only, the renumbering was invisible to every path at once.
     """
 
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     try:
         pg.set_content(RENUMBER_FIXTURE)
-        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+        pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
         _watch(pg)
         pg.evaluate("() => window.__renumber()")
         got = _capture(pg)
@@ -757,11 +759,11 @@ COLLISION_FIXTURE = """
 
 
 def _capture_with_ghost(browser, *, before: bool) -> dict:
-    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    pg = browser.new_page(viewport={"width": 800, "height": 600})
     try:
         pg.set_content(COLLISION_FIXTURE)
-        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+        pg.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
         _watch(pg)
         pg.evaluate("(b) => window.__ghost(b)", before)
         pg.wait_for_timeout(150)
@@ -782,7 +784,7 @@ def test_two_rows_sharing_a_thread_position_are_counted_rather_than_overwritten(
     the collision passes exactly when the survivor happens to be the one that agrees.
     """
     for before in (True, False):
-        got = _capture_with_ghost(browser, before = before)
+        got = _capture_with_ghost(browser, before=before)
         assert got["ordinal_collisions"] == 1, (before, got)
         assert got["collided_ordinals"] == [1], (before, got)
         # The counter is not derived from the arithmetic, and this is why: two of the three rows on
@@ -802,10 +804,10 @@ def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
     in either direction, which is the rule this file applies to every other unreadable capture."""
     from studiobench.analysis import parity as P
 
-    clean = _capture_with_ghost(browser, before = False)
+    clean = _capture_with_ghost(browser, before=False)
     clean["ordinal_collisions"] = 0
     clean["collided_ordinals"] = []
-    ghosted = _capture_with_ghost(browser, before = True)
+    ghosted = _capture_with_ghost(browser, before=True)
     verdict = P.compare_visible(clean, ghosted)
     assert verdict["verdict"] == P.NOT_COMPARABLE, verdict
     assert "SAME thread position" in verdict["reason"], verdict
@@ -824,7 +826,7 @@ def test_losing_the_thread_outranks_the_collision_refusal(browser):
     """
     from studiobench.analysis import parity as P
 
-    ghosted = _capture_with_ghost(browser, before = True)
+    ghosted = _capture_with_ghost(browser, before=True)
     assert ghosted["ordinal_collisions"] == 1, ghosted
     # The other arm ended with nothing on screen at all, the 100K `model_change` shape: 12 mounted
     # messages to 0, never recovered.
@@ -844,9 +846,9 @@ def test_a_collision_with_both_viewports_alive_is_still_refused(browser):
     refusal, so a collision on an arm whose viewport is perfectly healthy must still refuse."""
     from studiobench.analysis import parity as P
 
-    clean = _capture_with_ghost(browser, before = False)
+    clean = _capture_with_ghost(browser, before=False)
     clean["ordinal_collisions"] = 0
     clean["collided_ordinals"] = []
-    ghosted = _capture_with_ghost(browser, before = True)
+    ghosted = _capture_with_ghost(browser, before=True)
     assert clean["messages"] and ghosted["messages"], (clean, ghosted)
     assert P.compare_visible(clean, ghosted)["verdict"] == P.NOT_COMPARABLE

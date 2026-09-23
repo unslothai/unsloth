@@ -46,19 +46,19 @@ _LAYER = re.compile(r"^\s{2}([A-Z_]+): (\d+),$", re.MULTILINE)
 
 def _layers() -> dict[str, int]:
     """The named scale, straight out of z-layers.ts."""
-    text = Z_LAYERS.read_text(encoding = "utf-8")
+    text = Z_LAYERS.read_text(encoding="utf-8")
     found = {name: int(value) for name, value in _LAYER.findall(text)}
     assert found, "no named layers were found in z-layers.ts"
     return found
 
 
 def _z_indexes(path: Path) -> list[int]:
-    return [int(m) for m in _Z.findall(path.read_text(encoding = "utf-8"))]
+    return [int(m) for m in _Z.findall(path.read_text(encoding="utf-8"))]
 
 
 def _container(path: Path, ref: str) -> str:
     """The JSX attributes of the fixed container that stacks a floating panel."""
-    src = path.read_text(encoding = "utf-8")
+    src = path.read_text(encoding="utf-8")
     found = re.search(rf"ref=\{{{ref}\}}\s*\n(?:\s*[^\n]*\n)*?\s*>", src)
     assert found, f"{path.name}: the container with ref={{{ref}}} was not found"
     return found.group(0)
@@ -96,7 +96,7 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
         f"{path.name}: the panel container still carries a hard-coded z-index, "
         f"which would win over the shared layer: {container!r}"
     )
-    src = path.read_text(encoding = "utf-8")
+    src = path.read_text(encoding="utf-8")
     assert (
         "useFloatingPanelZIndex" in src
     ), f"{path.name}: the panel no longer reads the shared floating panel layer"
@@ -114,7 +114,7 @@ def test_the_notification_stack_uses_the_named_layer():
     is asserted in tests/studio/test_update_release_notes.py, which is the file about its
     layout; this one is only about the layer it draws on.
     """
-    src = without_comments(PROVIDER.read_text(encoding = "utf-8"))
+    src = without_comments(PROVIDER.read_text(encoding="utf-8"))
     stacks = []
     at = src.find(_RAIL_TESTID)
     while at != -1:

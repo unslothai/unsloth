@@ -44,7 +44,7 @@ _NOT_IN_ANY_SHARD = {
 
 
 def _backend_ci() -> dict:
-    return yaml.safe_load(_BACKEND_CI.read_text(encoding = "utf-8"))
+    return yaml.safe_load(_BACKEND_CI.read_text(encoding="utf-8"))
 
 
 def _shards() -> dict:

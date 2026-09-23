@@ -33,10 +33,10 @@ def outputs(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setattr(training_history, "outputs_root", lambda: root)
     monkeypatch.setattr(
-        training_history, "_active_training_output_dir", lambda: None, raising = False
+        training_history, "_active_training_output_dir", lambda: None, raising=False
     )
     monkeypatch.setattr(
-        training_history, "_output_dir_shared", lambda *a, **k: False, raising = False
+        training_history, "_output_dir_shared", lambda *a, **k: False, raising=False
     )
 
     import contextlib
@@ -47,7 +47,7 @@ def outputs(tmp_path, monkeypatch):
     return root
 
 
-def _run_dir(outputs, name = "run-1"):
+def _run_dir(outputs, name="run-1"):
     d = outputs / name
     d.mkdir()
     (d / "adapter_model.safetensors").write_bytes(b"\x00" * 128)
@@ -123,7 +123,7 @@ def test_a_purge_that_fails_puts_the_directory_back_under_its_own_name(outputs, 
 def test_an_active_run_is_refused_before_anything_moves(outputs, monkeypatch):
     run_dir = _run_dir(outputs)
     monkeypatch.setattr(
-        training_history, "_active_training_output_dir", lambda: str(run_dir), raising = False
+        training_history, "_active_training_output_dir", lambda: str(run_dir), raising=False
     )
 
     outcome, original, staged = training_history._delete_run_output_dir_guarded(
@@ -137,7 +137,7 @@ def test_an_active_run_is_refused_before_anything_moves(outputs, monkeypatch):
 
 def test_a_shared_output_dir_is_refused_before_anything_moves(outputs, monkeypatch):
     run_dir = _run_dir(outputs)
-    monkeypatch.setattr(training_history, "_output_dir_shared", lambda *a, **k: True, raising = False)
+    monkeypatch.setattr(training_history, "_output_dir_shared", lambda *a, **k: True, raising=False)
 
     outcome, original, staged = training_history._delete_run_output_dir_guarded(
         "run-1", str(run_dir)

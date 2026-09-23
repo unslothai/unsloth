@@ -18,7 +18,7 @@ TAURI = REPO / "studio/src-tauri"
 
 
 def read(path: Path) -> str:
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def bmp_metadata(path: Path) -> tuple[int, int, int]:
@@ -149,7 +149,7 @@ def test_dmg_background_art_is_what_its_renderer_produces() -> None:
 
     # a tolerance, not equality, so no one Pillow build is baked in. a stale asset is far worse
     for page, reference in zip(pages, expected):
-        drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
+        drift = np.abs(np.asarray(page, dtype=np.int16) - np.asarray(reference, dtype=np.int16))
         assert drift.max() <= 2
 
 
@@ -162,14 +162,14 @@ def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
     scale = renderer.SCALE
     # the band Finder puts the icon label in, just under the app icon
     label = (
-        np.asarray(renderer.build().convert("RGB"), dtype = np.float32)[
+        np.asarray(renderer.build().convert("RGB"), dtype=np.float32)[
             238 * scale : 260 * scale, 140 * scale : 220 * scale
         ]
         / 255.0
     )
 
     channel = np.where(label <= 0.04045, label / 12.92, ((label + 0.055) / 1.055) ** 2.4)
-    luminance = channel @ np.array([0.2126, 0.7152, 0.0722], dtype = np.float32)
+    luminance = channel @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
     assert (luminance.min() + 0.05) / 0.05 >= 7.0  # WCAG AAA for body text
 
 
@@ -280,7 +280,7 @@ def rust_branding_offenders() -> list[str]:
     return [
         f"{path.relative_to(REPO)}:{number}"
         for path in sorted(RUST_SOURCES.rglob("*.rs"))
-        for number, line in enumerate(read(path).splitlines(), start = 1)
+        for number, line in enumerate(read(path).splitlines(), start=1)
         if "Unsloth Studio" in line and line.strip() not in RUST_VERBATIM_LINES
     ]
 

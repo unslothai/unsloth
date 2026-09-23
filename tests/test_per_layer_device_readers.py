@@ -37,11 +37,11 @@ def _device_or_none(value):
         return None
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def default_device_is_usable() -> bool:
     """Measured, not asked: torch 2.6 raises here, torch 2.11 returns `cuda:0` and fails later."""
     try:
-        torch.zeros(1, device = torch.device(0))
+        torch.zeros(1, device=torch.device(0))
         return True
     except Exception:
         return False
@@ -50,14 +50,14 @@ def default_device_is_usable() -> bool:
 class _Layer(torch.nn.Module):
     def __init__(
         self,
-        device = None,
-        index = "absent",
-        parameter_device = "cpu",
+        device=None,
+        index="absent",
+        parameter_device="cpu",
     ):
         super().__init__()
         self.weight = torch.nn.Parameter(
-            torch.zeros(2, device = torch.device(parameter_device)),
-            requires_grad = False,
+            torch.zeros(2, device=torch.device(parameter_device)),
+            requires_grad=False,
         )
         if device is not None:
             self._per_layer_device = device
@@ -68,7 +68,7 @@ class _Layer(torch.nn.Module):
 def test_current_unsloth_zoo_device_wins():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(device = torch.device("cuda:2"), index = 2)
+    layer = _Layer(device=torch.device("cuda:2"), index=2)
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cuda:2")
     assert buffer_index == 2
@@ -77,7 +77,7 @@ def test_current_unsloth_zoo_device_wins():
 def test_cpu_offloaded_layer_resolves_to_cpu_not_cuda_zero():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(device = torch.device("cpu"), index = "cpu")
+    layer = _Layer(device=torch.device("cpu"), index="cpu")
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cpu")
     assert isinstance(
@@ -88,7 +88,7 @@ def test_cpu_offloaded_layer_resolves_to_cpu_not_cuda_zero():
 def test_older_unsloth_zoo_integer_index_is_unchanged():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = 1, parameter_device = "cpu")
+    layer = _Layer(index=1, parameter_device="cpu")
     device, buffer_index = per_layer_device(layer)
     if default_device_is_usable():
         assert device == torch.device(1)
@@ -97,13 +97,13 @@ def test_older_unsloth_zoo_integer_index_is_unchanged():
     assert buffer_index == 1, "the buffer subscript must survive either way"
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs two orderable accelerator ordinals")
+@pytest.mark.skipif(not has_real_cuda(), reason="needs two orderable accelerator ordinals")
 def test_a_boolean_index_is_not_an_accelerator_ordinal():
     """`False` hashes equal to 0, so as an ordinal it would key the memo for another value."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = False, parameter_device = "cpu")
-    device, buffer_index = per_layer_device(layer, default = 1)
+    layer = _Layer(index=False, parameter_device="cpu")
+    device, buffer_index = per_layer_device(layer, default=1)
     assert device == torch.device(1), "a bool index resolved as the ordinal 0"
     assert buffer_index == 1
 
@@ -112,8 +112,8 @@ def test_a_boolean_index_does_not_poison_the_memo_for_zero():
     """Bool first, then 0: reversed, a shared memo entry is masked by the correct value."""
     from unsloth.models._utils import per_layer_device
 
-    per_layer_device(_Layer(index = False, parameter_device = "cpu"))
-    device, buffer_index = per_layer_device(_Layer(index = 0, parameter_device = "cpu"))
+    per_layer_device(_Layer(index=False, parameter_device="cpu"))
+    device, buffer_index = per_layer_device(_Layer(index=0, parameter_device="cpu"))
     if default_device_is_usable():
         assert device == torch.device(0)
     else:
@@ -125,7 +125,7 @@ def test_a_re_placed_layer_is_not_answered_from_the_memo():
     """unsloth_zoo re-running `verify_and_set_device` must invalidate it with no explicit clear."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = 0, parameter_device = "cpu")
+    layer = _Layer(index=0, parameter_device="cpu")
     per_layer_device(layer)
     layer._per_layer_device_index = "cpu"
     device, buffer_index = per_layer_device(layer)
@@ -137,7 +137,7 @@ def test_a_published_device_is_memoised_too():
     from unsloth.models._utils import per_layer_device
 
     published = torch.device("cpu")
-    layer = _Layer(device = published, index = 0, parameter_device = "cpu")
+    layer = _Layer(device=published, index=0, parameter_device="cpu")
     first = per_layer_device(layer)
     second = per_layer_device(layer)
     assert first == second == (published, 0)
@@ -157,7 +157,7 @@ def test_a_hook_derived_answer_is_never_memoised():
         def __init__(self, execution_device):
             self.execution_device = execution_device
 
-    layer = _Layer(device = torch.device("meta"), index = 0, parameter_device = "meta")
+    layer = _Layer(device=torch.device("meta"), index=0, parameter_device="meta")
     layer._hf_hook = _Hook(torch.device("cpu"))
     first, _ = per_layer_device(layer)
     assert first == torch.device("cpu")
@@ -175,9 +175,9 @@ def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
     """Keyed on the index alone, a per-device tuple is read at the wrong offset."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = "cpu", parameter_device = "cpu")
-    first_device, first_index = per_layer_device(layer, default = 0)
-    second_device, second_index = per_layer_device(layer, default = 1)
+    layer = _Layer(index="cpu", parameter_device="cpu")
+    first_device, first_index = per_layer_device(layer, default=0)
+    second_device, second_index = per_layer_device(layer, default=1)
     assert first_device == torch.device("cpu")
     assert second_device == torch.device("cpu")
     assert first_index == 0
@@ -187,8 +187,8 @@ def test_the_memo_is_keyed_on_the_default_as_well_as_the_index():
 def test_two_layers_on_different_devices_do_not_share_a_memo_entry():
     from unsloth.models._utils import per_layer_device
 
-    first, _ = per_layer_device(_Layer(index = 0, parameter_device = "cpu"))
-    second, second_index = per_layer_device(_Layer(index = 1, parameter_device = "cpu"))
+    first, _ = per_layer_device(_Layer(index=0, parameter_device="cpu"))
+    second, second_index = per_layer_device(_Layer(index=1, parameter_device="cpu"))
     if default_device_is_usable():
         assert first == torch.device(0)
         assert second == torch.device(1)
@@ -198,7 +198,7 @@ def test_two_layers_on_different_devices_do_not_share_a_memo_entry():
 def test_older_unsloth_zoo_none_index_reads_the_layer_instead():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = None, parameter_device = "cpu")
+    layer = _Layer(index=None, parameter_device="cpu")
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cpu"), (
         "a None index must not resolve to cuda:0, which would move a CPU layer's "
@@ -239,7 +239,7 @@ def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch
     assert _utils._as_torch_device(0) is None
     assert _utils._as_torch_device("cpu") == torch.device("cpu")
 
-    layer = _Layer(parameter_device = "cpu")
+    layer = _Layer(parameter_device="cpu")
     device, buffer_index = _utils.per_layer_device(layer)
     assert device == torch.device(
         "cpu"
@@ -251,7 +251,7 @@ def test_an_available_accelerator_still_wins_the_default(monkeypatch):
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: True)
-    layer = _Layer(parameter_device = "cpu")
+    layer = _Layer(parameter_device="cpu")
     device, buffer_index = _utils.per_layer_device(layer)
     expected = _device_or_none(0)
     if expected is not None:
@@ -262,7 +262,7 @@ def test_an_available_accelerator_still_wins_the_default(monkeypatch):
 def test_a_garbage_index_falls_back_rather_than_raising():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index = "not a device")
+    layer = _Layer(index="not a device")
     device, buffer_index = per_layer_device(layer)
     assert isinstance(device, torch.device)
     if default_device_is_usable():
@@ -286,7 +286,7 @@ def test_move_to_device_accepts_every_resolution(device, index):
     """The contract that broke: move_to_device only takes int, str or torch.device."""
     from unsloth.models._utils import move_to_device, per_layer_device
 
-    layer = _Layer(device = device, index = index)
+    layer = _Layer(device=device, index=index)
     resolved, buffer_index = per_layer_device(layer)
     assert isinstance(resolved, torch.device)
 
@@ -302,15 +302,15 @@ def test_move_to_device_accepts_every_resolution(device, index):
 def test_cpu_offloaded_layer_no_longer_raises_invalid_target_device():
     from unsloth.models._utils import move_to_device, per_layer_device
 
-    layer = _Layer(device = torch.device("cpu"), index = "cpu")
+    layer = _Layer(device=torch.device("cpu"), index="cpu")
     resolved, _ = per_layer_device(layer)
     hidden_states = torch.zeros(1, 2, 4)
-    position_ids = torch.zeros(1, 2, dtype = torch.long)
+    position_ids = torch.zeros(1, 2, dtype=torch.long)
     hidden_states, position_ids = move_to_device(resolved, hidden_states, position_ids)
     assert hidden_states.device == torch.device("cpu")
     assert position_ids.device == torch.device("cpu")
 
-    with pytest.raises(ValueError, match = "Invalid target device"):
+    with pytest.raises(ValueError, match="Invalid target device"):
         move_to_device(None, hidden_states)
 
 
@@ -331,7 +331,7 @@ def test_unsloth_zoo_setter_and_reader_agree():
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_goes_through_the_helper(path):
-    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
+    source = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
     assert (
         'getattr(decoder_layer, "_per_layer_device_index"' not in source
     ), f"{path} reads the raw index again; a None there is #3538"
@@ -346,7 +346,7 @@ def test_every_reader_goes_through_the_helper(path):
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_imports_the_helper_explicitly(path):
     """Do not rely on `from .llama import *` to carry the name across."""
-    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
+    source = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
     assert re.search(
         r"^from \._utils import .*per_layer_device", source, re.MULTILINE
     ), f"{path} must import per_layer_device from ._utils explicitly"
@@ -371,7 +371,7 @@ def _reader_scopes(source: str, path: str):
             if function.lineno <= node.lineno <= (function.end_lineno or function.lineno)
         ]
         assert enclosing, f"{path}: per_layer_device call at module level?"
-        innermost = max(enclosing, key = lambda function: function.lineno)
+        innermost = max(enclosing, key=lambda function: function.lineno)
         found.append((innermost.name, innermost.lineno))
     return found
 
@@ -385,7 +385,7 @@ def test_no_reader_reads_a_name_it_never_binds(path):
     import symtable
 
     module = importlib.import_module("unsloth.models." + pathlib.Path(path).stem)
-    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
+    source = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
     wanted = _reader_scopes(source, path)
     assert wanted, f"{path}: no per_layer_device call found"
 
@@ -421,7 +421,7 @@ def test_no_reader_reads_a_name_it_never_binds(path):
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
-    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
+    source = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
     for tuple_name in READERS[path]:
         assert f"{tuple_name}[device_index]" in source, (
             f"{path} subscripts {tuple_name} with something other than the "
@@ -430,7 +430,7 @@ def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
         assert "layer_device, device_index = per_layer_device(decoder_layer)" in source
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason="needs a real GPU")
 def test_cuda_layer_path_is_unchanged():
     from unsloth.models._utils import move_to_device, per_layer_device
 
@@ -491,13 +491,13 @@ def test_the_published_attributes_are_read_without_a_failed_getattr():
                 type(self).misses += 1
             return super().__getattr__(name)
 
-    layer = _Counting(device = torch.device("cpu"), index = "cpu")
+    layer = _Counting(device=torch.device("cpu"), index="cpu")
     _Counting.misses = 0
     per_layer_device(layer)
     assert _Counting.misses == 0
 
     # unsloth_zoo from before the device attribute existed: the index alone.
-    layer = _Counting(index = 0)
+    layer = _Counting(index=0)
     _Counting.misses = 0
     per_layer_device(layer)
     assert _Counting.misses == 0, (
@@ -537,10 +537,11 @@ def test_moving_an_activation_to_meta_destroys_it_silently():
 
 def test_a_meta_layer_never_resolves_to_meta():
     from unsloth.models._utils import per_layer_device
+
     for layer in (
-        _Layer(parameter_device = "meta", index = None),
-        _Layer(device = torch.device("meta"), index = "meta"),
-        _Layer(parameter_device = "meta", index = "meta"),
+        _Layer(parameter_device="meta", index=None),
+        _Layer(device=torch.device("meta"), index="meta"),
+        _Layer(parameter_device="meta", index="meta"),
     ):
         device, buffer_index = per_layer_device(layer)
         assert device.type != "meta", device
@@ -552,8 +553,8 @@ def test_a_meta_layer_uses_the_accelerate_hook_execution_device():
 
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(parameter_device = "meta", index = None)
-    layer._hf_hook = SimpleNamespace(execution_device = "cpu")
+    layer = _Layer(parameter_device="meta", index=None)
+    layer._hf_hook = SimpleNamespace(execution_device="cpu")
     device, _buffer_index = per_layer_device(layer)
     assert device == torch.device("cpu")
 
@@ -565,8 +566,8 @@ def test_a_hook_that_itself_says_meta_is_not_believed():
     from unsloth.models._utils import per_layer_device
 
     for execution_device in (None, "meta", torch.device("meta")):
-        layer = _Layer(parameter_device = "meta", index = None)
-        layer._hf_hook = SimpleNamespace(execution_device = execution_device)
+        layer = _Layer(parameter_device="meta", index=None)
+        layer._hf_hook = SimpleNamespace(execution_device=execution_device)
         device, _buffer_index = per_layer_device(layer)
         assert device.type != "meta", (execution_device, device)
 
@@ -574,11 +575,11 @@ def test_a_hook_that_itself_says_meta_is_not_believed():
 def test_a_non_meta_layer_is_unchanged_by_the_meta_guard():
     from unsloth.models._utils import per_layer_device
 
-    device, buffer_index = per_layer_device(_Layer(parameter_device = "cpu", index = None))
+    device, buffer_index = per_layer_device(_Layer(parameter_device="cpu", index=None))
     assert device == torch.device("cpu")
     assert buffer_index == 0
 
-    device, buffer_index = per_layer_device(_Layer(device = torch.device("cuda:1"), index = 1))
+    device, buffer_index = per_layer_device(_Layer(device=torch.device("cuda:1"), index=1))
     assert device == torch.device("cuda:1")
     assert buffer_index == 1
 
@@ -587,7 +588,7 @@ def test_the_fast_path_spells_the_memo_name_the_constant_holds():
     """Read as a literal, written through the constant: a rename is a silent miss."""
     from unsloth.models import _utils
 
-    source = (REPOSITORY_ROOT / "unsloth/models/_utils.py").read_text(encoding = "utf-8")
+    source = (REPOSITORY_ROOT / "unsloth/models/_utils.py").read_text(encoding="utf-8")
     fast_path = source.split("def per_layer_device(")[1].split("\n    published =")[0]
     assert f"module.{_utils._PER_LAYER_DEVICE_MEMO}" in fast_path, (
         "the fast path does not read the attribute _PER_LAYER_DEVICE_MEMO names, so the "
@@ -598,7 +599,7 @@ def test_the_fast_path_spells_the_memo_name_the_constant_holds():
 def test_a_layer_that_publishes_nothing_is_memoised_from_the_default():
     from unsloth.models import _utils
 
-    layer = _Layer(parameter_device = "cpu")
+    layer = _Layer(parameter_device="cpu")
     first = _utils.per_layer_device(layer)
     memo = layer.__dict__.get(_utils._PER_LAYER_DEVICE_MEMO)
     if not default_device_is_usable():
@@ -620,7 +621,7 @@ def test_the_default_memo_yields_the_moment_the_layer_publishes_a_name(name):
     if not default_device_is_usable():
         pytest.skip("no usable default device, so this shape is never memoised")
 
-    layer = _Layer(parameter_device = "cpu")
+    layer = _Layer(parameter_device="cpu")
     _utils.per_layer_device(layer)
     _utils.per_layer_device(layer)
     assert layer.__dict__[_utils._PER_LAYER_DEVICE_MEMO][2] == _utils._MEMO_FROM_DEFAULT
@@ -636,7 +637,7 @@ def test_a_parameter_derived_answer_is_never_memoised(monkeypatch):
     from unsloth.models import _utils
 
     monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
-    layer = _Layer(parameter_device = "cpu")
+    layer = _Layer(parameter_device="cpu")
     device, _ = _utils.per_layer_device(layer)
     assert device == torch.device("cpu")
     assert _utils._PER_LAYER_DEVICE_MEMO not in layer.__dict__, (

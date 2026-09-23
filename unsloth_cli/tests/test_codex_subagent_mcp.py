@@ -13,7 +13,7 @@ import pytest
 import unsloth_cli.codex_subagent_mcp as bridge
 
 
-def _write_config(tmp_path, *, bypass_permissions = False):
+def _write_config(tmp_path, *, bypass_permissions=False):
     path = tmp_path / "subagent.json"
     path.write_text(
         json.dumps(
@@ -49,10 +49,10 @@ def test_protocol_uses_codex_specific_tool_name():
     bridge.serve(
         io.StringIO(requests),
         output,
-        run_agent = lambda task, cancel_event: f"completed: {task}",
-        tool_name = bridge._CODEX_SUBAGENT_MCP_TOOL,
-        tool_description = bridge._CODEX_SUBAGENT_TOOL_DESCRIPTION,
-        instructions = bridge._SERVER_INSTRUCTIONS,
+        run_agent=lambda task, cancel_event: f"completed: {task}",
+        tool_name=bridge._CODEX_SUBAGENT_MCP_TOOL,
+        tool_description=bridge._CODEX_SUBAGENT_TOOL_DESCRIPTION,
+        instructions=bridge._SERVER_INSTRUCTIONS,
     )
     responses = {
         response["id"]: response for response in map(json.loads, output.getvalue().splitlines())
@@ -76,7 +76,7 @@ def test_protocol_uses_codex_specific_tool_name():
 def test_local_child_uses_explicit_unsloth_profile(
     monkeypatch, tmp_path, bypass_permissions, wsl_bridge
 ):
-    config = _write_config(tmp_path, bypass_permissions = bypass_permissions)
+    config = _write_config(tmp_path, bypass_permissions=bypass_permissions)
     monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
     credential_names = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
     for name in credential_names:
@@ -193,7 +193,7 @@ def test_local_child_prioritizes_failed_turn_over_progress():
             json.dumps({"type": "turn.failed", "error": {"message": "local failure"}}),
         ]
     )
-    with pytest.raises(RuntimeError, match = "local failure"):
+    with pytest.raises(RuntimeError, match="local failure"):
         bridge._result_text(output)
 
 
@@ -223,7 +223,7 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
         child.returncode = -15
 
     monkeypatch.setattr(bridge, "_stop_child", stop)
-    with pytest.raises(RuntimeError, match = "cancelled"):
+    with pytest.raises(RuntimeError, match="cancelled"):
         bridge.run_local_agent("wait", cancel_event)
     assert stopped == [process]
 
@@ -239,7 +239,7 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
     def resolver(
         executable,
         arguments,
-        environment = None,
+        environment=None,
     ):
         captured["resolver"] = (executable, arguments, environment)
         return ["C:\\nodejs\\node.exe", "index.js", *arguments]

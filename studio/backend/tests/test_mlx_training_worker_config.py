@@ -40,7 +40,7 @@ def _load_worker_module():
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
-        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+        child_stdio.utf8_child_env = lambda env=None: dict(env or {})
         sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
@@ -105,12 +105,12 @@ def test_mlx_studio_optimizer_aliases_are_explicit():
 
 
 def test_mlx_studio_rejects_unknown_optimizer():
-    with pytest.raises(ValueError, match = "Supported"):
+    with pytest.raises(ValueError, match="Supported"):
         _normalize_mlx_studio_optimizer("adamw_typo")
 
 
 def test_mlx_studio_rejects_unknown_scheduler():
-    with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
+    with pytest.raises(ValueError, match="Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
 
 
@@ -119,25 +119,25 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
     # keyword is not support.
     def old_zoo(
         model,
-        r = 16,
+        r=16,
         **kwargs,
     ):
         return model
 
     def new_zoo(
         model,
-        r = 16,
-        use_dora = False,
+        r=16,
+        use_dora=False,
         **kwargs,
     ):
         return model
 
-    def keyword_only_zoo(model, *, use_dora = False):
+    def keyword_only_zoo(model, *, use_dora=False):
         return model
 
     def positional_only_zoo(
         model,
-        use_dora = False,
+        use_dora=False,
         /,
         **kwargs,
     ):
@@ -151,12 +151,12 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
 
     for usable in (new_zoo, keyword_only_zoo):
         assert _mlx_dora_peft_kwargs({"use_dora": True}, usable) == {"use_dora": True}
-    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+    with pytest.raises(NotImplementedError, match="unsloth-zoo"):
         _mlx_dora_peft_kwargs({"use_dora": True}, old_zoo)
     for unusable in (positional_only_zoo, var_positional_zoo, var_keyword_zoo):
-        with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        with pytest.raises(NotImplementedError, match="unsloth-zoo"):
             _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
-    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+    with pytest.raises(NotImplementedError, match="unsloth-zoo"):
         _mlx_dora_peft_kwargs({"use_dora": True}, object())
     # An image-bearing dataset is not proof of a vision model; a text
     # model can still train language-only DoRA.
@@ -174,7 +174,7 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
     assert "tokenizer = tokenizer" in source
@@ -185,7 +185,7 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
     # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
     # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
     assert (
@@ -206,7 +206,7 @@ def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
 
 def test_mlx_vlm_resize_keeps_default_numpy_layout_hwc():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
 
     resized = _resize_mlx_vlm_image(image, 128)
 
@@ -216,9 +216,9 @@ def test_mlx_vlm_resize_keeps_default_numpy_layout_hwc():
 
 def test_mlx_vlm_resize_uses_requested_chw_numpy_layout():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
 
-    resized = _resize_mlx_vlm_image(image, 128, image_layout = "chw")
+    resized = _resize_mlx_vlm_image(image, 128, image_layout="chw")
 
     assert resized.shape == (3, 80, 128)
     assert resized.flags.c_contiguous
@@ -226,14 +226,14 @@ def test_mlx_vlm_resize_uses_requested_chw_numpy_layout():
 
 def test_mlx_vlm_resized_image_layout_probes_processor_contract():
     class ChwOnlyImageProcessor:
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             image = images[0]
             if image.shape[0] == 3:
                 return {"pixel_values": image}
             raise ValueError("expected CHW")
 
     class HwcImageProcessor:
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             image = images[0]
             if image.shape[-1] == 3:
                 return {"pixel_values": image}
@@ -241,12 +241,12 @@ def test_mlx_vlm_resized_image_layout_probes_processor_contract():
 
     assert (
         _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = ChwOnlyImageProcessor())
+            types.SimpleNamespace(image_processor=ChwOnlyImageProcessor())
         )
         == "chw"
     )
     assert (
-        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = HwcImageProcessor()))
+        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor=HwcImageProcessor()))
         is None
     )
 
@@ -256,7 +256,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
         def __init__(self):
             self.calls = 0
 
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             self.calls += 1
             image = images[0]
             if image.shape[0] == 3:
@@ -265,7 +265,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
 
     image_processor = StatefulImageProcessor()
 
-    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = image_processor))
+    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor=image_processor))
 
     assert layout == "chw"
     assert image_processor.calls == 0
@@ -292,12 +292,12 @@ def test_mlx_vlm_layout_probe_skips_uncopyable_processors():
         def __deepcopy__(self, _memo):
             raise RuntimeError("no deepcopy")
 
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             raise AssertionError("live processor should not be probed")
 
     assert (
         _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = UncopyableImageProcessor())
+            types.SimpleNamespace(image_processor=UncopyableImageProcessor())
         )
         is None
     )
@@ -305,7 +305,7 @@ def test_mlx_vlm_layout_probe_skips_uncopyable_processors():
 
 def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
     item = {
         "messages": [
             {
@@ -318,7 +318,7 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
         ]
     }
 
-    adapted = _adapt_for_mlx_vlm([item], resize = 128, image_layout = "chw")
+    adapted = _adapt_for_mlx_vlm([item], resize=128, image_layout="chw")
 
     assert adapted[0]["image"].shape == (3, 80, 128)
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
@@ -336,11 +336,11 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
     """
     warnings_logged = []
     fake_logger = types.SimpleNamespace(
-        warning = lambda *a, **k: warnings_logged.append((a, k)),
+        warning=lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
 
-    def _boom(_name, _hf_token = None):
+    def _boom(_name, _hf_token=None):
         raise RuntimeError("venv .venv_t5_550 missing")
 
     monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
@@ -355,11 +355,11 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
 def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     warnings_logged = []
     fake_logger = types.SimpleNamespace(
-        warning = lambda *a, **k: warnings_logged.append((a, k)),
+        warning=lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
     monkeypatch.setattr(
-        _worker, "_activate_transformers_version", lambda _name, _hf_token = None: None
+        _worker, "_activate_transformers_version", lambda _name, _hf_token=None: None
     )
 
     _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
@@ -408,8 +408,8 @@ def test_alpaca_datasets_still_get_explicit_markers():
 
 
 def _run_masking(
-    model_name = "org/unmapped",
-    detect = None,
+    model_name="org/unmapped",
+    detect=None,
     **overrides,
 ):
     """Execute the real masking block from _run_mlx_training and return its events.
@@ -417,9 +417,9 @@ def _run_masking(
     _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
     directly. That keeps the production statements under test rather than a copy of them.
     """
-    block = compile(ast.Module(body = [_masking_block()], type_ignores = []), "<masking>", "exec")
+    block = compile(ast.Module(body=[_masking_block()], type_ignores=[]), "<masking>", "exec")
     events = []
-    trainer = types.SimpleNamespace(processing_class = types.SimpleNamespace(), tokenizer = None)
+    trainer = types.SimpleNamespace(processing_class=types.SimpleNamespace(), tokenizer=None)
     zoo = types.ModuleType("unsloth_zoo")
     zoo.__path__ = []
     datasets = types.ModuleType("unsloth_zoo.dataset_utils")
@@ -451,12 +451,13 @@ def _run_masking(
 
 try:  # the block imports this lazily; skip the behaviour tests where it cannot load
     import utils.datasets.completion_masking  # noqa: F401
+
     _MASKING_IMPORTABLE = True
 except Exception:  # pragma: no cover
     _MASKING_IMPORTABLE = False
 
 needs_masking_helper = pytest.mark.skipif(
-    not _MASKING_IMPORTABLE, reason = "utils.datasets.completion_masking is not importable"
+    not _MASKING_IMPORTABLE, reason="utils.datasets.completion_masking is not importable"
 )
 
 
@@ -475,7 +476,7 @@ def _detect_fails(_processor):
         {"raw_text_mode": True},
         {"dataset_final_format": "raw_text"},
     ],
-    ids = ["not-requested", "raw-text-mode", "raw-text-format"],
+    ids=["not-requested", "raw-text-mode", "raw-text-format"],
 )
 @needs_masking_helper
 def test_masking_block_is_skipped(overrides):
@@ -487,7 +488,7 @@ def test_masking_block_is_skipped(overrides):
 @needs_masking_helper
 def test_masking_miss_reaches_the_warning_channel():
     """A miss must be a sticky warning, not a status line the next update overwrites."""
-    events, applied = _run_masking(detect = _detect_fails)
+    events, applied = _run_masking(detect=_detect_fails)
 
     assert applied is False
     warnings = _warnings(events)
@@ -503,12 +504,12 @@ def test_masking_miss_reaches_the_warning_channel():
         ("org/unmapped", lambda _p: ("<|user|>", "<|assistant|>")),
         ("unsloth/llama-3-8b-instruct", _detect_fails),
     ],
-    ids = ["auto-detected", "recovered-by-template-table"],
+    ids=["auto-detected", "recovered-by-template-table"],
 )
 @needs_masking_helper
 def test_applied_runs_leave_no_warning(model_name, detect):
     """Detection can fail at level "warning" and the table still mask. That is not a miss."""
-    events, applied = _run_masking(model_name = model_name, detect = detect)
+    events, applied = _run_masking(model_name=model_name, detect=detect)
 
     assert applied is True
     assert _warnings(events) == []
@@ -517,6 +518,6 @@ def test_applied_runs_leave_no_warning(model_name, detect):
 @pytest.mark.parametrize("model_name", ["", None, "org/model with spaces", "org/{brace}"])
 @needs_masking_helper
 def test_odd_model_names_do_not_break_the_warning(model_name):
-    events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
+    events, applied = _run_masking(model_name=model_name, detect=_detect_fails)
 
     assert applied is False and len(_warnings(events)) == 1

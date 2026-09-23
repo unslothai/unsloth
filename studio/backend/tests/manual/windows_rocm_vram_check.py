@@ -55,7 +55,7 @@ def run_holder(gib: float, max_seconds: int) -> int:
     import torch
 
     if not torch.cuda.is_available():
-        print(json.dumps({"status": "ERROR", "error": "no cuda/hip device"}), flush = True)
+        print(json.dumps({"status": "ERROR", "error": "no cuda/hip device"}), flush=True)
         return 2
 
     # TOUCHED, not merely allocated: an uncommitted allocation is not what a
@@ -63,7 +63,7 @@ def run_holder(gib: float, max_seconds: int) -> int:
     chunks, held, step = [], 0, 256 * 1024 * 1024
     want = int(gib * GIB)
     while held < want:
-        t = torch.empty(step, dtype = torch.uint8, device = "cuda")
+        t = torch.empty(step, dtype=torch.uint8, device="cuda")
         t.fill_(1)
         chunks.append(t)
         held += step
@@ -77,7 +77,7 @@ def run_holder(gib: float, max_seconds: int) -> int:
                 "allocated_gib": torch.cuda.memory_allocated() / GIB,
             }
         ),
-        flush = True,
+        flush=True,
     )
 
     deadline = time.time() + max_seconds
@@ -157,11 +157,11 @@ def _wait_for_ready(proc, timeout: float) -> dict | None:
             q.put(line)
         q.put(None)
 
-    threading.Thread(target = pump, daemon = True).start()
+    threading.Thread(target=pump, daemon=True).start()
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            line = q.get(timeout = 1.0)
+            line = q.get(timeout=1.0)
         except queue.Empty:
             if proc.poll() is not None:
                 return None
@@ -183,11 +183,11 @@ def _wait_for_ready(proc, timeout: float) -> dict | None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description = __doc__)
-    ap.add_argument("--holder", action = "store_true", help = argparse.SUPPRESS)
-    ap.add_argument("--gib", type = float, default = 4.0)
-    ap.add_argument("--max-seconds", type = int, default = 300)
-    ap.add_argument("--json", type = Path, default = None)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--holder", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--gib", type=float, default=4.0)
+    ap.add_argument("--max-seconds", type=int, default=300)
+    ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args()
 
     if args.holder:
@@ -217,7 +217,7 @@ def main() -> int:
 
     if not torch.cuda.is_available():
         report["fatal"] = "no cuda/hip device visible to torch"
-        print(json.dumps(report, indent = 2))
+        print(json.dumps(report, indent=2))
         return 2
 
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
@@ -243,6 +243,7 @@ def main() -> int:
     }
     try:
         from utils.hardware import amd as _amd
+
         gates["amd_smi_allowed"] = _safe(_amd._amd_smi_allowed)
     except Exception as e:  # noqa: BLE001
         gates["amd_smi_allowed"] = f"error: {type(e).__name__}: {e}"
@@ -304,26 +305,26 @@ def main() -> int:
             "--max-seconds",
             str(args.max_seconds),
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.DEVNULL,
-        text = True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
     )
-    ready = _wait_for_ready(proc, timeout = 180)
+    ready = _wait_for_ready(proc, timeout=180)
     report["holder"] = ready
     if ready:
         report["with_holder"] = _reading(hw, torch)
     # Stop by PID. Never pkill by pattern: it matches the shell running it.
     proc.terminate()
     try:
-        proc.wait(timeout = 30)
+        proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
         proc.kill()
     time.sleep(3)
     report["after"] = _reading(hw, torch)
 
-    print(json.dumps(report, indent = 2))
+    print(json.dumps(report, indent=2))
     if args.json:
-        args.json.write_text(json.dumps(report, indent = 2))
+        args.json.write_text(json.dumps(report, indent=2))
 
     # --- verdict ---
     print("\n" + "=" * 62)

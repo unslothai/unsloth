@@ -31,9 +31,9 @@ def _require_node():
         pytest.skip("studio chat sources not present")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if result.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
@@ -47,14 +47,14 @@ def _write_atomic(path: Path, text: str):
     importing it can hand that process an empty or partial module. Contents are
     constant, so the rename leaves every reader a whole file.
     """
-    fd, tmp = tempfile.mkstemp(dir = str(path.parent), prefix = path.name, suffix = ".tmp")
-    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
     os.replace(tmp, path)
 
 
 def _ensure_harness():
-    TEMP.mkdir(parents = True, exist_ok = True)
+    TEMP.mkdir(parents=True, exist_ok=True)
     _write_atomic(
         TEMP / "register.mjs",
         "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n",
@@ -76,8 +76,8 @@ def _run(script: str):
     # A unique name, not a per-call dir like _node_harness.py uses: these scripts reach the sources by a path relative
     # to TEMP, so an extra level breaks every import.
     script_path = TEMP / f"run_{uuid.uuid4().hex}.mts"
-    script_path.write_text(script, encoding = "utf-8")
-    env = dict(os.environ, NODE_NO_WARNINGS = "1")
+    script_path.write_text(script, encoding="utf-8")
+    env = dict(os.environ, NODE_NO_WARNINGS="1")
     result = subprocess.run(
         [
             "node",
@@ -86,13 +86,13 @@ def _run(script: str):
             "--no-warnings",
             script_path.name,
         ],
-        cwd = str(TEMP),
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env,
+        cwd=str(TEMP),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
     )
-    script_path.unlink(missing_ok = True)
+    script_path.unlink(missing_ok=True)
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
     last = [line for line in result.stdout.strip().splitlines() if line.strip()][-1]
     return json.loads(last)

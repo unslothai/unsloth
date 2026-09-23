@@ -114,7 +114,7 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     from models.inference import DiffusionLoadRequest
     from routes.inference import load_diffusion_model_gated
 
-    engine = create_autospec(SdCppDiffusionBackend, instance = True)
+    engine = create_autospec(SdCppDiffusionBackend, instance=True)
     engine.begin_load.return_value = {"loaded": False, "repo_id": None}
     engine.preflight_base_access.return_value = None
 
@@ -128,7 +128,7 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     monkeypatch.setattr(
         device_module,
         "resolve_diffusion_device_target",
-        lambda: types.SimpleNamespace(device = "cpu"),
+        lambda: types.SimpleNamespace(device="cpu"),
     )
     monkeypatch.setattr("routes.inference._guard_diffusion_load_against_training", lambda: None)
 
@@ -140,11 +140,11 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     asyncio.run(
         load_diffusion_model_gated(
             DiffusionLoadRequest(
-                model_path = "unsloth/FLUX.1-dev-GGUF",
-                gguf_filename = "flux1-dev-Q4_K_M.gguf",
+                model_path="unsloth/FLUX.1-dev-GGUF",
+                gguf_filename="flux1-dev-Q4_K_M.gguf",
             ),
             "test-user",
-            user_initiated = user_initiated,
+            user_initiated=user_initiated,
         )
     )
     return engine
@@ -155,7 +155,7 @@ def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiat
     # The regression: this raised TypeError for BOTH values, so the Images page could not load a
     # model at all on any host that selects sd.cpp. The parametrisation keeps the user-initiated
     # case explicit, because that is the one nobody expects an offline flag to break.
-    engine = _drive_the_images_load(monkeypatch, user_initiated = user_initiated)
+    engine = _drive_the_images_load(monkeypatch, user_initiated=user_initiated)
 
     engine.begin_load.assert_called_once()
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
@@ -186,11 +186,11 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
 
     _no_hub(monkeypatch)
-    backend = Native(engine = None)
+    backend = Native(engine=None)
     monkeypatch.setattr(
         Native,
         "_resolve_backend",
-        lambda self: ("oneshot", None, types.SimpleNamespace(version = lambda: "master")),
+        lambda self: ("oneshot", None, types.SimpleNamespace(version=lambda: "master")),
     )
     fetched: list = []
 
@@ -198,8 +198,8 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         self,
         assets,
         token,
-        cancel_event = None,
-        local_files_only = False,
+        cancel_event=None,
+        local_files_only=False,
     ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")
@@ -209,13 +209,13 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
     repo = "unsloth/FLUX.1-dev-GGUF"
     Native._run_load(
         backend,
-        repo_id = repo,
-        gguf_filename = "flux1-dev-Q4_K_M.gguf",
-        base = "black-forest-labs/FLUX.1-dev",
-        fam = detect_family(repo),
-        hf_token = None,
-        local_files_only = True,
-        _load_token = 1,
+        repo_id=repo,
+        gguf_filename="flux1-dev-Q4_K_M.gguf",
+        base="black-forest-labs/FLUX.1-dev",
+        fam=detect_family(repo),
+        hf_token=None,
+        local_files_only=True,
+        _load_token=1,
     )
 
     # Reached the fetch (so the probe and preflight were skipped, not merely tolerated) and the
@@ -238,10 +238,10 @@ def test_the_native_fetch_resolves_from_cache_only(monkeypatch, tmp_path):
 
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
-    Native(engine = None)._fetch_assets(
+    Native(engine=None)._fetch_assets(
         [("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", "diffusion_model")],
         None,
-        local_files_only = True,
+        local_files_only=True,
     )
 
     assert seen == [("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", True)]
@@ -261,10 +261,10 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
     with pytest.raises(RuntimeError) as caught:
-        Native(engine = None)._fetch_assets(
+        Native(engine=None)._fetch_assets(
             [("black-forest-labs/FLUX.1-dev", "ae.safetensors", "vae")],
             None,
-            local_files_only = True,
+            local_files_only=True,
         )
     message = str(caught.value)
     assert "ae.safetensors" in message
@@ -292,16 +292,16 @@ def test_an_uncached_vision_projector_does_not_fail_an_offline_load(monkeypatch,
 
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
     repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
-    paths = Native(engine = None)._fetch_assets(
+    paths = Native(engine=None)._fetch_assets(
         [(repo, cached.name, "llm"), (repo, "mmproj-F16.gguf", "llm_vision")],
         None,
-        local_files_only = True,
+        local_files_only=True,
     )
     assert paths == {"llm": str(cached)}
 
-    with pytest.raises(RuntimeError, match = "mmproj-F16.gguf"):
-        Native(engine = None)._fetch_assets(
-            [(repo, "mmproj-F16.gguf", "llm")], None, local_files_only = True
+    with pytest.raises(RuntimeError, match="mmproj-F16.gguf"):
+        Native(engine=None)._fetch_assets(
+            [(repo, "mmproj-F16.gguf", "llm")], None, local_files_only=True
         )
 
 
@@ -319,7 +319,7 @@ def test_the_default_still_takes_the_xet_fallback_ladder(monkeypatch, tmp_path):
     monkeypatch.setattr(xet, "_shared_hf_hub_download_with_xet_fallback", _shared)
 
     xet.hf_hub_download_with_xet_fallback(
-        "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", None, cache_dir = str(tmp_path)
+        "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", None, cache_dir=str(tmp_path)
     )
 
     assert len(seen) == 1
@@ -353,8 +353,8 @@ def test_the_offline_download_never_reaches_the_shared_ladder(monkeypatch, tmp_p
         "unsloth/FLUX.1-dev-GGUF",
         "flux1-dev-Q4_K_M.gguf",
         None,
-        cache_dir = str(tmp_path),
-        local_files_only = True,
+        cache_dir=str(tmp_path),
+        local_files_only=True,
     )
 
     assert seen and seen[0]["local_files_only"] is True
@@ -371,9 +371,9 @@ def test_a_cancelled_offline_download_still_stops(monkeypatch, tmp_path):
             "unsloth/FLUX.1-dev-GGUF",
             "flux1-dev-Q4_K_M.gguf",
             None,
-            cache_dir = str(tmp_path),
-            local_files_only = True,
-            cancel_event = cancel,
+            cache_dir=str(tmp_path),
+            local_files_only=True,
+            cancel_event=cancel,
         )
 
 

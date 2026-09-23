@@ -69,22 +69,22 @@ class _Driver:
     def _step(self, verb: str, args: tuple) -> None:
         page = self.page
         if verb == "goto":
-            page.goto(f"{self.base_url}{args[0]}", wait_until = "domcontentloaded", timeout = 60_000)
+            page.goto(f"{self.base_url}{args[0]}", wait_until="domcontentloaded", timeout=60_000)
         elif verb == "click":
             # A REAL mouse click through the driver, not element.click(): Radix menus open on pointerdown and
             # a synthetic click never opens them, which reads downstream as a menu that opened in zero
             # milliseconds. The same trap dom.js documents for the film's actions.
-            page.click(args[0], timeout = 6000)
+            page.click(args[0], timeout=6000)
         elif verb == "click_if":
             el = page.query_selector(args[0])
             if el is not None:
-                el.click(timeout = 6000)
+                el.click(timeout=6000)
         elif verb == "hover":
-            page.hover(args[0], timeout = 6000)
+            page.hover(args[0], timeout=6000)
         elif verb == "press":
             page.keyboard.press(args[0])
         elif verb == "fill":
-            page.fill(args[0], args[1], timeout = 6000)
+            page.fill(args[0], args[1], timeout=6000)
         elif verb == "wait":
             page.wait_for_timeout(int(args[0]))
         else:  # pragma: no cover

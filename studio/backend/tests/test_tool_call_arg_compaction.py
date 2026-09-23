@@ -27,8 +27,8 @@ from core.inference.context_window import (
 
 
 def _call(
-    call_id = "c1",
-    name = "edit_file",
+    call_id="c1",
+    name="edit_file",
     **arguments,
 ):
     return {
@@ -41,15 +41,15 @@ def _call(
 def _thread(
     body,
     *,
-    answered = True,
-    call_id = "c1",
+    answered=True,
+    call_id="c1",
 ):
     messages = [
         {"role": "user", "content": "Create a Flappy Bird game in HTML"},
         {
             "role": "assistant",
             "content": "Writing the file.",
-            "tool_calls": [_call(call_id, path = "flappy-bird.html", old_string = "", new_string = body)],
+            "tool_calls": [_call(call_id, path="flappy-bird.html", old_string="", new_string=body)],
         },
     ]
     if answered:
@@ -98,7 +98,7 @@ def test_what_the_tool_received_is_never_rewritten():
 
 def test_a_call_still_awaiting_its_result_is_left_alone():
     """Rewriting the in-flight call would describe a write different from the one running."""
-    messages = _thread("x" * 8000, answered = False)
+    messages = _thread("x" * 8000, answered=False)
 
     fitted, compacted = compact_completed_tool_arguments(messages)
 
@@ -109,7 +109,7 @@ def test_a_call_still_awaiting_its_result_is_left_alone():
 def test_protect_last_holds_the_freshest_exchange_clear():
     messages = _thread("x" * 8000)
 
-    _, compacted = compact_completed_tool_arguments(messages, protect_last = 2)
+    _, compacted = compact_completed_tool_arguments(messages, protect_last=2)
 
     assert compacted == 0
 
@@ -144,7 +144,7 @@ def test_a_batch_of_small_edits_is_compacted_on_its_total():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "edit_file", path = "a.py", edits = edits)],
+            "tool_calls": [_call("c1", "edit_file", path="a.py", edits=edits)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 20 edits"},
     ]
@@ -179,7 +179,7 @@ def test_one_large_edit_beside_many_small_ones_still_compacts_all_of_them():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "edit_file", path = "a.py", edits = edits)],
+            "tool_calls": [_call("c1", "edit_file", path="a.py", edits=edits)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 51 edits"},
     ]
@@ -274,7 +274,7 @@ def test_the_pre_execution_refusal_promises_nothing_was_written():
 
 def test_the_refusal_says_when_history_was_already_spent():
     """Otherwise "increase the Context Length" reads as advice nobody tried."""
-    assert "compacted" in describe_unservable_tool_call("edit_file", 4237, 4096, compacted_calls = 2)
+    assert "compacted" in describe_unservable_tool_call("edit_file", 4237, 4096, compacted_calls=2)
     assert "compacted" not in describe_unservable_tool_call("edit_file", 4237, 4096)
 
 
@@ -359,8 +359,8 @@ def test_compacting_a_refusal_leaves_other_calls_alone():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                _call("keep", "edit_file", path = "a.py", note = "z" * 8000),
-                _call("drop", "edit_file", path = "b.py", note = "q" * 8000),
+                _call("keep", "edit_file", path="a.py", note="z" * 8000),
+                _call("drop", "edit_file", path="b.py", note="q" * 8000),
             ],
         },
         {"role": "tool", "tool_call_id": "drop", "name": "edit_file", "content": "refused"},
@@ -472,7 +472,7 @@ def test_an_ordinary_result_is_still_compacted_beside_one_that_did_not_run():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c2", "edit_file", path = "b.py", new_string = "y" * 8000)],
+            "tool_calls": [_call("c2", "edit_file", path="b.py", new_string="y" * 8000)],
         }
     )
     messages.append(
@@ -498,7 +498,7 @@ def _reused_id_thread():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = "a" * 4000)],
+            "tool_calls": [_call("call_0", "edit_file", path="first.html", new_string="a" * 4000)],
         },
         {
             "role": "tool",
@@ -509,7 +509,7 @@ def _reused_id_thread():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("call_0", "edit_file", path = "second.html", new_string = "b" * 4000)],
+            "tool_calls": [_call("call_0", "edit_file", path="second.html", new_string="b" * 4000)],
         },
     ]
 
@@ -567,7 +567,7 @@ def test_a_tool_that_writes_no_file_is_not_told_its_arguments_are_on_disk(tool_n
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", tool_name, code = "print(1)\n" * 500)],
+            "tool_calls": [_call("c1", tool_name, code="print(1)\n" * 500)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": tool_name, "content": "1"},
     ]
@@ -707,7 +707,7 @@ def test_a_non_file_tool_is_not_told_it_wrote_nothing(tool_name):
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", tool_name, code = "open('out.txt','w')\n" * 400)],
+            "tool_calls": [_call("c1", tool_name, code="open('out.txt','w')\n" * 400)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": tool_name, "content": "done"},
     ]
@@ -735,7 +735,7 @@ def test_the_destination_path_survives_aggregate_compaction():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "edit_file", path = long_path, edits = edits)],
+            "tool_calls": [_call("c1", "edit_file", path=long_path, edits=edits)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 2 edits"},
     ]
@@ -757,7 +757,7 @@ def test_the_refusal_blames_a_file_only_when_a_file_is_involved(tool_name, expec
     an MCP payload was answered with "ask for a smaller file"."""
     from core.inference.context_window import _blamed_role  # noqa: PLC0415
 
-    message = {"role": "assistant", "tool_calls": [_call("c1", tool_name, code = "x")]}
+    message = {"role": "assistant", "tool_calls": [_call("c1", tool_name, code="x")]}
 
     role = _blamed_role(message)
 
@@ -779,13 +779,13 @@ def test_a_reply_pairs_with_the_newest_pending_call_of_a_reused_id():
             "role": "assistant",
             "content": "",
             # Announced, then the turn was interrupted: no `tool` reply ever followed.
-            "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = body_a)],
+            "tool_calls": [_call("call_0", "edit_file", path="first.html", new_string=body_a)],
         },
         {"role": "user", "content": "Try again"},
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("call_0", "edit_file", path = "second.html", new_string = body_b)],
+            "tool_calls": [_call("call_0", "edit_file", path="second.html", new_string=body_b)],
         },
         {
             "role": "tool",
@@ -814,8 +814,8 @@ def test_a_mixed_batch_is_blamed_on_the_call_that_made_it_large():
     message = {
         "role": "assistant",
         "tool_calls": [
-            _call("c1", "edit_file", path = "a.py", edits = [{"old_string": "a", "new_string": "b"}]),
-            _call("c2", "python", code = "x" * 40000),
+            _call("c1", "edit_file", path="a.py", edits=[{"old_string": "a", "new_string": "b"}]),
+            _call("c2", "python", code="x" * 40000),
         ],
     }
 
@@ -829,8 +829,8 @@ def test_a_batch_whose_bulk_is_the_file_edit_still_gets_the_file_wording():
     message = {
         "role": "assistant",
         "tool_calls": [
-            _call("c1", "edit_file", path = "a.py", new_string = "x" * 40000),
-            _call("c2", "python", code = "print(1)"),
+            _call("c1", "edit_file", path="a.py", new_string="x" * 40000),
+            _call("c2", "python", code="print(1)"),
         ],
     }
 
@@ -883,7 +883,7 @@ def test_a_refused_call_is_compacted_below_the_general_floor():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "python", code = body)],
+            "tool_calls": [_call("c1", "python", code=body)],
         },
     ]
     before = messages[0]["tool_calls"][0]["function"]["arguments"]
@@ -904,7 +904,7 @@ def test_a_receipt_that_would_grow_the_prompt_is_still_refused():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "python", code = "print(1)")],
+            "tool_calls": [_call("c1", "python", code="print(1)")],
         },
     ]
     before = messages[0]["tool_calls"][0]["function"]["arguments"]
@@ -928,7 +928,7 @@ def test_an_overflowing_tool_turn_is_blamed_on_the_call_not_the_reply():
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [_call("c1", "python", code = "x" * 40000)],
+            "tool_calls": [_call("c1", "python", code="x" * 40000)],
         },
         {"role": "tool", "tool_call_id": "c1", "name": "python", "content": "ok"},
     ]

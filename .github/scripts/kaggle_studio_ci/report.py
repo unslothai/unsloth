@@ -35,16 +35,16 @@ def _load_shared():
 
 
 def _summary(text: str) -> None:
-    print(text, flush = True)
+    print(text, flush=True)
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding = "utf-8") as fh:
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(text + "\n")
 
 
 def _notice(level: str, title: str, message: str) -> None:
     flat = message.replace("\n", " ").replace("::", ":")
-    print(f"::{level} title={title}::{flat}", flush = True)
+    print(f"::{level} title={title}::{flat}", flush=True)
 
 
 # Order the assertions are presented in, and the one-line reminder of what each is actually worth: a reader who has never seen this job before should not have to open the payload to know whether a tick means anything.
@@ -146,9 +146,9 @@ def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evidence", required = True)
+    ap.add_argument("--evidence", required=True)
     # One, always: the payload's two notebooks are halves of one experiment and produce exactly one `studio-gpu` report between them. See the count note in kaggle_t4_ci/build_kernel.py's --all-kernels tail.
-    ap.add_argument("--expect", type = int, default = 1)
+    ap.add_argument("--expect", type=int, default=1)
     args = ap.parse_args()
 
     evidence = Path(args.evidence)
@@ -162,7 +162,7 @@ def main() -> int:
         _notice("warning", "Unsloth GPU smoke did not run", "no launch_result.json was produced")
         return 0
 
-    result = json.loads(result_file.read_text(encoding = "utf-8"))
+    result = json.loads(result_file.read_text(encoding="utf-8"))
     verdict = result.get("verdict", "infra")
     reason = result.get("reason", "")
     reports = result.get("reports", [])

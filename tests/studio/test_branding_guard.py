@@ -23,23 +23,23 @@ def _stage(tmp_path):
     venv_share = tmp_path / "venv-share"
     js_dir = tmp_path / "jupyter_server"
 
-    (venv_share).mkdir(parents = True)
+    (venv_share).mkdir(parents=True)
     (venv_share / "UNSLOTH_LICENSE.AGPL-3.0").write_text(
         "                    GNU AFFERO GENERAL PUBLIC LICENSE\n"
         "                       Version 3, 19 November 2007\n"
         "  Copyright (C) 2007 Free Software Foundation, Inc.\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
-    (venv_share / "lab" / "settings").mkdir(parents = True)
+    (venv_share / "lab" / "settings").mkdir(parents=True)
     (venv_share / "lab" / "settings" / "overrides.json").write_text(
         json.dumps({"@jupyterlab/apputils-extension:themes": {"theme": ub.THEME_NAME}}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     labext = venv_share / "labextensions" / ub.LABEXT_NAME
-    (labext / "static").mkdir(parents = True)
-    (labext / "package.json").write_text(json.dumps({"name": ub.LABEXT_NAME}), encoding = "utf-8")
+    (labext / "static").mkdir(parents=True)
+    (labext / "package.json").write_text(json.dumps({"name": ub.LABEXT_NAME}), encoding="utf-8")
     bundle = " ".join(
         [
             ub.PHRASE,
@@ -51,27 +51,27 @@ def _stage(tmp_path):
             ub.LOGO_DATA_URI_PREFIX + "AAAAdummyimagebytes",
         ]
     )
-    (labext / "static" / "remoteEntry.abc123.js").write_text(bundle, encoding = "utf-8")
+    (labext / "static" / "remoteEntry.abc123.js").write_text(bundle, encoding="utf-8")
 
-    (js_dir / "templates").mkdir(parents = True)
+    (js_dir / "templates").mkdir(parents=True)
     (js_dir / "templates" / "login.html").write_text(
         "Built by the Unsloth team. Apache 2.0, AGPLv3 License Link\n"
         "Copyright 2026-Present the Unsloth team.\n"
         "https://github.com/unslothai/unsloth#license\n"
         "https://github.com/unslothai/unsloth\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
-    (js_dir / "static" / "favicons").mkdir(parents = True)
+    (js_dir / "static" / "favicons").mkdir(parents=True)
     (js_dir / "static" / "favicons" / "favicon.ico").write_bytes(b"\x00\x00\x01\x00icon")
-    (js_dir / "static" / "logo").mkdir(parents = True)
+    (js_dir / "static" / "logo").mkdir(parents=True)
     (js_dir / "static" / "logo" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nlogo")
 
     # config_dirs = [] keeps the tree hermetic: no host jupyter config is scanned
     return ub.resolve_paths(
-        venv_share = str(venv_share),
-        jupyter_server_dir = str(js_dir),
-        config_dirs = [],
+        venv_share=str(venv_share),
+        jupyter_server_dir=str(js_dir),
+        config_dirs=[],
     )
 
 
@@ -85,7 +85,7 @@ def _remove_license(paths):
 
 
 def _blank_license(paths):
-    with open(paths["license"], "w", encoding = "utf-8") as f:
+    with open(paths["license"], "w", encoding="utf-8") as f:
         f.write("All rights reserved. Proprietary. Resold by someone else.\n")
 
 
@@ -94,44 +94,46 @@ def _remove_login(paths):
 
 
 def _strip_login_source(paths):
-    with open(paths["login"], encoding = "utf-8") as f:
+    with open(paths["login"], encoding="utf-8") as f:
         text = f.read()
-    with open(paths["login"], "w", encoding = "utf-8") as f:
+    with open(paths["login"], "w", encoding="utf-8") as f:
         f.write(text.replace(ub.SOURCE_URL, "https://example.com/forks"))
 
 
 def _strip_login_copyright(paths):
-    with open(paths["login"], encoding = "utf-8") as f:
+    with open(paths["login"], encoding="utf-8") as f:
         text = f.read()
-    with open(paths["login"], "w", encoding = "utf-8") as f:
+    with open(paths["login"], "w", encoding="utf-8") as f:
         f.write(text.replace(ub.COPYRIGHT, "Copyright someone else"))
 
 
 def _drop_theme(paths):
-    with open(paths["overrides"], "w", encoding = "utf-8") as f:
+    with open(paths["overrides"], "w", encoding="utf-8") as f:
         f.write("{}")
 
 
 def _rebrand_labext(paths):
-    with open(paths["labext_pkg"], "w", encoding = "utf-8") as f:
+    with open(paths["labext_pkg"], "w", encoding="utf-8") as f:
         f.write(json.dumps({"name": "totally-not-unsloth"}))
 
 
 def _strip_bundle_phrase(paths):
     import glob
+
     for path in glob.glob(os.path.join(paths["labext_static"], "*.js")):
-        with open(path, encoding = "utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read()
-        with open(path, "w", encoding = "utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(text.replace(ub.PHRASE, "").replace(ub.SHORT_LABEL, ""))
 
 
 def _strip_bundle_logo(paths):
     import glob
+
     for path in glob.glob(os.path.join(paths["labext_static"], "*.js")):
-        with open(path, encoding = "utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read()
-        with open(path, "w", encoding = "utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(text.replace(ub.LOGO_DATA_URI_PREFIX, "data:image/png;base64,XXXX"))
 
 
@@ -144,17 +146,17 @@ def _empty_favicon(paths):
 
 
 def _disable_unsloth_ext(paths):
-    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+    with open(paths["page_configs"][0], "w", encoding="utf-8") as f:
         json.dump({"disabledExtensions": {ub.LABEXT_NAME: True}}, f)
 
 
 def _disable_unsloth_plugin(paths):
-    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+    with open(paths["page_configs"][0], "w", encoding="utf-8") as f:
         json.dump({"disabledExtensions": {ub.ABOUT_PLUGIN_ID: True}}, f)
 
 
 def _disable_unsloth_ext_list_form(paths):
-    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+    with open(paths["page_configs"][0], "w", encoding="utf-8") as f:
         json.dump({"disabledExtensions": [ub.SPLASH_PLUGIN_ID]}, f)
 
 
@@ -188,7 +190,7 @@ def test_negative_each_marker_is_enforced(tmp_path, mutate):
 def test_disabling_stock_plugins_is_allowed(tmp_path):
     """We disable the stock logo/splash ourselves; the guard must not flag those."""
     paths = _stage(tmp_path)
-    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+    with open(paths["page_configs"][0], "w", encoding="utf-8") as f:
         json.dump(
             {
                 "disabledExtensions": {
@@ -221,7 +223,7 @@ def test_attribution_sources_have_no_encoded_obfuscation():
         "codecs.decode",
     ]
     for path in files:
-        with open(path, encoding = "utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read()
         for token in forbidden:
             assert token not in text, path + " uses obfuscation token: " + token
@@ -232,9 +234,9 @@ def test_canonical_phrase_is_plain_text_in_definition_files():
     whole in the bundle for the guard to grep."""
     src_dir = os.path.join(REPO, "docker", "jupyter")
     ts = open(
-        os.path.join(src_dir, "unsloth_labext", "src", "branding.ts"), encoding = "utf-8"
+        os.path.join(src_dir, "unsloth_labext", "src", "branding.ts"), encoding="utf-8"
     ).read()
     assert ub.PHRASE in ts, "branding.ts must hold the full PHRASE as one literal"
-    py = open(os.path.join(src_dir, "unsloth_branding.py"), encoding = "utf-8").read()
+    py = open(os.path.join(src_dir, "unsloth_branding.py"), encoding="utf-8").read()
     for marker in (ub.SHORT_LABEL, ub.COPYRIGHT, ub.SOURCE_URL, ub.AGPL_URL, ub.THEME_NAME):
         assert marker in py, "unsloth_branding.py missing plain marker: " + marker

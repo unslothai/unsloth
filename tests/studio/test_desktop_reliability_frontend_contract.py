@@ -360,7 +360,7 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "downloadUrl(src, filename)" in audio
     assert 'filename = "generated-audio.wav"' in audio
 
-    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     assert "connect-src 'self' ipc: http://ipc.localhost" in tauri_config
 
     for source in (training, markdown, image, audio):
@@ -393,7 +393,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
-    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     assert (
         "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
     )
@@ -414,14 +414,14 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
     # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
     # quiet cannot hang the save while a legitimately large clip still finishes.
-    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
+    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding="utf-8")
     assert "fn streaming_client" in loopback
     assert "redirect(reqwest::redirect::Policy::none())" in loopback
     assert ".read_timeout(read_timeout)" in loopback
     assert ".timeout(" not in loopback.split("fn streaming_client")[1]
     assert loopback.count(".no_proxy()") == 2
     assert "loopback_http::streaming_client" in dialogs
-    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding="utf-8")
     assert "native_file_dialogs::save_native_file_from_url," in main_rs
 
 
@@ -619,7 +619,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         r"showSidebarSurface && !pinned\s*\?\s*"
         r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
         r"\s*:\s*sidebarWidth",
-        TITLEBAR.read_text(encoding = "utf-8"),
+        TITLEBAR.read_text(encoding="utf-8"),
     ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
@@ -730,7 +730,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "windowFocused" not in navbar
     assert "bg-[#d0d0d0]" not in navbar
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     # The nudge has to move the navigation without pushing it out of the titlebar it sits
     # in, so the button box travels with it. The mac-only margin is deliberately not in the
@@ -771,7 +771,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     # the accessibility tree, over every combination of the four inputs, and let any
     # spelling that admits exactly those states pass.
     inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
-    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop=inputs), inputs)
     for combination, removed in table.items():
         has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
         assert removed == (
@@ -1062,7 +1062,7 @@ def _ui_source(path) -> str:
     renders identically at the default scale of 1. Reading through `_at_default_scale` keeps
     each contract asking about the length it was written for instead of the spelling.
     """
-    return _at_default_scale(path.read_text(encoding = "utf-8"))
+    return _at_default_scale(path.read_text(encoding="utf-8"))
 
 
 def _window_chrome_source(path) -> str:
@@ -1075,7 +1075,7 @@ def _window_chrome_source(path) -> str:
     the real titlebar stayed put and every fixed sheet slid off it at a non-default UI size,
     so the chrome is read raw and a scale wrapper fails the contract.
     """
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def _spacing_rem(live_css: str) -> float | None:
@@ -1472,7 +1472,7 @@ def _labelled_actions(
         left = left_paddings[stated_left[0]] if stated_left else base_left
         # A modifier that states no edge leaves the base rule's in force, so that is the
         # fallback, not zero.
-        shift = max((offsets[token] for token in modifiers), default = base_offset)
+        shift = max((offsets[token] for token in modifiers), default=base_offset)
         found[at] = (name, shift + padding + left)
     # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
     # below is written about a row that has one. Without this the per-variant pins alone keep
@@ -1640,7 +1640,7 @@ _DECLARES_RIGHT_EDGE = (
 )
 
 
-@functools.lru_cache(maxsize = 4)
+@functools.lru_cache(maxsize=4)
 def _css_rules(live_css: str) -> tuple[tuple[str, str], ...]:
     """Every rule in the stylesheet once, as (selector list, own declarations).
 
@@ -1884,7 +1884,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # `{/* ... */}` is how a prop is commented out in JSX, and it is the spelling that would
     # be used here, so a stripper that only knew `//` left a disabled className reading as a
     # live one. Block form first, then line form.
-    applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags = re.S)
+    applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags=re.S)
     applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in applied.splitlines())
     builder = re.search(r"const buttonClass = cn\(", applied)
     assert builder, (
@@ -1971,7 +1971,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # in the builder says nothing about the rows that do not take it: moving the verified
     # pair into `showWorkSpinner ? "...pair..." : undefined` leaves every ordinary row with
     # no gutter at all while a scan over literals still finds it.
-    live_css = _at_default_scale(re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S))
+    live_css = _at_default_scale(re.sub(r"/\*.*?\*/", " ", css_source, flags=re.S))
     spacing = _spacing_rem(live_css)
     assert spacing is not None, (
         "index.css does not state one readable --spacing, so this guard cannot convert the "
@@ -2603,7 +2603,7 @@ _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE = (
 
 
 def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = APP_PROVIDER.read_text(encoding="utf-8")
     blocks = dict(re.findall(r"const (\w+_CHROME_STYLE) = \{(.*?)\n\}", source, re.S))
     assert len(blocks) >= 2, f"the provider states {sorted(blocks)}, so a chrome has gone missing"
     # Per block, not across the file: the chromes are alternatives, and one of them holding a
@@ -2622,7 +2622,7 @@ def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
 
 
 def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
-    source = INDEX_CSS.read_text(encoding = "utf-8")
+    source = INDEX_CSS.read_text(encoding="utf-8")
     for prop, length, expected in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
         scaled = len(
             re.findall(
@@ -2641,7 +2641,7 @@ def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
 
 def test_the_colours_these_contracts_read_still_carry_their_gain():
     for path, utility, colour, amount, gain, expected in _COLOURS_THAT_MUST_KEEP_THEIR_GAIN:
-        source = path.read_text(encoding = "utf-8")
+        source = path.read_text(encoding="utf-8")
         scaled = (
             f"{utility}-[color-mix(in_oklab,var({colour})_"
             f"calc({amount}%*var(--contrast-{gain}-gain,1)),transparent)]"
@@ -2659,7 +2659,7 @@ def test_the_colours_these_contracts_read_still_carry_their_gain():
 
 def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
     for path, variant, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
-        source = path.read_text(encoding = "utf-8")
+        source = path.read_text(encoding="utf-8")
         named = f"{variant}{utility}-{length}"
         scaled = len(
             re.findall(

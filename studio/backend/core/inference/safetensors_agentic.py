@@ -168,7 +168,7 @@ def _held_rehearsal_tail_len(
     tail = text[i:]
     held = (
         len(tail)
-        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted=unrestricted)
         else 0
     )
     return max(
@@ -238,7 +238,7 @@ def _earliest_tool_signal(
                 if p < 0:
                     break
                 name_start = _rehearsal_name_start(
-                    candidate, p, active_tools, unrestricted = unrestricted
+                    candidate, p, active_tools, unrestricted=unrestricted
                 )
                 if name_start < p:
                     if name_start >= floor and (best < 0 or name_start < best):
@@ -253,8 +253,8 @@ def _earliest_tool_signal(
             candidate,
             None if unrestricted else (lambda: _active_tool_names(active_tools)),
             start,
-            floor = floor,
-            streaming = streaming,
+            floor=floor,
+            streaming=streaming,
         )
         if gemma >= floor and (best < 0 or gemma < best):
             best = gemma
@@ -290,7 +290,7 @@ def _has_genuine_tool_signal(
         if sig == "[ARGS]":
             if (
                 _earliest_tool_signal(
-                    candidate, ("[ARGS]",), active_tools, unrestricted = unrestricted
+                    candidate, ("[ARGS]",), active_tools, unrestricted=unrestricted
                 )
                 >= 0
             ):
@@ -331,7 +331,7 @@ def strip_tool_markup_streaming(
         # streaming path and ``strip_tool_markup`` cannot drift. Its end-of-turn arms
         # run only on the last segment.
         return _parser_strip_segment(
-            segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
+            segment, seg_final=is_last, enabled_tool_names=enabled_tool_names
         )
 
     # Preserve think blocks verbatim: stripping a rehearsed call inside one shrinks then
@@ -348,7 +348,7 @@ def _strip_tool_markup_final(
 ) -> str:
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    return strip_tool_markup(text, final = True, enabled_tool_names = enabled_tool_names)
+    return strip_tool_markup(text, final=True, enabled_tool_names=enabled_tool_names)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -462,7 +462,7 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
 
     if not candidates:
         return None
-    _pos, name = min(candidates, key = lambda c: c[0])
+    _pos, name = min(candidates, key=lambda c: c[0])
     return name or None
 
 
@@ -478,7 +478,7 @@ def _coerce_arguments_with_provenance(
     tool_name: str = "",
 ):
     """Normalise tool ``arguments`` and report whether healing was applied."""
-    coerced = coerce_tool_arguments(raw_args, heal = heal, tool_name = tool_name)
+    coerced = coerce_tool_arguments(raw_args, heal=heal, tool_name=tool_name)
     return coerced.arguments, coerced.healed
 
 
@@ -490,8 +490,8 @@ def _coerce_arguments(
 ) -> dict:
     arguments, _ = _coerce_arguments_with_provenance(
         raw_args,
-        heal = heal,
-        tool_name = tool_name,
+        heal=heal,
+        tool_name=tool_name,
     )
     return arguments
 
@@ -522,6 +522,7 @@ def _accepts_output_callback(func: Callable[..., str]) -> bool:
 
 def _search_images_kwargs(func: Callable[..., str], tool_name: str) -> dict[str, bool]:
     from core.inference.tool_stream_exec import search_images_kwargs
+
     return search_images_kwargs(func, tool_name)
 
 
@@ -534,14 +535,14 @@ def _call_single_turn(
     """Call a single-turn generator with the tool schemas and protocol flag it supports."""
     try:
         return single_turn(
-            conversation, active_tools = active_tools, tool_protocol_active = tool_protocol_active
+            conversation, active_tools=active_tools, tool_protocol_active=tool_protocol_active
         )
     except TypeError as exc:
         # A bare signature reports the FIRST unexpected kwarg, so accept either name.
         if "tool_protocol_active" not in str(exc) and "active_tools" not in str(exc):
             raise
     try:
-        return single_turn(conversation, active_tools = active_tools)
+        return single_turn(conversation, active_tools=active_tools)
     except TypeError as exc:
         if "active_tools" not in str(exc):
             raise
@@ -551,6 +552,7 @@ def _call_single_turn(
 def _dense_message_tokens(messages: list[dict]) -> int:
     """`estimate_messages_tokens_dense`, imported where it is used like the rest here."""
     from core.inference.context_window import estimate_messages_tokens_dense
+
     return estimate_messages_tokens_dense(messages)
 
 
@@ -605,8 +607,8 @@ def run_safetensors_tool_loop(
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
-    markup = None,
-    renderable_tools = None,
+    markup=None,
+    renderable_tools=None,
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
@@ -703,8 +705,8 @@ def run_safetensors_tool_loop(
         else neutralize_tool_descriptions(tools, None, markup)
     )
     tool_controller = ToolLoopController(
-        tools = (None if unrestricted_tools else _authorized),
-        auto_heal_tool_calls = auto_heal_tool_calls,
+        tools=(None if unrestricted_tools else _authorized),
+        auto_heal_tool_calls=auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0
@@ -786,7 +788,7 @@ def run_safetensors_tool_loop(
             held = cumulative_display + ("" if buffer_in_display else content_buffer)
             if not held:
                 return ""
-            cleaned = strip_tool_markup(held, final = True, enabled_tool_names = _enabled_tool_names)
+            cleaned = strip_tool_markup(held, final=True, enabled_tool_names=_enabled_tool_names)
             return cleaned if len(cleaned) > len(last_emitted) else ""
 
         detect_state = _state_buffering
@@ -857,7 +859,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: generation was interrupted before the tool call completed.",
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 raise
 
@@ -888,7 +890,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                     yield {
                         "type": "tool_args",
@@ -923,9 +925,9 @@ def run_safetensors_tool_loop(
                     candidate,
                     tool_xml_signals,
                     _detect_tools,
-                    unrestricted = unrestricted_tools,
-                    start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
-                    streaming = True,
+                    unrestricted=unrestricted_tools,
+                    start=max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
+                    streaming=True,
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
@@ -942,7 +944,7 @@ def run_safetensors_tool_loop(
                             "tool_name": "render_html",
                             "tool_call_id": provisional_render_html_id,
                             "arguments": {},
-                            "provenance": _tool_event_provenance(provisional = True),
+                            "provenance": _tool_event_provenance(provisional=True),
                         }
                         yield {
                             "type": "tool_args",
@@ -959,7 +961,7 @@ def run_safetensors_tool_loop(
                 # released by later prose or the end-of-stream flush.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
-                        cleaned, _detect_tools, unrestricted = unrestricted_tools
+                        cleaned, _detect_tools, unrestricted=unrestricted_tools
                     )
                     emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
                 else:
@@ -991,7 +993,7 @@ def run_safetensors_tool_loop(
                             stripped,
                             ("[ARGS]",),
                             _detect_tools,
-                            unrestricted = unrestricted_tools,
+                            unrestricted=unrestricted_tools,
                         )
                         >= 0
                     ):
@@ -1007,7 +1009,7 @@ def run_safetensors_tool_loop(
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and _is_rehearsal_prefix(stripped, _detect_tools, unrestricted = unrestricted_tools)
+                and _is_rehearsal_prefix(stripped, _detect_tools, unrestricted=unrestricted_tools)
             ):
                 is_prefix = True
                 is_rehearsal_prefix = True
@@ -1032,9 +1034,9 @@ def run_safetensors_tool_loop(
                         continue
                 elif parse_tool_calls_from_text(
                     content_buffer,
-                    id_offset = next_call_id,
-                    allow_incomplete = auto_heal_tool_calls,
-                    enabled_tool_names = _enabled_tool_names,
+                    id_offset=next_call_id,
+                    allow_incomplete=auto_heal_tool_calls,
+                    enabled_tool_names=_enabled_tool_names,
                 ):
                     detect_state = _state_draining
                     continue
@@ -1072,9 +1074,9 @@ def run_safetensors_tool_loop(
                     # end-of-turn parser gets it.
                     if parse_tool_calls_from_text(
                         stripped,
-                        id_offset = next_call_id,
-                        allow_incomplete = auto_heal_tool_calls,
-                        enabled_tool_names = _enabled_tool_names,
+                        id_offset=next_call_id,
+                        allow_incomplete=auto_heal_tool_calls,
+                        enabled_tool_names=_enabled_tool_names,
                     ):
                         detect_state = _state_draining
                         continue
@@ -1112,7 +1114,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                     yield {
                         "type": "tool_args",
@@ -1132,7 +1134,7 @@ def run_safetensors_tool_loop(
                 # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
-                        cleaned, _detect_tools, unrestricted = unrestricted_tools
+                        cleaned, _detect_tools, unrestricted=unrestricted_tools
                     )
                     emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
                 else:
@@ -1159,7 +1161,7 @@ def run_safetensors_tool_loop(
                     stripped,
                     tool_xml_signals,
                     _detect_tools,
-                    unrestricted = unrestricted_tools,
+                    unrestricted=unrestricted_tools,
                 )
             ):
                 detect_state = _state_draining
@@ -1176,7 +1178,7 @@ def run_safetensors_tool_loop(
                     cumulative_display += content_buffer
                     buffer_in_display = True
                     cleaned = strip_tool_markup(
-                        cumulative_display, final = True, enabled_tool_names = _enabled_tool_names
+                        cumulative_display, final=True, enabled_tool_names=_enabled_tool_names
                     )
                     if len(cleaned) > len(last_emitted):
                         last_emitted = cleaned
@@ -1188,9 +1190,9 @@ def run_safetensors_tool_loop(
             # strict so plain answers stay untouched. Mirrors GGUF.
             safety_tc = parse_tool_calls_from_text(
                 content_accum,
-                id_offset = next_call_id,
-                allow_incomplete = auto_heal_tool_calls,
-                enabled_tool_names = _enabled_tool_names,
+                id_offset=next_call_id,
+                allow_incomplete=auto_heal_tool_calls,
+                enabled_tool_names=_enabled_tool_names,
             )
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
@@ -1198,7 +1200,7 @@ def run_safetensors_tool_loop(
                 # default, while explicit request values win.
                 intent_text = _reprompt_intent_text(
                     content_accum,
-                    reasoning_prefilled = reasoning_prefilled,
+                    reasoning_prefilled=reasoning_prefilled,
                 )
                 if (
                     auto_heal_tool_calls
@@ -1225,7 +1227,7 @@ def run_safetensors_tool_loop(
                     append_assistant_turn(
                         conversation,
                         {"role": "assistant", "content": intent_text},
-                        continue_final_message = continue_final_message,
+                        continue_final_message=continue_final_message,
                     )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
@@ -1256,9 +1258,9 @@ def run_safetensors_tool_loop(
             tool_calls = safety_tc
             content_text = _strip_tool_markup_final(
                 content_accum,
-                auto_heal_tool_calls = auto_heal_tool_calls,
-                tool_protocol_active = True,
-                enabled_tool_names = _enabled_names_gate,
+                auto_heal_tool_calls=auto_heal_tool_calls,
+                tool_protocol_active=True,
+                enabled_tool_names=_enabled_names_gate,
             )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
@@ -1272,9 +1274,9 @@ def run_safetensors_tool_loop(
             # being dropped into a blank continuation.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
-                id_offset = next_call_id,
-                allow_incomplete = auto_heal_tool_calls,
-                enabled_tool_names = _enabled_names_gate,
+                id_offset=next_call_id,
+                allow_incomplete=auto_heal_tool_calls,
+                enabled_tool_names=_enabled_names_gate,
             )
             if not tool_calls:
                 # Parser found nothing. Auto-Heal-enabled display cleanup
@@ -1283,9 +1285,9 @@ def run_safetensors_tool_loop(
                 if content_accum:
                     _drain_text = _strip_tool_markup_final(
                         content_accum,
-                        auto_heal_tool_calls = auto_heal_tool_calls,
-                        tool_protocol_active = False,
-                        enabled_tool_names = _enabled_tool_names,
+                        auto_heal_tool_calls=auto_heal_tool_calls,
+                        tool_protocol_active=False,
+                        enabled_tool_names=_enabled_tool_names,
                     )
                     # Drained bare-JSON call that didn't parse: with Auto-Heal on, drop the fragment
                     # (plain JSON answers are left untouched); off keeps it visible per the strict contract.
@@ -1300,15 +1302,15 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: render_html tool call could not be parsed.",
-                        "provenance": _tool_event_provenance(provisional = True),
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 yield {"type": "status", "text": ""}
                 return
             content_text = _strip_tool_markup_final(
                 content_accum,
-                auto_heal_tool_calls = auto_heal_tool_calls,
-                tool_protocol_active = True,
-                enabled_tool_names = _enabled_names_gate,
+                auto_heal_tool_calls=auto_heal_tool_calls,
+                tool_protocol_active=True,
+                enabled_tool_names=_enabled_names_gate,
             )
 
         if tool_calls:
@@ -1385,7 +1387,7 @@ def run_safetensors_tool_loop(
                 and tool_name == "render_html"
                 and tc.get("id", "") == provisional_render_html_id
             )
-            decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            decision = tool_controller.prepare_call(tc, provisional=provisional_match)
             # The frontend keeps a round's tool cards together by this id
             # (codexLocalToolRoundId) and otherwise flushes each completed pair on its
             # own. This loop shows a parallel batch as ONE picture, and replay groups
@@ -1398,7 +1400,7 @@ def run_safetensors_tool_loop(
                     append_assistant_turn(
                         conversation,
                         assistant_msg,
-                        continue_final_message = continue_final_message,
+                        continue_final_message=continue_final_message,
                     )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
@@ -1428,7 +1430,7 @@ def run_safetensors_tool_loop(
                 append_assistant_turn(
                     conversation,
                     assistant_msg,
-                    continue_final_message = continue_final_message,
+                    continue_final_message=continue_final_message,
                 )
                 assistant_appended = True
             else:
@@ -1442,6 +1444,7 @@ def run_safetensors_tool_loop(
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call
+
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -1465,7 +1468,7 @@ def run_safetensors_tool_loop(
                     wait_tool_decision(
                         decision_slot,
                         approval_id,
-                        cancel_event = cancel_event,
+                        cancel_event=cancel_event,
                     )
                     if decision_slot is not None
                     else None
@@ -1521,14 +1524,14 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                def _invoke_tool(_output_callback, _decision=decision):
                     kwargs = dict(
-                        cancel_event = cancel_event,
-                        timeout = eff_timeout,
-                        session_id = session_id,
-                        thread_id = thread_id,
-                        rag_scope = rag_scope,
-                        disable_sandbox = bypass_permissions,
+                        cancel_event=cancel_event,
+                        timeout=eff_timeout,
+                        session_id=session_id,
+                        thread_id=thread_id,
+                        rag_scope=rag_scope,
+                        disable_sandbox=bypass_permissions,
                     )
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = request_branch
@@ -1555,7 +1558,7 @@ def run_safetensors_tool_loop(
                             int(context_length),
                             max_tokens,
                             spent,
-                            reply_returns = True,
+                            reply_returns=True,
                         )
                     # And what a RESULT may add, which is the same question asked of
                     # every tool rather than of retrieval alone. This loop has no rolling
@@ -1597,7 +1600,7 @@ def run_safetensors_tool_loop(
                         # room the rest of the batch still needs.
                         pending = list(tool_calls or [])[_call_index + 1 :]
                         pending_args = [
-                            {"role": "assistant", "content": json.dumps(call, default = str)}
+                            {"role": "assistant", "content": json.dumps(call, default=str)}
                             for call in pending
                         ]
                         # the notice restores skipped arguments after the retained results.
@@ -1617,7 +1620,7 @@ def run_safetensors_tool_loop(
                             # Every ASCII character of a result at two per token, not only
                             # its unbroken runs: a result is `hexdump`, `ls -l` or a stack
                             # trace as often as it is a blob, and those carry spaces.
-                            + _spent_tokens(results, dense_ascii = True)
+                            + _spent_tokens(results, dense_ascii=True)
                             # Doubled for the same reason the results above are: a pending
                             # call can carry base64, minified JSON or a block of code, and
                             # nothing on this path can price a string exactly.
@@ -1631,9 +1634,9 @@ def run_safetensors_tool_loop(
                 try:
                     result = yield from stream_tool_execution(
                         _invoke_tool,
-                        tool_name = decision.tool_name,
-                        tool_call_id = decision.tool_call_id,
-                        cancel_event = cancel_event,
+                        tool_name=decision.tool_name,
+                        tool_call_id=decision.tool_call_id,
+                        cancel_event=cancel_event,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
@@ -1663,8 +1666,8 @@ def run_safetensors_tool_loop(
                 tool_call_limit_nudge(
                     over_cap,
                     _MAX_TOOL_CALLS_PER_TURN,
-                    final = over_cap_final,
-                    unavailable_tools = {
+                    final=over_cap_final,
+                    unavailable_tools={
                         _limit_decision.tool_name
                         for call in over_cap
                         if (_limit_decision := tool_controller.prepare_call(call)).action
@@ -1692,14 +1695,14 @@ def run_safetensors_tool_loop(
                     conversation,
                     len(encoded),
                     sum(len(r) for r in batch_mcp_images),
-                    lead = MCP_DETACHED_IMAGE_TURN_TEXT
+                    lead=MCP_DETACHED_IMAGE_TURN_TEXT
                     if _batch_results != 1
                     else MCP_IMAGE_TURN_TEXT,
                 )
                 # Rebased on the way out: this trim deletes entries before the
                 # attachment, and reusing the original index on the next batch
                 # would protect the wrong payload and delete the attachment.
-                caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
+                caller_images = trim_image_turns(conversation, images_sink, keep=caller_images)
 
         yield {"type": "status", "text": ""}
 

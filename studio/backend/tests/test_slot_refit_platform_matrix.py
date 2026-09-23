@@ -117,12 +117,12 @@ def _plan(
     *,
     os_key,
     vendor,
-    weights_mib = _FIXTURE_WEIGHTS_MIB,
-    n_parallel = _FIXTURE_SLOTS,
-    vram_mib = CARD_MIB,
-    n_ctx = 0,
-    tensor_parallel = False,
-    gpu_memory_mode = None,
+    weights_mib=_FIXTURE_WEIGHTS_MIB,
+    n_parallel=_FIXTURE_SLOTS,
+    vram_mib=CARD_MIB,
+    n_ctx=0,
+    tensor_parallel=False,
+    gpu_memory_mode=None,
 ):
     """Drive the real planner under a spoofed host. Returns (plan, refit_entries)."""
     sys_platform, system, apple_silicon = OS_CELLS[os_key]
@@ -145,7 +145,7 @@ def _plan(
         # macOS enumerates no torch.cuda device; a CPU-only host has none either.
         cards = [] if (not enumerates_gpu or sys_platform == "darwin") else [vram_mib]
         memory = [(i, mib, mib) for i, mib in enumerate(cards)]
-        backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = memory)
+        backend, gguf = _backend(tmp_path, vulkan=vulkan, memory=memory)
 
         def read(_path):
             for key, value in DENSE.items():
@@ -156,7 +156,7 @@ def _plan(
         del backend._can_estimate_kv  # the real one, now that the dims are set
         # The per-slot cost the re-fit trades against (see the helper).
         _install_slot_scaled_compute(backend)
-        backend.probe_server_capabilities = lambda _binary = None: {
+        backend.probe_server_capabilities = lambda _binary=None: {
             "mtp_token": "draft-mtp",
             "supports_ngram_mod": True,
             "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -174,7 +174,7 @@ def _plan(
             launched = _launch(backend, gguf, **kwargs)
         cmd = launched["cmd"]
 
-        def flag(name, default = None):
+        def flag(name, default=None):
             return cmd[cmd.index(name) + 1] if name in cmd else default
 
         return {
@@ -198,7 +198,7 @@ class TestWhoTheRefitIsAllowedToTouch:
         cells red at once with `assert 0 > 0`, which reads like the re-fit was
         deleted when the block is untouched and only the fixture went stale.
         """
-        got, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
+        got, entries = _plan(tmp_path, os_key="linux", vendor="nvidia")
         assert entries > 0, (
             f"the shared fixture ({_FIXTURE_WEIGHTS_MIB} MiB of weights on a "
             f"{CARD_MIB} MiB card, asking {_FIXTURE_SLOTS} slots) no longer produces "
@@ -208,10 +208,10 @@ class TestWhoTheRefitIsAllowedToTouch:
             f"question from a fixture where nobody can."
         )
 
-    @pytest.mark.parametrize("os_key,vendor", ALL_CELLS, ids = [f"{o}-{v}" for o, v in ALL_CELLS])
+    @pytest.mark.parametrize("os_key,vendor", ALL_CELLS, ids=[f"{o}-{v}" for o, v in ALL_CELLS])
     def test_only_a_gpu_host_enters_the_refit(self, tmp_path, os_key, vendor):
         """Metal and CPU-only hosts must not reach the new block at all."""
-        got, entries = _plan(tmp_path, os_key = os_key, vendor = vendor)
+        got, entries = _plan(tmp_path, os_key=os_key, vendor=vendor)
         if (os_key, vendor) in REACHABLE:
             assert entries > 0, (
                 f"{os_key}/{vendor} should re-fit but made no reduced-slot probe. "
@@ -226,7 +226,7 @@ class TestWhoTheRefitIsAllowedToTouch:
     @pytest.mark.parametrize("os_key", ["macos_arm", "macos_intel"])
     def test_macos_plans_exactly_as_it_did(self, tmp_path, os_key):
         """No enumerated GPU means the Apple arm owns the plan, untouched."""
-        got, entries = _plan(tmp_path, os_key = os_key, vendor = "nvidia")
+        got, entries = _plan(tmp_path, os_key=os_key, vendor="nvidia")
         assert entries == 0
         assert got["ngl"] is None  # never pinned to a device that does not exist
 
@@ -234,21 +234,21 @@ class TestWhoTheRefitIsAllowedToTouch:
         """The tensor arm has no --fit valve, so the re-fit must stay out."""
         _, entries = _plan(
             tmp_path,
-            os_key = "linux",
-            vendor = "nvidia",
-            tensor_parallel = True,
-            vram_mib = 24 * 1024,
+            os_key="linux",
+            vendor="nvidia",
+            tensor_parallel=True,
+            vram_mib=24 * 1024,
         )
         assert entries == 0
 
     def test_manual_memory_mode_is_excluded(self, tmp_path):
         """Manual mode is the caller taking the budget over."""
-        _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", gpu_memory_mode = "manual")
+        _, entries = _plan(tmp_path, os_key="linux", vendor="nvidia", gpu_memory_mode="manual")
         assert entries == 0
 
     def test_a_single_slot_request_is_excluded(self, tmp_path):
         """Nothing to reduce, so nothing to re-fit."""
-        _, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia", n_parallel = 1)
+        _, entries = _plan(tmp_path, os_key="linux", vendor="nvidia", n_parallel=1)
         assert entries == 0
 
 
@@ -257,8 +257,8 @@ class TestWindowsPlansLikeLinux:
 
     def test_the_thread_cap_tracks_the_slot_reduction_not_the_refit(self, tmp_path):
         """--threads 2 rides fully_gpu_offloaded, which the reduction already set."""
-        win, win_entries = _plan(tmp_path, os_key = "windows", vendor = "nvidia")
-        linux, linux_entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
+        win, win_entries = _plan(tmp_path, os_key="windows", vendor="nvidia")
+        linux, linux_entries = _plan(tmp_path, os_key="linux", vendor="nvidia")
         assert win_entries == linux_entries > 0
         # Same plan either way; only the Windows-only thread pin differs.
         assert (win["ctx"], win["slots"], win["fit"]) == (

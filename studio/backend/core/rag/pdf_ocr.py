@@ -46,16 +46,16 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
             try:
                 page = doc[number - 1]
                 textpage = page.get_textpage_ocr(
-                    language = os.environ.get("RAG_OCR_LANGUAGE", "eng"),
-                    dpi = config.OCR_DPI,
-                    full = True,
-                    tessdata = os.environ.get("TESSDATA_PREFIX") or None,
+                    language=os.environ.get("RAG_OCR_LANGUAGE", "eng"),
+                    dpi=config.OCR_DPI,
+                    full=True,
+                    tessdata=os.environ.get("TESSDATA_PREFIX") or None,
                 )
-                text = page.get_text("text", textpage = textpage).strip()
+                text = page.get_text("text", textpage=textpage).strip()
             except Exception:
                 # A missing engine/language pack affects every page. Do not repeatedly
                 # try an unavailable OCR engine for an entire scanned document.
-                logger.warning("Local PDF OCR failed on page %s", number, exc_info = True)
+                logger.warning("Local PDF OCR failed on page %s", number, exc_info=True)
                 break
             if text:
                 out[number] = text

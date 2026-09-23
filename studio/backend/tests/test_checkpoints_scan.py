@@ -48,7 +48,7 @@ def _setup_training_runs_table(db_path: Path) -> None:
 def _make_outputs_dir(tmp_path, monkeypatch) -> Path:
     studio_home = tmp_path / "studio-home"
     outputs_dir = studio_home / "outputs"
-    outputs_dir.mkdir(parents = True)
+    outputs_dir.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
     return outputs_dir
 
@@ -86,7 +86,7 @@ def test_scan_checkpoints_uses_output_dir_history_for_base_model(tmp_path, monke
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
@@ -98,7 +98,7 @@ def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(
     run_name = build_default_output_dir_name(
         "unsloth/Llama-3.2-3B-Instruct",
         "Customer Support",
-        timestamp = 1771227800,
+        timestamp=1771227800,
     )
     run_dir = outputs_dir / run_name
     run_dir.mkdir()
@@ -131,7 +131,7 @@ def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
@@ -141,7 +141,7 @@ def test_scan_checkpoints_strips_project_suffix_without_history(tmp_path, monkey
     run_name = build_default_output_dir_name(
         "unsloth/Llama-3.2-3B-Instruct",
         "Customer Support",
-        timestamp = 1771227800,
+        timestamp=1771227800,
     )
     run_dir = outputs_dir / run_name
     run_dir.mkdir()
@@ -155,7 +155,7 @@ def test_scan_checkpoints_strips_project_suffix_without_history(tmp_path, monkey
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
@@ -164,7 +164,7 @@ def test_scan_checkpoints_preserves_project_marker_in_model_without_history(tmp_
     outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_name = build_default_output_dir_name(
         "org/foo__project-bar",
-        timestamp = 1771227800,
+        timestamp=1771227800,
     )
     run_dir = outputs_dir / run_name
     run_dir.mkdir()
@@ -178,7 +178,7 @@ def test_scan_checkpoints_preserves_project_marker_in_model_without_history(tmp_
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "org/foo__project-bar"
 
@@ -197,7 +197,7 @@ def test_scan_checkpoints_preserves_legacy_folder_name_fallback(tmp_path, monkey
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
@@ -209,7 +209,7 @@ def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path
     (run_dir / "config.json").write_text("{}")
 
     copied_dir = tmp_path / "copied" / run_dir.name
-    copied_dir.mkdir(parents = True)
+    copied_dir.mkdir(parents=True)
 
     db_path = tmp_path / "studio.db"
     _setup_training_runs_table(db_path)
@@ -251,6 +251,6 @@ def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+    models = checkpoints_module.scan_checkpoints(outputs_dir=str(outputs_dir))
 
     assert models[0][2]["base_model"] == "correct/base"

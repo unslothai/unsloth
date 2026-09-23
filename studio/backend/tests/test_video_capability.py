@@ -24,7 +24,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 
 def _src(rel):
-    return (_BACKEND / rel).read_text(encoding = "utf-8")
+    return (_BACKEND / rel).read_text(encoding="utf-8")
 
 
 def _func_src(rel, name):
@@ -41,10 +41,10 @@ def _patch(
     torch: bool,
     device,
     apple: bool,
-    chat_only_reason = "no_gpu",
-    system = None,
-    mps = None,
-    torch_import_error = None,
+    chat_only_reason="no_gpu",
+    system=None,
+    mps=None,
+    torch_import_error=None,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
@@ -65,7 +65,7 @@ def _patch(
 
 
 def test_cuda_supports_video(monkeypatch):
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.CUDA, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.CUDA, apple=False)
     cap = hw.video_capability()
     assert cap["video_supported"] is True
     assert cap["video_unsupported_reason"] is None
@@ -73,7 +73,7 @@ def test_cuda_supports_video(monkeypatch):
 
 
 def test_xpu_supports_video(monkeypatch):
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.XPU, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.XPU, apple=False)
     assert hw.video_capability()["video_supported"] is True
 
 
@@ -81,7 +81,7 @@ def test_apple_silicon_with_mps_supports_video(monkeypatch):
     """Apple Silicon runs the same device-neutral diffusers pipelines on Metal. The host may
     report MLX or plain CPU depending on what else is installed; neither changes the answer."""
     for device in (hw.DeviceType.MLX, hw.DeviceType.CPU):
-        _patch(monkeypatch, torch = True, device = device, apple = True)
+        _patch(monkeypatch, torch=True, device=device, apple=True)
         cap = hw.video_capability()
         assert cap["video_supported"] is True
         assert cap["video_unsupported_reason"] is None
@@ -89,7 +89,7 @@ def test_apple_silicon_with_mps_supports_video(monkeypatch):
 
 
 def test_apple_silicon_without_torch_reports_pytorch_missing(monkeypatch):
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = True)
+    _patch(monkeypatch, torch=False, device=hw.DeviceType.MLX, apple=True)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
     assert cap["video_unsupported_reason"] == "pytorch_not_installed"
@@ -115,11 +115,11 @@ def test_apple_silicon_with_broken_torch_is_not_told_to_install_it(
     # PyTorch already sitting there broken.
     _patch(
         monkeypatch,
-        torch = False,
-        device = device,
-        apple = True,
-        chat_only_reason = chat_only_reason,
-        torch_import_error = "OSError('broken native library')",
+        torch=False,
+        device=device,
+        apple=True,
+        chat_only_reason=chat_only_reason,
+        torch_import_error="OSError('broken native library')",
     )
     cap = hw.video_capability()
     assert cap["video_supported"] is False
@@ -131,7 +131,7 @@ def test_apple_silicon_with_broken_torch_is_not_told_to_install_it(
 def test_apple_silicon_without_a_metal_device_is_not_supported(monkeypatch):
     # Apple Silicon alone does not imply MPS: a torch built without it leaves the pipelines
     # with nowhere to run, and claiming support would fail at load instead of at the gate.
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = True, mps = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.MLX, apple=True, mps=False)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
     assert cap["video_unsupported_reason"] == "mps_unavailable"
@@ -140,12 +140,12 @@ def test_apple_silicon_without_a_metal_device_is_not_supported(monkeypatch):
 def test_mlx_device_is_apple_even_without_the_apple_probe(monkeypatch):
     # MLX only exists on Apple, so an is_apple_silicon() that fails to answer must not
     # reclassify the host as a CPU box missing a GPU. With torch + Metal it is supported.
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.MLX, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.MLX, apple=False)
     assert hw.video_capability()["video_supported"] is True
 
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = False)
+    _patch(monkeypatch, torch=False, device=hw.DeviceType.CPU, apple=False)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
     assert cap["video_unsupported_reason"] == "pytorch_not_installed"
@@ -153,7 +153,7 @@ def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
 
 
 def test_cpu_with_torch_reports_no_accelerator(monkeypatch):
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.CPU, apple=False)
     cap = hw.video_capability()
     assert cap["video_supported"] is False
     assert cap["video_unsupported_reason"] == "no_accelerator"
@@ -166,10 +166,10 @@ def test_a_failed_detection_is_reported_as_such(monkeypatch):
     no_accelerator would point the remediation at hardware that may be fine."""
     _patch(
         monkeypatch,
-        torch = True,
-        device = hw.DeviceType.CPU,
-        apple = False,
-        chat_only_reason = "detection_failed",
+        torch=True,
+        device=hw.DeviceType.CPU,
+        apple=False,
+        chat_only_reason="detection_failed",
     )
     cap = hw.video_capability()
     assert cap["video_supported"] is False
@@ -213,9 +213,9 @@ def test_mps_probe_reads_availability_not_whether_torch_was_built_with_it(monkey
 
     # is_built() is true on any Metal-capable build, including one that cannot reach a device
     # here, so a probe on that predicate would promise video the host cannot run.
-    _fake_torch(monkeypatch, types.SimpleNamespace(mps = _Mps(available = False)))
+    _fake_torch(monkeypatch, types.SimpleNamespace(mps=_Mps(available=False)))
     assert hw._torch_mps_available() is False
-    _fake_torch(monkeypatch, types.SimpleNamespace(mps = _Mps(available = True)))
+    _fake_torch(monkeypatch, types.SimpleNamespace(mps=_Mps(available=True)))
     assert hw._torch_mps_available() is True
 
 
@@ -229,7 +229,7 @@ def test_mps_probe_reports_no_metal_rather_than_raising(monkeypatch):
         def is_available(self):
             raise RuntimeError("Metal probe blew up")
 
-    _fake_torch(monkeypatch, types.SimpleNamespace(mps = _Boom()))
+    _fake_torch(monkeypatch, types.SimpleNamespace(mps=_Boom()))
     assert hw._torch_mps_available() is False
 
 
@@ -270,7 +270,7 @@ def test_video_capability_separates_apple_silicon_from_intel_macs():
 
 def test_frontend_reads_the_new_fields():
     hook = (_BACKEND.parent / "frontend" / "src" / "hooks" / "use-hardware-info.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     for field in ("video_supported", "video_unsupported_reason", "video_unsupported_message"):
         assert field in hook, f"{field} is not consumed by use-hardware-info.ts"
@@ -284,11 +284,11 @@ def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
     for torch_present in (True, False):
         _patch(
             monkeypatch,
-            torch = torch_present,
-            device = hw.DeviceType.CPU,
-            apple = False,
-            system = "Darwin",
-            mps = False,
+            torch=torch_present,
+            device=hw.DeviceType.CPU,
+            apple=False,
+            system="Darwin",
+            mps=False,
         )
         cap = hw.video_capability()
         assert cap["video_supported"] is False
@@ -304,10 +304,10 @@ def test_a_broken_probe_still_beats_the_macos_branch(monkeypatch):
     # told detection failed, not that video is coming soon, because the verdict is unknown.
     _patch(
         monkeypatch,
-        torch = True,
-        device = hw.DeviceType.CPU,
-        apple = True,
-        chat_only_reason = "detection_failed",
-        system = "Darwin",
+        torch=True,
+        device=hw.DeviceType.CPU,
+        apple=True,
+        chat_only_reason="detection_failed",
+        system="Darwin",
     )
     assert hw.video_capability()["video_unsupported_reason"] == "detection_failed"

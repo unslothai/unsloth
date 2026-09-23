@@ -22,10 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def sync() -> str:
     assert SYNC.is_file(), f"missing {SYNC}"
-    return SYNC.read_text(encoding = "utf-8")
+    return SYNC.read_text(encoding="utf-8")
 
 
 def test_the_refresh_is_still_detached(sync: str):
@@ -211,7 +211,7 @@ _NEEDS = ("bash", "git", "sha256sum", "mv")
 
 behavioural = pytest.mark.skipif(
     any(shutil.which(tool) is None for tool in _NEEDS),
-    reason = "needs bash, git, sha256sum and mv",
+    reason="needs bash, git, sha256sum and mv",
 )
 
 
@@ -222,15 +222,15 @@ def _sha256(path: Path) -> str:
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args],
-        cwd = cwd,
-        check = True,
-        capture_output = True,
-        env = dict(
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env=dict(
             os.environ,
-            GIT_AUTHOR_NAME = "t",
-            GIT_AUTHOR_EMAIL = "t@e",
-            GIT_COMMITTER_NAME = "t",
-            GIT_COMMITTER_EMAIL = "t@e",
+            GIT_AUTHOR_NAME="t",
+            GIT_AUTHOR_EMAIL="t@e",
+            GIT_COMMITTER_NAME="t",
+            GIT_COMMITTER_EMAIL="t@e",
         ),
     )
 
@@ -239,25 +239,25 @@ def _remote_with(tmp_path: Path, body: str) -> Path:
     remote = tmp_path / "remote"
     remote.mkdir()
     _git(remote, "init", "-q", "-b", "main")
-    (remote / "x.ipynb").write_text(body, encoding = "utf-8")
+    (remote / "x.ipynb").write_text(body, encoding="utf-8")
     _git(remote, "add", "x.ipynb")
     _git(remote, "commit", "-qm", "one")
     return remote
 
 
 def _advance(remote: Path, body: str) -> None:
-    (remote / "x.ipynb").write_text(body, encoding = "utf-8")
+    (remote / "x.ipynb").write_text(body, encoding="utf-8")
     _git(remote, "add", "x.ipynb")
     _git(remote, "commit", "-qm", "next")
 
 
 def _env(tmp_path: Path, remote: Path, dest: Path, *, save_bytes: str | None) -> dict:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok = True)
+    bin_dir.mkdir(exist_ok=True)
     real_mv = shutil.which("mv")
     shim = bin_dir / "mv"
     if save_bytes is None:
-        shim.write_text(f'#!/usr/bin/env bash\nexec "{real_mv}" "$@"\n', encoding = "utf-8")
+        shim.write_text(f'#!/usr/bin/env bash\nexec "{real_mv}" "$@"\n', encoding="utf-8")
     else:
         shim.write_text(
             "#!/usr/bin/env bash\n"
@@ -267,19 +267,19 @@ def _env(tmp_path: Path, remote: Path, dest: Path, *, save_bytes: str | None) ->
             f'  : > "{tmp_path / ".fired"}"\n'
             f'  printf %s {save_bytes!r} > "$dst"\n'
             "fi\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
     shim.chmod(0o755)
     return dict(
         os.environ,
-        PATH = f"{bin_dir}{os.pathsep}" + os.environ["PATH"],
-        UNSLOTH_NB_REFRESH_CHILD = "1",
-        UNSLOTH_NOTEBOOKS_TEMPLATE = str(tmp_path / "template"),
-        UNSLOTH_NOTEBOOKS_DIR = str(dest),
-        UNSLOTH_NOTEBOOKS_REPO = str(remote),
-        UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
-        UNSLOTH_KEEP_COLAB_INTRO = "1",
-        UNSLOTH_NOTEBOOK_BODY_AWARE = "0",
+        PATH=f"{bin_dir}{os.pathsep}" + os.environ["PATH"],
+        UNSLOTH_NB_REFRESH_CHILD="1",
+        UNSLOTH_NOTEBOOKS_TEMPLATE=str(tmp_path / "template"),
+        UNSLOTH_NOTEBOOKS_DIR=str(dest),
+        UNSLOTH_NOTEBOOKS_REPO=str(remote),
+        UNSLOTH_SKIP_NOTEBOOK_VIEW="1",
+        UNSLOTH_KEEP_COLAB_INTRO="1",
+        UNSLOTH_NOTEBOOK_BODY_AWARE="0",
     )
 
 
@@ -293,15 +293,15 @@ def _recorded(dest: Path) -> str:
 
 def _seed(tmp_path: Path, body: str) -> Path:
     template = tmp_path / "template"
-    template.mkdir(exist_ok = True)
-    (template / "x.ipynb").write_text(body, encoding = "utf-8")
+    template.mkdir(exist_ok=True)
+    (template / "x.ipynb").write_text(body, encoding="utf-8")
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / "x.ipynb").write_text(body, encoding = "utf-8")
+    (dest / "x.ipynb").write_text(body, encoding="utf-8")
     (dest / ".unsloth_sync_state").write_text(
-        f"{_sha256(dest / 'x.ipynb')}  x.ipynb\n", encoding = "utf-8"
+        f"{_sha256(dest / 'x.ipynb')}  x.ipynb\n", encoding="utf-8"
     )
-    (dest / ".unsloth_sync_commit").write_text("0" * 40 + "\n", encoding = "utf-8")
+    (dest / ".unsloth_sync_commit").write_text("0" * 40 + "\n", encoding="utf-8")
     return dest
 
 
@@ -312,10 +312,10 @@ def test_a_save_landing_after_the_rename_is_not_recorded_as_pristine(tmp_path: P
     dest = _seed(tmp_path, "v1")
     subprocess.run(
         ["bash", str(SYNC)],
-        env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        env=_env(tmp_path, remote, dest, save_bytes="USER EDIT"),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     live = (dest / "x.ipynb").read_text()
     assert live == "USER EDIT", f"the shim did not land the save: {live!r}"
@@ -334,18 +334,18 @@ def test_a_save_in_that_window_survives_the_next_refresh(tmp_path: Path):
     dest = _seed(tmp_path, "v1")
     subprocess.run(
         ["bash", str(SYNC)],
-        env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        env=_env(tmp_path, remote, dest, save_bytes="USER EDIT"),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     _advance(remote, "v3")
     subprocess.run(
         ["bash", str(SYNC)],
-        env = _env(tmp_path, remote, dest, save_bytes = None),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        env=_env(tmp_path, remote, dest, save_bytes=None),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     assert (
         dest / "x.ipynb"
@@ -359,10 +359,10 @@ def test_an_unraced_refresh_still_publishes_and_records_upstream(tmp_path: Path)
     dest = _seed(tmp_path, "v1")
     subprocess.run(
         ["bash", str(SYNC)],
-        env = _env(tmp_path, remote, dest, save_bytes = None),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        env=_env(tmp_path, remote, dest, save_bytes=None),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     assert (dest / "x.ipynb").read_text() == "v2"
     assert _recorded(dest) == hashlib.sha256(b"v2").hexdigest()

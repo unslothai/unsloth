@@ -18,7 +18,7 @@ _PRUNED = {".git", "__pycache__", "node_modules", "dist", "build", "venv", ".ven
 
 
 def _finder_patterns(field):
-    text = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     finder = text.split("[tool.setuptools.packages.find]", 1)[1].split("\n[", 1)[0]
     match = re.search(rf"^{field}\s*=\s*\[(.*?)\]", finder, re.MULTILINE | re.DOTALL)
     assert match, f"no packages.find {field} list in pyproject.toml"
@@ -27,7 +27,7 @@ def _finder_patterns(field):
 
 def _exclude_package_data():
     """The [tool.setuptools.exclude-package-data] table, as {package: patterns}."""
-    text = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     section = text.split("[tool.setuptools.exclude-package-data]", 1)
     assert len(section) == 2, "no exclude-package-data table in pyproject.toml"
     body = section[1].split("\n[", 1)[0]
@@ -70,10 +70,10 @@ def _tracked_files():
     try:
         out = subprocess.run(
             ["git", "ls-files", "studio"],
-            cwd = REPO_ROOT,
-            capture_output = True,
-            text = True,
-            check = True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError):  # pragma: no cover - no git checkout
         pytest.skip("not a git checkout, cannot resolve the setuptools-scm file list")
@@ -182,7 +182,7 @@ def test_manifest_prunes_match_exclude_package_data():
     exclusion precedence. These prunes are what keep them out of the SDIST
     itself, so neither artifact carries a tree nothing installs.
     """
-    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding = "utf-8")
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     for path in (
         "studio/frontend/public",
         "studio/frontend/src",

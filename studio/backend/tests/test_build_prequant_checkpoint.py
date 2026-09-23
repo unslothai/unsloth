@@ -51,45 +51,45 @@ def test_a_rotated_upload_goes_to_the_name_the_loader_asks_for_not_the_legacy_fa
     # The rotated INT8 denoiser is published under the family's declared name, which is the one
     # resolve_prequant_source asks for first. transformer_int8.pt is never asked for on this
     # family, so an upload landing there would be invisible.
-    assert build.upload_destination(h3, "int8", rotated = True) == "MiniMax-H3-INT8-ConvRot.pt"
+    assert build.upload_destination(h3, "int8", rotated=True) == "MiniMax-H3-INT8-ConvRot.pt"
     # A plain build keeps the legacy name it has always used, so nothing else moves.
-    assert build.upload_destination(h3, "int8", rotated = False) == "transformer_int8.pt"
+    assert build.upload_destination(h3, "int8", rotated=False) == "transformer_int8.pt"
 
 
 def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published_over_the_fallback():
     build = _script()
-    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override="z-image")
     assert zimage is not None
     # Publishing a v2 artifact under transformer_<scheme>.pt hands it to every OLDER build as the
     # fallback, which refuses the tag and drops to the dense download. Refuse instead.
-    with pytest.raises(ValueError, match = "prequant_filenames"):
-        build.upload_destination(zimage, "int8", rotated = True)
+    with pytest.raises(ValueError, match="prequant_filenames"):
+        build.upload_destination(zimage, "int8", rotated=True)
     # An explicit name is the operator's escape hatch, rotated or not.
     assert (
         build.upload_destination(
-            zimage, "int8", rotated = True, override = "Z-Image-Turbo-INT8-ConvRot.pt"
+            zimage, "int8", rotated=True, override="Z-Image-Turbo-INT8-ConvRot.pt"
         )
         == "Z-Image-Turbo-INT8-ConvRot.pt"
     )
-    assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
+    assert build.upload_destination(zimage, "fp8", rotated=False) == "transformer_fp8.pt"
 
 
 def test_a_safetensors_upload_needs_a_name_the_loader_would_ask_for():
     build = _script()
-    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override="z-image")
     assert zimage is not None
     # Every DERIVED name ends in .pt, so no build ever asks the Hub for a safetensors artifact
     # unless the family declares one. Publishing under a derived name produces a file nothing can
     # reach, on a repo that looks like it has a checkpoint.
-    with pytest.raises(ValueError, match = "prequant_filenames"):
-        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+    with pytest.raises(ValueError, match="prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated=False, safetensors=True)
     assert (
         build.upload_destination(
             zimage,
             "fp8",
-            rotated = False,
-            safetensors = True,
-            override = "Z-Image-Turbo-FP8.safetensors",
+            rotated=False,
+            safetensors=True,
+            override="Z-Image-Turbo-FP8.safetensors",
         )
         == "Z-Image-Turbo-FP8.safetensors"
     )
@@ -102,8 +102,8 @@ def test_a_safetensors_build_refuses_a_declared_name_that_reads_as_a_pickle():
     # H3 declares a .pt name for int8. Uploading a safetensors artifact there gives every loader a
     # file whose extension says pickle and whose bytes are not one, so the load fails for a reason
     # that has nothing to do with the real mistake. Refuse at build time and say which name to fix.
-    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
-        build.upload_destination(h3, "int8", rotated = False, safetensors = True)
+    with pytest.raises(ValueError, match=r"does not end in '\.safetensors'"):
+        build.upload_destination(h3, "int8", rotated=False, safetensors=True)
 
 
 def test_a_rotated_pickle_build_refuses_a_declared_name_that_reads_as_safetensors():
@@ -117,11 +117,11 @@ def test_a_rotated_pickle_build_refuses_a_declared_name_that_reads_as_safetensor
     """
     build = _script()
     fam = types.SimpleNamespace(
-        name = "qwen-image-2.1",
-        prequant_filenames = (("fp8", "Qwen-Image-2.1-FP8.safetensors"),),
+        name="qwen-image-2.1",
+        prequant_filenames=(("fp8", "Qwen-Image-2.1-FP8.safetensors"),),
     )
-    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
-        build.upload_destination(fam, "fp8", rotated = True, safetensors = False)
+    with pytest.raises(ValueError, match=r"does not end in '\.pt'"):
+        build.upload_destination(fam, "fp8", rotated=True, safetensors=False)
 
 
 def test_an_override_still_has_to_match_the_container_it_is_naming():
@@ -133,25 +133,25 @@ def test_an_override_still_has_to_match_the_container_it_is_naming():
     took, which is why this is refused before the upload rather than reported after it.
     """
     build = _script()
-    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override="z-image")
     assert zimage is not None
 
-    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
+    with pytest.raises(ValueError, match=r"does not end in '\.safetensors'"):
         build.upload_destination(
-            zimage, "fp8", rotated = False, safetensors = True, override = "Z-Image-Turbo-FP8.pt"
+            zimage, "fp8", rotated=False, safetensors=True, override="Z-Image-Turbo-FP8.pt"
         )
-    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
+    with pytest.raises(ValueError, match=r"does not end in '\.pt'"):
         build.upload_destination(
             zimage,
             "fp8",
-            rotated = True,
-            safetensors = False,
-            override = "Z-Image-Turbo-FP8.safetensors",
+            rotated=True,
+            safetensors=False,
+            override="Z-Image-Turbo-FP8.safetensors",
         )
     # The matching pairs are untouched, including the rotated escape hatch above.
     assert (
         build.upload_destination(
-            zimage, "fp8", rotated = True, override = "Z-Image-Turbo-FP8-ConvRot.pt"
+            zimage, "fp8", rotated=True, override="Z-Image-Turbo-FP8-ConvRot.pt"
         )
         == "Z-Image-Turbo-FP8-ConvRot.pt"
     )
@@ -159,9 +159,9 @@ def test_an_override_still_has_to_match_the_container_it_is_naming():
         build.upload_destination(
             zimage,
             "fp8",
-            rotated = False,
-            safetensors = True,
-            override = "Z-Image-Turbo-FP8.safetensors",
+            rotated=False,
+            safetensors=True,
+            override="Z-Image-Turbo-FP8.safetensors",
         )
         == "Z-Image-Turbo-FP8.safetensors"
     )
@@ -175,15 +175,15 @@ def test_a_plain_safetensors_build_derives_the_name_the_loader_now_asks_for_firs
     family with no declared entry should not have to pass an override it could compute itself.
     """
     build = _script()
-    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override="z-image")
     assert zimage is not None
 
     name = build.upload_destination(
         zimage,
         "fp8",
-        rotated = False,
-        safetensors = True,
-        upload_repo = "unsloth/Z-Image-Turbo-FP8",
+        rotated=False,
+        safetensors=True,
+        upload_repo="unsloth/Z-Image-Turbo-FP8",
     )
     assert name == "Z-Image-Turbo-FP8.safetensors", name
     # And it is really the first name the loader asks that repo for, read from the resolver
@@ -193,17 +193,17 @@ def test_a_plain_safetensors_build_derives_the_name_the_loader_now_asks_for_firs
     assert derived_prequant_filenames("unsloth/Z-Image-Turbo-FP8", "fp8")[0] == name
 
     # A ROTATED build still has no derived spelling that carries the marker, so it still refuses.
-    with pytest.raises(ValueError, match = "prequant_filenames"):
+    with pytest.raises(ValueError, match="prequant_filenames"):
         build.upload_destination(
             zimage,
             "fp8",
-            rotated = True,
-            safetensors = True,
-            upload_repo = "unsloth/Z-Image-Turbo-FP8",
+            rotated=True,
+            safetensors=True,
+            upload_repo="unsloth/Z-Image-Turbo-FP8",
         )
     # No upload repo means nothing to derive from, so it refuses rather than guessing.
-    with pytest.raises(ValueError, match = "prequant_filenames"):
-        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+    with pytest.raises(ValueError, match="prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated=False, safetensors=True)
 
 
 def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsys, monkeypatch):

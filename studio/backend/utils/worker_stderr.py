@@ -65,7 +65,7 @@ def _utf8_edge_bounds(data: bytes, *, trim_end: bool = True) -> "tuple[int, int]
 
 def _without_partial_utf8_edges(data: bytes, *, trim_end: bool = True) -> bytes:
     """``trim_end`` is off at EOF, where a trailing 0xC0+ byte is a complete cp1252 character, not a severed one."""
-    start, end = _utf8_edge_bounds(data, trim_end = trim_end)
+    start, end = _utf8_edge_bounds(data, trim_end=trim_end)
     return data[start:end]
 
 
@@ -94,7 +94,7 @@ def decode_worker_stderr(data: bytes, *, ends_at_eof: bool = True) -> str:
         try:
             text = data.decode("cp1252")
         except (UnicodeDecodeError, LookupError):
-            text = data.decode("utf-8", errors = "replace")
+            text = data.decode("utf-8", errors="replace")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -105,7 +105,7 @@ def stderr_tail_from_bytes(
     *,
     ends_at_eof: bool = True,
 ) -> str:
-    text = decode_worker_stderr(data, ends_at_eof = ends_at_eof)
+    text = decode_worker_stderr(data, ends_at_eof=ends_at_eof)
     lines = [line.rstrip() for line in text.split("\n")]
     lines = [line for line in lines if line.strip()]
     if not lines:
@@ -152,9 +152,9 @@ class WorkerStderrCapture:
     ) -> None:
         global _ATEXIT_REGISTERED, _SINKS_OWNER_PID
         handle, self._path = tempfile.mkstemp(
-            prefix = prefix,
-            suffix = ".stderr",
-            dir = directory,
+            prefix=prefix,
+            suffix=".stderr",
+            dir=directory,
         )
         os.close(handle)
         _OPEN_SINKS.add(self._path)
@@ -182,7 +182,7 @@ class WorkerStderrCapture:
                 data = handle.read()
         except OSError:
             return ""
-        return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
+        return stderr_tail_from_bytes(data, max_lines=max_lines, max_chars=max_chars)
 
     def close(self) -> None:
         """Tolerates a child still holding the sink open, which is the norm on Windows."""
@@ -203,7 +203,7 @@ def _open_existing_sink(path: str):
     except OSError:
         return None
     try:
-        return os.fdopen(handle, "r+b", buffering = 0)
+        return os.fdopen(handle, "r+b", buffering=0)
     except OSError:
         try:
             os.close(handle)
@@ -233,7 +233,7 @@ def _open_sink_for_reading(path: str):
     except OSError:
         return None
     try:
-        return os.fdopen(handle, "rb", buffering = 0)
+        return os.fdopen(handle, "rb", buffering=0)
     except OSError:
         try:
             os.close(handle)
@@ -248,8 +248,8 @@ _COMPACT_CATCH_UP_ROUNDS = 8
 def _compact_sink(
     sink,
     cap_bytes: int,
-    reader = None,
-    emit = None,
+    reader=None,
+    emit=None,
 ) -> int:
     """Rewrite *sink* to roughly its last *cap_bytes* bytes.
 
@@ -308,13 +308,13 @@ class _MirrorRelay:
 
     def __init__(self, inherited_fd: int, max_chunks: int) -> None:
         self._fd = inherited_fd
-        self._chunks = collections.deque(maxlen = max_chunks)
+        self._chunks = collections.deque(maxlen=max_chunks)
         self._wake = threading.Event()
         self._closed = False
         self._thread = threading.Thread(
-            target = self._run,
-            name = "unsloth-worker-stderr-relay",
-            daemon = True,
+            target=self._run,
+            name="unsloth-worker-stderr-relay",
+            daemon=True,
         )
         self._thread.start()
 
@@ -329,7 +329,7 @@ class _MirrorRelay:
         self._wake.set()
 
     def join(self, timeout: "float | None" = None) -> None:
-        self._thread.join(timeout = timeout)
+        self._thread.join(timeout=timeout)
 
     def is_alive(self) -> bool:
         return self._thread.is_alive()
@@ -375,7 +375,7 @@ def _tail_sink_to_stderr(
         # Bytes ON DISK, not bytes relayed: the relay can fall arbitrarily far behind.
         if cap_bytes > 0 and _sink_size(sink) > 2 * cap_bytes:
             try:
-                _compact_sink(sink, cap_bytes, reader = reader, emit = relay.emit)
+                _compact_sink(sink, cap_bytes, reader=reader, emit=relay.emit)
                 # The file was rewritten from the front; the old offset is now meaningless.
                 reader.seek(0, os.SEEK_END)
             except (OSError, ValueError):
@@ -393,8 +393,8 @@ def _tail_sink_to_stderr(
 def _stop_mirror(
     inherited_fd: int,
     pump: threading.Thread,
-    stop = None,
-    relay = None,
+    stop=None,
+    relay=None,
 ) -> None:
     """The pump must be a daemon or ``BaseProcess._bootstrap`` waits on it for ever.
 
@@ -411,10 +411,10 @@ def _stop_mirror(
     if stop is not None:
         # fd 2 no longer points at the sink, so the next empty read is the end, not a pause.
         stop.set()
-    pump.join(timeout = _PUMP_JOIN_TIMEOUT_S)
+    pump.join(timeout=_PUMP_JOIN_TIMEOUT_S)
     if relay is not None:
         relay.close()
-        relay.join(timeout = _PUMP_JOIN_TIMEOUT_S)
+        relay.join(timeout=_PUMP_JOIN_TIMEOUT_S)
     if pump.is_alive() or (relay is not None and relay.is_alive()):
         # A thread may be inside os.write(inherited_fd, ...); closing frees the number for any thread's next open().
         return
@@ -470,10 +470,10 @@ def install_worker_stderr_mirror(
     stop = threading.Event()
     relay = _MirrorRelay(inherited, _MIRROR_RELAY_CHUNKS)
     pump = threading.Thread(
-        target = _tail_sink_to_stderr,
-        args = (reader, relay, sink, cap_bytes, stop),
-        name = "unsloth-worker-stderr-mirror",
-        daemon = True,
+        target=_tail_sink_to_stderr,
+        args=(reader, relay, sink, cap_bytes, stop),
+        name="unsloth-worker-stderr-mirror",
+        daemon=True,
     )
     pump.start()
     atexit.register(_stop_mirror, inherited, pump, stop, relay)
@@ -577,7 +577,7 @@ def _install_continuation_hook() -> bool:
     return True
 
 
-def mark_log_record_continuations(logger_object = None, *, cover_later_handlers = True) -> int:
+def mark_log_record_continuations(logger_object=None, *, cover_later_handlers=True) -> int:
     """Covers ``logging.lastResort`` and later handlers too: a miss hands a RECOVERED
     request's traceback to the next caller as their crash."""
     import logging

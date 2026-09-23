@@ -85,13 +85,13 @@ class OAuthFlow:
 
     marker: str = ""
     consumed: bool = False
-    server: asyncio.AbstractServer | None = field(default = None, repr = False)
-    task: asyncio.Task | None = field(default = None, repr = False)
+    server: asyncio.AbstractServer | None = field(default=None, repr=False)
+    task: asyncio.Task | None = field(default=None, repr=False)
 
-    cleanup_task: asyncio.Task | None = field(default = None, repr = False)
+    cleanup_task: asyncio.Task | None = field(default=None, repr=False)
 
     persist_bundle: Callable[[str, dict[str, Any]], Awaitable[None] | None] | None = field(
-        default = None, repr = False
+        default=None, repr=False
     )
 
 
@@ -104,8 +104,8 @@ def _provider_file_lock(provider_id: str) -> FileLock:
     lock_name = hashlib.sha256(provider_id.encode()).hexdigest()[:24]
     return FileLock(
         str(studio_db_path().parent / f".openai-codex-refresh-{lock_name}.lock"),
-        timeout = 30,
-        thread_local = False,
+        timeout=30,
+        thread_local=False,
     )
 
 
@@ -234,7 +234,7 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
     credential_secrets.upsert_secret(
         credential_secrets.OPENAI_CODEX_OAUTH_KIND,
         provider_id,
-        json.dumps(bundle, separators = (",", ":")),
+        json.dumps(bundle, separators=(",", ":")),
     )
     if previous and previous.get("account_id") != bundle.get("account_id"):
         # Rebound to a different ChatGPT account, whose plan lists different slugs. No later request is guaranteed to
@@ -244,6 +244,7 @@ def save_oauth_bundle(provider_id: str, bundle: dict[str, Any]) -> None:
             forget_subscription_models,
             mark_subscription_catalog_stale,
         )
+
         forget_subscription_models(provider_id)
         # deliberate, not a cold start: until this account's catalog is read, the saved models still describe the
         # previous one
@@ -297,9 +298,9 @@ def auth_status(provider_id: str) -> str:
 async def _token_request(data: dict[str, Any]) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(
-            timeout = 30.0, follow_redirects = False, trust_env = False
+            timeout=30.0, follow_redirects=False, trust_env=False
         ) as client:
-            response = await client.post(OPENAI_CODEX_TOKEN_URL, data = data)
+            response = await client.post(OPENAI_CODEX_TOKEN_URL, data=data)
     except httpx.HTTPError as exc:
         raise CodexAuthError("Could not reach ChatGPT authentication.") from exc
     if response.status_code >= 400:
@@ -365,7 +366,7 @@ async def _loopback_handler(
     flow: OAuthFlow, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     try:
-        first = await asyncio.wait_for(reader.readline(), timeout = 5)
+        first = await asyncio.wait_for(reader.readline(), timeout=5)
         target = first.decode("ascii", "ignore").split(" ")[1]
         parsed = urlparse(target)
         query = parse_qs(parsed.query)
@@ -406,21 +407,21 @@ async def _start_browser_flow(
 ) -> OAuthFlow:
     verifier, challenge = create_pkce()
     flow = OAuthFlow(
-        id = secrets.token_urlsafe(24),
-        provider_id = provider_id,
-        method = "browser",
-        created_at = time.time(),
-        expires_at = time.time() + _FLOW_TTL_SECONDS,
-        state = secrets.token_urlsafe(32),
-        verifier = verifier,
-        marker = marker,
-        persist_bundle = persist_bundle,
+        id=secrets.token_urlsafe(24),
+        provider_id=provider_id,
+        method="browser",
+        created_at=time.time(),
+        expires_at=time.time() + _FLOW_TTL_SECONDS,
+        state=secrets.token_urlsafe(32),
+        verifier=verifier,
+        marker=marker,
+        persist_bundle=persist_bundle,
     )
     bound_port: int | None = None
     for port in OPENAI_CODEX_LOOPBACK_PORTS:
         try:
             flow.server = await asyncio.start_server(
-                lambda r, w, f = flow: _loopback_handler(f, r, w), "127.0.0.1", port
+                lambda r, w, f=flow: _loopback_handler(f, r, w), "127.0.0.1", port
             )
             bound_port = port
             break
@@ -458,11 +459,11 @@ async def _device_poll(flow: OAuthFlow) -> None:
         await asyncio.sleep(flow.interval)
         try:
             async with httpx.AsyncClient(
-                timeout = 30.0, follow_redirects = False, trust_env = False
+                timeout=30.0, follow_redirects=False, trust_env=False
             ) as client:
                 response = await client.post(
                     OPENAI_CODEX_DEVICE_TOKEN_URL,
-                    json = {
+                    json={
                         "device_auth_id": flow.device_auth_id,
                         "user_code": flow.user_code,
                     },
@@ -506,8 +507,8 @@ async def _device_poll(flow: OAuthFlow) -> None:
             await _exchange_code(
                 flow,
                 code,
-                verifier = verifier,
-                redirect_uri = OPENAI_CODEX_DEVICE_REDIRECT_URI,
+                verifier=verifier,
+                redirect_uri=OPENAI_CODEX_DEVICE_REDIRECT_URI,
             )
             return
         except asyncio.CancelledError:
@@ -538,10 +539,10 @@ async def _start_device_flow(
 ) -> OAuthFlow:
     try:
         async with httpx.AsyncClient(
-            timeout = 30.0, follow_redirects = False, trust_env = False
+            timeout=30.0, follow_redirects=False, trust_env=False
         ) as client:
             response = await client.post(
-                OPENAI_CODEX_DEVICE_CODE_URL, json = {"client_id": OPENAI_CODEX_CLIENT_ID}
+                OPENAI_CODEX_DEVICE_CODE_URL, json={"client_id": OPENAI_CODEX_CLIENT_ID}
             )
     except httpx.HTTPError as exc:
         raise CodexAuthError("Could not reach ChatGPT authentication.") from exc
@@ -561,19 +562,19 @@ async def _start_device_flow(
     except Exception as exc:
         raise CodexAuthError("ChatGPT returned an invalid device authorization response.") from exc
     flow = OAuthFlow(
-        id = secrets.token_urlsafe(24),
-        provider_id = provider_id,
-        method = "device",
-        created_at = time.time(),
-        expires_at = time.time()
+        id=secrets.token_urlsafe(24),
+        provider_id=provider_id,
+        method="device",
+        created_at=time.time(),
+        expires_at=time.time()
         + min(int(body.get("expires_in", _FLOW_TTL_SECONDS)), _FLOW_TTL_SECONDS),
-        device_auth_id = str(device_auth_id),
-        user_code = str(user_code),
-        verification_url = str(verification_url),
-        interval = max(1.0, min(float(body.get("interval", 5)), 30.0)),
-        redirect_uri = OPENAI_CODEX_DEVICE_REDIRECT_URI,
-        marker = marker,
-        persist_bundle = persist_bundle,
+        device_auth_id=str(device_auth_id),
+        user_code=str(user_code),
+        verification_url=str(verification_url),
+        interval=max(1.0, min(float(body.get("interval", 5)), 30.0)),
+        redirect_uri=OPENAI_CODEX_DEVICE_REDIRECT_URI,
+        marker=marker,
+        persist_bundle=persist_bundle,
     )
     flow.task = asyncio.create_task(_device_poll(flow))
     return flow
@@ -739,7 +740,7 @@ def save_oauth_flow_marker(
                 "status": flow.status,
                 "message": flow.message,
             },
-            separators = (",", ":"),
+            separators=(",", ":"),
         )
     credential_secrets.upsert_secret(
         credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
@@ -770,7 +771,7 @@ def set_oauth_flow_marker_status(
     credential_secrets.upsert_secret(
         credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
         provider_id,
-        json.dumps(record, separators = (",", ":")),
+        json.dumps(record, separators=(",", ":")),
     )
 
 
@@ -802,22 +803,22 @@ def _load_persisted_oauth_flow(provider_id: str, flow_id: str) -> OAuthFlow | No
         return None
     try:
         return OAuthFlow(
-            id = flow_id,
-            provider_id = provider_id,
-            method = method,
-            created_at = float(record["created_at"]),
-            expires_at = float(record["expires_at"]),
-            state = str(record.get("state", "")),
-            verifier = str(record.get("verifier", "")),
-            redirect_uri = str(record.get("redirect_uri", "")),
-            authorization_url = str(record.get("authorization_url", "")),
-            verification_url = str(record.get("verification_url", "")),
-            user_code = str(record.get("user_code", "")),
-            device_auth_id = str(record.get("device_auth_id", "")),
-            interval = float(record.get("interval", 5.0)),
-            status = status,
-            message = str(record.get("message", "")),
-            marker = str(record.get("marker", "")),
+            id=flow_id,
+            provider_id=provider_id,
+            method=method,
+            created_at=float(record["created_at"]),
+            expires_at=float(record["expires_at"]),
+            state=str(record.get("state", "")),
+            verifier=str(record.get("verifier", "")),
+            redirect_uri=str(record.get("redirect_uri", "")),
+            authorization_url=str(record.get("authorization_url", "")),
+            verification_url=str(record.get("verification_url", "")),
+            user_code=str(record.get("user_code", "")),
+            device_auth_id=str(record.get("device_auth_id", "")),
+            interval=float(record.get("interval", 5.0)),
+            status=status,
+            message=str(record.get("message", "")),
+            marker=str(record.get("marker", "")),
         )
     except (KeyError, TypeError, ValueError):
         return None

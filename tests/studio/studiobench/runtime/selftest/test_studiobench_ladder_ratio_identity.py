@@ -98,7 +98,7 @@ def _rows(paths: Paths) -> list:
     """Every row in the payload, as JSON."""
     return [
         json.loads(line)
-        for line in paths.payload_jsonl.read_text(encoding = "utf-8").splitlines()
+        for line in paths.payload_jsonl.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
@@ -253,7 +253,7 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
 
     assert _problems(paths, 4.0) != []
     refused.close()
-    dropped = rollback_session_rows(paths.payload_jsonl, mark, log = lambda _m: None)
+    dropped = rollback_session_rows(paths.payload_jsonl, mark, log=lambda _m: None)
 
     assert dropped > 0
     assert paths.payload_jsonl.read_bytes() == before
@@ -281,8 +281,8 @@ def test_a_rollback_never_cuts_into_what_it_was_given(tmp_path):
     mark = payload_mark(paths.payload_jsonl)
     assert mark == len(before)
 
-    assert rollback_session_rows(paths.payload_jsonl, mark, log = lambda _m: None) == 0
-    assert rollback_session_rows(paths.payload_jsonl, mark + 4096, log = lambda _m: None) == 0
+    assert rollback_session_rows(paths.payload_jsonl, mark, log=lambda _m: None) == 0
+    assert rollback_session_rows(paths.payload_jsonl, mark + 4096, log=lambda _m: None) == 0
     assert paths.payload_jsonl.read_bytes() == before
 
 
@@ -291,4 +291,4 @@ def test_the_mark_of_a_payload_that_does_not_exist_yet_is_its_length(tmp_path):
 
     paths = Paths.under(tmp_path / "out")
     assert payload_mark(paths.payload_jsonl) == 0
-    assert rollback_session_rows(paths.payload_jsonl, 0, log = lambda _m: None) == 0
+    assert rollback_session_rows(paths.payload_jsonl, 0, log=lambda _m: None) == 0

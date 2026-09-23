@@ -27,7 +27,7 @@ from utils.account_context import account_thread, current_account_id, is_owner_c
 logger = get_logger(__name__)
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _LocalGgufEntry:
     loader_id: str
     load_path: str
@@ -91,6 +91,7 @@ def _is_abs_path_id(value: str) -> bool:
     no leading separator, drive or UNC prefix.
     """
     from pathlib import PurePosixPath, PureWindowsPath
+
     try:
         return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
     except Exception:
@@ -122,6 +123,7 @@ def _resolve_load_dir(p, loader_id: Optional[str] = None):
     try:
         if (p / "snapshots").is_dir():
             from routes.models import _resolve_hf_cache_realpath
+
             real = _resolve_hf_cache_realpath(p)
             if real:
                 load_dir = Path(real)
@@ -206,7 +208,7 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
                 logger.debug("Skipping unreadable companion snapshot %s: %s", path, exc)
     except OSError as exc:
         logger.debug("Stopping at unreadable companion snapshots dir %s: %s", snapshots, exc)
-    siblings.sort(key = snapshot_selection_key, reverse = True)
+    siblings.sort(key=snapshot_selection_key, reverse=True)
     return (str(selected), *(str(path) for path in siblings))
 
 
@@ -242,7 +244,7 @@ def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
     # samefile, not string equality: spellings differ by symlink, or by case on Windows.
     if chosen is None or not same_existing_path(chosen[3], selected):
         return ()
-    roots = local_gguf_companion_roots(load_path, repo_level = True)
+    roots = local_gguf_companion_roots(load_path, repo_level=True)
     # A lone root is not inert: callers read `roots is not None` as
     # `allow_disjoint_search_root`, defeating the guard at model_config.py:2062.
     return roots if len(roots) > 1 else ()
@@ -350,10 +352,10 @@ def _local_gguf_entry(
             selected = _resolve_gguf_load_snapshot(cache_repo_dir)
             if selected is None:
                 load_dir = p
-                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
+                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files=True)
             else:
                 selected_variants, _has_vision, complete, load_dir = selected
-                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
+                variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files=True)
                 if complete:
                     complete_keys = {str(quant).casefold() for quant in complete}
                     complete_files = {
@@ -371,7 +373,7 @@ def _local_gguf_entry(
                     ]
         else:
             load_dir = _resolve_load_dir(p) if p.name.startswith("models--") else p
-            variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
+            variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files=True)
         if exact_snapshot:
             from hub.utils.gguf import list_local_gguf_variants as inventory_variants
             from hub.utils.inventory_scan import complete_snapshot_variants
@@ -401,8 +403,8 @@ def _local_gguf_entry(
             loader_id,
             str(load_dir),
             quants,
-            repo_level_companions = cache_repo_dir is not None,
-            aliases = _legacy_variant_aliases(variants),
+            repo_level_companions=cache_repo_dir is not None,
+            aliases=_legacy_variant_aliases(variants),
         )
     except Exception:
         return None
@@ -427,8 +429,9 @@ _VISUAL_TOKEN_ID_KEYS = (
 def _read_json(path):
     """Parsed JSON for *path*, or None when it is absent or unreadable."""
     import json
+
     try:
-        with path.open(encoding = "utf-8") as handle:
+        with path.open(encoding="utf-8") as handle:
             return json.load(handle)
     except (OSError, ValueError):
         return None
@@ -442,6 +445,7 @@ def _host_serves_mlx() -> bool:
     """
     try:
         from utils.hardware import hardware as hw
+
         return hw.DEVICE == hw.DeviceType.MLX
     except Exception:
         return False
@@ -609,6 +613,7 @@ def _host_can_serve_minimax_music3() -> bool:
     try:
         from core.inference.audio_device import audio_device_forces_cpu
         from utils.hardware import hardware as hw
+
         return (
             sys.version_info >= (3, 10)
             and hw.DEVICE == hw.DeviceType.CUDA
@@ -668,14 +673,14 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         load_dir = _resolve_load_dir(p, loader_id)
         if _native_audio_pipeline_is_servable_here(load_dir):
-            return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+            return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf=False)
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
-        return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+        return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf=False)
     except Exception:
         return None
 
@@ -800,7 +805,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             # load by, and its snapshot basename (what /v1/models advertises once loaded by path) is never a key at
             # all. No format classification here: nothing on this path reads model_format, and its recursive walk
             # would duplicate the one _local_gguf_entry already does per snapshot, on the request path.
-            return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
+            return _scan_hf_cache(directory, active_cache=rp == active_root, classify_format=False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
@@ -832,14 +837,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     try:
         from hub.services.models.hermes import scan_hermes_dir
         from utils.paths import hermes_model_dirs
+
         for hermes_dir in hermes_model_dirs():
             found += scan_hermes_dir(hermes_dir)
     except Exception as exc:
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
         from utils.paths import ollama_model_dirs
+
         for ollama_dir in ollama_model_dirs():
-            found += _scan_ollama_dir(ollama_dir, materialize_links = False)
+            found += _scan_ollama_dir(ollama_dir, materialize_links=False)
     except Exception as exc:
         logger.debug("auto-switch: Ollama scan failed: %s", exc)
     try:
@@ -850,10 +857,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             try:
                 fp = Path(folder["path"])
                 custom_found += dedupe_custom_gguf_rows(
-                    _scan_models_dir(fp, limit = 200)
+                    _scan_models_dir(fp, limit=200)
                     + _scan_hf_once(fp)
                     + _scan_lmstudio_dir(fp)
-                    + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
+                    + _scan_ollama_dir(fp, limit=200, materialize_links=False)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
@@ -881,8 +888,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         path_alias_entry = entry
         if entry.repo_level_companions and _is_abs_path_id(raw_id):
             from types import SimpleNamespace
+
             path_alias_entry = _local_gguf_entry(
-                loader_id, SimpleNamespace(path = raw_id), exact_snapshot = True
+                loader_id, SimpleNamespace(path=raw_id), exact_snapshot=True
             )
         snapshot_name = (
             Path(raw_id).name if entry.repo_level_companions and _is_abs_path_id(raw_id) else None
@@ -938,7 +946,7 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     for sibling in siblings:
         if not snapshot_variants_all_complete(str(sibling)):
             continue
-        entry = _local_gguf_entry(loader_id, SimpleNamespace(path = str(sibling)))
+        entry = _local_gguf_entry(loader_id, SimpleNamespace(path=str(sibling)))
         if entry is not None:
             yield sibling.name, entry
 
@@ -1062,7 +1070,7 @@ def resolve_trusted_cached_local_gguf(
     resolved = _resolve_from_index(
         requested,
         snapshot[1],
-        include_companion_scope = include_companion_scope,
+        include_companion_scope=include_companion_scope,
     )
     if resolved is None or _snapshot() is not snapshot:
         return None
@@ -1113,7 +1121,7 @@ def warm_index_soon() -> None:
                     _warming = _warm_pending = False
 
     # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
-    account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+    account_thread(target=_run, name="local-model-index-warm", daemon=True).start()
 
 
 def resolve_local_gguf(
@@ -1145,7 +1153,7 @@ def resolve_local_gguf(
         return _resolve_from_index(
             requested,
             index,
-            include_companion_scope = include_companion_scope,
+            include_companion_scope=include_companion_scope,
         )
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model, so a malformed name can never turn a
@@ -1214,7 +1222,7 @@ def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = No
     if isinstance(load_path, str) and load_path:
         try:
             if Path(load_path).exists():
-                return _local_gguf_entry("", SimpleNamespace(path = load_path)) is not None
+                return _local_gguf_entry("", SimpleNamespace(path=load_path)) is not None
         except OSError:
             pass
     if not isinstance(loader_id, str) or not loader_id.strip():

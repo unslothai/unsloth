@@ -50,7 +50,7 @@ def _load_real_index_env_scrub():
     import sys as _sys
     import tempfile as _tempfile
 
-    src = STACK.read_text(encoding = "utf-8")
+    src = STACK.read_text(encoding="utf-8")
     ns: dict = {
         "os": _os,
         "ast": _ast,
@@ -108,21 +108,21 @@ def _load(
     *,
     spec,
     generic,
-    has_pip = True,
-    ensurepip_works = True,
-    download_ok = True,
-    drops_wheel = True,
-    uninstall_ok = True,
-    install_ok = True,
-    pinned = True,
-    torch_label = "2.9.1+xpu",
+    has_pip=True,
+    ensurepip_works=True,
+    download_ok=True,
+    drops_wheel=True,
+    uninstall_ok=True,
+    install_ok=True,
+    pinned=True,
+    torch_label="2.9.1+xpu",
 ):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
     counted: list[int] = []
 
     mod = types.ModuleType("_stack_under_test")
-    src = STACK.read_text(encoding = "utf-8")
+    src = STACK.read_text(encoding="utf-8")
     # Only these helpers are needed; importing the whole module would run the installer.
     start = src.index("def _installed_torch_version_label() -> str:")
     end = src.index("def _ensure_cpu_torch() -> None:")
@@ -153,7 +153,7 @@ def _load(
         _importlib_util,
         "find_spec",
         lambda name: (
-            types.SimpleNamespace(origin = str(_pkg / "__init__.py"))
+            types.SimpleNamespace(origin=str(_pkg / "__init__.py"))
             if name == "torch" and torch_label is not None
             else None
         ),
@@ -176,18 +176,18 @@ def _load(
             return subprocess.CompletedProcess(cmd, 0)
         if "importlib.metadata" in joined:
             out = f"SPEC={spec}\nGENERIC={generic}\n".encode()
-            return subprocess.CompletedProcess(cmd, 0, stdout = out)
+            return subprocess.CompletedProcess(cmd, 0, stdout=out)
         if "download" in cmd:
             log.append("DOWNLOAD")
             index_urls.append(cmd[cmd.index("--index-url") + 1])
             if download_ok and drops_wheel:
                 target = cmd[cmd.index("-d") + 1]
                 Path(target, "pytorch_triton_xpu-3.5.0-py3-none-any.whl").write_bytes(b"")
-            return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout = b"")
+            return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout=b"")
         if "uninstall" in cmd:
             log.append("UNINSTALL")
             return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else 1)
-        return subprocess.CompletedProcess(cmd, 0, stdout = b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"")
 
     def fake_pip_install_try(label, *args, **kw):
         if label.startswith("pip"):
@@ -207,16 +207,16 @@ def _load(
 
     ns = {
         "subprocess": types.SimpleNamespace(
-            run = fake_run,
-            CompletedProcess = subprocess.CompletedProcess,
-            TimeoutExpired = subprocess.TimeoutExpired,
-            DEVNULL = subprocess.DEVNULL,
-            PIPE = subprocess.PIPE,
-            STDOUT = subprocess.STDOUT,
+            run=fake_run,
+            CompletedProcess=subprocess.CompletedProcess,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            DEVNULL=subprocess.DEVNULL,
+            PIPE=subprocess.PIPE,
+            STDOUT=subprocess.STDOUT,
         ),
         "sys": sys,
         "glob": _glob,
-        "importlib": types.SimpleNamespace(util = _importlib_util, invalidate_caches = lambda: None),
+        "importlib": types.SimpleNamespace(util=_importlib_util, invalidate_caches=lambda: None),
         "os": _os,
         "re": _re,
         "shutil": _shutil,
@@ -265,25 +265,25 @@ def _run(monkeypatch, tmp_path, **kw):
 class TestXpuTritonSwap:
     def test_orders_fetch_uninstall_install(self, monkeypatch, tmp_path):
         # The whole point: the uninstall sits between the fetch and the install.
-        log = _run(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        log = _run(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_the_uninstall_counts_as_an_environment_change(self, monkeypatch, tmp_path):
         """It removes a distribution outside pip_install, and the pass's final pip check only
         runs when something said the environment moved. Uncounted, dropping generic triton on
         an XPU host would leave torch's dependency unmet with nothing left to report it."""
-        mod, _log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _log = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_counted"], "the uninstall did not count as a change"
 
     def test_handles_the_triton_xpu_rename(self, monkeypatch, tmp_path):
         # torch 2.10 renamed the distribution; the spec is read from torch, never hardcoded.
-        log = _run(monkeypatch, tmp_path, spec = "triton-xpu==3.6.0", generic = "3.7.1")
+        log = _run(monkeypatch, tmp_path, spec="triton-xpu==3.6.0", generic="3.7.1")
         assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_bootstraps_pip_when_the_venv_has_none(self, monkeypatch, tmp_path):
         log = _run(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", has_pip = False
+            monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1", has_pip=False
         )
         assert log[0] == "ENSUREPIP"
         assert log[-3:] == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
@@ -293,10 +293,10 @@ class TestXpuTritonSwap:
         log = _run(
             monkeypatch,
             tmp_path,
-            spec = "pytorch-triton-xpu==3.5.0",
-            generic = "3.7.1",
-            has_pip = False,
-            ensurepip_works = False,
+            spec="pytorch-triton-xpu==3.5.0",
+            generic="3.7.1",
+            has_pip=False,
+            ensurepip_works=False,
         )
         # ensurepip failed, so it tries a real pip install; that fails too, and the swap must warn rather than uninstall
         # with nothing to install from.
@@ -312,16 +312,16 @@ class TestXpuTritonSwap:
         ],
     )
     def test_leaves_a_healthy_venv_alone(self, monkeypatch, tmp_path, spec, generic):
-        assert _run(monkeypatch, tmp_path, spec = spec, generic = generic) == []
+        assert _run(monkeypatch, tmp_path, spec=spec, generic=generic) == []
 
     def test_a_dead_mirror_removes_nothing(self, monkeypatch, tmp_path):
         # Warn and leave the venv working; never uninstall with nothing to install from.
         log = _run(
             monkeypatch,
             tmp_path,
-            spec = "pytorch-triton-xpu==3.5.0",
-            generic = "3.7.1",
-            download_ok = False,
+            spec="pytorch-triton-xpu==3.5.0",
+            generic="3.7.1",
+            download_ok=False,
         )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
@@ -330,9 +330,9 @@ class TestXpuTritonSwap:
         log = _run(
             monkeypatch,
             tmp_path,
-            spec = "pytorch-triton-xpu==3.5.0",
-            generic = "3.7.1",
-            drops_wheel = False,
+            spec="pytorch-triton-xpu==3.5.0",
+            generic="3.7.1",
+            drops_wheel=False,
         )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
@@ -344,9 +344,9 @@ class TestFailedSwapIsNotSurvivable:
         log = _run(
             monkeypatch,
             tmp_path,
-            spec = "pytorch-triton-xpu==3.5.0",
-            generic = "3.7.1",
-            uninstall_ok = False,
+            spec="pytorch-triton-xpu==3.5.0",
+            generic="3.7.1",
+            uninstall_ok=False,
         )
         assert log == ["DOWNLOAD", "UNINSTALL"]
         assert "INSTALL" not in log
@@ -358,9 +358,9 @@ class TestFailedSwapIsNotSurvivable:
             _run(
                 monkeypatch,
                 tmp_path,
-                spec = "pytorch-triton-xpu==3.5.0",
-                generic = "3.7.1",
-                install_ok = False,
+                spec="pytorch-triton-xpu==3.5.0",
+                generic="3.7.1",
+                install_ok=False,
             )
 
 
@@ -378,15 +378,15 @@ class TestTheInstalledWheelIsThePin:
         log = _run(
             monkeypatch,
             tmp_path,
-            spec = "pytorch-triton-xpu==3.5.0",
-            generic = "3.7.1",
-            pinned = False,
+            spec="pytorch-triton-xpu==3.5.0",
+            generic="3.7.1",
+            pinned=False,
         )
         assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_no_pin_falls_back_to_the_default_xpu_index(self, monkeypatch, tmp_path):
         mod, _ = _load(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", pinned = False
+            monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1", pinned=False
         )
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
@@ -399,10 +399,10 @@ class TestTheInstalledWheelIsThePin:
             _run(
                 monkeypatch,
                 tmp_path,
-                spec = "pytorch-triton-xpu==3.5.0",
-                generic = "3.7.1",
-                pinned = False,
-                torch_label = label,
+                spec="pytorch-triton-xpu==3.5.0",
+                generic="3.7.1",
+                pinned=False,
+                torch_label=label,
             )
             == []
         )
@@ -411,13 +411,13 @@ class TestTheInstalledWheelIsThePin:
         # The fake torch/__init__.py raises, so reaching the swap proves the label came from version.py.
         # `import torch` loads the SYCL runtime and wedges on a stalled Intel driver.
         mod, _ = _load(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", pinned = False
+            monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1", pinned=False
         )
         assert mod.__dict__["_installed_torch_version_label"]() == "2.9.1+xpu"
 
     def test_an_explicit_pin_still_wins(self, monkeypatch, tmp_path):
         # A pinned mirror must be used verbatim, not replaced by the default index.
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _ = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
 
@@ -444,7 +444,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
     )
     def test_the_fetch_drops_index_environment(self, monkeypatch, tmp_path, var, value):
         monkeypatch.setenv(var, value)
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _ = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env is not None, "the fetch inherited the ambient environment"
@@ -453,7 +453,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
     def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
         # A config no-index outranks the CLI pin, and devnull is the only spelling that
         # reaches a SITE or GLOBAL file.
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _ = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["PIP_CONFIG_FILE"] == os.devnull
@@ -464,7 +464,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
         monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _ = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["PIP_ONLY_BINARY"] == ":all:"
@@ -476,7 +476,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index
         # at all.
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, _ = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
@@ -509,19 +509,19 @@ class TestADeadDriverIsNotAFlavourMismatch:
         ],
     )
     def test_the_supported_range_matches_the_probe(self, monkeypatch, tmp_path, label, supported):
-        mod, _ = _load(monkeypatch, tmp_path, spec = "", generic = "", torch_label = label)
+        mod, _ = _load(monkeypatch, tmp_path, spec="", generic="", torch_label=label)
         assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
 
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
         # Two copies of the range in different places; a drifted floor installs an environment that raises at import.
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         assert src.count("(2, 6) <= _n < (2, 11)") == 1, "the probe's range moved"
         assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
 
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the early return must come
         # BEFORE the repair reason is set, or the repair runs anyway.
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         start = src.index("def _ensure_xpu_torch() -> None:")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
@@ -533,8 +533,8 @@ class TestADeadDriverIsNotAFlavourMismatch:
 class TestPlatformGuards:
     @pytest.mark.parametrize("flag", ["NO_TORCH", "IS_MACOS"])
     def test_skipped_where_it_does_not_apply(self, monkeypatch, tmp_path, flag):
-        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
-        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising=False)
+        mod, log = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__[flag] = True
         mod.__dict__["_ensure_xpu_triton"].__globals__[flag] = True
         mod.__dict__["_ensure_xpu_triton"]()
@@ -544,7 +544,7 @@ class TestPlatformGuards:
         # setup.ps1 performs the same swap after this file exits, and publishes the handover variable immediately before
         # invoking it.
         monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "xpu")
-        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod, log = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
         mod.__dict__["_ensure_xpu_triton"]()
         assert log == []
@@ -553,15 +553,15 @@ class TestPlatformGuards:
         # Bare `python install_python_stack.py` on Windows has no setup.ps1 postlude, so the core install leaves
         # triton-windows over torch's XPU triton. The absent handover variable is the signal that nobody else will fix
         # it.
-        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising = False)
-        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        monkeypatch.delenv("UNSLOTH_EXPECTED_TORCH_TAG", raising=False)
+        mod, log = _load(monkeypatch, tmp_path, spec="pytorch-triton-xpu==3.5.0", generic="3.7.1")
         mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
         mod.__dict__["_ensure_xpu_triton"]()
         assert "INSTALL" in log
 
 
 def test_the_swap_is_wired_in_at_every_repair_point():
-    src = STACK.read_text(encoding = "utf-8")
+    src = STACK.read_text(encoding="utf-8")
     assert src.count("        _ensure_xpu_triton()") == 3
 
 
@@ -576,7 +576,7 @@ def test_the_swap_runs_after_every_torch_migration():
     import ast as _ast
 
     blocks = []
-    for node in _ast.walk(_ast.parse(STACK.read_text(encoding = "utf-8"))):
+    for node in _ast.walk(_ast.parse(STACK.read_text(encoding="utf-8"))):
         body = getattr(node, "body", None)
         if not isinstance(body, list):
             continue  # Lambda / IfExp carry a single expression here, not a statement list
@@ -607,7 +607,7 @@ def test_the_swap_runs_after_every_torch_migration():
             assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
     # The final repair pass would otherwise silently undo the first. The third point is
     # step 13w, the Windows flavor invariant.
-    src = STACK.read_text(encoding = "utf-8")
+    src = STACK.read_text(encoding="utf-8")
     windows = src[src.index("# 13w.") : src.index("# 14.")]
     assert windows.index("_ensure_expected_torch_flavor") < windows.index(
         "_ensure_xpu_triton"
@@ -617,7 +617,7 @@ def test_the_swap_runs_after_every_torch_migration():
 def test_install_sh_does_not_carry_a_second_copy():
     # It used to. install.sh runs setup.sh, which runs this module, so a copy there is redundant and a place for the two
     # to drift apart.
-    assert "replace generic Triton" not in (REPO / "install.sh").read_text(encoding = "utf-8")
+    assert "replace generic Triton" not in (REPO / "install.sh").read_text(encoding="utf-8")
 
 
 class TestCpuRepairSeesAnXpuWheel:
@@ -632,11 +632,11 @@ class TestCpuRepairSeesAnXpuWheel:
     @staticmethod
     def _classify(
         ver,
-        cuda = "",
-        hip = "",
-        runtime_xpu = "",
+        cuda="",
+        hip="",
+        runtime_xpu="",
     ):
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         seg = src[start : src.index("\n\ndef ", start)]
         # Read the predicate from the module source, so an edit to it is what this test sees rather than a copy that can
@@ -681,7 +681,7 @@ class TestCpuRepairSeesAnXpuWheel:
         # A private index serves XPU torch with no +xpu local version, so the tag says
         # nothing and torch.version stays empty on both fields. The runtime marker is the
         # only thing left that knows, and a CPU pin must still reinstall over that build.
-        assert self._classify("2.9.1", runtime_xpu = "20250101") == "gpu"
+        assert self._classify("2.9.1", runtime_xpu="20250101") == "gpu"
 
     @pytest.mark.parametrize(
         "ver,cuda,hip,want",
@@ -708,12 +708,12 @@ class TestCpuPinSurvivesAWedgedImport:
 
     @staticmethod
     def _fn(name):
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         start = src.index(f"def {name}(")
         body = src[start : src.index("\n\ndef ", start)]
         ns: dict = {
             "re": __import__("re"),
-            "importlib": __import__("importlib.util", fromlist = ["util"]),
+            "importlib": __import__("importlib.util", fromlist=["util"]),
             "Path": Path,
         }
         exec(compile(body, str(STACK), "exec"), ns)
@@ -736,7 +736,7 @@ class TestCpuPinSurvivesAWedgedImport:
         assert self._fn("_is_gpu_torch_label")(label) is want
 
     def test_timeout_falls_through_to_the_repair(self):
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         body = src[start : src.index("\n\ndef ", start)]
         stalled = body.index("if not _ran:")
@@ -750,7 +750,7 @@ class TestCpuPinSurvivesAWedgedImport:
 
     def test_the_disk_read_launches_no_interpreter(self):
         # An interpreter here would reintroduce the hang the disk read exists to avoid.
-        src = STACK.read_text(encoding = "utf-8")
+        src = STACK.read_text(encoding="utf-8")
         start = src.index("def _installed_torch_label_on_disk() -> str:")
         body = src[start : src.index("\n\ndef ", start)]
         assert "subprocess" not in body

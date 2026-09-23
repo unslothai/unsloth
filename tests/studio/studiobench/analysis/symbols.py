@@ -78,7 +78,7 @@ MAX_IDENTITY_MAPPING_FRACTION = 0.5
 # 95.4%. The checks below are structural instead.
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class FunctionVector:
     """A function identified by its exact call counts across the rung ladder."""
 
@@ -96,7 +96,7 @@ class FunctionVector:
 
     @property
     def informative(self) -> bool:
-        return max(self.counts, default = 0) >= MIN_INFORMATIVE_COUNT and any(self.counts)
+        return max(self.counts, default=0) >= MIN_INFORMATIVE_COUNT and any(self.counts)
 
     def label(self) -> str:
         return f"{self.function_name or '(anonymous)'}@{self.url}[{self.start_offset}:{self.end_offset}]"
@@ -111,17 +111,17 @@ class Bridge:
     bundle_sha: str = ""
     rungs: tuple[str, ...] = ()
     # prod function key -> dev function name
-    mapping: dict[str, str] = field(default_factory = dict)
+    mapping: dict[str, str] = field(default_factory=dict)
     # prod function key -> the count vector that matched it, for auditing
-    evidence: dict[str, list[int]] = field(default_factory = dict)
-    ambiguous_prod: list[str] = field(default_factory = list)
-    ambiguous_dev: list[str] = field(default_factory = list)
+    evidence: dict[str, list[int]] = field(default_factory=dict)
+    ambiguous_prod: list[str] = field(default_factory=list)
+    ambiguous_dev: list[str] = field(default_factory=list)
     unmatched_prod: int = 0
     # Resolved functions whose dev name equals their prod name. Expected to be small and non-zero;
     # near 100% means both arms were the same build.
     identity_mappings: int = 0
     anchors_checked: int = 0
-    anchor_failures: list[str] = field(default_factory = list)
+    anchor_failures: list[str] = field(default_factory=list)
     failure_reason: str = ""
 
     @staticmethod
@@ -180,34 +180,34 @@ class Bridge:
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> "Bridge":
         return cls(
-            status = str(doc.get("status", NOT_BUILT)),
-            react_version = str(doc.get("react_version", "")),
-            bundle_sha = str(doc.get("bundle_sha", "")),
-            rungs = tuple(doc.get("rungs") or ()),
-            mapping = dict(doc.get("mapping") or {}),
-            evidence = {k: list(v) for k, v in (doc.get("evidence") or {}).items()},
-            ambiguous_prod = list(doc.get("ambiguous_prod") or ()),
-            ambiguous_dev = list(doc.get("ambiguous_dev") or ()),
-            unmatched_prod = int(doc.get("unmatched_prod", 0)),
-            identity_mappings = int(doc.get("identity_mappings", 0)),
-            anchors_checked = int(doc.get("anchors_checked", 0)),
-            anchor_failures = list(doc.get("anchor_failures") or ()),
-            failure_reason = str(doc.get("failure_reason", "")),
+            status=str(doc.get("status", NOT_BUILT)),
+            react_version=str(doc.get("react_version", "")),
+            bundle_sha=str(doc.get("bundle_sha", "")),
+            rungs=tuple(doc.get("rungs") or ()),
+            mapping=dict(doc.get("mapping") or {}),
+            evidence={k: list(v) for k, v in (doc.get("evidence") or {}).items()},
+            ambiguous_prod=list(doc.get("ambiguous_prod") or ()),
+            ambiguous_dev=list(doc.get("ambiguous_dev") or ()),
+            unmatched_prod=int(doc.get("unmatched_prod", 0)),
+            identity_mappings=int(doc.get("identity_mappings", 0)),
+            anchors_checked=int(doc.get("anchors_checked", 0)),
+            anchor_failures=list(doc.get("anchor_failures") or ()),
+            failure_reason=str(doc.get("failure_reason", "")),
         )
 
     def filename(self) -> str:
         return f"react-dom@{self.react_version or 'unknown'}-{self.bundle_sha[:12] or 'nosha'}.json"
 
     def save(self, directory: str) -> str:
-        os.makedirs(directory, exist_ok = True)
+        os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, self.filename())
-        with open(path, "w", encoding = "utf-8") as fh:
-            json.dump(self.to_json(), fh, indent = 2, sort_keys = True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.to_json(), fh, indent=2, sort_keys=True)
         return path
 
     @classmethod
     def load(cls, path: str) -> "Bridge":
-        with open(path, "r", encoding = "utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             return cls.from_json(json.load(fh))
 
 
@@ -276,13 +276,13 @@ def vectors_from_snapshots(
         sample = next(table[key] for table in per_rung if key in table)
         out.append(
             FunctionVector(
-                build = build,
-                url = key[0],
-                function_name = str(sample.function_name or ""),
-                script_id = str(sample.script_id),
-                start_offset = key[1],
-                end_offset = key[2],
-                counts = counts,
+                build=build,
+                url=key[0],
+                function_name=str(sample.function_name or ""),
+                script_id=str(sample.script_id),
+                start_offset=key[1],
+                end_offset=key[2],
+                counts=counts,
             )
         )
     return out
@@ -330,11 +330,11 @@ def build_bridge(
     """
     if len(dev_snapshots) != len(prod_snapshots):
         return Bridge(
-            status = FAILED,
-            react_version = react_version,
-            bundle_sha = bundle_sha(bundle_source),
-            rungs = tuple(rungs),
-            failure_reason = (
+            status=FAILED,
+            react_version=react_version,
+            bundle_sha=bundle_sha(bundle_source),
+            rungs=tuple(rungs),
+            failure_reason=(
                 f"{len(dev_snapshots)} dev rungs against {len(prod_snapshots)} prod rungs; "
                 "the two builds must run the identical ladder or the vectors describe "
                 "different experiments"
@@ -342,26 +342,26 @@ def build_bridge(
         )
     if len(dev_snapshots) < 2:
         return Bridge(
-            status = FAILED,
-            react_version = react_version,
-            bundle_sha = bundle_sha(bundle_source),
-            rungs = tuple(rungs),
-            failure_reason = (
+            status=FAILED,
+            react_version=react_version,
+            bundle_sha=bundle_sha(bundle_source),
+            rungs=tuple(rungs),
+            failure_reason=(
                 f"{len(dev_snapshots)} rung(s); a single-rung vector is one integer and "
                 "collides with everything. Two or three rungs are the minimum."
             ),
         )
 
     bridge = Bridge(
-        status = OK,
-        react_version = react_version,
-        bundle_sha = bundle_sha(bundle_source),
-        rungs = tuple(rungs),
+        status=OK,
+        react_version=react_version,
+        bundle_sha=bundle_sha(bundle_source),
+        rungs=tuple(rungs),
     )
 
     # ---- anchor validation, on our own app code, both sides named ----------
-    dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter = anchor_url_filter)
-    prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter = anchor_url_filter)
+    dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter=anchor_url_filter)
+    prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter=anchor_url_filter)
     dev_by_name: dict[str, list[FunctionVector]] = {}
     for v in dev_all:
         if v.function_name:
@@ -420,8 +420,8 @@ def build_bridge(
         return bridge
 
     # ---- the actual matching, restricted to react-dom ----------------------
-    dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter = react_url_filter)
-    prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter = react_url_filter)
+    dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter=react_url_filter)
+    prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter=react_url_filter)
     dev_index, dev_ambiguous = _index_unique(dev_react)
     prod_index, prod_ambiguous = _index_unique(prod_react)
     bridge.ambiguous_dev = dev_ambiguous

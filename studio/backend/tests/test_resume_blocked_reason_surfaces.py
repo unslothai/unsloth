@@ -47,11 +47,11 @@ def test_the_field_is_optional_so_old_clients_are_unaffected():
     assert field.default is None
     assert (
         TrainingRunSummary(
-            id = "r",
-            status = "stopped",
-            model_name = "m",
-            dataset_name = "d",
-            started_at = "t",
+            id="r",
+            status="stopped",
+            model_name="m",
+            dataset_name="d",
+            started_at="t",
         ).resume_blocked_reason
         is None
     )
@@ -143,7 +143,7 @@ def test_the_client_prefers_the_server_reason():
         / "training"
         / "lib"
         / "resume-training-run.ts"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
 
     guard = source.split("if (!(detail.run.can_resume && outputDir))", 1)[1][:400]
     assert "detail.run.resume_blocked_reason" in guard

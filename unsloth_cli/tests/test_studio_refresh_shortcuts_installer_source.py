@@ -30,6 +30,7 @@ _SH = b"#!/bin/sh\ncreate_studio_shortcuts() { :; }\n--shortcuts-only\n" + b"# p
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -44,7 +45,7 @@ def _posix(monkeypatch, tmp_path):
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
-    monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
+    monkeypatch.delenv("STUDIO_LOCAL_REPO", raising=False)
     return studio
 
 
@@ -172,7 +173,7 @@ def test_oversized_and_html_responses_return_none(monkeypatch, tmp_path):
         def __init__(self, body):
             self._body = body
 
-        def read(self, n = None):
+        def read(self, n=None):
             return self._body[:n] if n else self._body
 
         def __enter__(self):
@@ -215,7 +216,7 @@ def test_a_truncated_body_is_never_executed(monkeypatch, tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def read(self, n = None):
+        def read(self, n=None):
             self.calls += 1
             if self.calls == 1:
                 return short
@@ -244,7 +245,7 @@ def test_a_complete_body_survives_the_completeness_check(monkeypatch, tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def read(self, n = None):
+        def read(self, n=None):
             self.calls += 1
             return _SH if self.calls == 1 else b""
 
@@ -291,7 +292,7 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     made = {}
 
     def _ok_mkstemp(*a, **k):
-        fd, path = real_mkstemp(dir = tmp_path)
+        fd, path = real_mkstemp(dir=tmp_path)
         made["path"] = path
         made["fd"] = fd
         return fd, path
@@ -405,7 +406,7 @@ def test_building_the_opener_never_mutates_global_urllib(monkeypatch):
 
     site = urllib.request.ProxyHandler({"https": "http://proxy.example:3128"})
     installed = urllib.request.build_opener(site)
-    monkeypatch.setattr(urllib.request, "_opener", installed, raising = False)
+    monkeypatch.setattr(urllib.request, "_opener", installed, raising=False)
 
     opener = studio._build_installer_opener()
     assert any(

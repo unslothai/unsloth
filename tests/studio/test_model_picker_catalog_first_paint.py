@@ -19,7 +19,7 @@ PICKERS_TSX = (
 
 
 def _source() -> str:
-    return PICKERS_TSX.read_text(encoding = "utf-8")
+    return PICKERS_TSX.read_text(encoding="utf-8")
 
 
 def test_curated_catalog_becomes_rows_without_a_request():

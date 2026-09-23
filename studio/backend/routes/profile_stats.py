@@ -26,9 +26,9 @@ logger = get_logger(__name__)
 
 @router.get("/stats")
 async def get_profile_stats(
-    days: int = Query(MAX_DAILY_DAYS, ge = 1, le = MAX_DAILY_DAYS),
-    tz_offset_minutes: int = Query(0, ge = -MAX_TZ_OFFSET_MINUTES, le = MAX_TZ_OFFSET_MINUTES),
-    tz: str = Query("", max_length = 64),
+    days: int = Query(MAX_DAILY_DAYS, ge=1, le=MAX_DAILY_DAYS),
+    tz_offset_minutes: int = Query(0, ge=-MAX_TZ_OFFSET_MINUTES, le=MAX_TZ_OFFSET_MINUTES),
+    tz: str = Query("", max_length=64),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, Any]:
     """Usage stats from the caller's database, bucketed in the caller's timezone (``tz``, or the ``tz_offset_minutes`` fallback)."""
@@ -37,12 +37,12 @@ async def get_profile_stats(
         # loop so it cannot stall token streaming when Settings is opened mid-generation.
         return await asyncio.to_thread(
             compute_profile_stats,
-            days = days,
-            tz_offset_minutes = tz_offset_minutes,
-            tz_name = tz,
-            subject = current_subject,
+            days=days,
+            tz_offset_minutes=tz_offset_minutes,
+            tz_name=tz,
+            subject=current_subject,
         )
     except Exception as exc:
         raise log_and_http_error(
-            exc, 500, "Failed to compute profile statistics", log = logger
+            exc, 500, "Failed to compute profile statistics", log=logger
         ) from exc

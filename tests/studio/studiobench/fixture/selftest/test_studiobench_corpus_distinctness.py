@@ -157,13 +157,13 @@ def test_a_corpus_too_small_for_the_ladder_fails_loudly():
     truncated = dict(corpus.manifest)
     truncated["units"] = [u for u in corpus.manifest["units"] if u["index"] < 6]
     small = Corpus(truncated, {}, corpus.seed)
-    with pytest.raises(ValueError, match = "too small for the"):
+    with pytest.raises(ValueError, match="too small for the"):
         plan_rung(small, "100K")
 
 
 def test_a_ratio_past_what_the_corpus_was_frozen_for_fails_loudly():
     corpus = _corpus()
-    with pytest.raises(ValueError, match = "too small for the"):
+    with pytest.raises(ValueError, match="too small for the"):
         plan_rung(corpus, "1M", MANIFEST_CHARS_PER_TOKEN * 2)
 
 
@@ -180,7 +180,7 @@ def test_a_rung_added_above_the_ladder_refuses_until_the_corpus_is_refrozen():
     original = dict(RUNGS)
     try:
         RUNGS["2M"] = 2_000_000
-        with pytest.raises(ValueError, match = "too small for the"):
+        with pytest.raises(ValueError, match="too small for the"):
             plan_rung(corpus, "2M")
         assert manifest_unit_count(corpus.seed) > len(corpus.manifest["units"])
     finally:

@@ -23,7 +23,7 @@ from utils.paths.storage_roots import _hermes_root, hermes_model_dirs  # noqa: E
 
 
 def _gguf(path: Path, size: int = 32) -> Path:
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\x00" * size)
     return path
 
@@ -57,7 +57,7 @@ def test_a_complete_split_counts_once_by_its_first_part(tmp_path):
 
 def test_a_split_download_is_sized_as_the_whole_set(tmp_path):
     for index, size in ((1, 32), (2, 48), (3, 64)):
-        _gguf(tmp_path / f"Big-Model-0000{index}-of-00003.gguf", size = size)
+        _gguf(tmp_path / f"Big-Model-0000{index}-of-00003.gguf", size=size)
 
     rows = scan_hermes_dir(tmp_path)
     assert [row.size_bytes for row in rows] == [144]
@@ -98,8 +98,8 @@ def test_an_mmproj_left_at_the_top_level_is_still_not_a_model(tmp_path):
 
 
 def test_non_gguf_files_and_a_missing_dir_are_ignored(tmp_path):
-    (tmp_path / "presets.ini").write_text("[Qwen3-8B]\n", encoding = "utf-8")
-    (tmp_path / "state.json").write_text("{}", encoding = "utf-8")
+    (tmp_path / "presets.ini").write_text("[Qwen3-8B]\n", encoding="utf-8")
+    (tmp_path / "state.json").write_text("{}", encoding="utf-8")
 
     assert staged_gguf_files(tmp_path) == []
     assert scan_hermes_dir(tmp_path / "nope") == []
@@ -109,7 +109,7 @@ def test_the_row_is_reachable_through_the_scan_limit(tmp_path):
     for name in ("A-Q4_K_M.gguf", "B-Q4_K_M.gguf", "C-Q4_K_M.gguf"):
         _gguf(tmp_path / name)
 
-    assert len(scan_hermes_dir(tmp_path, limit = 2)) == 2
+    assert len(scan_hermes_dir(tmp_path, limit=2)) == 2
 
 
 @pytest.mark.parametrize(
@@ -128,7 +128,7 @@ class TestHermesRoot:
     """The models dir hangs off the ROOT, mirroring Hermes' own resolution."""
 
     def test_no_env_uses_the_native_home(self, monkeypatch):
-        monkeypatch.delenv("HERMES_HOME", raising = False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         if sys.platform != "win32":
             assert _hermes_root() == Path.home() / ".hermes"
 
@@ -154,9 +154,9 @@ class TestHermesRoot:
         if sys.platform == "win32":
             pytest.skip("POSIX home layout")
         native_models = tmp_path / "home" / ".hermes" / "models"
-        native_models.mkdir(parents = True)
+        native_models.mkdir(parents=True)
         session_models = tmp_path / "session" / "models"
-        session_models.mkdir(parents = True)
+        session_models.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "session"))
@@ -167,5 +167,5 @@ class TestHermesRoot:
 
     def test_only_directories_that_exist_are_returned(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "empty-home"))
-        monkeypatch.delenv("HERMES_HOME", raising = False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         assert hermes_model_dirs() == []

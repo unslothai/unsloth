@@ -20,7 +20,7 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 
 def _binary_with_marker(tmp_path, payload):
-    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding = "utf-8")
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding="utf-8")
     return str(tmp_path / "build" / "bin" / "llama-server")
 
 
@@ -58,18 +58,18 @@ class TestInstalledLlamaCudaSms:
 def _fake_smi(
     monkeypatch,
     stdout,
-    returncode = 0,
+    returncode=0,
 ):
     def _run(cmd, **_kwargs):
         assert cmd[0] == "nvidia-smi"
-        return types.SimpleNamespace(returncode = returncode, stdout = stdout)
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout)
 
     monkeypatch.setattr(subprocess, "run", _run)
 
 
 class TestCudaComputeCaps:
     def test_parses_index_and_cap(self, monkeypatch):
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         _fake_smi(monkeypatch, "0, 9.0\n1, 12.0\n")
         assert LlamaCppBackend._cuda_compute_caps() == {0: 90, 1: 120}
 
@@ -87,12 +87,12 @@ class TestCudaComputeCaps:
         assert LlamaCppBackend._cuda_compute_caps() == {}
 
     def test_bad_lines_are_skipped(self, monkeypatch):
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         _fake_smi(monkeypatch, "0, 9.0\nno-cap-line\n1, N/A\n")
         assert LlamaCppBackend._cuda_compute_caps() == {0: 90}
 
     def test_probe_failure_is_empty(self, monkeypatch):
-        _fake_smi(monkeypatch, "", returncode = 1)
+        _fake_smi(monkeypatch, "", returncode=1)
         assert LlamaCppBackend._cuda_compute_caps() == {}
 
         def _raise(*_args, **_kwargs):
@@ -184,16 +184,16 @@ def _gated_backend(
     tmp_path,
     monkeypatch,
     *,
-    supported_sms = ("86", "89", "120"),
+    supported_sms=("86", "89", "120"),
 ):
     """A load on the incident host: the installed bundle's oldest image is
     compute_86 and the only GPU is an sm_75 T4, so no cubin and no back-compatible
     PTX exists and the gate wants to refuse. Everything below the placement
     decision is faked -- Popen never runs and health answers True."""
     install = tmp_path / "llama.cpp"
-    (install / "build" / "bin").mkdir(parents = True)
+    (install / "build" / "bin").mkdir(parents=True)
     binary = _binary_with_marker(install, {"supported_sms": list(supported_sms)})
-    Path(binary).write_text("", encoding = "utf-8")
+    Path(binary).write_text("", encoding="utf-8")
     os.chmod(binary, 0o755)
 
     gguf = tmp_path / "model.gguf"
@@ -219,11 +219,11 @@ def _gated_backend(
     )
     # The build probe runs `--version`, which the Popen patch below would count as a launch.
     monkeypatch.setattr(
-        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: None)
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary=None: None)
     )
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: []
-    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_memory = lambda _binary=None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary=None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -231,7 +231,7 @@ def _gated_backend(
     backend._resolve_launch_mmproj_path = lambda **_kw: None
     backend._apu_ram_shortfall_message = lambda *_a, **_kw: None
     backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: False
-    backend._find_llama_server_binary = lambda include_denied = False: binary
+    backend._find_llama_server_binary = lambda include_denied=False: binary
     backend._fit_off_retry_eligible = lambda *_a, **_kw: False
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
@@ -260,7 +260,7 @@ def _drive_load(backend, gguf, **intent_kwargs):
         def terminate(self):
             return None
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
         def kill(self):
@@ -271,12 +271,12 @@ def _drive_load(backend, gguf, **intent_kwargs):
         return _Process()
 
     error = None
-    with patch.object(subprocess, "Popen", side_effect = _popen):
+    with patch.object(subprocess, "Popen", side_effect=_popen):
         try:
             backend.load_model(
                 GgufLoadIntent(
-                    gguf_path = str(gguf),
-                    model_identifier = "owner/model",
+                    gguf_path=str(gguf),
+                    model_identifier="owner/model",
                     **intent_kwargs,
                 )
             )
@@ -292,7 +292,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
 
     def test_manual_zero_offload_still_launches_on_cpu(self, tmp_path, monkeypatch):
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
-        launches, error = _drive_load(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)
+        launches, error = _drive_load(backend, gguf, gpu_memory_mode="manual", gpu_layers=0)
         assert error is None, f"the SM gate refused a CPU-only load: {error}"
         assert len(launches) == 1
         _cmd, env = launches[0]
@@ -300,7 +300,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
 
     def test_a_gpu_offload_request_is_still_refused(self, tmp_path, monkeypatch):
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
-        launches, error = _drive_load(backend, gguf, gpu_memory_mode = "auto")
+        launches, error = _drive_load(backend, gguf, gpu_memory_mode="auto")
         assert isinstance(error, RuntimeError)
         assert "unsloth studio update" in str(error)
         assert launches == []
@@ -311,13 +311,13 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
             {"extra_args": ["--device", "CUDA0"]},
             {"extra_args": ["--model-draft", "/tmp/draft.gguf"]},
         ],
-        ids = ["device_pin", "gpu_drafter"],
+        ids=["device_pin", "gpu_drafter"],
     )
     def test_a_gpu_companion_keeps_the_gate(self, tmp_path, monkeypatch, companion):
         # These keep the GPUs visible, so the kernels are needed after all.
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
         launches, error = _drive_load(
-            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, **companion
+            backend, gguf, gpu_memory_mode="manual", gpu_layers=0, **companion
         )
         assert isinstance(error, RuntimeError)
         assert launches == []
@@ -330,9 +330,9 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         launches, error = _drive_load(
             backend,
             gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 0,
-            speculative_type = "auto",
+            gpu_memory_mode="manual",
+            gpu_layers=0,
+            speculative_type="auto",
         )
         assert error is None, f"the SM gate refused the default CPU-only load: {error}"
         assert len(launches) == 1
@@ -345,10 +345,10 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         launches, error = _drive_load(
             backend,
             gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 0,
-            speculative_type = "auto",
-            extra_args = ["--spec-draft-ngl", "0"],
+            gpu_memory_mode="manual",
+            gpu_layers=0,
+            speculative_type="auto",
+            extra_args=["--spec-draft-ngl", "0"],
         )
         assert error is None, f"the SM gate refused a CPU-pinned drafter: {error}"
         assert len(launches) == 1
@@ -365,10 +365,10 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         launches, error = _drive_load(
             backend,
             gguf,
-            gpu_memory_mode = "manual",
-            gpu_layers = 0,
-            is_vision = True,
-            extra_args = ["--no-mmproj-offload"],
+            gpu_memory_mode="manual",
+            gpu_layers=0,
+            is_vision=True,
+            extra_args=["--no-mmproj-offload"],
         )
         assert error is None, f"the SM gate refused a CPU-pinned projector: {error}"
         assert len(launches) == 1
@@ -383,7 +383,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         mmproj.write_bytes(b"")
         backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
         launches, error = _drive_load(
-            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, is_vision = True
+            backend, gguf, gpu_memory_mode="manual", gpu_layers=0, is_vision=True
         )
         assert isinstance(error, RuntimeError)
         assert launches == []
@@ -394,7 +394,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         # ggml_cuda_init runs. The exemption tracks the mask, not the argv.
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
         launches, error = _drive_load(
-            backend, gguf, gpu_memory_mode = "auto", extra_args = ["--device", "none"]
+            backend, gguf, gpu_memory_mode="auto", extra_args=["--device", "none"]
         )
         assert isinstance(error, RuntimeError)
         assert launches == []

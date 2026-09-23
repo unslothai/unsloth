@@ -29,7 +29,7 @@ RL_PY = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "rl.py"
 
 
 def _extract_mixed_precision_code() -> str:
-    lines = RL_PY.read_text(encoding = "utf-8").split("\n")
+    lines = RL_PY.read_text(encoding="utf-8").split("\n")
     try:
         start = next(i for i, l in enumerate(lines) if "mixed_precision = (" in l)
     except StopIteration:
@@ -84,11 +84,11 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
         os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1" if full_finetuning else "0"
         os.environ["UNSLOTH_MIXED_PRECISION"] = mixed_precision
         torch.cuda.is_bf16_supported = lambda *a, **k: bf16_supported
-        args = types.SimpleNamespace(fp16 = fp16, bf16 = bf16, mixed_precision = None)
-        emb = types.SimpleNamespace(weight = types.SimpleNamespace(dtype = dtype))
+        args = types.SimpleNamespace(fp16=fp16, bf16=bf16, mixed_precision=None)
+        emb = types.SimpleNamespace(weight=types.SimpleNamespace(dtype=dtype))
         model = types.SimpleNamespace(
-            config = types.SimpleNamespace(dtype = dtype, torch_dtype = dtype),
-            get_input_embeddings = lambda: emb,
+            config=types.SimpleNamespace(dtype=dtype, torch_dtype=dtype),
+            get_input_embeddings=lambda: emb,
         )
         raised = None
         try:
@@ -106,12 +106,12 @@ def test_v100_normal_fullft_fp16_explicit():
     # Normal model, full FT (weights upcast to float32), V100, fp16=True.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
-        bf16_supported = False,
-        force_float32 = False,
-        full_finetuning = True,
-        mixed_precision = "float32",
-        fp16 = True,
-        bf16 = False,
+        bf16_supported=False,
+        force_float32=False,
+        full_finetuning=True,
+        mixed_precision="float32",
+        fp16=True,
+        bf16=False,
     )
     assert raised is None
     assert (fp16, bf16) == (True, False)
@@ -121,12 +121,12 @@ def test_v100_normal_fullft_precision_unset():
     # Same, but user left precision unset -> must pick fp16, never bf16.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
-        bf16_supported = False,
-        force_float32 = False,
-        full_finetuning = True,
-        mixed_precision = "float32",
-        fp16 = False,
-        bf16 = False,
+        bf16_supported=False,
+        force_float32=False,
+        full_finetuning=True,
+        mixed_precision="float32",
+        fp16=False,
+        bf16=False,
     )
     assert raised is None
     assert (fp16, bf16) == (True, False)
@@ -137,12 +137,12 @@ def test_force_float32_model_fullft_is_pure_float32():
     # FORCE_FLOAT32 model (Gemma3, gpt_oss, ...) in full FT -> pure float32, no autocast.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
-        bf16_supported = False,
-        force_float32 = True,
-        full_finetuning = True,
-        mixed_precision = "float32",
-        fp16 = True,
-        bf16 = False,
+        bf16_supported=False,
+        force_float32=True,
+        full_finetuning=True,
+        mixed_precision="float32",
+        fp16=True,
+        bf16=False,
     )
     assert raised is None
     assert (fp16, bf16) == (False, False)
@@ -153,12 +153,12 @@ def test_no_bf16_on_volta_in_auto_branch():
     # bf16 model dtype but no bf16 HW, precision unset -> fp16, never bf16.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
-        bf16_supported = False,
-        force_float32 = False,
-        full_finetuning = False,
-        mixed_precision = "float32",
-        fp16 = False,
-        bf16 = False,
+        bf16_supported=False,
+        force_float32=False,
+        full_finetuning=False,
+        mixed_precision="float32",
+        fp16=False,
+        bf16=False,
     )
     assert bf16 is False
 
@@ -168,12 +168,12 @@ def test_bf16_gpu_unchanged_auto_branch():
     # still selects bf16 autocast (behavior must not change for bf16 hardware).
     fp16, bf16, amp, raised = _decide(
         torch.float32,
-        bf16_supported = True,
-        force_float32 = False,
-        full_finetuning = True,
-        mixed_precision = "float32",
-        fp16 = False,
-        bf16 = False,
+        bf16_supported=True,
+        force_float32=False,
+        full_finetuning=True,
+        mixed_precision="float32",
+        fp16=False,
+        bf16=False,
     )
     assert raised is None
     assert (fp16, bf16) == (False, True)
@@ -183,12 +183,12 @@ def test_genuine_bf16_model_with_fp16_still_raises():
     # A real bfloat16 model on bf16 HW with fp16 requested is a genuine mismatch.
     _, _, _, raised = _decide(
         torch.bfloat16,
-        bf16_supported = True,
-        force_float32 = False,
-        full_finetuning = False,
-        mixed_precision = "float32",
-        fp16 = True,
-        bf16 = False,
+        bf16_supported=True,
+        force_float32=False,
+        full_finetuning=False,
+        mixed_precision="float32",
+        fp16=True,
+        bf16=False,
     )
     assert raised == "TypeError"
 
@@ -200,12 +200,12 @@ def test_explicit_bf16_exports_bf16_env():
     # bfloat16 model in a float16 autocast and crashes GRPO inside matmul_lora.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
-        bf16_supported = True,
-        force_float32 = False,
-        full_finetuning = False,
-        mixed_precision = "float32",
-        fp16 = False,
-        bf16 = True,
+        bf16_supported=True,
+        force_float32=False,
+        full_finetuning=False,
+        mixed_precision="float32",
+        fp16=False,
+        bf16=True,
     )
     assert raised is None
     assert (fp16, bf16) == (False, True)
@@ -216,12 +216,12 @@ def test_explicit_fp16_exports_fp16_env():
     # float16 model with fp16 explicitly requested must export 'fp16'.
     fp16, bf16, amp, raised = _decide(
         torch.float16,
-        bf16_supported = False,
-        force_float32 = False,
-        full_finetuning = False,
-        mixed_precision = "float32",
-        fp16 = True,
-        bf16 = False,
+        bf16_supported=False,
+        force_float32=False,
+        full_finetuning=False,
+        mixed_precision="float32",
+        fp16=True,
+        bf16=False,
     )
     assert raised is None
     assert (fp16, bf16) == (True, False)
@@ -232,12 +232,12 @@ def test_force_float32_beats_explicit_bf16():
     # force_float32 must keep precedence over the explicit-flag export.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
-        bf16_supported = True,
-        force_float32 = True,
-        full_finetuning = False,
-        mixed_precision = "float32",
-        fp16 = False,
-        bf16 = True,
+        bf16_supported=True,
+        force_float32=True,
+        full_finetuning=False,
+        mixed_precision="float32",
+        fp16=False,
+        bf16=True,
     )
     assert raised is None
     assert (fp16, bf16) == (False, False)
@@ -249,12 +249,12 @@ def test_unsloth_mixed_precision_bfloat16_beats_explicit_bf16():
     # export.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
-        bf16_supported = True,
-        force_float32 = False,
-        full_finetuning = True,
-        mixed_precision = "bfloat16",
-        fp16 = False,
-        bf16 = True,
+        bf16_supported=True,
+        force_float32=False,
+        full_finetuning=True,
+        mixed_precision="bfloat16",
+        fp16=False,
+        bf16=True,
     )
     assert raised is None
     assert (fp16, bf16) == (False, False)

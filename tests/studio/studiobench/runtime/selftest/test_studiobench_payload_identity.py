@@ -71,9 +71,9 @@ def _run_meta(tier, ref, rungs, **extra):
 def _cell(
     cell_id,
     tokens,
-    arm = "A0",
-    rep = 0,
-    tier = "standard",
+    arm="A0",
+    rep=0,
+    tier="standard",
 ):
     return {
         "row_type": "cell",
@@ -110,10 +110,10 @@ def _record(paths, session, rows):
 def _finished_ab(
     tmp_path,
     *,
-    tier = "standard",
-    base = "main",
-    treatment = "fix",
-    treatment_url = "",
+    tier="standard",
+    base="main",
+    treatment="fix",
+    treatment_url="",
 ) -> Paths:
     paths = Paths.under(tmp_path / "out")
     _record(
@@ -130,9 +130,9 @@ def _finished_ab(
                 "balanced": False,
                 "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
             },
-            _cell("r10K.base.rep0", 10_000, arm = "base", tier = tier),
+            _cell("r10K.base.rep0", 10_000, arm="base", tier=tier),
             _keystroke("r10K.base.rep0", 100.0),
-            _cell("r10K.treatment.rep0", 10_000, arm = "treatment", tier = tier),
+            _cell("r10K.treatment.rep0", 10_000, arm="treatment", tier=tier),
             _keystroke("r10K.treatment.rep0", 50.0),
         ],
     )
@@ -148,7 +148,7 @@ def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "other", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "other", CORPUS), resume=True, log=lambda *_a: None
         )
 
     message = str(excinfo.value)
@@ -171,7 +171,7 @@ def test_resuming_a_self_managed_treatment_against_an_attached_one_is_refused(tm
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "treatment_url" in str(excinfo.value)
@@ -183,7 +183,7 @@ def test_resuming_after_changing_the_branch_is_refused(tmp_path):
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "studio_ref" in str(excinfo.value)
@@ -192,12 +192,12 @@ def test_resuming_after_changing_the_branch_is_refused(tmp_path):
 def test_resuming_a_fast_tier_payload_under_the_standard_tier_is_refused(tmp_path):
     """The films differ: 243 s of scene against 47 s, with different budgets and headroom."""
 
-    paths = _finished_ab(tmp_path, tier = "fast")
+    paths = _finished_ab(tmp_path, tier="fast")
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "fix", "--resume"])
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "tier" in str(excinfo.value)
@@ -212,7 +212,7 @@ def test_resuming_after_changing_the_cadence_or_the_instrument_level_is_refused(
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
 
     message = str(excinfo.value)
@@ -228,15 +228,15 @@ def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
     """
 
     paths = _finished_ab(tmp_path)
-    before = paths.payload_jsonl.read_text(encoding = "utf-8")
+    before = paths.payload_jsonl.read_text(encoding="utf-8")
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "other", "--resume"])
 
     with pytest.raises(SystemExit):
         prepare_payload(
-            paths, requested_identity(args, "other", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "other", CORPUS), resume=True, log=lambda *_a: None
         )
 
-    assert paths.payload_jsonl.read_text(encoding = "utf-8") == before
+    assert paths.payload_jsonl.read_text(encoding="utf-8") == before
     assert sorted(p.name for p in paths.out.glob("payload*.jsonl")) == ["payload.jsonl"]
 
 
@@ -249,7 +249,7 @@ def test_the_same_configuration_still_resumes(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -267,7 +267,7 @@ def test_resuming_with_more_reps_and_another_rung_is_still_a_resume(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -298,7 +298,7 @@ def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -311,12 +311,12 @@ def test_resuming_an_ab_payload_as_a_single_build_run_is_refused(tmp_path):
     The A/B's `base` cells stay in the payload and stay first at their rung, so the ladder keeps
     reporting them and never the `A0` cells this run is about to measure."""
 
-    paths = _finished_ab(tmp_path, treatment_url = "http://127.0.0.1:5311")
+    paths = _finished_ab(tmp_path, treatment_url="http://127.0.0.1:5311")
     args = parse_args(["--tier", "standard", "--branch", "main", "--resume"])
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "mode" in str(excinfo.value)
@@ -347,7 +347,7 @@ def test_resuming_a_payload_measured_by_another_instrument_version_is_refused(tm
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "tool_version" in str(excinfo.value)
@@ -367,7 +367,7 @@ def test_a_payload_recorded_by_this_version_still_resumes(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -390,7 +390,7 @@ def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_pat
                 "balanced": False,
                 "order": ["r10K.base.rep0", "r10K.treatment.rep0"],
             },
-            _cell("r10K.base.rep0", 10_000, arm = "base"),
+            _cell("r10K.base.rep0", 10_000, arm="base"),
         ],
     )
     args = parse_args(
@@ -400,7 +400,7 @@ def test_an_ab_payload_that_never_recorded_a_treatment_url_still_resumes(tmp_pat
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -429,7 +429,7 @@ def test_resuming_a_single_build_payload_as_an_ab_is_refused(tmp_path):
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "mode" in str(excinfo.value)
@@ -449,7 +449,7 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -480,7 +480,7 @@ def _fixture_payload(tmp_path, name, session, **fixture):
 def _one_engine_rung(
     tmp_path,
     engine,
-    name = "out",
+    name="out",
 ) -> Paths:
     """A payload holding one measured rung, recorded by a session that launched `engine`."""
 
@@ -493,7 +493,7 @@ def _one_engine_rung(
                 "standard",
                 "main",
                 ["1K", "10K"],
-                platform = {"system": "Linux", "engine": engine, "engine_note": "for this test"},
+                platform={"system": "Linux", "engine": engine, "engine_note": "for this test"},
             ),
             _cell("r1K.A0.rep0", 1_000),
             _keystroke("r1K.A0.rep0", 40.0),
@@ -507,14 +507,14 @@ def _resume_args(*flags):
 
 
 def test_resuming_under_a_changed_stream_tail_is_refused(tmp_path):
-    paths = _fixture_payload(tmp_path, "tail", "sess-1", stream_tail_chars = 24_000)
+    paths = _fixture_payload(tmp_path, "tail", "sess-1", stream_tail_chars=24_000)
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_resume_args("--stream-tail-chars", "96000"), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
 
     message = str(excinfo.value)
@@ -525,23 +525,23 @@ def test_resuming_under_a_changed_stream_tail_is_refused(tmp_path):
 def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
     """Both directions. Dropping the flag on the resume is the likelier of the two."""
 
-    on = _fixture_payload(tmp_path, "on", "sess-on", corpus_dollars = True)
+    on = _fixture_payload(tmp_path, "on", "sess-on", corpus_dollars=True)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             on,
             requested_identity(_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "corpus_dollars" in str(excinfo.value)
 
-    off = _fixture_payload(tmp_path, "off", "sess-off", corpus_dollars = False)
+    off = _fixture_payload(tmp_path, "off", "sess-off", corpus_dollars=False)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             off,
             requested_identity(_resume_args("--corpus-dollars"), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "corpus_dollars" in str(excinfo.value)
 
@@ -550,12 +550,12 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
     """Two sessions, two films, one file: whichever of them you ask for, the other one is still
     in there and its cells would still be skipped."""
 
-    paths = _fixture_payload(tmp_path, "mixed", "sess-1", stream_tail_chars = 6_000)
+    paths = _fixture_payload(tmp_path, "mixed", "sess-1", stream_tail_chars=6_000)
     _record(
         paths,
         "sess-2",
         [
-            _run_meta("standard", "main", ["10K"], stream_tail_chars = 96_000),
+            _run_meta("standard", "main", ["10K"], stream_tail_chars=96_000),
             _cell("r100K.A0.rep0", 100_000),
         ],
     )
@@ -565,8 +565,8 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
             prepare_payload(
                 paths,
                 requested_identity(_resume_args("--stream-tail-chars", asked), None, CORPUS),
-                resume = True,
-                log = lambda *_a: None,
+                resume=True,
+                log=lambda *_a: None,
             )
         assert "stream_tail_chars" in str(excinfo.value)
 
@@ -576,13 +576,13 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
 
 def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     paths = _fixture_payload(
-        tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
+        tmp_path, "same", "sess-1", stream_tail_chars=24_000, corpus_dollars=True
     )
     args = _resume_args("--stream-tail-chars", "24000", "--corpus-dollars")
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -609,7 +609,7 @@ def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
 
     message = str(excinfo.value)
@@ -633,7 +633,7 @@ def test_the_engine_compared_is_the_one_that_will_launch_not_the_flag(tmp_path):
     assert requested_identity(args, None, CORPUS)["engine"] == default_engine()[0]
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
 
     assert "engine" in str(excinfo.value)
@@ -650,7 +650,7 @@ def test_the_same_engine_still_resumes(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -666,14 +666,14 @@ def test_a_payload_from_before_the_fixture_axes_existed_resumes_exactly_as_it_di
     """
 
     paths = _fixture_payload(tmp_path, "old", "sess-old")
-    assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+    assert "stream_tail_chars" not in paths.payload_jsonl.read_text(encoding="utf-8")
 
     assert (
         prepare_payload(
             paths,
             requested_identity(_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -701,8 +701,8 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
             prepare_payload(
                 paths,
                 requested_identity(_resume_args(*flags), None, CORPUS),
-                resume = True,
-                log = lambda *_a: None,
+                resume=True,
+                log=lambda *_a: None,
             )
 
         message = str(excinfo.value)
@@ -731,25 +731,25 @@ def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
     two halves as one ladder.
     """
 
-    probed = _fixture_payload(tmp_path, "probed", "sess-probed", click_probe = True)
+    probed = _fixture_payload(tmp_path, "probed", "sess-probed", click_probe=True)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             probed,
             requested_identity(_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     message = str(excinfo.value)
     assert "click_probe" in message
     assert "True" in message and "False" in message
 
-    plain = _fixture_payload(tmp_path, "plain", "sess-plain", click_probe = False)
+    plain = _fixture_payload(tmp_path, "plain", "sess-plain", click_probe=False)
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             plain,
             requested_identity(_resume_args("--click-probe"), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "click_probe" in str(excinfo.value)
 
@@ -759,14 +759,14 @@ def test_a_payload_from_before_the_probe_flag_is_refused_under_a_probed_resume(t
     there was no way to ask for the probe, so it ran without it."""
 
     paths = _fixture_payload(tmp_path, "legacy-probe", "sess-old")
-    assert "click_probe" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+    assert "click_probe" not in paths.payload_jsonl.read_text(encoding="utf-8")
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_resume_args("--click-probe"), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
 
     message = str(excinfo.value)
@@ -778,13 +778,13 @@ def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_
     """The control. The axis may not swallow a resume that is asking for the run it already has,
     on either setting."""
 
-    probed = _fixture_payload(tmp_path, "probed-same", "sess-probed", click_probe = True)
+    probed = _fixture_payload(tmp_path, "probed-same", "sess-probed", click_probe=True)
     assert (
         prepare_payload(
             probed,
             requested_identity(_resume_args("--click-probe"), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -795,8 +795,8 @@ def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_
         prepare_payload(
             plain,
             requested_identity(_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -844,7 +844,7 @@ def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tm
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -859,7 +859,7 @@ def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_pa
         paths,
         "sess-1",
         [
-            _run_meta("standard", "main", ["10K"], stream_tail_chars = None),
+            _run_meta("standard", "main", ["10K"], stream_tail_chars=None),
             {**_cell("r10K.A0.rep0", 10_000), "completed": False, "fidelity": "died"},
         ],
     )
@@ -883,7 +883,7 @@ def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
         paths,
         "sess-old",
         [
-            _run_meta("standard", "main", ["1K", "10K"], platform = {"system": "Linux"}),
+            _run_meta("standard", "main", ["1K", "10K"], platform={"system": "Linux"}),
             _cell("r1K.A0.rep0", 1_000),
             _keystroke("r1K.A0.rep0", 40.0),
         ],
@@ -895,7 +895,7 @@ def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
 
     assert (
         prepare_payload(
-            paths, requested_identity(args, None, CORPUS), resume = True, log = lambda *_a: None
+            paths, requested_identity(args, None, CORPUS), resume=True, log=lambda *_a: None
         )
         is None
     )
@@ -922,7 +922,7 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
             "sess-2",
             [
                 _run_meta("standard", "main", ["10K"]),
-                _cell(cell_id, 10_000, arm = repair_arm),
+                _cell(cell_id, 10_000, arm=repair_arm),
                 _keystroke(cell_id, 100.0),
             ],
         )
@@ -943,17 +943,17 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
 
 def test_a_fresh_run_moves_the_previous_payload_aside(tmp_path):
     paths = _finished_ab(tmp_path)
-    before = paths.payload_jsonl.read_text(encoding = "utf-8")
+    before = paths.payload_jsonl.read_text(encoding="utf-8")
 
     archived = prepare_payload(
         paths,
         requested_identity(parse_args(["--tier", "standard"]), None, CORPUS),
-        resume = False,
-        log = lambda *_a: None,
+        resume=False,
+        log=lambda *_a: None,
     )
 
     assert archived is not None and archived.exists()
-    assert archived.read_text(encoding = "utf-8") == before
+    assert archived.read_text(encoding="utf-8") == before
     assert not paths.payload_jsonl.exists()
 
 
@@ -967,7 +967,7 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
         "sess-fast",
         [
             _run_meta("fast", "attached:http://127.0.0.1:5401", ["100K"]),
-            _cell("r100K.A0.rep0", 100_000, tier = "fast"),
+            _cell("r100K.A0.rep0", 100_000, tier="fast"),
             _keystroke("r100K.A0.rep0", 900.0),
         ],
     )
@@ -975,8 +975,8 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
     prepare_payload(
         paths,
         requested_identity(parse_args(["--tier", "standard", "--branch", "main"]), None, CORPUS),
-        resume = False,
-        log = lambda *_a: None,
+        resume=False,
+        log=lambda *_a: None,
     )
     # The standard run, killed by the watchdog after 10K.
     _record(
@@ -993,7 +993,7 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
 
     rows = [
         json.loads(line)
-        for line in paths.payload_jsonl.read_text(encoding = "utf-8").splitlines()
+        for line in paths.payload_jsonl.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     measures = measures_from_records(latest_attempt_rows(rows))
@@ -1019,8 +1019,8 @@ def _injected_payload(tmp_path, name, session, **fixture):
         session,
         [
             _run_meta("standard", "main", ["10K"], **fixture),
-            _cell("r10K.base.rep0", 10_000, arm = "base"),
-            _cell("r10K.treatment.rep0", 10_000, arm = "treatment"),
+            _cell("r10K.base.rep0", 10_000, arm="base"),
+            _cell("r10K.treatment.rep0", 10_000, arm="treatment"),
         ],
     )
     return paths
@@ -1047,8 +1047,8 @@ def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp
         prepare_payload(
             paths,
             requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
 
     message = str(excinfo.value)
@@ -1061,14 +1061,14 @@ def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
     the retry is typed without the flag. The rungs already done stay injected, the rungs still to
     come are not, and the ladder the recovery fraction is computed from is half of each."""
 
-    paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms = 3.0)
+    paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms=3.0)
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_ab_resume_args(), "main", CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "inject_stream_cost_ms" in str(excinfo.value)
 
@@ -1077,14 +1077,14 @@ def test_resuming_under_a_changed_injection_amount_is_refused(tmp_path):
     """The amount is the measurement. A ladder half of which burned 3 ms per chunk and half 40 ms
     has no recovery fraction at all."""
 
-    paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms = 3.0)
+    paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms=3.0)
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_ab_resume_args("--inject-stream-cost-ms", "40"), "main", CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "inject_stream_cost_ms" in str(excinfo.value)
 
@@ -1094,14 +1094,14 @@ def test_a_payload_from_before_the_injection_flag_resumes_under_the_default(tmp_
     could not have been injected, so absence reads as off and an ordinary resume still works."""
 
     paths = _injected_payload(tmp_path, "old", "sess-old")
-    assert "inject_stream_cost_ms" not in paths.payload_jsonl.read_text(encoding = "utf-8")
+    assert "inject_stream_cost_ms" not in paths.payload_jsonl.read_text(encoding="utf-8")
 
     assert (
         prepare_payload(
             paths,
             requested_identity(_ab_resume_args(), "main", CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -1112,14 +1112,14 @@ def test_an_unchanged_injection_resumes(tmp_path):
     """THE SECOND CONTROL. An injected run that died is meant to be resumable AS an injected run;
     a refusal on every value would make the axis useless rather than safe."""
 
-    paths = _injected_payload(tmp_path, "same", "sess-1", inject_stream_cost_ms = 3.0)
+    paths = _injected_payload(tmp_path, "same", "sess-1", inject_stream_cost_ms=3.0)
 
     assert (
         prepare_payload(
             paths,
             requested_identity(_ab_resume_args("--inject-stream-cost-ms", "3"), "main", CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -1163,8 +1163,8 @@ def test_resuming_a_clean_payload_with_the_probe_variable_still_set_is_refused(
         prepare_payload(
             paths,
             requested_identity(_probe_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
 
     message = str(excinfo.value)
@@ -1177,15 +1177,15 @@ def test_resuming_a_probed_payload_with_the_variable_unset_is_refused(tmp_path, 
     """The other direction. It cannot poison anything -- the payload is already unscorable -- but
     it is a full wave of installs and rungs spent on a file no reader will ever accept."""
 
-    paths = _fixture_payload(tmp_path, "probed", "sess-probed", probe_init_script = PROBE)
-    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    paths = _fixture_payload(tmp_path, "probed", "sess-probed", probe_init_script=PROBE)
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising=False)
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_probe_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
 
     message = str(excinfo.value)
@@ -1197,15 +1197,15 @@ def test_resuming_a_probed_payload_under_a_different_probe_is_refused(tmp_path, 
     """Which probe is the experiment. Two scripts sample different things on different schedules,
     so half a ladder under each is not one arm however unscorable both halves already are."""
 
-    paths = _fixture_payload(tmp_path, "other", "sess-probed", probe_init_script = PROBE)
+    paths = _fixture_payload(tmp_path, "other", "sess-probed", probe_init_script=PROBE)
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", "probes/layout_counter.js")
 
     with pytest.raises(SystemExit) as excinfo:
         prepare_payload(
             paths,
             requested_identity(_probe_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
     assert "probe_init_script" in str(excinfo.value)
 
@@ -1216,15 +1216,15 @@ def test_a_payload_from_before_the_probe_hook_resumes_under_the_default(tmp_path
     as clean and an ordinary resume is still an ordinary resume."""
 
     paths = _fixture_payload(tmp_path, "old", "sess-old")
-    assert "probe_init_script" not in paths.payload_jsonl.read_text(encoding = "utf-8")
-    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    assert "probe_init_script" not in paths.payload_jsonl.read_text(encoding="utf-8")
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising=False)
 
     assert (
         prepare_payload(
             paths,
             requested_identity(_probe_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -1236,15 +1236,15 @@ def test_an_unchanged_probe_resumes(tmp_path, monkeypatch):
     The payload is not scorable either way, but a potency run is a run, and refusing every value
     would make the axis useless rather than safe."""
 
-    paths = _fixture_payload(tmp_path, "same", "sess-probed", probe_init_script = PROBE)
+    paths = _fixture_payload(tmp_path, "same", "sess-probed", probe_init_script=PROBE)
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)
 
     assert (
         prepare_payload(
             paths,
             requested_identity(_probe_resume_args(), None, CORPUS),
-            resume = True,
-            log = lambda *_a: None,
+            resume=True,
+            log=lambda *_a: None,
         )
         is None
     )
@@ -1261,7 +1261,7 @@ def test_the_probe_variable_reaches_the_identity_this_invocation_asks_for(monkey
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", "")
     assert requested_identity(_probe_resume_args(), None, CORPUS)["probe_init_script"] is None
 
-    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising=False)
     assert requested_identity(_probe_resume_args(), None, CORPUS)["probe_init_script"] is None
 
 
@@ -1285,7 +1285,7 @@ def test_one_probed_session_makes_the_clean_cells_beside_it_unscorable(tmp_path)
         paths,
         "sess-probed",
         [
-            _run_meta("standard", "main", ["10K"], probe_init_script = PROBE),
+            _run_meta("standard", "main", ["10K"], probe_init_script=PROBE),
             _cell("r100K.A0.rep0", 100_000),
             _keystroke("r100K.A0.rep0", 61.0),
         ],
@@ -1299,26 +1299,26 @@ def test_one_probed_session_makes_the_clean_cells_beside_it_unscorable(tmp_path)
 
 def test_a_fresh_run_into_a_new_directory_archives_nothing(tmp_path):
     paths = Paths.under(tmp_path / "out")
-    assert archive_payload(paths, log = lambda *_a: None) is None
+    assert archive_payload(paths, log=lambda *_a: None) is None
 
 
 def test_an_empty_payload_is_not_worth_archiving(tmp_path):
     paths = Paths.under(tmp_path / "out")
-    paths.payload_jsonl.write_text("", encoding = "utf-8")
-    assert archive_payload(paths, log = lambda *_a: None) is None
+    paths.payload_jsonl.write_text("", encoding="utf-8")
+    assert archive_payload(paths, log=lambda *_a: None) is None
     assert paths.payload_jsonl.exists()
 
 
 def test_a_resume_never_archives(tmp_path):
     paths = _finished_ab(tmp_path)
-    before = paths.payload_jsonl.read_text(encoding = "utf-8")
+    before = paths.payload_jsonl.read_text(encoding="utf-8")
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "fix", "--resume"])
 
     prepare_payload(
-        paths, requested_identity(args, "fix", CORPUS), resume = True, log = lambda *_a: None
+        paths, requested_identity(args, "fix", CORPUS), resume=True, log=lambda *_a: None
     )
 
-    assert paths.payload_jsonl.read_text(encoding = "utf-8") == before
+    assert paths.payload_jsonl.read_text(encoding="utf-8") == before
     assert sorted(p.name for p in paths.out.glob("payload*.jsonl")) == ["payload.jsonl"]
 
 

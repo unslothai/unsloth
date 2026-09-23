@@ -49,9 +49,9 @@ def _require_node():
         pytest.skip("studio chat sources not present")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if result.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
@@ -64,7 +64,7 @@ def _classification_slice() -> str:
     consumes it, so the slice tracks either the prepared-token form or the
     older raw-token ternary.
     """
-    src = ADAPTER.read_text(encoding = "utf-8")
+    src = ADAPTER.read_text(encoding="utf-8")
     anchor = src.index("async function loadAutoLoadCandidate(")
     starts = [
         pos
@@ -82,18 +82,18 @@ def _classification_slice() -> str:
 
 def _run(script: str, harness: str):
     _require_node()
-    TEMP.mkdir(parents = True, exist_ok = True)
-    workdir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
-    (workdir / "harness.ts").write_text(harness, encoding = "utf-8")
-    (workdir / "run.mts").write_text(script, encoding = "utf-8")
-    env = dict(os.environ, NODE_NO_WARNINGS = "1")
+    TEMP.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix="run", dir=TEMP))
+    (workdir / "harness.ts").write_text(harness, encoding="utf-8")
+    (workdir / "run.mts").write_text(script, encoding="utf-8")
+    env = dict(os.environ, NODE_NO_WARNINGS="1")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(workdir),
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env,
+        cwd=str(workdir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
     last = [line for line in result.stdout.strip().splitlines() if line.strip()][-1]
@@ -121,7 +121,7 @@ _STALE_TOKEN = "hf_staleTokenFromAnEarlierSession"
 
 
 def _harness() -> str:
-    return _HARNESS_TEMPLATE.format(slice = textwrap.indent(_classification_slice(), "  "))
+    return _HARNESS_TEMPLATE.format(slice=textwrap.indent(_classification_slice(), "  "))
 
 
 _SCRIPT = textwrap.dedent(

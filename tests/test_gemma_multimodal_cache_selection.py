@@ -32,7 +32,7 @@ _FIRST_VERSION_WITH_BLOCK_MASK = "5.10.0"
 def _make_model(
     module_name,
     has_helper,
-    helper = None,
+    helper=None,
 ):
     module = types.ModuleType(module_name)
     if has_helper:
@@ -94,7 +94,7 @@ def test_either_mask_builder_gates_the_guard(request, helper):
     """The two names span transformers 5.10 to current, so either one alone has
     to be enough."""
     name = f"_fake_helper_{request.node.name}"
-    model = _make_model(name, True, helper = helper)
+    model = _make_model(name, True, helper=helper)
     try:
         assert _needs_bidirectional_multimodal_mask(model, {"pixel_values": object()})
     finally:
@@ -121,7 +121,7 @@ def test_real_gemma_modules_expose_the_helper():
     seen = False
     for name in ("gemma3", "gemma4", "gemma4_unified"):
         try:
-            module = __import__(f"transformers.models.{name}.modeling_{name}", fromlist = ["x"])
+            module = __import__(f"transformers.models.{name}.modeling_{name}", fromlist=["x"])
         except Exception:
             continue
         seen = True
@@ -136,7 +136,7 @@ def test_causal_vlms_never_expose_a_mask_builder():
     pytest.importorskip("transformers")
     for name in ("qwen2_vl", "llava", "paligemma"):
         try:
-            module = __import__(f"transformers.models.{name}.modeling_{name}", fromlist = ["x"])
+            module = __import__(f"transformers.models.{name}.modeling_{name}", fromlist=["x"])
         except Exception:
             continue
         assert not any(hasattr(module, h) for h in _BIDIRECTIONAL_MASK_BUILDERS), name
@@ -164,7 +164,7 @@ def _gemma4_shaped(module, bidir):
             attention_mask,
             past_key_values,
             position_ids,
-            mm_token_type_ids = None,
+            mm_token_type_ids=None,
             **kwargs,
         ):
             return None
@@ -187,7 +187,7 @@ def _gemma3_shaped(module):
             attention_mask,
             past_key_values,
             position_ids,
-            token_type_ids = None,
+            token_type_ids=None,
             **kwargs,
         ):
             return None
@@ -230,7 +230,7 @@ def test_text_only_token_types_keep_the_static_cache(gemma_like):
     zeros, so presence alone must not cost the static path."""
     module = sys.modules[type(gemma_like).__module__]
     model = _gemma4_shaped(module, "vision")
-    ids = torch.zeros(1, 5, dtype = torch.long)
+    ids = torch.zeros(1, 5, dtype=torch.long)
     assert not _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": ids})
 
 
@@ -241,7 +241,7 @@ def test_gemma3_token_type_ids_are_read(gemma_like):
         model, {"token_type_ids": torch.tensor([[0, 1, 0]])}
     )
     assert not _needs_bidirectional_multimodal_mask(
-        model, {"token_type_ids": torch.zeros(1, 3, dtype = torch.long)}
+        model, {"token_type_ids": torch.zeros(1, 3, dtype=torch.long)}
     )
 
 
@@ -372,7 +372,7 @@ def test_mixed_precision_still_forces_dynamic_for_media():
     """UNSLOTH_BFLOAT16_MIXED_PRECISION clears the local default to None. An
     explicit static kwarg would otherwise survive and bring the bug back."""
     kwargs = {"generation_config": _GenCfg(), "cache_implementation": "static"}
-    assert _force_gate(None, kwargs, is_media = True)
+    assert _force_gate(None, kwargs, is_media=True)
     _resolve_cache_choice(True, None, kwargs)
     kwargs["cache_implementation"] = "dynamic"
     assert kwargs["generation_config"].cache_implementation == "dynamic"
@@ -381,11 +381,11 @@ def test_mixed_precision_still_forces_dynamic_for_media():
 
 def test_a_caller_supplied_cache_is_never_overridden():
     kwargs = {"past_key_values": object()}
-    assert not _force_gate("static", kwargs, is_media = True)
+    assert not _force_gate("static", kwargs, is_media=True)
 
 
 def test_text_only_never_forces_even_with_a_cleared_default():
-    assert not _force_gate(None, {}, is_media = False)
+    assert not _force_gate(None, {}, is_media=False)
 
 
 @pytest.mark.parametrize("requested", ["offloaded", "quantized"])

@@ -41,20 +41,20 @@ SHIPPED_PINS = [
 ]
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def dockerfile() -> str:
     assert DOCKERFILE.is_file(), f"missing {DOCKERFILE}"
-    return DOCKERFILE.read_text(encoding = "utf-8")
+    return DOCKERFILE.read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def sidecar_block(dockerfile: str) -> str:
     start = dockerfile.index("tf-sidecars/t_$(echo")
     block = dockerfile[dockerfile.rindex("RUN set -eux", 0, start) :]
     return block[: block.index("\n\n")]
 
 
-def _load_compat(root, floor = None):
+def _load_compat(root, floor=None):
     import os
 
     prev_root = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT")
@@ -134,7 +134,7 @@ def test_build_skips_the_gate_when_vllm_is_absent(sidecar_block: str):
 
 
 def test_compat_reads_the_floor_the_build_writes():
-    assert ".vllm_min_transformers" in COMPAT_PATH.read_text(encoding = "utf-8"), (
+    assert ".vllm_min_transformers" in COMPAT_PATH.read_text(encoding="utf-8"), (
         "unsloth_nb_compat must read the floor the Dockerfile records, not a "
         "literal that rots on the next vLLM bump"
     )

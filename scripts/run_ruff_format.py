@@ -39,7 +39,7 @@ def installed_ruff_version(python: str = sys.executable) -> str | None:
     """The ruff the format below would actually run, or None when it cannot say."""
     try:
         out = subprocess.run(
-            [python, "-m", "ruff", "--version"], capture_output = True, text = True, timeout = 60
+            [python, "-m", "ruff", "--version"], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -59,7 +59,7 @@ def ruff_unavailable_reason(python: str = sys.executable) -> str | None:
     """
     try:
         out = subprocess.run(
-            [python, "-m", "ruff", "--version"], capture_output = True, text = True, timeout = 60
+            [python, "-m", "ruff", "--version"], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{type(exc).__name__}: {exc}"
@@ -114,10 +114,10 @@ def parse_files(argv: list[str]) -> tuple[list[str], str | None]:
 def main(argv: list[str]) -> int:
     files, error = parse_files(argv)
     if error is not None:
-        print(f"run_ruff_format: {error}", file = sys.stderr)
+        print(f"run_ruff_format: {error}", file=sys.stderr)
         return 2
 
-    pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
+    pinned = pinned_ruff_version(CONFIG.read_text(encoding="utf-8")) if CONFIG.exists() else None
 
     # Both checks are made before anything is rewritten, because the pre-pass is
     # itself a rewrite. Without this first one, a missing or broken ruff let the
@@ -132,7 +132,7 @@ def main(argv: list[str]) -> int:
             f"  Refusing before rewriting anything: the passes either side of ruff would "
             f"leave the files half-formatted.\n"
             f"  Fix: pip install ruff=={pinned or '<the pin in .pre-commit-config.yaml>'}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 1
 
@@ -151,7 +151,7 @@ def main(argv: list[str]) -> int:
             f"  Fix: pip install ruff=={pinned}, or run the hook itself "
             f"(pre-commit run ruff-format-with-kwargs --files ...).\n"
             f"  Override with {ANY_VERSION_ENV}=1 if you really mean it.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 1
 

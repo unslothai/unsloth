@@ -31,7 +31,7 @@ def _set_flex_available(monkeypatch, available):
         import_utils,
         "is_torch_flex_attn_available",
         lambda: available,
-        raising = False,
+        raising=False,
     )
 
 
@@ -42,7 +42,7 @@ def test_gpt_oss_uses_eager_instead_of_flash_flex_or_sdpa(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlexAndSdpa,
         config,
-        supports_sdpa = True,
+        supports_sdpa=True,
     )
 
     assert impl == "eager"
@@ -56,7 +56,7 @@ def test_gpt_oss_falls_back_to_eager_when_flex_unavailable(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlexAndSdpa,
         config,
-        supports_sdpa = True,
+        supports_sdpa=True,
     )
 
     assert impl == "eager"
@@ -70,8 +70,8 @@ def test_float32_downgrades_flash_to_sdpa(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlashAndSdpa,
         config,
-        supports_sdpa = True,
-        dtype = torch.float32,
+        supports_sdpa=True,
+        dtype=torch.float32,
     )
 
     assert impl == "sdpa"
@@ -85,9 +85,9 @@ def test_float32_downgrades_explicit_flash_request(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlashAndSdpa,
         config,
-        requested_attn_implementation = "flash_attention_2",
-        supports_sdpa = True,
-        dtype = torch.float32,
+        requested_attn_implementation="flash_attention_2",
+        supports_sdpa=True,
+        dtype=torch.float32,
     )
 
     assert impl == "sdpa"
@@ -101,8 +101,8 @@ def test_half_dtypes_keep_flash(monkeypatch):
         impl = _utils.resolve_attention_implementation(
             SupportsFlashAndSdpa,
             config,
-            supports_sdpa = True,
-            dtype = dtype,
+            supports_sdpa=True,
+            dtype=dtype,
         )
 
         assert impl == "flash_attention_2"
@@ -124,9 +124,9 @@ def test_float32_does_not_reroute_an_explicit_non_flash_request(monkeypatch):
         answers[dtype] = _utils.resolve_attention_implementation(
             SupportsFlexAndSdpa,
             config,
-            requested_attn_implementation = "sdpa",
-            supports_sdpa = False,
-            dtype = dtype,
+            requested_attn_implementation="sdpa",
+            supports_sdpa=False,
+            dtype=dtype,
         )
 
     assert answers[torch.float32] == answers[torch.bfloat16] == "eager"
@@ -141,9 +141,9 @@ def test_float32_still_downgrades_an_explicit_flash_request(monkeypatch):
     impl = _utils.resolve_attention_implementation(
         SupportsFlashAndSdpa,
         config,
-        requested_attn_implementation = "flash_attention_2",
-        supports_sdpa = True,
-        dtype = torch.float32,
+        requested_attn_implementation="flash_attention_2",
+        supports_sdpa=True,
+        dtype=torch.float32,
     )
 
     assert impl == "sdpa"
@@ -153,14 +153,14 @@ def test_config_disable_reason_still_reroutes_a_non_flash_request(monkeypatch):
     """Only the float32 reason is narrowed - a config-driven one keeps its old behaviour."""
     _set_flex_available(monkeypatch, True)
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
-    config = _config("gemma3", head_dim = 512)
+    config = _config("gemma3", head_dim=512)
 
     impl = _utils.resolve_attention_implementation(
         SupportsFlexAndSdpa,
         config,
-        requested_attn_implementation = "sdpa",
-        supports_sdpa = False,
-        dtype = torch.bfloat16,
+        requested_attn_implementation="sdpa",
+        supports_sdpa=False,
+        dtype=torch.bfloat16,
     )
 
     assert impl == "flex_attention"
@@ -177,12 +177,12 @@ def test_float32_does_not_let_a_config_seeded_eager_win(monkeypatch):
 
     answers = {}
     for dtype in (torch.bfloat16, torch.float32):
-        config = _config("qwen2", _attn_implementation = "eager")
+        config = _config("qwen2", _attn_implementation="eager")
         answers[dtype] = _utils.resolve_attention_implementation(
             SupportsFlashAndSdpa,
             config,
-            supports_sdpa = True,
-            dtype = dtype,
+            supports_sdpa=True,
+            dtype=dtype,
         )
 
     assert answers[torch.float32] == answers[torch.bfloat16] == "sdpa"
@@ -192,13 +192,13 @@ def test_float32_with_flash_available_and_config_seeded_eager_lands_on_sdpa(monk
     """Same shape, but flash was genuinely on the table - the fallback is sdpa, not eager."""
     _set_flex_available(monkeypatch, True)
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
-    config = _config("qwen2", _attn_implementation = "eager")
+    config = _config("qwen2", _attn_implementation="eager")
 
     impl = _utils.resolve_attention_implementation(
         SupportsFlashAndSdpa,
         config,
-        supports_sdpa = True,
-        dtype = torch.float32,
+        supports_sdpa=True,
+        dtype=torch.float32,
     )
 
     assert impl == "sdpa"
@@ -208,13 +208,13 @@ def test_config_disable_reason_still_honors_a_config_seeded_eager(monkeypatch):
     """The narrowing is float32-only: a real flash exclusion keeps reading the config."""
     _set_flex_available(monkeypatch, True)
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
-    config = _config("qwen2", head_dim = 512, _attn_implementation = "eager")
+    config = _config("qwen2", head_dim=512, _attn_implementation="eager")
 
     impl = _utils.resolve_attention_implementation(
         SupportsFlashAndSdpa,
         config,
-        supports_sdpa = True,
-        dtype = torch.bfloat16,
+        supports_sdpa=True,
+        dtype=torch.bfloat16,
     )
 
     assert impl == "eager"

@@ -29,7 +29,7 @@ TOKEN = "hf_alice_token"
 REPO = "Org/PrivateGGUF"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -46,10 +46,10 @@ def isolated(monkeypatch, tmp_path):
         lambda *_a, **_k: (
             [
                 SimpleNamespace(
-                    filename = "model-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = "Q4_K_M",
-                    size_bytes = 1234,
+                    filename="model-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label="Q4_K_M",
+                    size_bytes=1234,
                 )
             ],
             False,
@@ -67,16 +67,16 @@ def _hub(monkeypatch, calls: list) -> None:
         calls.append(kwargs.get("token"))
         if not isinstance(kwargs.get("token"), str):
             error = Exception("private repo")
-            error.response = SimpleNamespace(status_code = 404)
+            error.response = SimpleNamespace(status_code=404)
             raise error
-        return SimpleNamespace(private = True, gated = False)
+        return SimpleNamespace(private=True, gated=False)
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=repo_info))
 
 
 def _variants(hf_token):
     return asyncio.run(
-        arun_as(ALICE, gguf_variants.get_gguf_variants_answer(REPO, hf_token = hf_token))
+        arun_as(ALICE, gguf_variants.get_gguf_variants_answer(REPO, hf_token=hf_token))
     )
 
 
@@ -114,7 +114,7 @@ def test_an_unreachable_hub_does_not_turn_a_token_into_access(monkeypatch):
     def repo_info(repo, **kwargs):
         raise OSError("Hub unavailable")
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=repo_info))
 
     with pytest.raises(HTTPException) as excinfo:
         _variants(TOKEN)

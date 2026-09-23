@@ -23,10 +23,10 @@ ARXIV_ONLY = {"allowedDomains": ["arxiv.org"], "blockedDomains": []}
 
 def test_create_run_normalizes_and_persists_website_policy():
     payload = CreateResearchRun(
-        threadId = "thread",
-        userMessageId = "message",
-        inferenceRequest = {"model": "local-model"},
-        websitePolicy = {
+        threadId="thread",
+        userMessageId="message",
+        inferenceRequest={"model": "local-model"},
+        websitePolicy={
             "allowedDomains": ["ARXIV.ORG."],
             "blockedDomains": ["ads.arxiv.org"],
         },
@@ -85,7 +85,7 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
         "allowedDomains": ["xn--bcher-kva.example"],
         "blockedDomains": [],
     }
-    with pytest.raises(ValueError, match = "without schemes or ports|Invalid website domain"):
+    with pytest.raises(ValueError, match="without schemes or ports|Invalid website domain"):
         normalize_website_policy({"allowedDomains": ["https://arxiv.org"]})
 
 
@@ -129,7 +129,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
         def text(
             self,
             query,
-            max_results = 5,
+            max_results=5,
             **kwargs,
         ):
             queries.append((query, max_results))
@@ -140,7 +140,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
             ]
 
     monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
-    result = tools._web_search("latest paper", website_policy = ARXIV_ONLY)
+    result = tools._web_search("latest paper", website_policy=ARXIV_ONLY)
 
     # A policy filters after the search, so a deeper candidate pool is requested.
     assert queries == [("latest paper (site:arxiv.org)", 5 * tools._POLICY_OVERFETCH)]
@@ -165,13 +165,13 @@ def test_web_search_refills_past_disallowed_results(monkeypatch):
         def text(
             self,
             query,
-            max_results = 5,
+            max_results=5,
             **kwargs,
         ):
             return blocked_then_allowed[:max_results]
 
     monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
-    result = tools._web_search("q", website_policy = {"blockedDomains": ["example.com"]})
+    result = tools._web_search("q", website_policy={"blockedDomains": ["example.com"]})
 
     assert "arxiv.org/abs/0" in result
     assert "example.com" not in result
@@ -189,17 +189,17 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
         def text(
             self,
             query,
-            max_results = 5,
+            max_results=5,
             **kwargs,
         ):
             queries.append((query, max_results))
             return [{"title": "T", "href": "https://a.example/1", "body": "B"}]
 
     monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
-    tools._web_search("q", website_policy = None)
+    tools._web_search("q", website_policy=None)
     # A run always stores a normalized policy, so the unrestricted case is an object with empty
     # lists, not None. Neither may pay the deeper-pool latency.
-    tools._web_search("q", website_policy = {"allowedDomains": [], "blockedDomains": []})
+    tools._web_search("q", website_policy={"allowedDomains": [], "blockedDomains": []})
     assert queries == [("q", 5), ("q", 5)]
 
 
@@ -231,7 +231,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
         def text(
             self,
             query,
-            max_results = 5,
+            max_results=5,
             **kwargs,
         ):
             return [
@@ -246,7 +246,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
             ]
 
     monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
-    result = tools._web_search("paper", website_policy = ARXIV_ONLY)
+    result = tools._web_search("paper", website_policy=ARXIV_ONLY)
     assert result.count("\nURL:") == 1
     assert "URL: https://arxiv.org/abs/real" in result
 
@@ -260,7 +260,7 @@ def test_direct_fetch_rejects_blocked_host_before_dns(monkeypatch):
     )
     result = tools._fetch_page_text(
         "https://example.com/article",
-        website_policy = ARXIV_ONLY,
+        website_policy=ARXIV_ONLY,
     )
     assert "Blocked: website access policy" in result
     assert resolved == []
@@ -283,7 +283,7 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
     monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *_args: RedirectingOpener())
     result = tools._fetch_page_text(
         "https://arxiv.org/abs/1",
-        website_policy = ARXIV_ONLY,
+        website_policy=ARXIV_ONLY,
     )
     assert "Blocked: website access policy disallows example.com" in result
     assert resolved == [("arxiv.org", 443)]
@@ -297,13 +297,13 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
         def text(
             self,
             query,
-            max_results = 5,
+            max_results=5,
             **kwargs,
         ):
             raise exc
 
     monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
-    return tools._web_search("q", timeout = 7)
+    return tools._web_search("q", timeout=7)
 
 
 def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatch):
@@ -320,6 +320,7 @@ def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatc
 
 def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
     from ddgs.exceptions import TimeoutException
+
     result = _search_with_raising_ddgs(monkeypatch, TimeoutException("timed out"))
     assert result == "Search failed: the search engines did not respond within 7s."
 

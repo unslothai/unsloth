@@ -106,14 +106,14 @@ def run_js(spec: dict) -> dict:
     exe = _node()
     with tempfile.TemporaryDirectory() as tmp:
         harness = Path(tmp) / "harness.js"
-        harness.write_text(HARNESS_JS, encoding = "utf-8")
+        harness.write_text(HARNESS_JS, encoding="utf-8")
         payload = Path(tmp) / "spec.json"
-        payload.write_text(json.dumps(spec), encoding = "utf-8")
+        payload.write_text(json.dumps(spec), encoding="utf-8")
         got = subprocess.run(
             [exe, str(harness), str(PARITY_JS), str(payload)],
-            capture_output = True,
-            text = True,
-            timeout = 120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     if got.returncode != 0:
         raise AssertionError(f"the parity.js harness failed: {got.stderr.strip()[-800:]}")
@@ -352,13 +352,13 @@ def test_content_below_the_depth_cap_is_not_compared():
 
 
 def capture(
-    digest = "aaaa",
+    digest="aaaa",
     *,
-    messages = None,
-    overlays = None,
-    root = "thread",
-    styles = None,
-    chars = 100,
+    messages=None,
+    overlays=None,
+    root="thread",
+    styles=None,
+    chars=100,
 ) -> dict:
     return {
         "parity_attempted": True,
@@ -395,7 +395,7 @@ def test_a_failed_capture_is_never_a_match():
 def test_two_different_roots_are_not_comparable():
     # A body-root capture carries the sidebar and its relative timestamps; comparing it with a
     # thread-root one produces two plausible hashes and a meaningless verdict.
-    got = P.compare(capture(root = "thread"), capture(root = "body"))
+    got = P.compare(capture(root="thread"), capture(root="body"))
     assert got["verdict"] == P.NOT_COMPARABLE
     assert "different roots" in got["reason"]
 
@@ -413,7 +413,7 @@ def test_a_capture_from_an_older_instrument_is_not_silently_compared():
 def test_a_difference_is_localised_to_the_message_that_moved():
     moved = capture(
         "zzzz",
-        messages = [
+        messages=[
             {"i": 0, "role": "user", "digest": "m0", "chars": 10},
             {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 33},
         ],
@@ -426,7 +426,7 @@ def test_a_difference_is_localised_to_the_message_that_moved():
 def test_an_added_message_is_localised_as_one_sided():
     extra = capture(
         "zzzz",
-        messages = [
+        messages=[
             {"i": 0, "role": "user", "digest": "m0", "chars": 10},
             {"i": 1, "role": "assistant", "digest": "m1", "chars": 20},
             {"i": 2, "role": "assistant", "digest": "m2", "chars": 5},
@@ -438,8 +438,8 @@ def test_an_added_message_is_localised_as_one_sided():
 def test_an_overlay_that_changes_without_changing_count_is_still_localised():
     # The bug this pins: comparing only the NUMBER of overlays passes an open menu whose contents
     # were rewritten, which is the popover regression the overlay walk was added for.
-    one = capture("aaaa", overlays = [{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
-    two = capture("zzzz", overlays = [{"sel": '[role="menu"]', "digest": "o2", "chars": 44}])
+    one = capture("aaaa", overlays=[{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
+    two = capture("zzzz", overlays=[{"sel": '[role="menu"]', "digest": "o2", "chars": 44}])
     got = P.compare(one, two)
     assert got["moved"] == ['overlay0[[role="menu"]]:40->44c'], got["moved"]
 
@@ -448,8 +448,8 @@ def test_an_overlay_change_alone_is_a_difference():
     # THE FALSE NEGATIVE THE SPIKE CONTROL FOUND. An overlay lives outside the thread root, so a
     # menu that mounts when it should not leaves the whole-thread digest untouched; testing only
     # that digest made the entire overlay walk unreachable and reported a clean pass.
-    one = capture("aaaa", overlays = [])
-    two = capture("aaaa", overlays = [{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
+    one = capture("aaaa", overlays=[])
+    two = capture("aaaa", overlays=[{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
     got = P.compare(one, two)
     assert got["verdict"] == P.DIFFER, "an overlay appearing on one arm only is a difference"
     assert got["moved"] == ["overlays 0->1"], got["moved"]
@@ -460,7 +460,7 @@ def test_a_message_change_alone_is_a_difference():
     # somehow does not, the pair still differs.
     moved = capture(
         "aaaa",
-        messages = [
+        messages=[
             {"i": 0, "role": "user", "digest": "m0", "chars": 10},
             {"i": 1, "role": "assistant", "digest": "CHANGED", "chars": 20},
         ],
@@ -476,7 +476,7 @@ def test_a_difference_outside_every_message_is_reported_as_such():
 
 
 def test_the_style_probe_is_a_separate_verdict_from_the_structural_one():
-    styled = capture(styles = {"digest": "OTHER", "chars": 5, "elements": 4, "capped": False})
+    styled = capture(styles={"digest": "OTHER", "chars": 5, "elements": 4, "capped": False})
     got = P.compare(capture(), styled)
     # Structure identical, style moved: a stylesheet change is exactly this shape, and folding it
     # into the structural verdict would put the hard signal's credibility on the soft reading.
@@ -485,7 +485,7 @@ def test_the_style_probe_is_a_separate_verdict_from_the_structural_one():
 
 
 def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
-    capped = capture(styles = {"digest": "s0", "chars": 5, "elements": 64, "capped": True})
+    capped = capture(styles={"digest": "s0", "chars": 5, "elements": 64, "capped": True})
     got = P.compare(capture(), capped)
     assert got["style_verdict"] == P.NOT_COMPARABLE
 

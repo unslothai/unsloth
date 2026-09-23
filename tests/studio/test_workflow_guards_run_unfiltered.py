@@ -48,7 +48,7 @@ EXEMPT = {
 
 
 def _guard_step() -> dict:
-    doc = yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(LINT.read_text(encoding="utf-8"))
     for step in doc["jobs"]["workflow-trigger-lint"]["steps"]:
         if "pytest" in str(step.get("run", "")):
             return step
@@ -56,7 +56,7 @@ def _guard_step() -> dict:
 
 
 def _modules_run_by_the_lint_job() -> set:
-    doc = yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(LINT.read_text(encoding="utf-8"))
     runs = "\n".join(
         str(step.get("run", "")) for step in doc["jobs"]["workflow-trigger-lint"]["steps"]
     )
@@ -71,7 +71,7 @@ def _modules_that_read_a_workflow() -> set:
     """
     found = set()
     for path in sorted(TESTS.glob("test_*.py")):
-        src = path.read_text(encoding = "utf-8", errors = "replace")
+        src = path.read_text(encoding="utf-8", errors="replace")
         if ".github/workflows" in src or re.search(r'"\.github"\s*/\s*"workflows"', src):
             found.add(path.name)
     return found
@@ -112,7 +112,7 @@ def test_the_guards_run_in_one_pytest_invocation():
     Measured over these 17 modules: 53.9s as a single invocation, 300.8s as one each. The
     shape regresses naturally, because the obvious way to add a guard is to add a step.
     """
-    doc = yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(LINT.read_text(encoding="utf-8"))
     steps = doc["jobs"]["workflow-trigger-lint"]["steps"]
     invocations = [s for s in steps if "-m pytest" in str(s.get("run", ""))]
     assert len(invocations) == 1, (
@@ -124,7 +124,7 @@ def test_the_guards_run_in_one_pytest_invocation():
 
 def test_the_job_that_runs_them_has_no_paths_filter():
     """The entire premise. If this job gains a filter, every guard above loses its point."""
-    doc = yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(LINT.read_text(encoding="utf-8"))
     on = doc.get(True) if True in doc else doc.get("on")
     for trigger in ("pull_request", "push"):
         config = on.get(trigger)

@@ -49,13 +49,13 @@ def _plan(
     weights_mib,
     n_parallel,
     ctx_checkpoints,
-    vram_mib = CARD_MIB,
-    cache_type_kv = "q8_0",
-    ctx_checkpoints_flag = "--ctx-checkpoints",
+    vram_mib=CARD_MIB,
+    cache_type_kv="q8_0",
+    ctx_checkpoints_flag="--ctx-checkpoints",
 ):
     """Return the generated plan plus what its own context really costs."""
     memory = [(0, vram_mib, vram_mib)]
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend, gguf = _backend(tmp_path, vulkan=False, memory=memory)
 
     def read(_path):
         for key, value in SWA.items():
@@ -64,7 +64,7 @@ def _plan(
     backend._read_gguf_metadata = read
     backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
     del backend._can_estimate_kv  # the real one, now that the dims are set
-    backend.probe_server_capabilities = lambda _binary = None: {
+    backend.probe_server_capabilities = lambda _binary=None: {
         "mtp_token": "draft-mtp",
         "supports_ngram_mod": True,
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -76,26 +76,26 @@ def _plan(
     launched = _launch(
         backend,
         gguf,
-        speculative_type = "off",
-        n_ctx = 0,
-        n_parallel = n_parallel,
-        cache_type_kv = cache_type_kv,
-        ctx_checkpoints = ctx_checkpoints,
+        speculative_type="off",
+        n_ctx=0,
+        n_parallel=n_parallel,
+        cache_type_kv=cache_type_kv,
+        ctx_checkpoints=ctx_checkpoints,
     )
     cmd = launched["cmd"]
 
-    def flag(name, default = None):
+    def flag(name, default=None):
         return cmd[cmd.index(name) + 1] if name in cmd else default
 
     ctx = int(flag("-c", 0))
     slots = int(flag("--parallel", 1))
     _cp = int(ctx_checkpoints or 0)
     kv_kwargs = dict(
-        n_parallel = slots,
-        swa_full = False,
-        kv_unified = True,
-        n_ubatch = None,
-        flash_attn = True,
+        n_parallel=slots,
+        swa_full=False,
+        kv_unified=True,
+        n_ubatch=None,
+        flash_attn=True,
     )
     return {
         "ctx": ctx,
@@ -104,8 +104,8 @@ def _plan(
         "checkpoints": flag("--ctx-checkpoints"),
         # What the launch reserves beyond the plain cache.
         "reserve_bytes": (
-            backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = _cp, **kv_kwargs)
-            - backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints = 0, **kv_kwargs)
+            backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints=_cp, **kv_kwargs)
+            - backend._estimate_kv_cache_bytes(ctx, cache_type_kv, ctx_checkpoints=0, **kv_kwargs)
         ),
     }
 
@@ -146,9 +146,9 @@ class TestThePredicateChargesTheReserve:
             LlamaCppBackend._GPU_PIN_VRAM_FRACTION,
             0,
             1,
-            n_ubatch = 512,
-            ctx_checkpoints = ctx_checkpoints,
-            include_requested = True,
+            n_ubatch=512,
+            ctx_checkpoints=ctx_checkpoints,
+            include_requested=True,
         )
 
     def test_charging_the_reserve_costs_slots(self):
@@ -163,10 +163,10 @@ class TestThePredicateChargesTheReserve:
 
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         _prime(backend)
-        kv = dict(n_parallel = 4, swa_full = False, kv_unified = True, flash_attn = True)
+        kv = dict(n_parallel=4, swa_full=False, kv_unified=True, flash_attn=True)
         assert backend._estimate_kv_cache_bytes(
-            8192, "q8_0", ctx_checkpoints = 32, **kv
-        ) > backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints = 0, **kv)
+            8192, "q8_0", ctx_checkpoints=32, **kv
+        ) > backend._estimate_kv_cache_bytes(8192, "q8_0", ctx_checkpoints=0, **kv)
 
 
 class TestTheRefitDoesNotSpendTheReserve:
@@ -190,8 +190,8 @@ class TestTheRefitDoesNotSpendTheReserve:
         charged: same slots, same context, same residency) distinguishable from the
         planner picking a different axis, which a raised fit floor can do on its own.
         """
-        free = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
-        charged = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = checkpoints)
+        free = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=0)
+        charged = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=checkpoints)
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
         if charged["fit"] != free["fit"]:
@@ -203,30 +203,30 @@ class TestTheRefitDoesNotSpendTheReserve:
 
     def test_a_plan_with_room_for_it_still_stays_on_gpu(self, tmp_path):
         """The reserve costs context, not the GPU pin, while there is room."""
-        got = _plan(tmp_path, weights_mib = 6_800, n_parallel = 8, ctx_checkpoints = 16)
+        got = _plan(tmp_path, weights_mib=6_800, n_parallel=8, ctx_checkpoints=16)
         assert got["fit"] == "off"
         assert got["ctx"] > 0
         assert got["reserve_bytes"] > 0
 
     def test_a_build_without_the_flag_is_not_charged(self, tmp_path):
         """The argv builder drops the request, so the child allocates nothing."""
-        supported = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 32)
+        supported = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=32)
         skipped = _plan(
             tmp_path,
-            weights_mib = 9_200,
-            n_parallel = 4,
-            ctx_checkpoints = 32,
-            ctx_checkpoints_flag = None,
+            weights_mib=9_200,
+            n_parallel=4,
+            ctx_checkpoints=32,
+            ctx_checkpoints_flag=None,
         )
-        none_asked = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
+        none_asked = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=0)
         assert skipped["checkpoints"] is None  # not emitted
         assert (skipped["ctx"], skipped["slots"]) == (none_asked["ctx"], none_asked["slots"])
         assert skipped["ctx"] > supported["ctx"]
 
     def test_no_checkpoints_is_unchanged(self, tmp_path):
         """The default (0) has to plan exactly as it did before."""
-        default = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = None)
-        zero = _plan(tmp_path, weights_mib = 9_200, n_parallel = 4, ctx_checkpoints = 0)
+        default = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=None)
+        zero = _plan(tmp_path, weights_mib=9_200, n_parallel=4, ctx_checkpoints=0)
         assert default["ctx"] == zero["ctx"]
         assert default["slots"] == zero["slots"]
         assert zero["reserve_bytes"] == 0

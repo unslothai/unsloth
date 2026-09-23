@@ -13,7 +13,7 @@ from ..runtime.types import ActionContext, ActionResult, Slot
 _ACTIONS: "dict[str, _Action]" = {}
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _Action:
     name: str
     fn: Callable[[ActionContext], ActionResult]
@@ -24,7 +24,7 @@ def register_action(name: str, default_budget_ms: int = 3000) -> Callable:
     def deco(fn: Callable[[ActionContext], ActionResult]) -> Callable:
         if name in _ACTIONS:
             raise ValueError(f"action {name!r} is already registered")
-        _ACTIONS[name] = _Action(name = name, fn = fn, default_budget_ms = default_budget_ms)
+        _ACTIONS[name] = _Action(name=name, fn=fn, default_budget_ms=default_budget_ms)
         return fn
 
     return deco

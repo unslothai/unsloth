@@ -61,11 +61,11 @@ def launched(monkeypatch, tmp_path):
     # `raising = False` so this fixture also builds against a lifecycle without the constant, which
     # makes the test below fail on the unfixed code for the reason it is about rather than on the way
     # in.
-    monkeypatch.setattr(lifecycle, "PID_DISCOVERY_TIMEOUT_S", 0.0, raising = False)
+    monkeypatch.setattr(lifecycle, "PID_DISCOVERY_TIMEOUT_S", 0.0, raising=False)
     # Stubbed for the same reason and, for every test but the two about it, so that whatever this
     # machine happens to have on :5399 cannot decide the answer.
     monkeypatch.setattr(
-        lifecycle, "port_is_busy", lambda *a, **k: state["port_busy"], raising = False
+        lifecycle, "port_is_busy", lambda *a, **k: state["port_busy"], raising=False
     )
     monkeypatch.setattr(lifecycle, "_find_unsloth_bin", lambda install: "/bin/true")
     monkeypatch.setattr(lifecycle, "_read_bootstrap_password", lambda *a, **k: "secret")
@@ -76,13 +76,13 @@ def launched(monkeypatch, tmp_path):
     def fake_run(cmd, *a, **k):
         assert cmd[0] == "pgrep", cmd
         out = f"{STUDIO_PID}\n" if state["pgrep_finds"] else ""
-        return subprocess.CompletedProcess(cmd, 0, stdout = out, stderr = "")
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
     monkeypatch.setattr(lifecycle, "_run", fake_run)
     monkeypatch.setattr(os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: state["signalled"].append((pgid, sig)))
 
-    state["install"] = StudioInstall(home = tmp_path / "home", repo = tmp_path / "repo", branch = "main")
+    state["install"] = StudioInstall(home=tmp_path / "home", repo=tmp_path / "repo", branch="main")
     state["log"] = tmp_path / "studio.log"
     return state
 
@@ -91,7 +91,7 @@ def test_a_studio_that_never_answers_healthz_is_terminated(launched):
     launched["healthy"] = False
 
     with pytest.raises(TimeoutError):
-        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert launched["install"].pid == STUDIO_PID
     assert [pgid for pgid, _sig in launched["signalled"]] == [STUDIO_PID]
@@ -105,7 +105,7 @@ def test_a_studio_that_never_started_at_all_still_raises(launched):
     launched["pgrep_finds"] = False
 
     with pytest.raises(TimeoutError):
-        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert launched["install"].pid is None
     assert launched["signalled"] == []
@@ -116,7 +116,7 @@ def test_a_healthy_studio_is_returned_with_its_pid_and_is_not_signalled(launched
 
     launched["healthy"] = True
 
-    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert install.pid == STUDIO_PID
     assert install.port == 5399
@@ -131,7 +131,7 @@ def test_a_healthy_studio_whose_pid_cannot_be_found_is_still_returned(launched):
     launched["healthy"] = True
     launched["pgrep_finds"] = False
 
-    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert install.pid is None
     assert launched["signalled"] == []
@@ -152,7 +152,7 @@ def test_a_port_that_is_already_serving_is_refused_before_anything_is_launched(l
     launched["healthy"] = True
 
     with pytest.raises(RuntimeError) as excinfo:
-        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert "5399" in str(excinfo.value)
     assert launched["spawned"] == []
@@ -166,7 +166,7 @@ def test_the_occupied_port_does_not_come_back_as_a_healthy_studio(launched):
     launched["healthy"] = True
 
     with pytest.raises(RuntimeError):
-        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+        launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert launched["install"].port is None
     assert launched["signalled"] == []
@@ -177,7 +177,7 @@ def test_a_free_port_still_launches(launched):
 
     launched["healthy"] = True
 
-    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s = 1)
+    install = launch_studio(launched["install"], 5399, launched["log"], healthz_timeout_s=1)
 
     assert install.pid == STUDIO_PID
     assert install.port == 5399

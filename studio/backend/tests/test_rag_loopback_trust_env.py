@@ -9,8 +9,8 @@ HTTPX_CALLEES = {"get", "post", "stream", "request", "Client", "AsyncClient"}
 
 
 def _httpx_calls(path):
-    with open(path, encoding = "utf-8") as f:
-        tree = ast.parse(f.read(), filename = path)
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), filename=path)
     calls = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):

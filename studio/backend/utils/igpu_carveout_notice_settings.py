@@ -52,6 +52,7 @@ def get_dismissed_at_gb() -> Optional[float]:
     """The GPU allocation the notice was last dismissed at, or None."""
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(IGPU_CARVEOUT_NOTICE_KEY, None)
     except Exception:
         return None
@@ -98,6 +99,7 @@ def dismiss_notice(current_gb: Optional[float]) -> Optional[float]:
         return existing
     try:
         from storage.studio_db import upsert_app_settings
+
         upsert_app_settings({IGPU_CARVEOUT_NOTICE_KEY: value})
     except Exception:
         return existing

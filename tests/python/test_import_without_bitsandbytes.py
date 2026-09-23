@@ -58,7 +58,7 @@ def _scan(path: Path, module: str):
     """
     is_package = path.name == "__init__.py"
     package = module if is_package else module.rpartition(".")[0]
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     risky, edges = [], []
 
     def walk(body, guarded):
@@ -115,7 +115,7 @@ def test_no_unguarded_bitsandbytes_import_on_the_unsloth_import_chain():
 
 def test_missing_bnb_leaves_a_callable_that_reports_the_real_cause():
     """The 4bit ctypes handles degrade to a stub, not a NameError later on."""
-    src = (REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding = "utf-8")
+    src = (REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding="utf-8")
     assert "def _bnb_required(" in src
     assert "get_ptr = _bnb_required" in src
     for name in (
@@ -132,7 +132,7 @@ def test_capability_flags_come_from_a_guarded_import_not_find_spec():
     """kernels/utils.py and _gpu_init.py treat any import failure as unavailable.
     device_type.py must agree, or an installed-but-unusable wheel leaves
     ALLOW_BITSANDBYTES true while the kernels fall back to the stub."""
-    src = (REPO_ROOT / "unsloth" / "device_type.py").read_text(encoding = "utf-8")
+    src = (REPO_ROOT / "unsloth" / "device_type.py").read_text(encoding="utf-8")
     head = src.split('if DEVICE_TYPE == "hip":')[0]
     assert "import bitsandbytes as _bnb_probe" in head
     assert 'find_spec("bitsandbytes")' not in head, "find_spec cannot see a broken wheel"
@@ -140,7 +140,7 @@ def test_capability_flags_come_from_a_guarded_import_not_find_spec():
 
 
 def _bnb_guards():
-    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     return src, [
         node
@@ -204,7 +204,7 @@ def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
 def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
     """8bit is bitsandbytes too: leaving load_in_8bit set sends the request to
     Transformers, which builds the bnb quantizer and fails there instead."""
-    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     guards = [
         node
@@ -274,7 +274,7 @@ def test_bitsandbytes_compile_patch_is_never_called_unguarded():
     """unsloth_zoo's patch_compiling_bitsandbytes imports bitsandbytes
     unconditionally, so an unwrapped call raises on a bnb-less host before any
     fallback can run."""
-    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     calls = [
         node

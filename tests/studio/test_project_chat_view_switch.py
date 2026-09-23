@@ -601,7 +601,7 @@ def _run(imports: str, body: str) -> dict:
         {textwrap.dedent(body)}
         """
     )
-    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
+    return run_harness(TEMP, _harness_source(), script, sources=SOURCES)
 
 
 # A resident GGUF, so the second effect has something it could price.
@@ -660,7 +660,7 @@ def test_the_harness_stubs_every_name_the_queue_boundary_imports():
     imported = re.findall(r"import \{ ([^}]+) \} from", text)
     names = [name.strip() for block in imported for name in block.split(",") if name.strip()]
     assert names, "parsed an empty import list; this guard would check nothing"
-    with open(__file__, encoding = "utf-8") as handle:
+    with open(__file__, encoding="utf-8") as handle:
         harness = handle.read()
     missing = [name for name in names if f"const {name}" not in harness]
     assert not missing, f"prompt-queue-boundary.ts imports {missing}, which this harness omits"
@@ -961,10 +961,10 @@ def test_a_composer_that_is_not_mounted_yet_does_not_break_the_switch():
         # activeNonce is non-null when the second nonce arrives, so the clear is the synchronous one, outside any
         # promise chain of its own.
         pytest.param(
-            'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id = "immediate"
+            'await renderSettled({ newThreadNonce: "n0" });', "immediate", 2, id="immediate"
         ),
         # activeNonce is null, so the clear is the one the switch's success arm calls.
-        pytest.param("await renderSettled({});", "deferred", 1, id = "deferred"),
+        pytest.param("await renderSettled({});", "deferred", 1, id="deferred"),
     ],
 )
 def test_an_attachment_remove_that_fails_is_not_an_unhandled_rejection(setup, path, attempts):

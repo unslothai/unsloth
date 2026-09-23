@@ -11,21 +11,21 @@ import pytest
 from .perf_utils import REPO, SCRATCH, baseline_ref, materialize_revision, run_probe
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def measured_costs():
     ref = baseline_ref()
     if ref is None:
         pytest.skip("no pre-account baseline commit is reachable from this clone")
     scratch = SCRATCH / uuid.uuid4().hex
-    scratch.mkdir(parents = True)
+    scratch.mkdir(parents=True)
     try:
         baseline = materialize_revision(ref, scratch / "baseline")
         yield (
-            run_probe(baseline, scratch / "baseline-home", mode = "cost"),
-            run_probe(REPO / "studio/backend", scratch / "head-home", mode = "cost"),
+            run_probe(baseline, scratch / "baseline-home", mode="cost"),
+            run_probe(REPO / "studio/backend", scratch / "head-home", mode="cost"),
         )
     finally:
-        shutil.rmtree(scratch, ignore_errors = True)
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 @pytest.mark.parametrize(

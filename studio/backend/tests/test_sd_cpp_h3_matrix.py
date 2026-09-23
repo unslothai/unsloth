@@ -28,7 +28,7 @@ from core.inference.video_families import VIDEO_CANCELLED_MSG
 def _shared_setup_1(backend, device, h3_host, platform):
     from core.inference import sd_cpp_backend
 
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
 
     swapped = {"done": False}
     real_probe = sd_cpp_backend._sd_cpp_probe_output
@@ -90,7 +90,7 @@ def h3_host(monkeypatch, tmp_path):
         monkeypatch.setattr(
             video_mod,
             "resolve_diffusion_device_target",
-            lambda: types.SimpleNamespace(backend = backend, device = device, dtype = None),
+            lambda: types.SimpleNamespace(backend=backend, device=device, dtype=None),
         )
         monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
         monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: managed)
@@ -138,19 +138,19 @@ def h3_host(monkeypatch, tmp_path):
             assert fam is not None
             backend_obj = VideoBackend()
             backend_obj._run_load_h3_native(
-                fam = fam,
-                token = None,
-                cancel_event = cancel_event or threading.Event(),
-                repo_id = H3_REPO,
-                gguf_filename = H3_FILE,
+                fam=fam,
+                token=None,
+                cancel_event=cancel_event or threading.Event(),
+                repo_id=H3_REPO,
+                gguf_filename=H3_FILE,
             )
             return backend_obj
 
         return types.SimpleNamespace(
-            run = run,
-            downloads = downloads,
-            asset_calls = asset_calls,
-            device_probes = device_probes,
+            run=run,
+            downloads=downloads,
+            asset_calls=asset_calls,
+            device_probes=device_probes,
         )
 
     return _setup
@@ -175,8 +175,8 @@ def test_h3_preflight_refuses_before_downloading(
     the H3 gate was written to prevent, and it was reachable on all of these hosts: the gate ran
     after the download loop, and a None binary was not rejected until later still.
     """
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = help_text)
-    with pytest.raises(RuntimeError, match = expected):
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=help_text)
+    with pytest.raises(RuntimeError, match=expected):
         host.run()
     assert host.downloads == []
 
@@ -188,7 +188,7 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
 ):
     """The other direction: a genuine H3 build is not refused anywhere, and the load proceeds to
     fetch exactly the four files. Guards against an identity check that is too strict."""
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
     backend_obj = host.run()
     assert len(host.downloads) == 4
     assert backend_obj._state is not None
@@ -204,11 +204,11 @@ def test_h3_gpu_host_falls_back_to_the_cpu_build(h3_host, platform, hw_label, ba
     """Upstream publishes no Linux CUDA archive, so a GPU host routinely ends up on the CPU
     prebuilt. It must still load, committed on the CPU rather than on a GPU it never ran on."""
     host = h3_host(
-        platform = platform,
-        backend = backend,
-        device = device,
-        help_text = _H3_HELP,
-        lists_accelerator = False,
+        platform=platform,
+        backend=backend,
+        device=device,
+        help_text=_H3_HELP,
+        lists_accelerator=False,
     )
     backend_obj = host.run()
     assert len(host.downloads) == 4
@@ -226,7 +226,7 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
     from core.inference import sd_cpp_backend
 
     cancelled = threading.Event()
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
     original = sd_cpp_backend.ensure_h3_sd_cpp_binary
 
     def _cancel_midway(**kwargs):
@@ -235,8 +235,8 @@ def test_h3_cancellation_during_the_preflight_stops_before_the_asset_calls(
 
     monkeypatch.setattr(sd_cpp_backend, "ensure_h3_sd_cpp_binary", _cancel_midway)
 
-    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
-        host.run(cancel_event = cancelled)
+    with pytest.raises(RuntimeError, match=VIDEO_CANCELLED_MSG):
+        host.run(cancel_event=cancelled)
     assert host.downloads == []
     # The point is not that it eventually raises -- the download loop always would. It is that a
     # cancelled load stops before paying for the four sequential size-estimate round trips.
@@ -255,7 +255,7 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
     replacement and being recorded as the identity every later generation compares against."""
     from core.inference import sd_cpp_backend
 
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
 
     # The preflight sees an H3 build; by the time the download is done the path holds a pre-H3 one.
     swapped = {"done": False}
@@ -277,7 +277,7 @@ def test_h3_revets_a_user_supplied_binary_swapped_during_the_download(
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
-    with pytest.raises(RuntimeError, match = "changed while this model was loading"):
+    with pytest.raises(RuntimeError, match="changed while this model was loading"):
         host.run()
     assert len(host.downloads) == 4  # the swap is caught after the fetch, not before it
 
@@ -311,7 +311,7 @@ def test_h3_revet_checks_identity_not_just_the_h3_marker(
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
-    with pytest.raises(RuntimeError, match = "changed while this model was loading"):
+    with pytest.raises(RuntimeError, match="changed while this model was loading"):
         host.run()
     assert len(host.downloads) == 4
 
@@ -347,7 +347,7 @@ def test_h3_revet_catches_a_user_binary_whose_accelerator_changed(
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
-    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+    with pytest.raises(RuntimeError, match="built for a different accelerator"):
         host.run()
 
 
@@ -394,7 +394,7 @@ def test_h3_probes_devices_only_where_the_answer_is_used(
     A CPU or MPS target never records a baseline, so neither the decision nor the re-check can use
     the answer -- it must not be asked. A GPU target asks exactly twice: once to decide, once under
     the claim to confirm the decision still holds."""
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
     host.run()
     expected = 2 if backend not in ("cpu", "mps") else 0
     assert len(host.device_probes) == expected
@@ -407,7 +407,7 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
     load cancelled before its worker started must not reach it."""
     from core.inference import sd_cpp_backend
 
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+    host = h3_host(platform=platform, backend=backend, device=device, help_text=_H3_HELP)
     ensures: list[str] = []
     original = sd_cpp_backend.ensure_h3_sd_cpp_binary
 
@@ -420,7 +420,7 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
         cancelled = threading.Event()
         cancelled.set()
         with pytest.raises(RuntimeError):
-            host.run(cancel_event = cancelled)
+            host.run(cancel_event=cancelled)
     finally:
         sd_cpp_backend.ensure_h3_sd_cpp_binary = original
     assert ensures == []
@@ -449,7 +449,7 @@ def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", _accelerator_of)
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
 
-    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+    with pytest.raises(RuntimeError, match="built for a different accelerator"):
         host.run()
 
 

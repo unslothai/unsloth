@@ -53,7 +53,7 @@ BASE = os.environ["BASE_URL"]
 OLD = os.environ["STUDIO_OLD_PW"]
 NEW = os.environ["STUDIO_NEW_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-update-banner"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
@@ -107,7 +107,7 @@ RELEASE_NOTES = {
     "error": None,
 }
 # A successful lookup with no previewable body.
-RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown = "", matched = False)
+RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown="", matched=False)
 LLAMA_STATUS = {
     "supported": True,
     "update_available": True,
@@ -173,10 +173,10 @@ LLAMA_CHANGELOG = {
 # The same card, renamed: whisper.cpp is not a second banner.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
-    llama_update_available = False,
-    update_component = "whisper",
-    component = "whisper.cpp",
-    whisper = {
+    llama_update_available=False,
+    update_component="whisper",
+    component="whisper.cpp",
+    whisper={
         "update_available": True,
         "installed_tag": "v1.9.1",
         "latest_tag": "v1.9.2",
@@ -257,7 +257,7 @@ NOTHING_DIFFUSION = {
     "dtype": None,
     "model_kind": None,
 }
-NOTHING_VIDEO = dict(NOTHING_DIFFUSION, transformer_quant = None)
+NOTHING_VIDEO = dict(NOTHING_DIFFUSION, transformer_quant=None)
 NOTHING_STT = {
     "available": True,
     "loaded_model": None,
@@ -371,7 +371,7 @@ checks = [0]
 
 
 def info(s: str) -> None:
-    print(f"[banner] {s}", flush = True)
+    print(f"[banner] {s}", flush=True)
 
 
 def check(
@@ -396,18 +396,18 @@ def api(
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         f"{BASE}{path}",
-        data = data,
-        method = method or ("POST" if data else "GET"),
-        headers = {"Content-Type": "application/json"}
+        data=data,
+        method=method or ("POST" if data else "GET"),
+        headers={"Content-Type": "application/json"}
         | ({"Authorization": f"Bearer {token}"} if token else {}),
     )
-    with urllib.request.urlopen(request, timeout = 30) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode())
 
 
 def read_ui_font_size(token: str) -> int | None:
     """The Appearance type size this install is on before the suite touches it."""
-    current = api("/api/settings/personalization", token = token)
+    current = api("/api/settings/personalization", token=token)
     return current["appearance"]["customization"].get("uiFontSize")
 
 
@@ -421,9 +421,9 @@ def set_ui_font_size(token: str, size: int | None) -> None:
     runs came to be measured at 20px while reporting themselves as default,
     and how a later suite in the same CI job would inherit it.
     """
-    current = api("/api/settings/personalization", token = token)
+    current = api("/api/settings/personalization", token=token)
     current["appearance"]["customization"]["uiFontSize"] = size
-    api("/api/settings/personalization", current, token = token, method = "PUT")
+    api("/api/settings/personalization", current, token=token, method="PUT")
 
 
 # Every box the fix is about, already intersected with whatever clips it.
@@ -819,9 +819,9 @@ def stub(payload: dict):
 
     def handler(route) -> None:
         route.fulfill(
-            status = 200,
-            content_type = "application/json",
-            body = json.dumps(payload),
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
         )
 
     return handler
@@ -865,13 +865,13 @@ def settle_stack(
 
 
 def boot(page, path: str) -> None:
-    page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
+    page.goto(f"{BASE}{path}", wait_until="domcontentloaded")
     # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
     # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
     # script, llama.cpp keeps its 1s, and both still mount after first paint.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
-            page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
+            page.wait_for_selector(f'[data-testid="{testid}"]', state="attached", timeout=SETTLE_MS)
         except PlaywrightTimeoutError:
             # Let the caller's own checks report the missing card; a bare timeout here would say nothing about which one
             # or where.
@@ -916,10 +916,10 @@ def exercise_llama_changelog(page, label: str) -> None:
     )
     if toggle.count() != 1:
         return
-    with page.expect_response("**/api/llama/update-changelog*", timeout = 10_000):
+    with page.expect_response("**/api/llama/update-changelog*", timeout=10_000):
         toggle.click()
     listing = page.locator('[data-testid="llama-update-changelog-list"]')
-    listing.wait_for(state = "visible", timeout = 10_000)
+    listing.wait_for(state="visible", timeout=10_000)
     text = listing.inner_text()
     check(
         f"{label}: expansion shows only the new carried changes",
@@ -951,7 +951,7 @@ def exercise_llama_changelog(page, label: str) -> None:
         and body["bottom"] <= footer["top"] + 1,
         f"geometry={geometry}",
     )
-    page.screenshot(path = str(ART / f"{label.replace(' ', '-')}-llama-expanded.png"))
+    page.screenshot(path=str(ART / f"{label.replace(' ', '-')}-llama-expanded.png"))
     toggle.click()
     check(
         f"{label}: the changelog collapses without dismissing the update",
@@ -961,7 +961,7 @@ def exercise_llama_changelog(page, label: str) -> None:
 
 
 def main() -> int:
-    wait_for_health(BASE, timeout = 60.0, info = info)
+    wait_for_health(BASE, timeout=60.0, info=info)
     # OLD is already NEW on a rerun, or when an earlier suite in the same job rotated it, and that login fails before
     # the rotation below can be skipped.
     try:
@@ -1009,8 +1009,8 @@ def main() -> int:
     with sync_playwright() as p:
         install_wall_clock_watchdog(
             WALL_TIMEOUT_S,
-            label = "ui-update-banner",
-            info = info,
+            label="ui-update-banner",
+            info=info,
         )
         launch_kwargs: dict = {"headless": True}
         if PLAYWRIGHT_BROWSER == "chromium":
@@ -1025,32 +1025,32 @@ def main() -> int:
         llama_payload = [LLAMA_STATUS]
         for width, height in VIEWPORTS[2:5] if SPOT else VIEWPORTS:
             context = browser.new_context(
-                viewport = {"width": width, "height": height},
-                reduced_motion = "reduce",
+                viewport={"width": width, "height": height},
+                reduced_motion="reduce",
             )
             context.add_init_script(seed_js)
             context.route(
                 "**/api/studio/update-status*",
                 lambda route: route.fulfill(
-                    status = 200,
-                    content_type = "application/json",
-                    body = json.dumps(UPDATE_STATUS),
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(UPDATE_STATUS),
                 ),
             )
             context.route(
                 "**/api/studio/release-notes*",
                 lambda route: route.fulfill(
-                    status = 200,
-                    content_type = "application/json",
-                    body = json.dumps(RELEASE_NOTES),
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(RELEASE_NOTES),
                 ),
             )
             context.route(
                 "**/api/llama/update-status*",
                 lambda route: route.fulfill(
-                    status = 200,
-                    content_type = "application/json",
-                    body = json.dumps(llama_payload[0]),
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(llama_payload[0]),
                 ),
             )
             context.route("**/api/llama/update-changelog*", stub(LLAMA_CHANGELOG))
@@ -1068,7 +1068,7 @@ def main() -> int:
                 if path == "/":
                     # Both update cards up, indicator off by default (#8346).
                     check_downloads_absent(page, f"{size} {name}", 2)
-                page.screenshot(path = str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
+                page.screenshot(path=str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
 
                 toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
                 if toggle.count() == 1:
@@ -1095,8 +1095,8 @@ def main() -> int:
         # Exercise the compact app card omitted by the notes-bearing fixtures.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
             context = browser.new_context(
-                viewport = {"width": width, "height": height},
-                reduced_motion = "reduce",
+                viewport={"width": width, "height": height},
+                reduced_motion="reduce",
             )
             context.add_init_script(seed_js)
             for pattern, payload in (
@@ -1115,12 +1115,12 @@ def main() -> int:
                 "the card is at its full height, so this pass proves nothing",
             )
             measure(page, f"{width}x{height} with no preview")
-            page.screenshot(path = str(ART / f"{width}x{height}-no-preview.png"))
+            page.screenshot(path=str(ART / f"{width}x{height}-no-preview.png"))
             # Expanded, the panel is back and so is the floor it pays for.
             toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
             if toggle.count() == 1:
                 toggle.click()
-                panel.wait_for(state = "visible", timeout = 10_000)
+                panel.wait_for(state="visible", timeout=10_000)
                 page.wait_for_timeout(SETTLED_MS)
                 measure(page, f"{width}x{height} with no preview, expanded")
             context.close()
@@ -1131,8 +1131,8 @@ def main() -> int:
         # #8346 ships it off by default, so nothing above this point sees it.
         for width, height in INDICATOR_VIEWPORTS:
             context = browser.new_context(
-                viewport = {"width": width, "height": height},
-                reduced_motion = "reduce",
+                viewport={"width": width, "height": height},
+                reduced_motion="reduce",
             )
             context.add_init_script(seed_js)
             context.add_init_script(
@@ -1153,7 +1153,7 @@ def main() -> int:
                 context.route(pattern, stub(payload))
             page = context.new_page()
             boot(page, "/")
-            page.wait_for_selector("text=Loaded models", timeout = 30_000)
+            page.wait_for_selector("text=Loaded models", timeout=30_000)
             # A third card changes the rail's height, which is what used to move it; give the layout a frame to prove
             # it does not.
             settle_stack(page)
@@ -1179,7 +1179,7 @@ def main() -> int:
                 f"{seen['railStyle'] if seen else seen}, so an inline offset or"
                 " cap is back on the rail",
             )
-            page.screenshot(path = str(ART / f"{width}x{height}-indicator.png"))
+            page.screenshot(path=str(ART / f"{width}x{height}-indicator.png"))
             context.close()
 
         if SPOT:
@@ -1194,8 +1194,8 @@ def main() -> int:
         # are already mounted and a resize is all a maximise or a restore ever is. It also exercises the path a fresh
         # load never does, where the placement has to re-measure rather than measure once.
         context = browser.new_context(
-            viewport = {"width": RESIZE_SWEEP[0][0], "height": RESIZE_SWEEP[0][1]},
-            reduced_motion = "reduce",
+            viewport={"width": RESIZE_SWEEP[0][0], "height": RESIZE_SWEEP[0][1]},
+            reduced_motion="reduce",
         )
         context.add_init_script(seed_js)
         for pattern, payload in (
@@ -1216,7 +1216,7 @@ def main() -> int:
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
         page.wait_for_timeout(RESIZE_SETTLE_MS)
-        page.screenshot(path = str(ART / "resize-sweep-end.png"))
+        page.screenshot(path=str(ART / "resize-sweep-end.png"))
 
         # Parked small and brought back. A minimised window cannot be photographed, but the restore is where a cached
         # measurement would show, and the claim is that it lands where a fresh load of the same size does rather than
@@ -1228,8 +1228,8 @@ def main() -> int:
             page.wait_for_timeout(RESIZE_SETTLE_MS)
             restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
             fresh_context = browser.new_context(
-                viewport = {"width": back_w, "height": back_h},
-                reduced_motion = "reduce",
+                viewport={"width": back_w, "height": back_h},
+                reduced_motion="reduce",
             )
             fresh_context.add_init_script(seed_js)
             for pattern, payload in (
@@ -1268,8 +1268,8 @@ def main() -> int:
         try:
             for width, height in FONT_SCALE_VIEWPORTS:
                 context = browser.new_context(
-                    viewport = {"width": width, "height": height},
-                    reduced_motion = "reduce",
+                    viewport={"width": width, "height": height},
+                    reduced_motion="reduce",
                 )
                 context.add_init_script(seed_js)
                 for pattern, payload in (
@@ -1291,7 +1291,7 @@ def main() -> int:
                     f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
-                page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
+                page.screenshot(path=str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
                 context.close()
         finally:
             set_ui_font_size(session["access_token"], was)

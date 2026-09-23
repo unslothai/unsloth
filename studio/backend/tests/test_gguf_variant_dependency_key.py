@@ -95,5 +95,5 @@ def test_the_listing_carries_the_key_per_variant():
 
     field = GgufVariantDetail.model_fields["dependency_key"]
     assert field.default is None
-    detail = GgufVariantDetail(filename = "a.gguf", quant = "Q4_K_M")
+    detail = GgufVariantDetail(filename="a.gguf", quant="Q4_K_M")
     assert detail.dependency_key is None

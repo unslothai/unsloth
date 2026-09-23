@@ -81,13 +81,13 @@ def _account_state():
         key = current_account_id()
         if key not in _account_states:
             _account_states[key] = SimpleNamespace(
-                _registry = {},
-                _cache_generation = 0,
-                _full_clear_generation = 0,
-                _reaped_at = {},
-                _reaped_floor_generation = 0,
-                _cleared_unservable = set(),
-                _inflight = {},
+                _registry={},
+                _cache_generation=0,
+                _full_clear_generation=0,
+                _reaped_at={},
+                _reaped_floor_generation=0,
+                _cleared_unservable=set(),
+                _inflight={},
             )
         return _account_states[key]
 
@@ -95,6 +95,7 @@ def _account_state():
 def search_images_enabled() -> bool:
     try:
         from storage.studio_db import list_chat_settings
+
         return list_chat_settings().get("searchImages") is True
     except Exception:  # noqa: BLE001 - a settings read must never break a tool call
         return False
@@ -107,6 +108,7 @@ def _clean_text(value: Any, limit: int = 200) -> str:
 
 def _domain_of(url: str) -> str:
     from urllib.parse import urlparse
+
     try:
         host = (urlparse(url).hostname or "").lower()
     except ValueError:
@@ -139,7 +141,7 @@ def _prune_registry_locked(now: float) -> None:
     for key in expired:
         state._registry.pop(key, None)
     if len(state._registry) > _REGISTRY_MAX_ENTRIES:
-        oldest = sorted(state._registry.items(), key = lambda item: item[1]["created"])
+        oldest = sorted(state._registry.items(), key=lambda item: item[1]["created"])
         for key, _entry in oldest[: len(state._registry) - _REGISTRY_MAX_ENTRIES]:
             state._registry.pop(key, None)
 
@@ -250,7 +252,7 @@ def format_images_for_model(entries: list[dict[str, str]]) -> str:
 def images_envelope(entries: list[dict[str, str]]) -> str:
     if not entries:
         return ""
-    return SEARCH_IMAGES_SENTINEL + json.dumps(entries, ensure_ascii = True, separators = (",", ":"))
+    return SEARCH_IMAGES_SENTINEL + json.dumps(entries, ensure_ascii=True, separators=(",", ":"))
 
 
 def is_image_entry(entry: object) -> bool:
@@ -291,6 +293,7 @@ def strip_images_suffix(result: str) -> str:
 def _cache_dir() -> Path:
     from utils.paths import ensure_account_dir
     from utils.paths.storage_roots import account_path
+
     return ensure_account_dir(account_path(_CACHE_DIRNAME))
 
 
@@ -318,7 +321,7 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
                 "source": entry["source"],
                 "policy": entry.get("policy"),
             },
-            ensure_ascii = True,
+            ensure_ascii=True,
         )
         with _registry_lock:
             # Per id, like the thumbnail write: a selective clear bumps the generation without touching this image, and
@@ -327,7 +330,7 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
                 return
             # writer-unique, like the JPEG: a torn read must not be possible.
             tmp = _meta_path(image_id).with_suffix(f".{secrets.token_hex(4)}.tmp")
-            tmp.write_text(payload, encoding = "utf-8")
+            tmp.write_text(payload, encoding="utf-8")
             tmp.replace(_meta_path(image_id))
     except (OSError, TypeError, ValueError) as exc:
         # Best effort: losing this costs a 404 on an unseen picture, never the search.
@@ -336,7 +339,7 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
 
 def _load_persisted_entry(image_id: str) -> dict[str, Any] | None:
     try:
-        raw = json.loads(_meta_path(image_id).read_text(encoding = "utf-8"))
+        raw = json.loads(_meta_path(image_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
@@ -366,7 +369,7 @@ def _evict_cache() -> None:
     # lets it be fetched again rather than 404.
     for pattern in ("*.jpg", "*.json"):
         try:
-            files = sorted(_cache_dir().glob(pattern), key = lambda p: p.stat().st_mtime)
+            files = sorted(_cache_dir().glob(pattern), key=lambda p: p.stat().st_mtime)
         except OSError:
             continue
         for path in files[: max(0, len(files) - _CACHE_MAX_FILES)]:
@@ -377,13 +380,14 @@ def _evict_cache() -> None:
     try:
         for stale in _cache_dir().glob("*.tmp"):
             if time.time() - stale.stat().st_mtime > 300:
-                stale.unlink(missing_ok = True)
+                stale.unlink(missing_ok=True)
     except OSError:
         pass
 
 
 def _encode_thumbnail(raw: bytes) -> bytes | None:
     from PIL import Image
+
     try:
         with Image.open(io.BytesIO(raw)) as im:
             if im.format not in _ALLOWED_FORMATS:
@@ -397,11 +401,11 @@ def _encode_thumbnail(raw: bytes) -> bytes | None:
             converted = im.convert("RGBA") if im.mode in ("RGBA", "LA", "P") else im.convert("RGB")
             if converted.mode == "RGBA":
                 flat = Image.new("RGB", converted.size, (255, 255, 255))
-                flat.paste(converted, mask = converted.getchannel("A"))
+                flat.paste(converted, mask=converted.getchannel("A"))
                 converted = flat
             converted.thumbnail((THUMBNAIL_EDGE_PX, THUMBNAIL_EDGE_PX), Image.LANCZOS)
             out = io.BytesIO()
-            converted.save(out, format = "JPEG", quality = 82, optimize = True)
+            converted.save(out, format="JPEG", quality=82, optimize=True)
             return out.getvalue()
     except Exception as exc:  # noqa: BLE001 - provider bytes; any decode failure is a miss
         logger.debug("search thumbnail decode failed (%s)", type(exc).__name__)
@@ -413,11 +417,11 @@ def _fetch_thumbnail_bytes(url: str, website_policy: dict | None = None) -> byte
 
     error, body, _content_type = tools._fetch_url_raw(
         url,
-        timeout = THUMBNAIL_FETCH_TIMEOUT_S,
-        extra_headers = {"Accept": "image/*"},
-        deadline = time.monotonic() + THUMBNAIL_FETCH_TIMEOUT_S * 2,
-        raw_bytes_max = MAX_THUMBNAIL_BYTES,
-        website_policy = website_policy,
+        timeout=THUMBNAIL_FETCH_TIMEOUT_S,
+        extra_headers={"Accept": "image/*"},
+        deadline=time.monotonic() + THUMBNAIL_FETCH_TIMEOUT_S * 2,
+        raw_bytes_max=MAX_THUMBNAIL_BYTES,
+        website_policy=website_policy,
     )
     if error is not None or not isinstance(body, (bytes, bytearray)) or not body:
         if error is not None:
@@ -439,7 +443,7 @@ def _drop_if_cleared(image_id: str) -> bool:
             return True
         for path in (_cache_path(image_id), _meta_path(image_id)):
             try:
-                path.unlink(missing_ok = True)
+                path.unlink(missing_ok=True)
             except OSError:
                 return False
         state._cleared_unservable.discard(image_id)
@@ -502,7 +506,7 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                 except OSError as exc:
                     logger.debug("search thumbnail cache write failed: %s", exc)
                     try:
-                        tmp.unlink(missing_ok = True)
+                        tmp.unlink(missing_ok=True)
                     except OSError:
                         pass
             _evict_cache()
@@ -633,7 +637,7 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
                 # per file: one that cannot be unlinked (a JPEG another process holds open on Windows) must not leave
                 # every later one on disk
                 try:
-                    path.unlink(missing_ok = True)
+                    path.unlink(missing_ok=True)
                 except OSError:
                     # Still on disk, so remember the id and refuse to serve it until the unlink does land.
                     # `.jpg`/`.json` share a stem; a `.tmp` was never servable, and its stem carries the writer suffix.

@@ -29,10 +29,10 @@ from routes.data_recipe import jobs
 ALICE = AccountContext("a1b2c3d4e5f6a7b8", "alice", "user")
 
 PARTS = dict(
-    job_id = "job-42",
-    export_format = "jsonl",
-    artifact_path = "recipe_my_run",
-    filename = None,
+    job_id="job-42",
+    export_format="jsonl",
+    artifact_path="recipe_my_run",
+    filename=None,
 )
 
 
@@ -46,16 +46,17 @@ def _mint_as(account):
 
 def _redeem(
     token,
-    account_lookup = None,
-    monkeypatch = None,
+    account_lookup=None,
+    monkeypatch=None,
 ):
     """Run the dependency and report the account in force inside the handler's scope."""
     if account_lookup is not None:
         import auth.storage
+
         monkeypatch.setattr(auth.storage, "get_account_by_id", account_lookup)
 
     async def drive():
-        generator = jobs._authorize_dataset_download(request = None, token = token, **PARTS)
+        generator = jobs._authorize_dataset_download(request=None, token=token, **PARTS)
         seen = None
         async for _ in generator:
             seen = current_account()
@@ -113,7 +114,7 @@ def test_the_owner_token_shape_is_not_accepted_for_a_managed_payload():
 
 def test_a_tampered_artifact_path_still_fails_the_mac():
     token = _mint_as(OWNER)
-    other = dict(PARTS, artifact_path = "recipe_someone_elses_run")
+    other = dict(PARTS, artifact_path="recipe_someone_elses_run")
     assert jobs._download_link_account(token, **other) is None
 
 
@@ -140,17 +141,17 @@ def test_the_signed_payload_is_injective_across_field_boundaries():
     """A bare separator join lets one signature authorize two different parameter sets: the
     separator is legal inside artifact_path and filename, so the boundary can be moved."""
     shifted_left = jobs._download_link_payload(
-        account_id = ALICE.account_id,
-        job_id = "j",
-        export_format = "jsonl",
-        artifact_path = "a",
-        filename = "b\x1fc",
+        account_id=ALICE.account_id,
+        job_id="j",
+        export_format="jsonl",
+        artifact_path="a",
+        filename="b\x1fc",
     )
     shifted_right = jobs._download_link_payload(
-        account_id = ALICE.account_id,
-        job_id = "j",
-        export_format = "jsonl",
-        artifact_path = "a\x1fb",
-        filename = "c",
+        account_id=ALICE.account_id,
+        job_id="j",
+        export_format="jsonl",
+        artifact_path="a\x1fb",
+        filename="c",
     )
     assert shifted_left != shifted_right

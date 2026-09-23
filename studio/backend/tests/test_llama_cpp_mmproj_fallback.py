@@ -224,10 +224,10 @@ class TestMmprojExplicitReload:
     @staticmethod
     def _intent(*, force_reload: bool = False) -> GgufLoadIntent:
         return GgufLoadIntent(
-            model_identifier = "owner/vision-model",
-            n_ctx = 8192,
-            speculative_type = "auto",
-            force_reload = force_reload,
+            model_identifier="owner/vision-model",
+            n_ctx=8192,
+            speculative_type="auto",
+            force_reload=force_reload,
         )
 
     def test_normal_duplicate_still_matches(self):
@@ -236,7 +236,7 @@ class TestMmprojExplicitReload:
 
     def test_explicit_reload_bypasses_runtime_deduplication(self):
         backend = self._backend()
-        assert backend._runtime_matches_intent(self._intent(force_reload = True), None) is False
+        assert backend._runtime_matches_intent(self._intent(force_reload=True), None) is False
 
 
 class TestStripMmprojArgs:
@@ -667,16 +667,16 @@ class TestMmprojRetryFailureMessage:
 
     def test_confirmed_projector_keeps_historical_wording(self):
         msg = LlamaCppBackend._mmproj_retry_failure_message(
-            projector_confirmed = True,
-            detail = "llama-server failed to start",
+            projector_confirmed=True,
+            detail="llama-server failed to start",
         )
         assert msg.startswith("Vision projector incompatible with this llama.cpp")
         assert "llama-server failed to start" in msg
 
     def test_bare_crash_does_not_claim_projector_incompatibility(self):
         msg = LlamaCppBackend._mmproj_retry_failure_message(
-            projector_confirmed = False,
-            detail = "llama-server failed to start. Check that the GGUF file is valid",
+            projector_confirmed=False,
+            detail="llama-server failed to start. Check that the GGUF file is valid",
         )
         assert "Vision projector incompatible" not in msg
         assert "crashed with --mmproj" in msg

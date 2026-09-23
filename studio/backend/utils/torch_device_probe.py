@@ -119,7 +119,7 @@ def _rocm_dll_directories() -> list[str]:
 
     try:
         if os.path.isdir(default_root):
-            for version in sorted(os.listdir(default_root), key = _version_key, reverse = True):
+            for version in sorted(os.listdir(default_root), key=_version_key, reverse=True):
                 bin_dir = os.path.join(default_root, version, "bin")
                 if os.path.isdir(bin_dir):
                     candidates.append(bin_dir)
@@ -165,7 +165,7 @@ def _unknown_verdict(
         device,
         what_happened,
         "usable, since CPU cannot fault the driver" if usable else "unusable",
-        exc_info = exc_info,
+        exc_info=exc_info,
     )
     return usable
 
@@ -184,7 +184,7 @@ def device_can_allocate(device: str) -> bool:
     return _device_can_allocate_cached(device, _identity_key())
 
 
-@lru_cache(maxsize = None)
+@lru_cache(maxsize=None)
 def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) -> bool:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return True
@@ -197,12 +197,12 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
     try:
         process = subprocess.Popen(
             [sys.executable, "-c", _PROBE_SCRIPT, device, str(_CHILD_SELF_LIMIT_SECONDS)],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.PIPE,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(env),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=utf8_child_env(env),
             # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when this multithreaded backend forks and executes Python before exec.
             **windows_hidden_subprocess_kwargs(),
         )
@@ -214,7 +214,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
     adopt_pid(process.pid)
     try:
         try:
-            _, stderr = process.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+            _, stderr = process.communicate(timeout=PROBE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             stderr = _terminate_and_drain(process)
             tail = (stderr or "").strip()[-_STDERR_TAIL_CHARS:]
@@ -254,7 +254,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             return _unknown_verdict(
                 device,
                 f"was killed by signal {-process.returncode} without faulting",
-                exc_info = False,
+                exc_info=False,
             )
         return True
     finally:
@@ -272,7 +272,7 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
         except OSError:
             pass
         try:
-            _, stderr = process.communicate(timeout = _TERMINATE_GRACE_SECONDS)
+            _, stderr = process.communicate(timeout=_TERMINATE_GRACE_SECONDS)
             return stderr or ""
         except subprocess.TimeoutExpired:
             continue
@@ -286,10 +286,10 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
 
 def _reap_later(process: subprocess.Popen) -> None:
     threading.Thread(
-        target = _wait_and_forget,
-        args = (process,),
-        daemon = True,
-        name = f"torch-device-probe-reaper-{process.pid}",
+        target=_wait_and_forget,
+        args=(process,),
+        daemon=True,
+        name=f"torch-device-probe-reaper-{process.pid}",
     ).start()
 
 
@@ -300,6 +300,7 @@ def _wait_and_forget(process: subprocess.Popen) -> None:
         pass
     try:
         from utils.process_lifetime import forget_pid
+
         forget_pid(process.pid)
     except Exception:  # noqa: BLE001 - best effort cleanup
         pass

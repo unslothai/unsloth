@@ -79,19 +79,19 @@ def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, 
 
     def worker():
         try:
-            gate.wait(timeout = 30)
+            gate.wait(timeout=30)
             backend = orch.get_inference_backend()
             with handed_lock:
                 handed_out.append(backend)
         except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
             errors.append(exc)
 
-    threads = [threading.Thread(target = worker, name = f"getter-{i}") for i in range(_THREADS)]
+    threads = [threading.Thread(target=worker, name=f"getter-{i}") for i in range(_THREADS)]
     for t in threads:
         t.start()
     for t in threads:
         # Generous, so a deadlock fails here rather than hanging the suite.
-        t.join(timeout = 60)
+        t.join(timeout=60)
         assert not t.is_alive(), f"{t.name} never returned from get_inference_backend()"
 
     assert not errors, f"worker threads raised: {errors}"
@@ -121,9 +121,9 @@ def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
     with orch._inference_backend_lock:
         # Lock held by this thread: a warm call from another must still return,
         # which it can only do by skipping the lock.
-        t = threading.Thread(target = lambda: returned.append(orch.get_inference_backend()))
+        t = threading.Thread(target=lambda: returned.append(orch.get_inference_backend()))
         t.start()
-        t.join(timeout = 10)
+        t.join(timeout=10)
         assert not t.is_alive(), "the warm path blocked on the singleton lock"
 
     assert returned == [first]
@@ -134,7 +134,7 @@ def test_getter_constructs_under_a_module_level_lock():
     """Static guard: construction must stay inside a ``with`` on the lock. A refactor back to
     the bare ``if _inference_backend is None: ...`` reads fine and passes every
     single-threaded test, so pin the shape."""
-    tree = ast.parse(_ORCHESTRATOR_SRC.read_text(encoding = "utf-8"))
+    tree = ast.parse(_ORCHESTRATOR_SRC.read_text(encoding="utf-8"))
 
     assigns_lock = [
         node

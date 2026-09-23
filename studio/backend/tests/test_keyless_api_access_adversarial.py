@@ -42,7 +42,7 @@ from utils.keyless_api_access import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
@@ -51,8 +51,8 @@ def isolated_auth_db(tmp_path, monkeypatch):
     storage._reset_api_key_hash_cache()
     _reset_scope_cache()
     # The merged suite leaves this latched on, masking the transport checks below.
-    monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising = False)
-    monkeypatch.setattr(host_policy, "_lan_connector_active", False, raising = False)
+    monkeypatch.setattr(host_policy, "_remote_connector_active", False, raising=False)
+    monkeypatch.setattr(host_policy, "_lan_connector_active", False, raising=False)
     yield
     storage._reset_api_key_hash_cache()
     _reset_scope_cache()
@@ -60,20 +60,20 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 def seed_user():
     storage.create_initial_user(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        password = "human-password-123",
-        jwt_secret = secrets.token_urlsafe(64),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        password="human-password-123",
+        jwt_secret=secrets.token_urlsafe(64),
     )
 
 
 def app_state(**overrides):
     state = SimpleNamespace(
-        bind_host = "127.0.0.1",
-        secure = False,
-        remote_access_is_colab = False,
-        lan_access_is_colab = False,
-        lan_access_secure_launch = False,
-        cloudflare_url = None,
+        bind_host="127.0.0.1",
+        secure=False,
+        remote_access_is_colab=False,
+        lan_access_is_colab=False,
+        lan_access_secure_launch=False,
+        cloudflare_url=None,
     )
     for name, value in overrides.items():
         setattr(state, name, value)
@@ -82,14 +82,14 @@ def app_state(**overrides):
 
 def asgi_scope(
     *,
-    path = "/v1/chat/completions",
-    method = None,
-    root_path = "",
-    headers = None,
-    raw_headers = None,
-    state = None,
-    server = ("127.0.0.1", 8000),
-    client = ("127.0.0.1", 50000),
+    path="/v1/chat/completions",
+    method=None,
+    root_path="",
+    headers=None,
+    raw_headers=None,
+    state=None,
+    server=("127.0.0.1", 8000),
+    client=("127.0.0.1", 50000),
 ):
     # `headers` is the convenient dict form; `raw_headers` is the ASGI list, which is the
     # only way to express a repeated header. A dict cannot, which is why the duplicate
@@ -106,7 +106,7 @@ def asgi_scope(
         "server": server,
         "client": client,
         "headers": encoded,
-        "app": SimpleNamespace(state = state or app_state()),
+        "app": SimpleNamespace(state=state or app_state()),
     }
 
 
@@ -139,7 +139,7 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
     ):
         with pytest.raises(HTTPException):
             asyncio.run(
-                get_current_subject(resolve(request_for(headers = {"Authorization": header})))
+                get_current_subject(resolve(request_for(headers={"Authorization": header})))
             )
 
 
@@ -155,25 +155,25 @@ def test_a_keyless_caller_cannot_widen_its_own_scope():
     from routes.settings import _require_ui_session_for_keyless
 
     seed_user()
-    set_keyless_api_access("full", tools = False)
-    credentials = resolve(request_for(path = "/api/settings/keyless-api-access", method = "PUT"))
+    set_keyless_api_access("full", tools=False)
+    credentials = resolve(request_for(path="/api/settings/keyless-api-access", method="PUT"))
     assert credentials.scheme == KEYLESS_SCHEME
     assert asyncio.run(authenticated_via_api_key(credentials)) is True
     with pytest.raises(HTTPException) as caught:
-        _require_ui_session_for_keyless(via_api_key = True)
+        _require_ui_session_for_keyless(via_api_key=True)
     assert caught.value.status_code == 403
 
     # An sk-unsloth key is held back by the same guard.
     raw_key, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "probe",
-        expires_at = None,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="probe",
+        expires_at=None,
     )
     key_credentials = resolve(
         request_for(
-            path = "/api/settings/keyless-api-access",
-            method = "PUT",
-            headers = {"Authorization": f"Bearer {raw_key}"},
+            path="/api/settings/keyless-api-access",
+            method="PUT",
+            headers={"Authorization": f"Bearer {raw_key}"},
         )
     )
     assert asyncio.run(authenticated_via_api_key(key_credentials)) is True
@@ -186,10 +186,10 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
     """Nothing exercises the inference limb with a genuinely public transport."""
     seed_user()
     set_keyless_api_access("inference")
-    public = app_state(bind_host = "64.227.100.5")
+    public = app_state(bind_host="64.227.100.5")
     assert (
         keyless_request_allowed(
-            request_for(server = ("64.227.100.5", 8000), client = ("8.8.8.8", 51000), state = public)
+            request_for(server=("64.227.100.5", 8000), client=("8.8.8.8", 51000), state=public)
         )
         is False
     )
@@ -197,9 +197,9 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
     assert (
         keyless_request_allowed(
             request_for(
-                server = ("100.64.0.10", 8000),
-                client = ("100.64.0.11", 51000),
-                state = app_state(bind_host = "100.64.0.10"),
+                server=("100.64.0.10", 8000),
+                client=("100.64.0.11", 51000),
+                state=app_state(bind_host="100.64.0.10"),
             )
         )
         is False
@@ -207,7 +207,7 @@ def test_inference_is_refused_from_a_public_bind_and_a_public_peer():
     # A private peer arriving on a loopback socket is still not LAN admission.
     assert (
         keyless_request_allowed(
-            request_for(server = ("127.0.0.1", 8000), client = ("192.168.1.90", 51000))
+            request_for(server=("127.0.0.1", 8000), client=("192.168.1.90", 51000))
         )
         is False
     )
@@ -225,15 +225,15 @@ def test_full_scope_denials_survive_without_the_tunnel_flag():
 
     for bind in ("0.0.0.0", "::"):
         assert (
-            keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False
+            keyless_request_allowed(request_for(state=app_state(bind_host=bind))) is False
         ), f"wildcard bind {bind} admitted under full scope"
 
     assert (
         keyless_request_allowed(
             request_for(
-                server = ("192.168.1.24", 8888),
-                client = ("192.168.1.90", 51000),
-                state = app_state(bind_host = "192.168.1.24"),
+                server=("192.168.1.24", 8888),
+                client=("192.168.1.90", 51000),
+                state=app_state(bind_host="192.168.1.24"),
             )
         )
         is False
@@ -252,11 +252,11 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
             "lan_access_secure_launch",
         ):
             assert (
-                keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False
+                keyless_request_allowed(request_for(state=app_state(**{flag: True}))) is False
             ), f"{flag} did not close scope={scope}"
         assert (
             keyless_request_allowed(
-                request_for(state = app_state(cloudflare_url = "https://x.trycloudflare.com"))
+                request_for(state=app_state(cloudflare_url="https://x.trycloudflare.com"))
             )
             is False
         ), f"active tunnel did not close scope={scope}"
@@ -283,20 +283,20 @@ def test_root_path_and_trailing_slash_reach_the_same_verdict_end_to_end():
     set_keyless_api_access("inference")
     assert (
         keyless_request_allowed(
-            request_for(path = "/studio/v1/models/", root_path = "/studio", method = "GET")
+            request_for(path="/studio/v1/models/", root_path="/studio", method="GET")
         )
         is True
     )
     assert (
         keyless_request_allowed(
-            request_for(path = "/studio/v1/load", root_path = "/studio", method = "POST")
+            request_for(path="/studio/v1/load", root_path="/studio", method="POST")
         )
         is False
     )
     # prefix confusion: a sibling mount must not borrow the root's allowlist
     assert (
         keyless_request_allowed(
-            request_for(path = "/studio-v2/v1/models", root_path = "/studio", method = "GET")
+            request_for(path="/studio-v2/v1/models", root_path="/studio", method="GET")
         )
         is False
     )
@@ -371,13 +371,13 @@ def test_a_session_jwt_naming_an_unknown_subject_is_refused():
         storage.DEFAULT_ADMIN_USERNAME
     )
     forged = jwt.encode(
-        {"sub": "ghost", "exp": datetime.now(timezone.utc) + timedelta(minutes = 30)},
+        {"sub": "ghost", "exp": datetime.now(timezone.utc) + timedelta(minutes=30)},
         jwt_secret,
-        algorithm = "HS256",
+        algorithm="HS256",
     )
     with pytest.raises(HTTPException):
         asyncio.run(
-            get_current_subject(resolve(request_for(headers = {"Authorization": f"Bearer {forged}"})))
+            get_current_subject(resolve(request_for(headers={"Authorization": f"Bearer {forged}"})))
         )
 
 
@@ -395,7 +395,7 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
     def dependency_says_keyless(headers):
         """Whether `security` admitted this request through one of the keyless schemes."""
         try:
-            credentials = resolve(request_for(path = "/v1/models", method = "GET", headers = headers))
+            credentials = resolve(request_for(path="/v1/models", method="GET", headers=headers))
         except HTTPException:
             return False
         return credentials.scheme in (KEYLESS_SCHEME, KEYLESS_FALLBACK_SCHEME)
@@ -426,7 +426,7 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         ({"Authorization": "Bearer not-needed-extra"}, False),
     ]
     for headers, expected in shapes:
-        twin = asgi_request_is_keyless(asgi_scope(path = "/v1/models", method = "GET", headers = headers))
+        twin = asgi_request_is_keyless(asgi_scope(path="/v1/models", method="GET", headers=headers))
         assert twin is expected, f"twin disagreed on {headers}"
         assert dependency_says_keyless(headers) is expected, f"dependency disagreed on {headers}"
 
@@ -436,9 +436,9 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         (b"authorization", b"Bearer not-needed"),
         (b"authorization", b"Bearer not-needed"),
     ]
-    assert asgi_request_is_keyless(asgi_scope(raw_headers = duplicated)) is False
+    assert asgi_request_is_keyless(asgi_scope(raw_headers=duplicated)) is False
     with pytest.raises(HTTPException):
-        resolve(request_for(path = "/v1/models", method = "GET", raw_headers = duplicated))
+        resolve(request_for(path="/v1/models", method="GET", raw_headers=duplicated))
 
 
 def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
@@ -473,7 +473,7 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
         ):
             assert (
                 keyless_request_allowed(
-                    request_for(path = "/v1/models", method = "GET", headers = {"Sec-Fetch-Site": site})
+                    request_for(path="/v1/models", method="GET", headers={"Sec-Fetch-Site": site})
                 )
                 is False
             ), f"{site!r} was admitted under {scope_name}"
@@ -482,14 +482,14 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
         for site in ("same-origin", "SAME-ORIGIN", " same-origin "):
             assert (
                 keyless_request_allowed(
-                    request_for(path = "/v1/models", method = "GET", headers = {"Sec-Fetch-Site": site})
+                    request_for(path="/v1/models", method="GET", headers={"Sec-Fetch-Site": site})
                 )
                 is True
             ), f"{site!r} was refused under {scope_name}"
 
         # absence must stay admitted: curl, the OpenAI SDKs and Safari < 16.4 send
         # no Sec-Fetch-* at all, and serving them is the entire point of the setting
-        assert keyless_request_allowed(request_for(path = "/v1/models", method = "GET")) is True
+        assert keyless_request_allowed(request_for(path="/v1/models", method="GET")) is True
 
         # a repeated header is ambiguous, and `Headers.get()` would silently take the
         # first. Neither h11 nor httptools rejects a repeated `Sec-Fetch-Site`, so this
@@ -498,9 +498,9 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
             assert (
                 keyless_request_allowed(
                     request_for(
-                        path = "/v1/models",
-                        method = "GET",
-                        raw_headers = [
+                        path="/v1/models",
+                        method="GET",
+                        raw_headers=[
                             (b"sec-fetch-site", pair[0].encode()),
                             (b"sec-fetch-site", pair[1].encode()),
                         ],
@@ -542,7 +542,7 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
         ):
             assert (
                 keyless_request_allowed(
-                    request_for(path = path, method = "GET", headers = {"Host": spelling})
+                    request_for(path=path, method="GET", headers={"Host": spelling})
                 )
                 is False
             ), f"{spelling} was admitted under {scope_name}"
@@ -551,7 +551,7 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
         for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "[::1]:8888", "localhost:8888"):
             assert (
                 keyless_request_allowed(
-                    request_for(path = path, method = "GET", headers = {"Host": spelling})
+                    request_for(path=path, method="GET", headers={"Host": spelling})
                 )
                 is True
             ), f"{spelling} was refused under {scope_name}"
@@ -582,7 +582,7 @@ def test_what_the_ui_advertises_matches_what_admission_accepts():
     for url, authority, expected in advertised_and_admitted:
         assert _has_keyless_lan_url([url]) is expected, f"UI disagreed on {url}"
         assert (
-            _host_authority_is_direct(request_for(headers = {"Host": authority}), "inference")
+            _host_authority_is_direct(request_for(headers={"Host": authority}), "inference")
             is expected
         ), f"admission disagreed on {authority}"
 
@@ -620,7 +620,7 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
         ):
             assert (
                 keyless_request_allowed(
-                    request_for(path = path, method = "GET", headers = {"Host": public})
+                    request_for(path=path, method="GET", headers={"Host": public})
                 )
                 is False
             ), f"{public} was admitted under {scope_name}"
@@ -628,17 +628,17 @@ def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
     # a private LAN authority is right for inference and wrong for full
     for spelling in ("192.168.1.5:8888", "10.0.0.5:8888", "[fd00::1]:8888"):
         assert (
-            _host_authority_is_direct(request_for(headers = {"Host": spelling}), "inference") is True
+            _host_authority_is_direct(request_for(headers={"Host": spelling}), "inference") is True
         ), f"{spelling} refused for inference"
         assert (
-            _host_authority_is_direct(request_for(headers = {"Host": spelling}), "full") is False
+            _host_authority_is_direct(request_for(headers={"Host": spelling}), "full") is False
         ), f"{spelling} admitted for full"
 
     # loopback stays right for both, and so does an absent Host
     for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "localhost:8888", "[::1]:8888"):
         for scope_name in ("full", "inference"):
             assert (
-                _host_authority_is_direct(request_for(headers = {"Host": spelling}), scope_name)
+                _host_authority_is_direct(request_for(headers={"Host": spelling}), scope_name)
                 is True
             ), f"{spelling} refused for {scope_name}"
     for scope_name in ("full", "inference"):
@@ -680,7 +680,7 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
         ):
             assert (
                 keyless_request_allowed(
-                    request_for(path = path, method = "GET", headers = {"Host": malformed})
+                    request_for(path=path, method="GET", headers={"Host": malformed})
                 )
                 is False
             ), f"{malformed!r} was admitted under {scope_name}"
@@ -694,9 +694,9 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
             assert (
                 keyless_request_allowed(
                     request_for(
-                        path = path,
-                        method = "GET",
-                        raw_headers = [(b"host", pair[0]), (b"host", pair[1])],
+                        path=path,
+                        method="GET",
+                        raw_headers=[(b"host", pair[0]), (b"host", pair[1])],
                     )
                 )
                 is False
@@ -719,11 +719,11 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
     seed_user()
     set_keyless_api_access("inference")
     lan = request_for(
-        path = "/v1/models",
-        method = "GET",
-        headers = {"Host": "192.168.1.50:8888"},
-        client = ("192.168.1.77", 51000),
-        server = ("192.168.1.50", 8888),
+        path="/v1/models",
+        method="GET",
+        headers={"Host": "192.168.1.50:8888"},
+        client=("192.168.1.77", 51000),
+        server=("192.168.1.50", 8888),
     )
     # no Sec-Fetch-Site is sent to a plain-HTTP LAN origin, so the predicate is inert
     assert _browser_initiated_elsewhere(lan) is False
@@ -731,11 +731,11 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
     assert _host_authority_is_direct(lan, "inference") is True
     # a rebound page on the LAN is still refused, by the authority rule alone
     rebound = request_for(
-        path = "/v1/models",
-        method = "GET",
-        headers = {"Host": "evil.example:8888"},
-        client = ("192.168.1.77", 51000),
-        server = ("192.168.1.50", 8888),
+        path="/v1/models",
+        method="GET",
+        headers={"Host": "evil.example:8888"},
+        client=("192.168.1.77", 51000),
+        server=("192.168.1.50", 8888),
     )
     assert _host_authority_is_direct(rebound, "inference") is False
 
@@ -753,58 +753,58 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
 
     seed_user()
     raw_key, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "always-on",
-        expires_at = None,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="always-on",
+        expires_at=None,
     )
     _s, _h, jwt_secret, _m = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
     session = jwt.encode(
         {
             "sub": storage.DEFAULT_ADMIN_USERNAME,
-            "exp": datetime.now(timezone.utc) + timedelta(minutes = 30),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
         },
         jwt_secret,
-        algorithm = "HS256",
+        algorithm="HS256",
     )
 
     transports = {
         "loopback": dict(
-            server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000), state = app_state()
+            server=("127.0.0.1", 8000), client=("127.0.0.1", 51000), state=app_state()
         ),
         "private_lan": dict(
-            server = ("192.168.1.24", 8888),
-            client = ("192.168.1.90", 51000),
-            state = app_state(bind_host = "0.0.0.0"),
+            server=("192.168.1.24", 8888),
+            client=("192.168.1.90", 51000),
+            state=app_state(bind_host="0.0.0.0"),
         ),
         "public": dict(
-            server = ("64.227.100.5", 8000),
-            client = ("8.8.8.8", 51000),
-            state = app_state(bind_host = "64.227.100.5"),
+            server=("64.227.100.5", 8000),
+            client=("8.8.8.8", 51000),
+            state=app_state(bind_host="64.227.100.5"),
         ),
         "tunnel": dict(
-            server = ("127.0.0.1", 8000),
-            client = ("127.0.0.1", 51000),
-            state = app_state(cloudflare_url = "https://x.trycloudflare.com"),
+            server=("127.0.0.1", 8000),
+            client=("127.0.0.1", 51000),
+            state=app_state(cloudflare_url="https://x.trycloudflare.com"),
         ),
         "colab": dict(
-            server = ("127.0.0.1", 8000),
-            client = ("127.0.0.1", 51000),
-            state = app_state(remote_access_is_colab = True),
+            server=("127.0.0.1", 8000),
+            client=("127.0.0.1", 51000),
+            state=app_state(remote_access_is_colab=True),
         ),
         "secure": dict(
-            server = ("127.0.0.1", 8000), client = ("127.0.0.1", 51000), state = app_state(secure = True)
+            server=("127.0.0.1", 8000), client=("127.0.0.1", 51000), state=app_state(secure=True)
         ),
         "browser_origin": dict(
-            server = ("127.0.0.1", 8000),
-            client = ("127.0.0.1", 51000),
-            state = app_state(),
-            headers = {"Origin": "https://evil.example"},
+            server=("127.0.0.1", 8000),
+            client=("127.0.0.1", 51000),
+            state=app_state(),
+            headers={"Origin": "https://evil.example"},
         ),
         "browser_cross_site": dict(
-            server = ("127.0.0.1", 8000),
-            client = ("127.0.0.1", 51000),
-            state = app_state(),
-            headers = {"Sec-Fetch-Site": "cross-site"},
+            server=("127.0.0.1", 8000),
+            client=("127.0.0.1", 51000),
+            state=app_state(),
+            headers={"Sec-Fetch-Site": "cross-site"},
         ),
     }
 
@@ -816,7 +816,7 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
             monkeypatch.setattr(
                 lan_access,
                 "lan_listener_status",
-                lambda t = transport: {
+                lambda t=transport: {
                     "running": True,
                     "port": t["server"][1],
                     "addresses": [t["server"][0]],
@@ -827,10 +827,10 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
                 headers = dict(transport.get("headers") or {})
                 headers["Authorization"] = f"Bearer {token}"
                 request = request_for(
-                    server = transport["server"],
-                    client = transport["client"],
-                    state = transport["state"],
-                    headers = headers,
+                    server=transport["server"],
+                    client=transport["client"],
+                    state=transport["state"],
+                    headers=headers,
                 )
                 credentials = resolve(request)
                 assert credentials.scheme not in (
@@ -845,15 +845,15 @@ def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeyp
     set_keyless_api_access("full")
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
     expired, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "expired",
-        expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat(),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="expired",
+        expires_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
     )
     for dead in (raw_key, expired):
         with pytest.raises(HTTPException):
             asyncio.run(
                 get_current_subject(
-                    resolve(request_for(headers = {"Authorization": f"Bearer {dead}"}))
+                    resolve(request_for(headers={"Authorization": f"Bearer {dead}"}))
                 )
             )
 
@@ -886,9 +886,9 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
             assert (
                 keyless_request_allowed(
                     request_for(
-                        path = path,
-                        method = "GET",
-                        headers = {"Host": hostile, "Sec-Fetch-Site": "same-origin"},
+                        path=path,
+                        method="GET",
+                        headers={"Host": hostile, "Sec-Fetch-Site": "same-origin"},
                     )
                 )
                 is False
@@ -904,13 +904,13 @@ def test_a_rebound_hostname_cannot_pose_as_a_local_client():
         ):
             assert (
                 keyless_request_allowed(
-                    request_for(path = path, method = "GET", headers = {"Host": direct})
+                    request_for(path=path, method="GET", headers={"Host": direct})
                 )
                 is True
             ), f"{direct} was refused under {scope_name}"
 
         # and no Host at all stays admitted: the merged suite sends none
-        assert keyless_request_allowed(request_for(path = path, method = "GET")) is True
+        assert keyless_request_allowed(request_for(path=path, method="GET")) is True
 
 
 # ── the reported race, pinned deterministically ──────────────────────────────
@@ -931,15 +931,15 @@ def test_revoking_a_key_after_the_admission_snapshot_never_yields_the_admin():
     )
 
     seed_user()
-    set_keyless_api_access("inference", tools = False)
+    set_keyless_api_access("inference", tools=False)
     reset_tool_policy()
     set_tool_policy_default(True)
     raw_key, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "race",
-        expires_at = None,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="race",
+        expires_at=None,
     )
-    scope = asgi_scope(headers = {"Authorization": f"Bearer {raw_key}"})
+    scope = asgi_scope(headers={"Authorization": f"Bearer {raw_key}"})
     observed = {}
 
     async def downstream(asgi, receive, send):

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from unsloth_cli._studio_runtime_gate import resolve_windows_powershell  # noqa: E402
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows PowerShell")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
 def test_resolves_through_path_when_available(monkeypatch):
     monkeypatch.setenv("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
     resolved = resolve_windows_powershell()
@@ -44,7 +44,7 @@ def test_falls_back_to_the_builtin_location_when_path_lacks_powershell(monkeypat
 def test_returns_the_bare_name_as_a_last_resort(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setenv("SystemRoot", str(tmp_path))
-    monkeypatch.delenv("ProgramFiles", raising = False)
+    monkeypatch.delenv("ProgramFiles", raising=False)
 
     # Preserve the familiar subprocess error when no host exists.
     assert resolve_windows_powershell() == "powershell.exe"
@@ -80,7 +80,7 @@ def test_the_setup_handoff_spawns_the_resolved_interpreter(monkeypatch, tmp_path
     studio = _windows_studio(monkeypatch)
     monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
     repo_root = tmp_path / "repo"
-    (repo_root / "studio").mkdir(parents = True)
+    (repo_root / "studio").mkdir(parents=True)
     (repo_root / "studio" / "setup.ps1").write_text("")
 
     spawned = []
@@ -88,7 +88,7 @@ def test_the_setup_handoff_spawns_the_resolved_interpreter(monkeypatch, tmp_path
         studio.subprocess, "Popen", lambda argv, **kw: spawned.append(list(argv)) or _Process()
     )
 
-    studio._run_setup_script(repo_root = repo_root)
+    studio._run_setup_script(repo_root=repo_root)
 
     # The handoff, not merely the first spawn: _run_setup_script asks uv where its cache
     # is before it hands over, and subprocess.run is built on Popen, so that probe lands
@@ -103,9 +103,9 @@ def test_the_profile_probe_falls_back_to_the_resolved_interpreter(monkeypatch, t
     gate empties it and the fallback is the only host the proxy probe gets."""
     studio = _windows_studio(monkeypatch)
     monkeypatch.setattr(studio, "_profile_probe_hosts", list)
-    monkeypatch.delenv("_UNSLOTH_PS_PROXY_DEFAULTS", raising = False)
+    monkeypatch.delenv("_UNSLOTH_PS_PROXY_DEFAULTS", raising=False)
     repo_root = tmp_path / "repo"
-    (repo_root / "studio").mkdir(parents = True)
+    (repo_root / "studio").mkdir(parents=True)
     (repo_root / "studio" / "setup.ps1").write_text("")
 
     probed = []
@@ -114,7 +114,7 @@ def test_the_profile_probe_falls_back_to_the_resolved_interpreter(monkeypatch, t
     )
     monkeypatch.setattr(studio.subprocess, "Popen", lambda argv, **kw: _Process())
 
-    studio._run_setup_script(repo_root = repo_root)
+    studio._run_setup_script(repo_root=repo_root)
 
     assert probed == [[_RESOLVED]], probed
 
@@ -146,7 +146,7 @@ def test_the_launcher_refresh_spawns_the_resolved_interpreter(monkeypatch, tmp_p
     assert spawned and spawned[0][0] == _RESOLVED, spawned
 
 
-@pytest.mark.parametrize("interactive", [False, True], ids = ["redirected", "console"])
+@pytest.mark.parametrize("interactive", [False, True], ids=["redirected", "console"])
 @pytest.mark.parametrize("flow", ["setup", "local-refresh", "fetched-refresh"])
 def test_windows_launch_uses_process_flags_without_windowstyle(
     monkeypatch, tmp_path, interactive, flow
@@ -158,17 +158,17 @@ def test_windows_launch_uses_process_flags_without_windowstyle(
     """
     studio = _windows_studio(monkeypatch)
     monkeypatch.setattr(studio.sys.stdout, "isatty", lambda: interactive)
-    monkeypatch.setattr(studio.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising = False)
+    monkeypatch.setattr(studio.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(studio, "_with_studio_uv_cache", lambda env, **kw: env)
     monkeypatch.setattr(studio, "_backfill_uv_cache_marker", lambda env: None)
     monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
 
     repo_root = tmp_path / "owner's repo"
-    (repo_root / "studio").mkdir(parents = True)
+    (repo_root / "studio").mkdir(parents=True)
     setup_script = repo_root / "studio" / "setup.ps1"
-    setup_script.write_text("", encoding = "utf-8")
+    setup_script.write_text("", encoding="utf-8")
     installer = repo_root / "install.ps1"
-    installer.write_text("", encoding = "utf-8")
+    installer.write_text("", encoding="utf-8")
     fetched = b"Write-Output 'refresh'"
     spawned = []
 
@@ -182,7 +182,7 @@ def test_windows_launch_uses_process_flags_without_windowstyle(
     monkeypatch.setattr(studio.subprocess, "Popen", capture)
     monkeypatch.setattr(studio.subprocess, "run", capture)
     if flow == "setup":
-        studio._run_setup_script(repo_root = repo_root)
+        studio._run_setup_script(repo_root=repo_root)
     else:
         monkeypatch.setattr(
             studio,

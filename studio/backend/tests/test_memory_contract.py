@@ -46,23 +46,23 @@ from core.inference.memory_contract import (  # noqa: E402
 # A planner breakdown where every term is a distinct number, so a projection
 # that reads the wrong field cannot coincidentally look right.
 _BREAKDOWN = SimpleNamespace(
-    weights_bytes = 5_000_000_000,  # resident: quant + projector + drafter
-    kv_bytes = 3_000_000_000,
-    compute_bytes = 700_000_000,
-    drafter_runtime_bytes = 400_000_000,
-    drafter_runtime_gpu_bytes = 250_000_000,
-    projector_runtime_bytes = 120_000_000,
-    drafter_kv_unsized = False,
-    adapters_unsized = False,
-    total_bytes = 8_700_000_000,
-    gpu_bytes = 8_100_000_000,
-    kv_estimable = True,
-    kv_on_gpu = True,
-    n_ctx = 32768,
-    cache_type_kv = "f16",
-    n_parallel = 4,
-    layer_count = 28,
-    gpu_layers = 28,
+    weights_bytes=5_000_000_000,  # resident: quant + projector + drafter
+    kv_bytes=3_000_000_000,
+    compute_bytes=700_000_000,
+    drafter_runtime_bytes=400_000_000,
+    drafter_runtime_gpu_bytes=250_000_000,
+    projector_runtime_bytes=120_000_000,
+    drafter_kv_unsized=False,
+    adapters_unsized=False,
+    total_bytes=8_700_000_000,
+    gpu_bytes=8_100_000_000,
+    kv_estimable=True,
+    kv_on_gpu=True,
+    n_ctx=32768,
+    cache_type_kv="f16",
+    n_parallel=4,
+    layer_count=28,
+    gpu_layers=28,
 )
 
 # The quant file alone: strictly smaller than the resident total above, which is
@@ -74,12 +74,12 @@ _QUANT_FILE_BYTES = 4_100_000_000
 def estimate():
     return build_memory_estimate(
         _BREAKDOWN,
-        quant_file_bytes = _QUANT_FILE_BYTES,
-        native_context = 131072,
-        gpu_floor_bytes = 900_000_000,
-        context_is_pinned = False,
-        inherited_device_pin = True,
-        spec_unpriced = True,
+        quant_file_bytes=_QUANT_FILE_BYTES,
+        native_context=131072,
+        gpu_floor_bytes=900_000_000,
+        context_is_pinned=False,
+        inherited_device_pin=True,
+        spec_unpriced=True,
     )
 
 
@@ -117,12 +117,12 @@ class TestTheCanonicalModel:
         an unrelated one rather than catching anything. An earlier draft clamped
         here and truncated a 4.1 GB quant to a 373 byte synthetic header.
         """
-        out = build_memory_estimate(_BREAKDOWN, quant_file_bytes = 9_999_999_999)
+        out = build_memory_estimate(_BREAKDOWN, quant_file_bytes=9_999_999_999)
         assert out.quant_file_bytes == 9_999_999_999
         assert out.resident_files_bytes == _BREAKDOWN.weights_bytes
 
     def test_optional_terms_default_without_being_invented(self):
-        out = build_memory_estimate(_BREAKDOWN, quant_file_bytes = _QUANT_FILE_BYTES)
+        out = build_memory_estimate(_BREAKDOWN, quant_file_bytes=_QUANT_FILE_BYTES)
         # None means "not computed" and must not become 0, which is a real value
         # meaning "nothing is pinned to the card at the shortest context".
         assert out.gpu_floor_bytes is None
@@ -135,32 +135,32 @@ class TestTheRouteOverrides:
     def test_gpu_bytes_carries_three_distinct_states(self):
         # A number, a real None (planner never ran), and "use the breakdown's".
         # None cannot express the third, which is why there is a sentinel.
-        assert build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = 0).gpu_bytes == 0
+        assert build_memory_estimate(_BREAKDOWN, quant_file_bytes=1, gpu_bytes=0).gpu_bytes == 0
         assert (
-            build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = None).gpu_bytes is None
+            build_memory_estimate(_BREAKDOWN, quant_file_bytes=1, gpu_bytes=None).gpu_bytes is None
         )
         # Omitted entirely: falls through to whatever the breakdown had.
         assert (
-            build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1).gpu_bytes == _BREAKDOWN.gpu_bytes
+            build_memory_estimate(_BREAKDOWN, quant_file_bytes=1).gpu_bytes == _BREAKDOWN.gpu_bytes
         )
 
     def test_the_other_overrides_apply(self):
         out = build_memory_estimate(
             _BREAKDOWN,
-            quant_file_bytes = 1,
-            compute_bytes = 11,
-            total_bytes = 22,
-            n_ctx = 33,
+            quant_file_bytes=1,
+            compute_bytes=11,
+            total_bytes=22,
+            n_ctx=33,
         )
         assert (out.compute_bytes, out.total_bytes, out.n_ctx) == (11, 22, 33)
         # And None collapses to 0 for the three that are declared non-optional,
         # matching what the route's `or None` handling produced before.
         none_out = build_memory_estimate(
             _BREAKDOWN,
-            quant_file_bytes = 1,
-            compute_bytes = None,
-            total_bytes = None,
-            n_ctx = None,
+            quant_file_bytes=1,
+            compute_bytes=None,
+            total_bytes=None,
+            n_ctx=None,
         )
         assert (none_out.compute_bytes, none_out.total_bytes, none_out.n_ctx) == (0, 0, 0)
 
@@ -176,7 +176,7 @@ class TestTheRouteOverrides:
         from pathlib import Path
 
         source = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
         for field in ("gpu_bytes", "compute_bytes", "total_bytes", "n_ctx"):
             assert f"_estimate.{field} =" not in source, (
@@ -190,7 +190,7 @@ class TestTheRouteOverrides:
         # change makes assignment validate, this fails and the guard can relax.
         from models.inference import MemoryEstimate
 
-        m = MemoryEstimate(available = True)
+        m = MemoryEstimate(available=True)
         m.gpu_bytes = "not an int"
         assert m.gpu_bytes == "not an int", (
             "assignment now validates; the no-mutation guard above is no longer "
@@ -232,7 +232,7 @@ class TestTheLegacyProjections:
         # an unsizable model look like a free one.
         empty = SimpleNamespace(**{**_BREAKDOWN.__dict__, "kv_bytes": 0})
         out = project_kv_cache_estimate(
-            build_memory_estimate(empty, quant_file_bytes = 0), kv_bytes = 0
+            build_memory_estimate(empty, quant_file_bytes=0), kv_bytes=0
         )
         assert out["kv_bytes"] is None
         assert out["weights_bytes"] is None
@@ -247,8 +247,8 @@ class TestTheLegacyProjections:
         """
         cpu_only = SimpleNamespace(**{**_BREAKDOWN.__dict__, "gpu_bytes": 0})
         out = project_kv_cache_estimate(
-            build_memory_estimate(cpu_only, quant_file_bytes = _QUANT_FILE_BYTES),
-            kv_bytes = _BREAKDOWN.kv_bytes,
+            build_memory_estimate(cpu_only, quant_file_bytes=_QUANT_FILE_BYTES),
+            kv_bytes=_BREAKDOWN.kv_bytes,
         )
         assert out["gpu_bytes"] == 0, "a real zero GPU share was folded into 'no answer'"
 
@@ -257,8 +257,8 @@ class TestTheLegacyProjections:
         # found nothing.
         absent = SimpleNamespace(**{**_BREAKDOWN.__dict__, "gpu_bytes": None})
         out = project_kv_cache_estimate(
-            build_memory_estimate(absent, quant_file_bytes = _QUANT_FILE_BYTES),
-            kv_bytes = _BREAKDOWN.kv_bytes,
+            build_memory_estimate(absent, quant_file_bytes=_QUANT_FILE_BYTES),
+            kv_bytes=_BREAKDOWN.kv_bytes,
         )
         assert out["gpu_bytes"] is None
 
@@ -273,10 +273,10 @@ class TestTheLegacyProjections:
         # them separately, so they must survive the round trip untouched.
         out = project_kv_cache_estimate(
             estimate,
-            spec_bytes = 111,
-            spec_fixed_bytes = 22,
-            projector_bytes = 333,
-            kv_checkpoint_bytes = 44,
+            spec_bytes=111,
+            spec_fixed_bytes=22,
+            projector_bytes=333,
+            kv_checkpoint_bytes=44,
         )
         assert (out["spec_bytes"], out["spec_fixed_bytes"]) == (111, 22)
         assert (out["projector_bytes"], out["kv_checkpoint_bytes"]) == (333, 44)

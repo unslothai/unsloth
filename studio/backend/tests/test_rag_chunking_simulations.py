@@ -13,11 +13,11 @@ from core.rag.parsers import parse_text
 
 
 @pytest.mark.parametrize("counter", ["words", "characters", "utf8"])
-@settings(max_examples = 250, deadline = None, derandomize = True, database = None)
+@settings(max_examples=250, deadline=None, derandomize=True, database=None)
 @given(
-    text = st.text(alphabet = "abcdef0123 \r\n\t#.| café東京漢字\U0001f600", min_size = 0, max_size = 2000),
-    limit = st.integers(min_value = 8, max_value = 128),
-    overlap = st.integers(min_value = 0, max_value = 64),
+    text=st.text(alphabet="abcdef0123 \r\n\t#.| café東京漢字\U0001f600", min_size=0, max_size=2000),
+    limit=st.integers(min_value=8, max_value=128),
+    overlap=st.integers(min_value=0, max_value=64),
 )
 def test_generated_chunks_preserve_every_nonspace_character(counter, text, limit, overlap):
     counters = {
@@ -27,7 +27,7 @@ def test_generated_chunks_preserve_every_nonspace_character(counter, text, limit
     }
     count = counters[counter]
     chunks = chunk_pages(
-        parse_text(text), max_tokens = limit, overlap = min(overlap, limit - 1), count = count
+        parse_text(text), max_tokens=limit, overlap=min(overlap, limit - 1), count=count
     )
     covered = set()
     for index, chunk in enumerate(chunks):

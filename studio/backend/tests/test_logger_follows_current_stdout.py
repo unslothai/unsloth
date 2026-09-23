@@ -12,7 +12,7 @@ from loggers.config import LogConfig, _CurrentStdoutLogger
 
 
 def test_a_cached_logger_writes_to_the_stdout_of_the_moment(monkeypatch):
-    LogConfig.setup_logging(env = "production", quiet_progress_bars = False)
+    LogConfig.setup_logging(env="production", quiet_progress_bars=False)
     logger = structlog.get_logger("tests.follows_stdout")
 
     first, second = io.StringIO(), io.StringIO()
@@ -26,7 +26,7 @@ def test_a_cached_logger_writes_to_the_stdout_of_the_moment(monkeypatch):
 
 
 def test_the_factory_hands_out_the_current_stdout_logger():
-    LogConfig.setup_logging(env = "production", quiet_progress_bars = False)
+    LogConfig.setup_logging(env="production", quiet_progress_bars=False)
     factory = structlog.get_config()["logger_factory"]
     assert isinstance(factory("any", "args"), _CurrentStdoutLogger)
 

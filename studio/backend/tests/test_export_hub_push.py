@@ -44,13 +44,13 @@ class _Model:
         self,
         save_directory,
         tokenizer,
-        save_method = None,
-        token = None,
+        save_method=None,
+        token=None,
     ):
         self.merges.append(save_method)
         suffix = "-torchao-fp8" if save_method == "torchao_fp8" else ""
         output = Path(f"{save_directory}{suffix}")
-        output.mkdir(parents = True, exist_ok = True)
+        output.mkdir(parents=True, exist_ok=True)
         (output / "model.safetensors").write_bytes(b"weights")
 
     def push_to_hub_merged(self, *args, **kwargs):
@@ -66,7 +66,7 @@ def _non_mlx_backend(monkeypatch, name, calls, seen):
     unsloth_save._normalize_torchao_method = lambda method: (
         ("fp8", "torchao-fp8") if method == "torchao_fp8" else None
     )
-    monkeypatch.setattr(unsloth, "save", unsloth_save, raising = False)
+    monkeypatch.setattr(unsloth, "save", unsloth_save, raising=False)
     monkeypatch.setitem(sys.modules, "unsloth.save", unsloth_save)
 
     peft = types.ModuleType("peft")
@@ -114,10 +114,10 @@ def test_base_export_push_creates_the_repo_without_push_to_hub_mixin(
 
     success, message, output_path = backend.export_base_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
-        private = private,
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
+        private=private,
     )
 
     assert success is True, message
@@ -139,11 +139,11 @@ def test_merged_torchao_export_push_creates_the_repo_without_push_to_hub_mixin(
 
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
-        private = private,
-        compressed_method = "torchao_fp8",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
+        private=private,
+        compressed_method="torchao_fp8",
     )
 
     assert success is True, message
@@ -171,11 +171,11 @@ def test_merged_export_push_uploads_the_saved_folder_instead_of_merging_again(
 
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
-        format_type = format_type,
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
-        private = private,
+        format_type=format_type,
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
+        private=private,
     )
 
     assert success is True, message
@@ -199,9 +199,9 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
 
     success, message, output_path = backend.export_merged_model(
         str(export_dir),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -229,7 +229,7 @@ def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     def fake_disk_usage(path):
         under_export = Path(path).resolve() == export_parent
         roomy = under_export if roomier != "temp" else not under_export
-        return types.SimpleNamespace(total = 1 << 40, used = 0, free = (1 << 40) if roomy else 1)
+        return types.SimpleNamespace(total=1 << 40, used=0, free=(1 << 40) if roomy else 1)
 
     monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage)
 
@@ -239,20 +239,20 @@ def test_merged_export_push_stages_the_clean_save_where_there_is_room(
 
         def refusing_temporary_directory(
             *args,
-            dir = None,
+            dir=None,
             **kwargs,
         ):
             if dir is not None and Path(dir).resolve() == export_parent:
                 raise PermissionError(13, "Permission denied", str(dir))
-            return real_temporary_directory(*args, dir = dir, **kwargs)
+            return real_temporary_directory(*args, dir=dir, **kwargs)
 
         monkeypatch.setattr(tempfile, "TemporaryDirectory", refusing_temporary_directory)
 
     success, message, _ = backend.export_merged_model(
         str(export_dir),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -273,9 +273,9 @@ def test_merged_export_push_treats_a_folder_of_finder_metadata_as_fresh(tmp_path
 
     success, message, output_path = backend.export_merged_model(
         str(export_dir),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -291,9 +291,9 @@ def test_merged_export_push_keeps_the_card_of_an_existing_repo(tmp_path, monkeyp
 
     success, message, _ = backend.export_merged_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -309,9 +309,9 @@ def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypa
 
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -336,18 +336,18 @@ def test_merged_export_push_merges_again_when_the_save_left_no_weights(
     def save_nothing(
         save_directory,
         tokenizer,
-        save_method = None,
-        token = None,
+        save_method=None,
+        token=None,
     ):
-        Path(save_directory).mkdir(parents = True, exist_ok = True)
+        Path(save_directory).mkdir(parents=True, exist_ok=True)
 
     backend.current_model.save_pretrained_merged = save_nothing
 
     success, message, _ = backend.export_merged_model(
         str(export_dir),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -360,14 +360,14 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     seen: dict = {}
     backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
     backend.current_model.config = types.SimpleNamespace(
-        _name_or_path = str(tmp_path), model_type = "qwen2"
+        _name_or_path=str(tmp_path), model_type="qwen2"
     )
 
     success, message, _ = backend.export_merged_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -382,9 +382,9 @@ def test_base_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, mo
 
     success, message, output_path = backend.export_base_model(
         str(tmp_path / "export"),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -404,9 +404,9 @@ def test_base_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp_p
 
     success, message, output_path = backend.export_base_model(
         str(export_dir),
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
     )
 
     assert success is True, message
@@ -435,7 +435,7 @@ def test_base_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypa
 
     monkeypatch.setattr(backend.current_model, "save_pretrained", fail_staging)
     success, message, _output_path = backend.export_base_model(
-        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+        str(export_dir), push_to_hub=True, repo_id="model", hf_token="hf_fake"
     )
 
     assert success is False
@@ -453,8 +453,8 @@ class _LoraTokenizer(_Tokenizer):
     def push_to_hub(
         self,
         repo_id,
-        token = None,
-        private = None,
+        token=None,
+        private=None,
     ):
         self.calls.append(f"tokenizer_push:{repo_id}")
 
@@ -477,13 +477,13 @@ class _LoraModel:
         self,
         save_directory,
         tokenizer,
-        save_method = None,
-        quantization_method = None,
-        token = None,
+        save_method=None,
+        quantization_method=None,
+        token=None,
     ):
         self.conversions.append(save_directory)
         output = Path(save_directory)
-        output.mkdir(parents = True, exist_ok = True)
+        output.mkdir(parents=True, exist_ok=True)
         (output / "adapter_config.json").write_text("{}")
         (output / "adapter_model.safetensors").write_bytes(b"lora")
         (output / f"model-lora-{quantization_method}.gguf").write_bytes(b"GGUF")
@@ -491,8 +491,8 @@ class _LoraModel:
     def push_to_hub(
         self,
         repo_id,
-        token = None,
-        private = None,
+        token=None,
+        private=None,
     ):
         self.calls.append(f"model_push:{repo_id}")
 
@@ -528,11 +528,11 @@ def _lora_backend(monkeypatch, name, calls, seen, leg):
 def _push_lora(backend, save_directory, gguf, private):
     return backend.export_lora_adapter(
         save_directory,
-        push_to_hub = True,
-        repo_id = "model",
-        hf_token = "hf_fake",
-        private = private,
-        gguf = gguf,
+        push_to_hub=True,
+        repo_id="model",
+        hf_token="hf_fake",
+        private=private,
+        gguf=gguf,
     )
 
 
@@ -573,13 +573,13 @@ def test_lora_export_push_refuses_to_upload_when_privacy_cannot_be_confirmed(
     def _denied(
         self,
         repo_id,
-        private = None,
-        repo_type = None,
+        private=None,
+        repo_type=None,
     ):
         raise RuntimeError("403 Forbidden: write:repo_settings missing")
 
     monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
-    seen["repo_info_result"] = types.SimpleNamespace(private = False)
+    seen["repo_info_result"] = types.SimpleNamespace(private=False)
 
     success, message, output_path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
 
@@ -600,13 +600,13 @@ def test_lora_export_push_uploads_when_the_repo_is_already_private(tmp_path, mon
     def _denied(
         self,
         repo_id,
-        private = None,
-        repo_type = None,
+        private=None,
+        repo_type=None,
     ):
         raise RuntimeError("403 Forbidden: write:repo_settings missing")
 
     monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
-    seen["repo_info_result"] = types.SimpleNamespace(private = True)
+    seen["repo_info_result"] = types.SimpleNamespace(private=True)
 
     success, message, _path = _push_lora(backend, str(tmp_path / "export"), gguf, True)
 

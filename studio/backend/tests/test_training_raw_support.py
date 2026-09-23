@@ -47,27 +47,27 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-cpt-raw",
-                model_name = "unsloth/test-bnb-4bit",
-                training_type = "Continued Pretraining",
-                format_type = "raw",
-                load_in_4bit = True,
-                embedding_learning_rate = 1e-5,
+                job_id="test-cpt-raw",
+                model_name="unsloth/test-bnb-4bit",
+                training_type="Continued Pretraining",
+                format_type="raw",
+                load_in_4bit=True,
+                embedding_learning_rate=1e-5,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -92,27 +92,27 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-grad-clip",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                max_grad_norm = 0.7,
-                max_grad_value = 3.0,
-                max_grad_leaf_norm = 1.3,
+                job_id="test-grad-clip",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                max_grad_norm=0.7,
+                max_grad_value=3.0,
+                max_grad_leaf_norm=1.3,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -138,25 +138,25 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-seed",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                random_seed = 1234,
+                job_id="test-seed",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                random_seed=1234,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -187,18 +187,18 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         def request(**overrides):
             return TrainingStartRequest(
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                format_type = "auto",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                format_type="auto",
                 **overrides,
             )
 
         with self.assertRaises(ValidationError):
-            request(max_grad_norm = float("inf"))
+            request(max_grad_norm=float("inf"))
         # Unset must survive to the resolver rather than being coerced en route,
         # so "no opinion" stays distinguishable from an explicit 0.
         self.assertIsNone(request().max_grad_norm)
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
         self.assertIn(
             'max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))',
             source,
@@ -207,7 +207,7 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
         # What refills Unsloth's Gradient Norm chart on Apple Silicon; see the
         # rationale at the opt-in site in worker.py.
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
         self.assertIn('if "report_grad_norm" in _supported_fields:', source)
         self.assertIn('mlx_config_kwargs["report_grad_norm"] = True', source)
         # Feature-detected like the other newer fields, so an older unsloth_zoo
@@ -237,24 +237,24 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-grad-clip-default",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
+                job_id="test-grad-clip-default",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -262,13 +262,13 @@ class TestTrainingRawSupport(unittest.TestCase):
 
     def test_route_forwards_all_grad_clipping_fields(self):
         # The HTTP route builds the config dict by hand; an unforwarded schema field is silently dropped.
-        source = (_BACKEND_ROOT / "routes" / "training.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "routes" / "training.py").read_text(encoding="utf-8")
         self.assertIn('"max_grad_norm": request.max_grad_norm', source)
         self.assertIn('"max_grad_value": request.max_grad_value', source)
         self.assertIn('"max_grad_leaf_norm": request.max_grad_leaf_norm', source)
 
     def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
 
         # random_seed itself is normalized first so an explicit None from a raw caller cannot propagate.
         self.assertIn('_raw_seed = config.get("random_seed", 3407)', source)
@@ -294,7 +294,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertIn("seed = random_seed,", source)
 
     def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
 
         # None must survive to the MLX trainer so it picks its own runtime default, and any other
         # value must coerce to float without rebinding None to 1.0 (which the legacy code did).
@@ -357,16 +357,16 @@ class TestTrainingRawSupport(unittest.TestCase):
             for bad in (float("inf"), float("nan")):
                 with self.assertRaises(ValidationError):
                     TrainingStartRequest(
-                        model_name = "unsloth/test",
-                        training_type = "LoRA/QLoRA",
-                        format_type = "auto",
+                        model_name="unsloth/test",
+                        training_type="LoRA/QLoRA",
+                        format_type="auto",
                         **{field: bad},
                     )
 
         with self.assertRaises(ValueError):
             _resolve_mlx_max_grad_norm(float("inf"))
 
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
         for name in ("max_grad_value", "max_grad_leaf_norm"):
             self.assertIn(f"if {name} < 0 or not math.isfinite({name}):", source)
         self.assertTrue(math.isfinite(_resolve_mlx_max_grad_norm(None)))
@@ -375,7 +375,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         # `cast_norm_output_to_input_dtype`, `dataset_order`, `max_grad_leaf_norm` and `append_eos` ship
         # in the paired unsloth-zoo update, so until that floor is in place the worker must gate them
         # or releases predating those fields cannot construct MLXTrainingConfig.
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding="utf-8")
 
         self.assertIn(
             'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
@@ -433,33 +433,33 @@ class TestTrainingRawSupport(unittest.TestCase):
                 return True
 
         request = TrainingStartRequest(
-            model_name = "unsloth/test-bnb-4bit",
-            training_type = "Continued Pretraining",
-            format_type = "raw",
-            load_in_4bit = True,
-            embedding_learning_rate = 1e-5,
+            model_name="unsloth/test-bnb-4bit",
+            training_type="Continued Pretraining",
+            format_type="raw",
+            load_in_4bit=True,
+            embedding_learning_rate=1e-5,
         )
 
         with (
             patch.object(
                 training_route,
                 "get_training_backend",
-                return_value = DummyBackend(),
+                return_value=DummyBackend(),
             ),
             patch.object(
                 training_route.asyncio,
                 "to_thread",
-                new = _inline_to_thread,
+                new=_inline_to_thread,
             ),
             patch.object(
                 training_route,
                 "_remote_untrainable_model_format",
-                return_value = None,
+                return_value=None,
             ),
-            patch.object(training_route, "load_model_defaults", return_value = {}),
+            patch.object(training_route, "load_model_defaults", return_value={}),
             patch(
                 "core.inference.get_inference_backend",
-                return_value = type(
+                return_value=type(
                     "InferenceBackend",
                     (),
                     {"active_model_name": None},
@@ -467,7 +467,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = type(
+                return_value=type(
                     "ExportBackend",
                     (),
                     {"current_checkpoint": None},
@@ -475,7 +475,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             ),
         ):
             response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
+                training_route.start_training(request, current_subject="test-user")
             )
 
         self.assertEqual(response.status, "queued")
@@ -491,7 +491,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             }
         )
 
-        result = format_dataset(dataset, format_type = "raw")
+        result = format_dataset(dataset, format_type="raw")
 
         self.assertEqual(result["final_format"], "raw_text")
         self.assertIn("text", result["dataset"].column_names)
@@ -503,9 +503,9 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         result = format_and_template_dataset(
             dataset,
-            model_name = "unsloth/test",
-            tokenizer = None,
-            format_type = "raw",
+            model_name="unsloth/test",
+            tokenizer=None,
+            format_type="raw",
         )
 
         self.assertTrue(result["success"])
@@ -517,10 +517,10 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         result = prepare_raw_text_dataset(
             dataset,
-            mode_label = "CPT",
-            split_name = "train",
-            eos_token = "<eos>",
-            append_eos = True,
+            mode_label="CPT",
+            split_name="train",
+            eos_token="<eos>",
+            append_eos=True,
         )
 
         self.assertEqual(len(result.dataset), 2)

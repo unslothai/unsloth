@@ -78,8 +78,8 @@ def te_prequant_budget_scale(
         sources = te_prequant_sources_for_base(
             fam,
             base,
-            te_quant_mode = te_quant_mode,
-            target = target,
+            te_quant_mode=te_quant_mode,
+            target=target,
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
@@ -140,7 +140,7 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     return any(a in group and b in group for group in _TE_EQUIVALENT_BASES)
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class TePrequantSource:
     """Where a pre-cast text-encoder checkpoint lives. ``kind`` is "path" (a local file) or
     "repo" (Hub repo id in ``location`` + ``filename``)."""
@@ -254,15 +254,15 @@ def resolve_te_prequant_source(
         return None
     override = (path_override or "").strip()
     if override:
-        return TePrequantSource(kind = "path", location = override, filename = None)
+        return TePrequantSource(kind="path", location=override, filename=None)
     repo_id = family_te_prequant_repo(fam, scheme, component)
     if repo_id:
         names = te_prequant_repo_filenames(repo_id, component, scheme)
         return TePrequantSource(
-            kind = "repo",
-            location = repo_id,
-            filename = names[0],
-            fallback_filenames = names[1:],
+            kind="repo",
+            location=repo_id,
+            filename=names[0],
+            fallback_filenames=names[1:],
         )
     return None
 
@@ -333,9 +333,9 @@ def te_prequant_sources_for_base(
     """
     sources = te_prequant_sources(
         fam,
-        te_quant_mode = te_quant_mode,
-        target = target,
-        components = components,
+        te_quant_mode=te_quant_mode,
+        target=target,
+        components=components,
     )
     registered_base = str(getattr(fam, "base_repo", "") or "")
     standalone = standalone_component_bases or {}
@@ -407,8 +407,8 @@ def load_prequant_text_encoder(
         path = _resolve_checkpoint_path(
             source,
             hf_token,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
         )
         if path is None:
             return None
@@ -425,7 +425,7 @@ def load_prequant_text_encoder(
         if is_safetensors_checkpoint(path):
             ckpt = load_prequant_safetensors(path)
         else:
-            ckpt = torch.load(path, weights_only = True, map_location = "cpu")
+            ckpt = torch.load(path, weights_only=True, map_location="cpu")
         if not _validate_checkpoint(ckpt, scheme, component, base, logger):
             return None
         state_dict = ckpt["state_dict"]
@@ -462,12 +462,12 @@ def load_prequant_text_encoder(
 
         with init_empty_weights():
             encoder = encoder_cls(config)
-        encoder.load_state_dict(state_dict, strict = True, assign = True)
+        encoder.load_state_dict(state_dict, strict=True, assign=True)
         if _has_meta_tensors(encoder):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
             # they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
-            encoder.load_state_dict(state_dict, strict = True, assign = True)
+            encoder.load_state_dict(state_dict, strict=True, assign=True)
         # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g.
         # Qwen3's lm_head from embed_tokens and defeating _cast_fp8's tied-projection skip. Re-tie to the
         # builder-identical structure; a no-op when untied.
@@ -526,8 +526,8 @@ def te_prequant_pipe_kwargs(
         sources = te_prequant_sources_for_base(
             fam,
             base,
-            te_quant_mode = te_quant_mode,
-            target = target,
+            te_quant_mode=te_quant_mode,
+            target=target,
         )
         # Non-empty only for the one hosted scheme (see te_prequant_sources' gate).
         mode = TE_QUANT_FP8
@@ -537,11 +537,11 @@ def te_prequant_pipe_kwargs(
                 base,
                 component,
                 source,
-                dtype = dtype,
-                hf_token = hf_token,
-                scheme = mode,
-                logger = logger,
-                local_files_only = local_files_only,
+                dtype=dtype,
+                hf_token=hf_token,
+                scheme=mode,
+                logger=logger,
+                local_files_only=local_files_only,
             )
             if encoder is not None:
                 injected[component] = encoder
@@ -561,6 +561,7 @@ def _resolve_checkpoint_path(
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
+
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
@@ -584,11 +585,11 @@ def _resolve_checkpoint_path(
         for name in names:
             try:
                 return hf_hub_download(
-                    repo_id = source.location,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = cache_dir,
-                    local_files_only = local_files_only,
+                    repo_id=source.location,
+                    filename=name,
+                    token=hf_token,
+                    cache_dir=cache_dir,
+                    local_files_only=local_files_only,
                 )
             except LocalEntryNotFoundError:
                 # Online this is the Hub being unreachable, not a missing name: re-raise as itself
@@ -667,7 +668,7 @@ def te_prequant_hub_files(
         if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
             continue
         try:
-            info = api.model_info(source.location, files_metadata = True)
+            info = api.model_info(source.location, files_metadata=True)
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)
             continue
@@ -686,6 +687,7 @@ def te_prequant_hub_files(
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
     from itertools import chain
+
     try:
         return any(
             getattr(t, "is_meta", False) for t in chain(module.parameters(), module.buffers())

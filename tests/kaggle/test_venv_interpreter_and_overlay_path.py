@@ -64,15 +64,15 @@ def _driver_source() -> str:
     names = ("default", "canary")
     payloads = {
         f"t4_{legs.LEGS[n].name}.ipynb": build_kernel.build_payload_notebook(
-            SMOKE_DIR, legs.LEGS[n], unsloth_ref = "main", zoo_ref = "main"
+            SMOKE_DIR, legs.LEGS[n], unsloth_ref="main", zoo_ref="main"
         )
         for n in names
     }
     driver = build_kernel.build_driver(
         payloads,
-        per_run_timeout = 3600,
-        vram_source = {f"t4_{legs.LEGS[n].name}.ipynb": legs.LEGS[n] for n in names},
-        overlays = {f"t4_{legs.LEGS[n].name}.ipynb": tuple(legs.LEGS[n].overlay) for n in names},
+        per_run_timeout=3600,
+        vram_source={f"t4_{legs.LEGS[n].name}.ipynb": legs.LEGS[n] for n in names},
+        overlays={f"t4_{legs.LEGS[n].name}.ipynb": tuple(legs.LEGS[n].overlay) for n in names},
     )
     return "".join("".join(c["source"]) for c in driver["cells"])
 

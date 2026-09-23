@@ -52,7 +52,7 @@ if str(STUDIO_BACKEND) not in sys.path:
 
 # The studio backend pulls in torch. A runner without it cannot answer any question this
 # file asks, so skip the module rather than fail collection on it.
-pytest.importorskip("torch", reason = "the studio backend imports torch at module scope")
+pytest.importorskip("torch", reason="the studio backend imports torch at module scope")
 
 # Imported eagerly, before any fake torch can be in place: these modules are the subject
 # of the test, and importing them under a spoof would measure the spoof.
@@ -61,7 +61,7 @@ from core.inference.mlx_inference import MLXInferenceBackend  # noqa: E402
 from core.inference.orchestrator import _mirrored_model_entry  # noqa: E402
 import routes.inference as routes_inference  # noqa: E402
 
-WORKER_SOURCE = (STUDIO_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
+WORKER_SOURCE = (STUDIO_BACKEND / "core" / "inference" / "worker.py").read_text(encoding="utf-8")
 HARDWARE_PACKAGE = STUDIO_BACKEND / "utils" / "hardware"
 # The real torch, before anything here shadows it. Re-seated at the top of every spoof so
 # a second cell in one test does not build its profile against the previous fake.
@@ -77,7 +77,7 @@ def _code_without_comments(path: Path) -> str:
     ``open("/proc/version")`` -- so stripping strings instead would hide exactly the thing
     being looked for.
     """
-    text = path.read_text(encoding = "utf-8")
+    text = path.read_text(encoding="utf-8")
     return "".join(
         token.string if token.type != tokenize.COMMENT else ""
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
@@ -118,7 +118,7 @@ CELLS = [(os_key, vendor) for os_key in OS_KEYS for vendor in VENDORS]
 CELL_IDS = [f"{os_key}-{vendor}" for os_key, vendor in CELLS]
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Expectation:
     """What one cell must produce. ``real`` records whether the cell can be booted."""
 
@@ -152,7 +152,7 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         None,
-        real = True,
+        real=True,
     ),
     ("windows", "amd"): Expectation(
         "CUDA",
@@ -160,8 +160,8 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         None,
-        real = True,
-        note = "ROCm reuses torch.cuda over HIP; DeviceType stays CUDA, IS_ROCM flips.",
+        real=True,
+        note="ROCm reuses torch.cuda over HIP; DeviceType stays CUDA, IS_ROCM flips.",
     ),
     ("windows", "cpu"): Expectation(
         "CPU",
@@ -169,13 +169,13 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         "no_gpu",
-        real = True,
-        note = "MLX stack present and healthy, and still CPU: the gate requires Darwin.",
+        real=True,
+        note="MLX stack present and healthy, and still CPU: the gate requires Darwin.",
     ),
     # --- Linux -------------------------------------------------------------------
-    ("linux", "nvidia"): Expectation("CUDA", False, False, False, None, real = True),
-    ("linux", "amd"): Expectation("CUDA", True, False, False, None, real = True),
-    ("linux", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
+    ("linux", "nvidia"): Expectation("CUDA", False, False, False, None, real=True),
+    ("linux", "amd"): Expectation("CUDA", True, False, False, None, real=True),
+    ("linux", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real=True),
     # --- WSL (indistinguishable from Linux; see the dedicated tests) --------------
     ("wsl", "nvidia"): Expectation(
         "CUDA",
@@ -183,11 +183,11 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         None,
-        real = True,
-        note = "sys.platform is 'linux'; nothing in utils/hardware reads a WSL marker.",
+        real=True,
+        note="sys.platform is 'linux'; nothing in utils/hardware reads a WSL marker.",
     ),
-    ("wsl", "amd"): Expectation("CUDA", True, False, False, None, real = True),
-    ("wsl", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
+    ("wsl", "amd"): Expectation("CUDA", True, False, False, None, real=True),
+    ("wsl", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real=True),
     # --- macOS -------------------------------------------------------------------
     ("macos", "nvidia"): Expectation(
         "CUDA",
@@ -195,8 +195,8 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         None,
-        real = False,
-        note = _NOT_A_REAL_CELL,
+        real=False,
+        note=_NOT_A_REAL_CELL,
     ),
     ("macos", "amd"): Expectation(
         "CUDA",
@@ -204,8 +204,8 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         False,
         False,
         None,
-        real = False,
-        note = _NOT_A_REAL_CELL,
+        real=False,
+        note=_NOT_A_REAL_CELL,
     ),
     ("macos", "cpu"): Expectation(
         "MLX",
@@ -213,8 +213,8 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         True,
         True,
         None,
-        real = True,
-        note = "The one cell that serves MLX: Darwin + arm64, no CUDA/XPU, healthy stack.",
+        real=True,
+        note="The one cell that serves MLX: Darwin + arm64, no CUDA/XPU, healthy stack.",
     ),
 }
 
@@ -224,8 +224,8 @@ def _devices_for(vendor: str) -> list:
     if vendor == "cpu":
         return []
     if vendor == "nvidia":
-        return [_OS_MATRIX._device(name = "NVIDIA GeForce RTX 4090", arch = "")]
-    return [_OS_MATRIX._device(arch = "gfx1100", name = "AMD Radeon RX 7900 XTX")]
+        return [_OS_MATRIX._device(name="NVIDIA GeForce RTX 4090", arch="")]
+    return [_OS_MATRIX._device(arch="gfx1100", name="AMD Radeon RX 7900 XTX")]
 
 
 @pytest.fixture
@@ -254,31 +254,31 @@ def spoof_cell(monkeypatch, spoof_hardware):
             monkeypatch.setitem(sys.modules, "torch", _REAL_TORCH)
         spoof_hardware(
             _DISPATCH.HardwareProfile(
-                name = f"{os_key}-{vendor}",
-                system = system_name,
-                machine = machine,
-                cuda_available = vendor != "cpu",
-                hip_version = "6.4" if vendor == "amd" else None,
-                xpu_available = False,
-                has_mlx = mlx,
-                mps_available = system_name == "Darwin",
-                expect_is_mlx = False,
-                expect_device_type = "CPU",
-                expect_is_rocm = vendor == "amd",
-                expect_apple_silicon = system_name == "Darwin" and machine == "arm64",
+                name=f"{os_key}-{vendor}",
+                system=system_name,
+                machine=machine,
+                cuda_available=vendor != "cpu",
+                hip_version="6.4" if vendor == "amd" else None,
+                xpu_available=False,
+                has_mlx=mlx,
+                mps_available=system_name == "Darwin",
+                expect_is_mlx=False,
+                expect_device_type="CPU",
+                expect_is_rocm=vendor == "amd",
+                expect_apple_silicon=system_name == "Darwin" and machine == "arm64",
             )
         )
-        _OS_MATRIX._apply_os(monkeypatch, os_key, is_rocm = vendor == "amd")
+        _OS_MATRIX._apply_os(monkeypatch, os_key, is_rocm=vendor == "amd")
         monkeypatch.setattr(platform, "machine", lambda: machine)
         monkeypatch.setitem(
             sys.modules,
             "torch",
-            _OS_MATRIX._fake_torch(_devices_for(vendor), vendor = vendor),
+            _OS_MATRIX._fake_torch(_devices_for(vendor), vendor=vendor),
         )
         # Neither hint may leak in from the host running this: an inherited
         # ZE_AFFINITY_MASK plus a CPU-only torch would route the cell to XPU.
         for var in ("ZE_AFFINITY_MASK", "UNSLOTH_FORCE_XPU", "CUDA_VISIBLE_DEVICES"):
-            monkeypatch.delenv(var, raising = False)
+            monkeypatch.delenv(var, raising=False)
         return _DISPATCH._import_studio_hardware_module()
 
     return _apply
@@ -295,7 +295,7 @@ def spoof_hardware(monkeypatch):
 # ======================================================================================
 
 
-@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids=CELL_IDS)
 def test_detected_device_per_cell(os_key, vendor, spoof_cell):
     """Each cell resolves to the DeviceType recorded above, with a healthy MLX stack."""
     expected = EXPECTED[(os_key, vendor)]
@@ -321,7 +321,7 @@ def test_detected_device_per_cell(os_key, vendor, spoof_cell):
 # ======================================================================================
 
 
-@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids = CELL_IDS)
+@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids=CELL_IDS)
 def test_mlx_backend_selection_per_cell(os_key, vendor, spoof_cell):
     """``MLXInferenceBackend`` is constructed on exactly one cell.
 
@@ -370,10 +370,10 @@ def test_worker_selects_mlx_on_device_type_alone():
 # ======================================================================================
 
 # A model config carrying a trained window, in the shape mlx-lm attaches it.
-_MLX_MODEL = SimpleNamespace(args = SimpleNamespace(max_position_embeddings = 131072))
+_MLX_MODEL = SimpleNamespace(args=SimpleNamespace(max_position_embeddings=131072))
 # What a transformers load attaches: Unsloth writes the served length onto the model and
 # nothing else, so there is no native window to read back.
-_TORCH_MODEL = SimpleNamespace(max_seq_length = 4096)
+_TORCH_MODEL = SimpleNamespace(max_seq_length=4096)
 
 
 def _model_info_for(mlx_selected: bool, requested: int) -> dict:
@@ -409,8 +409,8 @@ class _FakeOrchestrator:
         self.max_seq_length = None
 
 
-@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids = CELL_IDS)
-@pytest.mark.parametrize("requested", [0, 8192], ids = ["auto", "pinned"])
+@pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids=CELL_IDS)
+@pytest.mark.parametrize("requested", [0, 8192], ids=["auto", "pinned"])
 def test_context_triple_reported_per_cell(os_key, vendor, requested, spoof_cell, monkeypatch):
     """The triple survives to ``/v1/models`` on the MLX cell and is withheld on the rest.
 
@@ -449,7 +449,7 @@ def test_context_triple_reported_per_cell(os_key, vendor, requested, spoof_cell,
     monkeypatch.setattr(
         routes_inference,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = False),
+        lambda: SimpleNamespace(is_loaded=False),
     )
     monkeypatch.setattr(
         routes_inference,
@@ -519,9 +519,9 @@ def test_wsl_is_indistinguishable_from_linux_in_the_detector():
     # And the one string that IS a Windows-only lookup, named so this test cannot be read
     # as claiming the package never mentions Microsoft.
     assert "Microsoft" in _code_without_comments(HARDWARE_PACKAGE / "hardware.py")
-    assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(encoding = "utf-8")
+    assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(encoding="utf-8")
     # And the llama.cpp side, which does, so this stays an accurate statement of scope.
-    llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")
+    llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding="utf-8")
     assert "_wsl_system_rocm_lib_dirs" in llama_cpp
 
 
@@ -542,7 +542,7 @@ def test_windows_on_arm_with_a_healthy_mlx_stack_is_still_cpu(spoof_cell):
     arm64 alone is not enough, and this is the half of ``is_apple_silicon`` the ordinary
     Windows row cannot exercise (it is x86_64, so either conjunct would explain it).
     """
-    hw = spoof_cell("windows", "cpu", machine = "arm64", mlx = True)
+    hw = spoof_cell("windows", "cpu", machine="arm64", mlx=True)
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.is_apple_silicon() is False
     assert hw.CHAT_ONLY_REASON == "no_gpu"
@@ -550,7 +550,7 @@ def test_windows_on_arm_with_a_healthy_mlx_stack_is_still_cpu(spoof_cell):
 
 def test_the_apple_silicon_gate_is_a_conjunction():
     """Source-level, because the runtime answer cannot distinguish AND from OR here."""
-    source = (HARDWARE_PACKAGE / "hardware.py").read_text(encoding = "utf-8")
+    source = (HARDWARE_PACKAGE / "hardware.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     (gate,) = [
         node
@@ -566,7 +566,7 @@ def test_the_apple_silicon_gate_is_a_conjunction():
 
 def test_apple_silicon_without_the_mlx_stack_falls_to_chat_only(spoof_cell):
     """The macos/cpu cell's other half: Darwin + arm64 with no usable stack is CPU."""
-    hw = spoof_cell("macos", "cpu", mlx = False)
+    hw = spoof_cell("macos", "cpu", mlx=False)
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.is_apple_silicon() is True
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
@@ -574,7 +574,7 @@ def test_apple_silicon_without_the_mlx_stack_falls_to_chat_only(spoof_cell):
 
 def test_intel_mac_is_not_an_mlx_host(spoof_cell):
     """x86_64 Darwin: the second impossible-on-macOS shape, and a real machine."""
-    hw = spoof_cell("macos", "cpu", machine = "x86_64", mlx = True)
+    hw = spoof_cell("macos", "cpu", machine="x86_64", mlx=True)
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.is_apple_silicon() is False
     assert hw.CHAT_ONLY_REASON == "intel_mac"
@@ -588,29 +588,29 @@ def test_amd_sdk_wheel_reaches_is_rocm_without_version_hip(monkeypatch, spoof_ha
     """
     spoof_hardware(
         _DISPATCH.HardwareProfile(
-            name = "windows-amd-sdk",
-            system = "Windows",
-            machine = "x86_64",
-            cuda_available = True,
-            hip_version = None,
-            xpu_available = False,
-            has_mlx = True,
-            mps_available = False,
-            expect_is_mlx = False,
-            expect_device_type = "CUDA",
-            expect_is_rocm = True,
-            expect_apple_silicon = False,
+            name="windows-amd-sdk",
+            system="Windows",
+            machine="x86_64",
+            cuda_available=True,
+            hip_version=None,
+            xpu_available=False,
+            has_mlx=True,
+            mps_available=False,
+            expect_is_mlx=False,
+            expect_device_type="CUDA",
+            expect_is_rocm=True,
+            expect_apple_silicon=False,
         )
     )
-    _OS_MATRIX._apply_os(monkeypatch, "windows", is_rocm = True)
+    _OS_MATRIX._apply_os(monkeypatch, "windows", is_rocm=True)
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _OS_MATRIX._fake_torch(_devices_for("amd"), vendor = "amd_sdk"),
+        _OS_MATRIX._fake_torch(_devices_for("amd"), vendor="amd_sdk"),
     )
     for var in ("ZE_AFFINITY_MASK", "UNSLOTH_FORCE_XPU", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
     hw = _DISPATCH._import_studio_hardware_module()
     assert hw.detect_hardware() == hw.DeviceType.CUDA
     assert hw.IS_ROCM is True

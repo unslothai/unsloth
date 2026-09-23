@@ -20,12 +20,14 @@ BAD_LEASE = {"nativePathLease": "rag-matrix-invalid-lease"}
 def _connection(account):
     from storage import rag_db
     from utils.account_context import run_as
+
     return run_as(account, rag_db.get_connection)
 
 
 def _uploads_dir(account):
     from utils.account_context import run_as
     from utils.paths import ensure_dir, rag_uploads_root
+
     return run_as(account, lambda: ensure_dir(rag_uploads_root()))
 
 
@@ -37,21 +39,23 @@ def _store_file(account) -> str:
 
 def _create_kb(conn) -> None:
     from core.rag import store
-    store.create_kb(conn, name = KB_NAME, description = None, kb_id = KB_ID)
+
+    store.create_kb(conn, name=KB_NAME, description=None, kb_id=KB_ID)
 
 
 def _create_document(account, conn, *, scope: str, **columns) -> None:
     import hashlib
 
     from core.rag import store
+
     store.create_document(
         conn,
-        scope = scope,
-        filename = FILENAME,
-        sha256 = hashlib.sha256(CONTENT).hexdigest(),
-        status = "completed",
-        stored_path = _store_file(account),
-        document_id = DOCUMENT_ID,
+        scope=scope,
+        filename=FILENAME,
+        sha256=hashlib.sha256(CONTENT).hexdigest(),
+        status="completed",
+        stored_path=_store_file(account),
+        document_id=DOCUMENT_ID,
         **columns,
     )
 
@@ -73,7 +77,7 @@ def seed_rag_document(account) -> dict[str, str]:
     conn = _connection(account)
     try:
         _create_kb(conn)
-        _create_document(account, conn, scope = store.kb_scope(KB_ID), kb_id = KB_ID)
+        _create_document(account, conn, scope=store.kb_scope(KB_ID), kb_id=KB_ID)
     finally:
         conn.close()
     return {"document_id": DOCUMENT_ID, "kb_id": KB_ID}
@@ -86,7 +90,7 @@ def seed_rag_job(account) -> dict[str, str]:
     conn = _connection(account)
     try:
         _create_kb(conn)
-        _create_document(account, conn, scope = store.kb_scope(KB_ID), kb_id = KB_ID)
+        _create_document(account, conn, scope=store.kb_scope(KB_ID), kb_id=KB_ID)
         conn.execute(
             "INSERT INTO ingestion_jobs(id, document_id, scope, status, stage, progress, "
             "created_at) VALUES(?,?,?,'completed','done',1.0,'2026-01-01T00:00:00+00:00')",
@@ -110,16 +114,16 @@ def seed_rag_folder(account) -> dict[str, str]:
     finally:
         conn.close()
     linked = run_as(account, workspace_root) / "rag-matrix-linked"
-    linked.mkdir(parents = True, exist_ok = True)
+    linked.mkdir(parents=True, exist_ok=True)
     (linked / FILENAME).write_bytes(CONTENT)
     folder = run_as(
         account,
         lambda: folder_sync.create_folder(
-            scope_type = "knowledge_base",
-            scope_id = KB_ID,
-            path = str(linked),
-            name = KB_NAME,
-            auto_sync = False,
+            scope_type="knowledge_base",
+            scope_id=KB_ID,
+            path=str(linked),
+            name=KB_NAME,
+            auto_sync=False,
         ),
     )
     conn = _connection(account)
@@ -162,7 +166,7 @@ def seed_rag_project_document(account) -> dict[str, str]:
     conn = _connection(account)
     try:
         _create_document(
-            account, conn, scope = store.project_scope(PROJECT_ID), project_id = PROJECT_ID
+            account, conn, scope=store.project_scope(PROJECT_ID), project_id=PROJECT_ID
         )
     finally:
         conn.close()
@@ -175,7 +179,7 @@ def seed_rag_thread_document(account) -> dict[str, str]:
 
     conn = _connection(account)
     try:
-        _create_document(account, conn, scope = store.thread_scope(THREAD_ID), thread_id = THREAD_ID)
+        _create_document(account, conn, scope=store.thread_scope(THREAD_ID), thread_id=THREAD_ID)
     finally:
         conn.close()
     return {"thread_id": THREAD_ID, "document_id": DOCUMENT_ID}
@@ -207,85 +211,85 @@ FACTORIES = {
     "routes.rag:DELETE:/knowledge-bases/{kb_id}": Factory("rag-kb"),
     "routes.rag:GET:/knowledge-bases/{kb_id}/documents": Factory(
         "rag-document",
-        fragment = FILENAME,
-        absent = FILENAME,
-        owner = (200,),
-        wrong = (200,),
-        reason = _LIST_SCOPE,
+        fragment=FILENAME,
+        absent=FILENAME,
+        owner=(200,),
+        wrong=(200,),
+        reason=_LIST_SCOPE,
     ),
     "routes.rag:POST:/knowledge-bases/{kb_id}/documents": Factory(
         "rag-kb",
-        success = 400,
-        fragment = "No file was provided",
-        self_expected = (400,),
-        reason = _MULTIPART,
+        success=400,
+        fragment="No file was provided",
+        self_expected=(400,),
+        reason=_MULTIPART,
     ),
     "routes.rag:POST:/knowledge-bases/{kb_id}/linked-folders": Factory(
         "rag-kb",
         BAD_LEASE,
-        success = 400,
-        fragment = "Native path grant",
-        self_expected = (400,),
-        reason = _LEASE,
+        success=400,
+        fragment="Native path grant",
+        self_expected=(400,),
+        reason=_LEASE,
     ),
     "routes.rag:DELETE:/documents/{document_id}": Factory("rag-document"),
     "routes.rag:GET:/documents/{document_id}/file-url": Factory(
-        "rag-document", fragment = "file-signed"
+        "rag-document", fragment="file-signed"
     ),
     "routes.rag:GET:/documents/{document_id}/preview-target": Factory(
-        "rag-document", fragment = FILENAME
+        "rag-document", fragment=FILENAME
     ),
-    "routes.rag:GET:/jobs/{job_id}": Factory("rag-job", fragment = DOCUMENT_ID),
+    "routes.rag:GET:/jobs/{job_id}": Factory("rag-job", fragment=DOCUMENT_ID),
     "routes.rag:GET:/jobs/{job_id}/events": Factory(
         "rag-job",
-        fragment = "[DONE]",
-        absent = DOCUMENT_ID,
-        owner = (200,),
-        wrong = (200,),
-        reason = _INGESTION_SSE,
+        fragment="[DONE]",
+        absent=DOCUMENT_ID,
+        owner=(200,),
+        wrong=(200,),
+        reason=_INGESTION_SSE,
     ),
     "routes.rag:POST:/jobs/{job_id}/events": Factory(
         "rag-job",
-        fragment = "[DONE]",
-        absent = DOCUMENT_ID,
-        owner = (200,),
-        wrong = (200,),
-        reason = _INGESTION_SSE,
+        fragment="[DONE]",
+        absent=DOCUMENT_ID,
+        owner=(200,),
+        wrong=(200,),
+        reason=_INGESTION_SSE,
     ),
-    "routes.rag:GET:/linked-folder-jobs/{job_id}": Factory("rag-folder", fragment = FOLDER_JOB_ID),
-    "routes.rag:GET:/linked-folder-jobs/{job_id}/events": Factory("rag-folder", fragment = "[DONE]"),
-    "routes.rag:POST:/linked-folder-jobs/{job_id}/events": Factory("rag-folder", fragment = "[DONE]"),
+    "routes.rag:GET:/linked-folder-jobs/{job_id}": Factory("rag-folder", fragment=FOLDER_JOB_ID),
+    "routes.rag:GET:/linked-folder-jobs/{job_id}/events": Factory("rag-folder", fragment="[DONE]"),
+    "routes.rag:POST:/linked-folder-jobs/{job_id}/events": Factory("rag-folder", fragment="[DONE]"),
     "routes.rag:PATCH:/linked-folders/{folder_id}": Factory(
-        "rag-folder", {"name": EDITED}, fragment = EDITED
+        "rag-folder", {"name": EDITED}, fragment=EDITED
     ),
     "routes.rag:DELETE:/linked-folders/{folder_id}": Factory("rag-folder"),
     "routes.rag:POST:/linked-folders/{folder_id}/sync": Factory("rag-folder"),
     "routes.rag:POST:/linked-folders/{folder_id}/rebuild": Factory("rag-folder"),
     "routes.rag:GET:/projects/{project_id}/documents": Factory(
-        "rag-project-document", fragment = FILENAME
+        "rag-project-document", fragment=FILENAME
     ),
     "routes.rag:POST:/projects/{project_id}/documents": Factory(
         "rag-project",
-        success = 400,
-        fragment = "No file was provided",
-        self_expected = (400,),
-        reason = _MULTIPART,
+        success=400,
+        fragment="No file was provided",
+        self_expected=(400,),
+        reason=_MULTIPART,
     ),
     "routes.rag:POST:/projects/{project_id}/linked-folders": Factory(
         "rag-project",
         BAD_LEASE,
-        success = 400,
-        fragment = "Native path grant",
-        self_expected = (400,),
-        reason = _LEASE,
+        success=400,
+        fragment="Native path grant",
+        self_expected=(400,),
+        reason=_LEASE,
     ),
     "routes.rag:GET:/threads/{thread_id}/documents": Factory(
         "rag-thread-document",
-        fragment = FILENAME,
-        absent = FILENAME,
-        owner = (200,),
-        wrong = (200,),
-        reason = _LIST_SCOPE,
+        fragment=FILENAME,
+        absent=FILENAME,
+        owner=(200,),
+        wrong=(200,),
+        reason=_LIST_SCOPE,
     ),
 }
 

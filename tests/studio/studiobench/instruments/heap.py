@@ -37,7 +37,7 @@ DEFAULT_SAMPLING_INTERVAL = 4096
 MIN_CHROME_FOR_GC_FLAGS = 108
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class HeapFrame:
     function_name: str
     url: str
@@ -57,15 +57,15 @@ class HeapFrame:
 class HeapProfile:
     """Flattened sampling profile: bytes attributed to allocation sites."""
 
-    self_bytes: dict[tuple[str, str, int, int], int] = field(default_factory = dict)
-    frames: dict[tuple[str, str, int, int], HeapFrame] = field(default_factory = dict)
+    self_bytes: dict[tuple[str, str, int, int], int] = field(default_factory=dict)
+    frames: dict[tuple[str, str, int, int], HeapFrame] = field(default_factory=dict)
     total_bytes: int = 0
     sample_count: int = 0
     included_major_gc: bool = False
 
     def top(self, limit: int = 30) -> list[tuple[HeapFrame, int]]:
         rows = [(self.frames[k], v) for k, v in self.self_bytes.items() if k in self.frames]
-        rows.sort(key = lambda r: -r[1])
+        rows.sort(key=lambda r: -r[1])
         return rows[:limit]
 
     def bytes_matching(self, needles: Iterable[str]) -> int:
@@ -89,11 +89,11 @@ class HeapProfile:
 def _flatten(node: dict[str, Any], profile: HeapProfile) -> None:
     cf = node.get("callFrame") or {}
     frame = HeapFrame(
-        function_name = str(cf.get("functionName", "")),
-        url = str(cf.get("url", "")),
-        line = int(cf.get("lineNumber", -1)),
-        column = int(cf.get("columnNumber", -1)),
-        script_id = str(cf.get("scriptId", "")),
+        function_name=str(cf.get("functionName", "")),
+        url=str(cf.get("url", "")),
+        line=int(cf.get("lineNumber", -1)),
+        column=int(cf.get("columnNumber", -1)),
+        script_id=str(cf.get("scriptId", "")),
     )
     size = int(node.get("selfSize", 0) or 0)
     if size:
@@ -176,7 +176,7 @@ class SamplingHeapProfiler:
         head = raw.get("head")
         if head is None:
             raise CellFailure("heap_profile_empty", "stopSampling returned no profile head")
-        profile = HeapProfile(included_major_gc = self.include_major_gc)
+        profile = HeapProfile(included_major_gc=self.include_major_gc)
         _flatten(head, profile)
         profile.sample_count = len(raw.get("samples") or ())
         return profile
@@ -302,7 +302,7 @@ class HeapInstrument:
         if self.cdp is None:
             return
         t0 = time.perf_counter()
-        self.profiler = SamplingHeapProfiler(self.cdp, include_major_gc = self.include_major_gc)
+        self.profiler = SamplingHeapProfiler(self.cdp, include_major_gc=self.include_major_gc)
         try:
             self.profiler.start()
         except CellFailure as exc:
@@ -374,6 +374,6 @@ class HeapInstrument:
             self.profiler = None
 
 
-@register_instrument(name = "heap", level = 3)
+@register_instrument(name="heap", level=3)
 def _make_heap() -> HeapInstrument:
     return HeapInstrument()

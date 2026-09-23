@@ -27,8 +27,8 @@ def _make_repo(
     repo = root / dir_name
     snapshot = repo / "snapshots" / sha
     blobs = repo / "blobs"
-    snapshot.mkdir(parents = True, exist_ok = True)
-    blobs.mkdir(parents = True, exist_ok = True)
+    snapshot.mkdir(parents=True, exist_ok=True)
+    blobs.mkdir(parents=True, exist_ok=True)
     for index, name in enumerate(("config.json", "model.safetensors")):
         blob = blobs / f"blob{index}"
         blob.write_text("{}")
@@ -43,7 +43,7 @@ def _make_repo(
     return snapshot
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def restore_environ():
     """The child-side scrub writes os.environ directly, which monkeypatch cannot undo for keys it
     never saw. Snapshot the whole mapping so one test's scrub is not the next one's premise."""
@@ -61,7 +61,7 @@ def cache_root(monkeypatch, tmp_path):
 
     root = tmp_path / "hub"
     root.mkdir()
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors=None: [root])
     return root
 
 
@@ -91,6 +91,7 @@ def test_cached_private_dataset_path_is_attributed_to_the_dataset_repo(cache_roo
 
 def test_cached_space_path_is_attributed(cache_root):
     from hub.utils.hf_cache_state import cached_repo_ref_for_path
+
     snapshot = _make_repo(cache_root, "spaces--org--private-space")
     assert cached_repo_ref_for_path(snapshot) == ("org/private-space", "space")
 
@@ -117,7 +118,7 @@ def test_a_symlink_from_outside_cannot_launder_a_private_snapshot(cache_root, tm
     snapshot = _make_repo(cache_root, "models--org--private")
     link = tmp_path / "looks_harmless"
     try:
-        link.symlink_to(snapshot, target_is_directory = True)
+        link.symlink_to(snapshot, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("this filesystem does not allow symlinks")
     assert cached_repo_ref_for_path(link) == ("org/private", "model")
@@ -126,6 +127,7 @@ def test_a_symlink_from_outside_cannot_launder_a_private_snapshot(cache_root, tm
 def test_a_single_segment_repo_id_round_trips(cache_root):
     """models--gpt2 has no separator at all."""
     from hub.utils.hf_cache_state import cached_repo_ref_for_path
+
     assert cached_repo_ref_for_path(_make_repo(cache_root, "models--gpt2")) == ("gpt2", "model")
 
 
@@ -140,7 +142,7 @@ def test_a_repo_in_a_second_cache_root_is_attributed(monkeypatch, tmp_path):
     monkeypatch.setattr(
         hf_cache_state,
         "hf_cache_roots",
-        lambda scan_errors = None: [first, second],
+        lambda scan_errors=None: [first, second],
     )
     snapshot = _make_repo(second, "models--other--secret")
     assert hf_cache_state.cached_repo_ref_for_path(snapshot) == ("other/secret", "model")
@@ -154,7 +156,7 @@ def test_a_prefix_collision_sibling_of_a_cache_root_is_not_attributed(monkeypatc
     root.mkdir()
     sibling = tmp_path / "hub_evil"
     sibling.mkdir()
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors=None: [root])
     assert hf_cache_state.cached_repo_ref_for_path(_make_repo(sibling, "models--org--p")) is None
 
 
@@ -173,7 +175,7 @@ def test_an_unreadable_cache_root_authorizes_rather_than_skips(monkeypatch, tmp_
 
     missing = tmp_path / "gone"
 
-    def roots(scan_errors = None):
+    def roots(scan_errors=None):
         if scan_errors is not None:
             scan_errors.append(OSError("unreadable"))
         return [missing]
@@ -217,8 +219,8 @@ def test_local_dataset_paths_in_the_cache_require_caller_authorization(monkeypat
         *,
         repo_id,
         is_cached,
-        repo_type = "model",
-        offline = False,
+        repo_type="model",
+        offline=False,
     ):
         seen["repo_id"] = repo_id
         seen["repo_type"] = repo_type
@@ -256,10 +258,10 @@ def test_diffusion_child_drops_the_saved_login_for_a_tokenless_api_key(monkeypat
 
     for key in ("HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
         monkeypatch.setenv(key, "operator-saved-login")
-    monkeypatch.delenv("HF_TOKEN_PATH", raising = False)
+    monkeypatch.delenv("HF_TOKEN_PATH", raising=False)
     monkeypatch.setattr(service, "_run_diffusion_child", lambda **kwargs: None)
 
-    service._default_target(event_queue = None, stop_queue = None, config = {"allow_ambient": False})
+    service._default_target(event_queue=None, stop_queue=None, config={"allow_ambient": False})
 
     import os
 
@@ -277,9 +279,9 @@ def test_diffusion_child_forwards_the_callers_own_token(monkeypatch):
     monkeypatch.setattr(service, "_run_diffusion_child", lambda **kwargs: None)
 
     service._default_target(
-        event_queue = None,
-        stop_queue = None,
-        config = {"allow_ambient": False, "hf_token": "  caller-own-token  "},
+        event_queue=None,
+        stop_queue=None,
+        config={"allow_ambient": False, "hf_token": "  caller-own-token  "},
     )
 
     import os
@@ -305,7 +307,7 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
     # HF_HUB_DISABLE_IMPLICIT_TOKEN set, and the claim here is that this call does not set it.
     implicit_before = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     for config in ({}, {"allow_ambient": True}):
-        service._default_target(event_queue = None, stop_queue = None, config = config)
+        service._default_target(event_queue=None, stop_queue=None, config=config)
         assert os.environ["HF_TOKEN"] == "operator-saved-login"
         assert os.environ.get("HF_TOKEN_PATH") == token_path_before
         assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == implicit_before
@@ -328,8 +330,8 @@ def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cach
         *,
         repo_id,
         is_cached,
-        repo_type = "model",
-        offline = False,
+        repo_type="model",
+        offline=False,
     ):
         seen["repo_id"] = repo_id
         return hf_token is False and is_cached()
@@ -373,8 +375,8 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
         *,
         repo_id,
         is_cached,
-        repo_type = "model",
-        offline = False,
+        repo_type="model",
+        offline=False,
     ):
         seen["repo_id"] = repo_id
         seen["repo_type"] = repo_type
@@ -429,7 +431,7 @@ def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
     # A tokenless API key: the sentinel, and it authorizes no cache read.
     token = _worker_hf_token({"allow_ambient": False})
     assert is_anonymous(token)
-    assert cache_reads_authorized(token, repo_id = "org/private") is False
+    assert cache_reads_authorized(token, repo_id="org/private") is False
 
     # A tokenless UI session keeps the ambient login, exactly as before.
     assert _worker_hf_token({"allow_ambient": True}) is None
@@ -443,7 +445,7 @@ def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
     # A UI session's own token is entitled to ambient and must not be demoted by the trim.
     ui = _worker_hf_token({"allow_ambient": True, "hf_token": " hf_ui "})
     assert isinstance(ui, AmbientAuthorizedToken) and ui == "hf_ui"
-    assert cache_reads_authorized(ui, repo_id = "org/private") is True
+    assert cache_reads_authorized(ui, repo_id="org/private") is True
 
 
 def test_the_worker_no_longer_launders_the_sentinel_through_or_none():
@@ -473,7 +475,7 @@ def test_an_interrupted_download_is_not_evidence_of_a_cached_read(monkeypatch, c
     assert usable("org/interrupted") is False
 
     # Present but empty: snapshots/<rev> with no metadata for the load to consume.
-    (cache_root / "models--org--partial" / "snapshots" / "abc").mkdir(parents = True)
+    (cache_root / "models--org--partial" / "snapshots" / "abc").mkdir(parents=True)
     assert usable("org/partial") is False
 
     # A real one still counts, so the guard has not been blunted.
@@ -492,7 +494,7 @@ def test_an_unreadable_repo_directory_still_counts_as_cached(monkeypatch, cache_
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 
     repo = cache_root / "models--org--locked"
-    (repo / "snapshots").mkdir(parents = True)
+    (repo / "snapshots").mkdir(parents=True)
     os.chmod(repo / "snapshots", 0o000)
     try:
         if os.access(repo / "snapshots", os.R_OK):
@@ -540,12 +542,12 @@ def test_a_metadata_less_probe_needs_content_not_just_a_revision_dir(cache_root)
     empty snapshots/<rev>/ left by an interrupted download must not read as usable."""
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 
-    (cache_root / "models--org--empty-rev" / "snapshots" / "abc").mkdir(parents = True)
+    (cache_root / "models--org--empty-rev" / "snapshots" / "abc").mkdir(parents=True)
     assert repo_cache_has_usable_snapshot("model", "org/empty-rev") is False
 
     # Weights in a per-component subdirectory, as diffusers lays a pipeline out, do count.
     unet = cache_root / "models--org--pipeline" / "snapshots" / "abc" / "unet"
-    unet.mkdir(parents = True)
+    unet.mkdir(parents=True)
     (unet / "diffusion_pytorch_model.safetensors").write_text("w")
     assert repo_cache_has_usable_snapshot("model", "org/pipeline") is True
 
@@ -569,7 +571,7 @@ def test_a_metadata_less_probe_ignores_repo_boilerplate(cache_root):
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 
     revision = cache_root / "models--org--card-only" / "snapshots" / "abc"
-    revision.mkdir(parents = True)
+    revision.mkdir(parents=True)
     (revision / "README.md").write_text("# model card")
     (revision / ".gitattributes").write_text("*.safetensors filter=lfs")
     (revision / "LICENSE").write_text("apache-2.0")
@@ -589,14 +591,14 @@ def test_a_shadowed_hub_dataset_is_not_the_source():
     from routes.training import _hf_dataset_is_the_source
 
     def request(**kwargs):
-        base = dict(hf_dataset = "org/private", local_datasets = [], s3_config = None)
+        base = dict(hf_dataset="org/private", local_datasets=[], s3_config=None)
         base.update(kwargs)
         return SimpleNamespace(**base)
 
     assert _hf_dataset_is_the_source(request()) is True
-    assert _hf_dataset_is_the_source(request(local_datasets = ["/data/train.jsonl"])) is False
-    assert _hf_dataset_is_the_source(request(s3_config = {"bucket": "b"})) is False
-    assert _hf_dataset_is_the_source(request(hf_dataset = "")) is False
+    assert _hf_dataset_is_the_source(request(local_datasets=["/data/train.jsonl"])) is False
+    assert _hf_dataset_is_the_source(request(s3_config={"bucket": "b"})) is False
+    assert _hf_dataset_is_the_source(request(hf_dataset="")) is False
 
 
 def test_the_shadowed_dataset_gate_is_wired_into_the_start():
@@ -618,7 +620,7 @@ def test_a_diffusion_data_dir_cannot_name_a_cached_repo(tmp_path, monkeypatch):
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     cache = tmp_path / "hfcache" / "datasets--org--private" / "snapshots" / "abc"
-    cache.mkdir(parents = True)
+    cache.mkdir(parents=True)
     (cache / "0001.png").write_bytes(b"x")
 
     with pytest.raises(ValueError):
@@ -628,7 +630,7 @@ def test_a_diffusion_data_dir_cannot_name_a_cached_repo(tmp_path, monkeypatch):
             "../hfcache/datasets--org--private/snapshots/abc"
         )
 
-    datasets_root().mkdir(parents = True, exist_ok = True)
+    datasets_root().mkdir(parents=True, exist_ok=True)
     (datasets_root() / "shadow").symlink_to(cache)
     with pytest.raises(Exception) as caught:
         training_routes._resolve_diffusion_data_dir("shadow")

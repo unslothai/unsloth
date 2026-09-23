@@ -39,29 +39,29 @@ def _note(backend, **kwargs):
 def test_the_default_micro_batch_is_rendered_not_printed_as_none(backend, monkeypatch):
     # The estimators and the child both read None as llama.cpp's default, so the line
     # must name that number.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
 
     assert f"ubatch {backend._DEFAULT_N_UBATCH}" in _note(backend)
     assert "ubatch None" not in _note(backend)
-    assert "ubatch 1024" in _note(backend, n_ubatch = 1024)
+    assert "ubatch 1024" in _note(backend, n_ubatch=1024)
 
 
 def test_n_max_is_named_exactly_where_it_moves_the_reserve(backend, monkeypatch):
     # A Hybrid Mamba target allocates one rollback copy per drafted token, so the
     # reserve scales with n_max there and nowhere else.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 64 * 1024**2)
-    assert "n_max 4" in _note(backend, target_rollback = True)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 64 * 1024**2)
+    assert "n_max 4" in _note(backend, target_rollback=True)
 
-    assert "n_max" not in _note(backend, target_rollback = False)
+    assert "n_max" not in _note(backend, target_rollback=False)
 
     # Rollback wanted, but no recurrent state to copy.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
-    assert "n_max" not in _note(backend, target_rollback = True)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
+    assert "n_max" not in _note(backend, target_rollback=True)
 
 
 def test_the_note_still_names_the_context_slots_and_the_fallback(backend, monkeypatch):
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
-    note = _note(backend, flat_fallback = True)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
+    note = _note(backend, flat_fallback=True)
 
     # No estimator to ask, so every dimension is named -- what the line always did.
     assert note.startswith("MTP reserve: 3.00 GB (draft KV @ 8192 x 2 slots")
@@ -71,26 +71,26 @@ def test_the_note_still_names_the_context_slots_and_the_fallback(backend, monkey
 def test_slots_and_ubatch_are_named_only_where_they_move_the_reserve(backend, monkeypatch):
     # A dense embedded head under a unified cache reads neither: one stream is
     # padded_ctx cells at any slot count, and n_ubatch is not read on that branch.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
-    flat = _note(backend, reprice = lambda slots, ub: 3 * 1024**3)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
+    flat = _note(backend, reprice=lambda slots, ub: 3 * 1024**3)
     assert flat.startswith("MTP reserve: 3.00 GB (draft KV @ 8192)")
     assert "slots" not in flat and "ubatch" not in flat
 
     # A separate drafter's KV follows both, so both come back.
-    both = _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots * ub)
+    both = _note(backend, reprice=lambda slots, ub: 3 * 1024**3 + slots * ub)
     assert "x 2 slots" in both and f"ubatch {backend._DEFAULT_N_UBATCH}" in both
 
     # One axis at a time, so a single flag cannot be standing in for the pair.
-    assert "x 2 slots" in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots)
-    assert "ubatch" not in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots)
-    assert "slots" not in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + ub)
-    assert "ubatch" in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + ub)
+    assert "x 2 slots" in _note(backend, reprice=lambda slots, ub: 3 * 1024**3 + slots)
+    assert "ubatch" not in _note(backend, reprice=lambda slots, ub: 3 * 1024**3 + slots)
+    assert "slots" not in _note(backend, reprice=lambda slots, ub: 3 * 1024**3 + ub)
+    assert "ubatch" in _note(backend, reprice=lambda slots, ub: 3 * 1024**3 + ub)
 
 
 def test_a_single_slot_launch_still_probes_a_distinct_slot_count(backend, monkeypatch):
     # At n_parallel 1 "double it" is also "+1", so the pair probes one point: a real
     # 8192-cell context splits 1 x 8192 and 2 x 4096, then 3 x 2816.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
 
     def _cells(slots, _ub):
         _, streams, per_stream = llama_cpp_module._kv_cache_cell_layout(8192, slots, False)
@@ -98,13 +98,13 @@ def test_a_single_slot_launch_still_probes_a_distinct_slot_count(backend, monkey
 
     assert _cells(1, 0) == _cells(2, 0) and _cells(3, 0) != _cells(1, 0), "premise moved"
 
-    note = _note(backend, n_parallel = 1, reprice = _cells)
+    note = _note(backend, n_parallel=1, reprice=_cells)
     assert "x 1 slots" in note
 
 
 def test_the_slot_probe_escapes_a_padding_plateau(backend, monkeypatch):
     # At n_ctx 12288, 2, 3 and 4 slots all price 12288 cells and only 5 moves.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
 
     def _cells(slots, _ub):
         _, streams, per_stream = llama_cpp_module._kv_cache_cell_layout(12288, slots, False)
@@ -113,18 +113,18 @@ def test_the_slot_probe_escapes_a_padding_plateau(backend, monkeypatch):
     assert [_cells(s, 0) for s in (2, 3, 4)] == [12288] * 3, "premise moved"
     assert _cells(5, 0) != 12288
 
-    note = _note(backend, n_ctx = 12288, n_parallel = 2, reprice = _cells)
+    note = _note(backend, n_ctx=12288, n_parallel=2, reprice=_cells)
     assert "x 2 slots" in note
 
     # The control: a slot-independent reserve stays unnamed however far it reaches.
-    flat = _note(backend, n_ctx = 12288, n_parallel = 2, reprice = lambda slots, ub: 3 * 1024**3)
+    flat = _note(backend, n_ctx=12288, n_parallel=2, reprice=lambda slots, ub: 3 * 1024**3)
     assert "slots" not in flat
 
 
 def test_the_ubatch_probe_escapes_a_padding_plateau(backend, monkeypatch):
     # Through the same padding, as a compact-SWA term: a value and its double share
     # a bucket, so halving and doubling cannot see it.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
 
     def _window(_slots, ub):
         return llama_cpp_module._pad_kv_cells(1024 + ub)
@@ -132,22 +132,22 @@ def test_the_ubatch_probe_escapes_a_padding_plateau(backend, monkeypatch):
     assert _window(1, 64) == _window(1, 128) == _window(1, 32), "premise moved"
     assert _window(1, 64 + 256) != _window(1, 64)
 
-    note = _note(backend, n_ubatch = 64, reprice = _window)
+    note = _note(backend, n_ubatch=64, reprice=_window)
     assert "ubatch 64" in note
 
     # The control: a reserve the micro-batch does not reach stays unnamed.
-    flat = _note(backend, n_ubatch = 64, reprice = lambda slots, ub: 3 * 1024**3)
+    flat = _note(backend, n_ubatch=64, reprice=lambda slots, ub: 3 * 1024**3)
     assert "ubatch" not in flat
 
 
 def test_an_estimator_that_cannot_answer_keeps_the_dimension_named(backend, monkeypatch):
     # Dropping a name on a raise would under-report a real dependency.
-    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel=1: 0)
 
     def _raises(slots, ub):
         raise RuntimeError("unsized")
 
-    note = _note(backend, reprice = _raises)
+    note = _note(backend, reprice=_raises)
     assert "x 2 slots" in note and "ubatch" in note
 
 
@@ -190,10 +190,10 @@ def test_the_real_estimator_ignores_both_axes_for_a_dense_embedded_head(backend)
     def _reserve(n_parallel, n_ubatch):
         return backend._estimate_mtp_overhead_bytes(
             8192,
-            spec_draft_n_max = 4,
-            n_parallel = n_parallel,
-            kv_unified = True,
-            n_ubatch = n_ubatch,
+            spec_draft_n_max=4,
+            n_parallel=n_parallel,
+            kv_unified=True,
+            n_ubatch=n_ubatch,
         )
 
     base = _reserve(2, 512)
@@ -207,7 +207,7 @@ def test_the_real_estimator_ignores_both_axes_for_a_dense_embedded_head(backend)
     # divide does move the number. Three, not two: at two the halves pad back to the
     # unified total and the control would pass for the wrong reason.
     split = backend._estimate_mtp_overhead_bytes(
-        8192, spec_draft_n_max = 4, n_parallel = 3, kv_unified = False, n_ubatch = 512
+        8192, spec_draft_n_max=4, n_parallel=3, kv_unified=False, n_ubatch=512
     )
     assert split != base
 

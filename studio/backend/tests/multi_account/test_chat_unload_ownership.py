@@ -35,7 +35,7 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(inference.router, prefix = "/api/inference")
+    app.include_router(inference.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -62,10 +62,10 @@ class FakeLlama:
 def chat_resident(monkeypatch, accounts):
     llama = FakeLlama()
     standard = SimpleNamespace(
-        active_model_name = None,
-        models = {},
-        get_loading_model = lambda: None,
-        loading_models = (),
+        active_model_name=None,
+        models={},
+        get_loading_model=lambda: None,
+        loading_models=(),
     )
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(access, "_prior_resident_accounts", {})
@@ -88,7 +88,7 @@ def bob_status(accounts):
 
 def test_manual_unload_releases_chat_ownership(chat_resident, accounts):
     with client_for(accounts["alice"]) as client:
-        unload = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
+        unload = client.post("/api/inference/unload", json={"model_path": RESIDENT})
     assert unload.status_code == 200, unload.text
     assert chat_resident.unloaded, "the fake backend was never torn down"
 
@@ -153,13 +153,13 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
 
     def held_open():
         reached_release.set()
-        assert may_release.wait(timeout = 5.0), "the test never let the release proceed"
+        assert may_release.wait(timeout=5.0), "the test never let the release proceed"
         return real_release()
 
     monkeypatch.setattr(inference, "release_chat_gpu_claim", held_open)
 
     async def tick():
-        task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds = 0.01))
+        task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds=0.01))
         for _ in range(500):
             await asyncio.sleep(0.01)
             if reached_release.is_set():
@@ -193,7 +193,7 @@ def test_idle_auto_unload_releases_chat_ownership(chat_resident, accounts, monke
     arm_the_idle_loop(monkeypatch)
 
     async def one_tick():
-        task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds = 0.01))
+        task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds=0.01))
         for _ in range(500):
             await asyncio.sleep(0.01)
             # Not chat_resident.unloaded on its own. The loop tears the backend down several

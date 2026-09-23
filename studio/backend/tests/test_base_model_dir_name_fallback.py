@@ -28,8 +28,8 @@ if importlib.util.find_spec("structlog") is None:  # pragma: no cover - minimal 
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 from utils.models.model_config import (  # noqa: E402
@@ -63,6 +63,7 @@ _NON_ASCII_NAMES = (
 def test_the_non_ascii_cases_are_word_characters():
     """Non-vacuity: every name above must be one `\\w` accepts, or it proves nothing."""
     import re
+
     for name in _NON_ASCII_NAMES:
         assert re.fullmatch(r"[\w.-]+", name), name
         assert not name.isascii(), name
@@ -126,7 +127,7 @@ def test_base_model_from_run_dir_name(dir_name, expected):
 @pytest.mark.parametrize("project_name", [None, "Demo Project", "customer support"])
 def test_a_generated_run_dir_name_parses_back_to_its_model(repo_id, project_name):
     """The parser is the generator read backwards; this is what stops the two drifting."""
-    dir_name = build_default_output_dir_name(repo_id, project_name, timestamp = 1771227800)
+    dir_name = build_default_output_dir_name(repo_id, project_name, timestamp=1771227800)
     assert base_model_from_run_dir_name(dir_name) == repo_id
 
 
@@ -254,9 +255,9 @@ def test_a_non_ascii_digit_run_is_not_a_timestamp(stamp):
 
 
 def _write_adapter(directory):
-    directory.mkdir(parents = True)
+    directory.mkdir(parents=True)
     # No base_model_name_or_path, so detection has to fall through to the directory name.
-    (directory / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
+    (directory / "adapter_config.json").write_text(json.dumps({}), encoding="utf-8")
     (directory / "adapter_model.safetensors").write_bytes(b"")
 
 
@@ -295,7 +296,7 @@ def test_a_named_base_model_still_wins_over_the_directory_name(tmp_path):
     adapter = tmp_path / "unsloth_Qwen3-8B_1771227800"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
-        json.dumps({"base_model_name_or_path": "meta-llama/Llama-3.1-8B"}), encoding = "utf-8"
+        json.dumps({"base_model_name_or_path": "meta-llama/Llama-3.1-8B"}), encoding="utf-8"
     )
     (adapter / "adapter_model.safetensors").write_bytes(b"")
     assert get_base_model_from_lora(str(adapter)) == "meta-llama/Llama-3.1-8B"
@@ -315,11 +316,12 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
 
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):
     from utils.transformers_version import _resolve_base_model, recorded_local_base
+
     for dir_name in ("unsloth_Qwen3-8B", "unsloth_llama_3_8b", "unsloth_Qwen3-8B_1771227800"):
         expected = base_model_from_run_dir_name(dir_name)
 
         weights_only = tmp_path / "weights" / dir_name
-        weights_only.mkdir(parents = True)
+        weights_only.mkdir(parents=True)
         (weights_only / "adapter_model.safetensors").write_bytes(b"")
         assert recorded_local_base(str(weights_only)) == (expected, False)
         assert _resolve_base_model(str(weights_only)) == (expected or str(weights_only))

@@ -66,7 +66,7 @@ def test_load_dispatches_on_extension(monkeypatch):
         pq, "_torch_load_prequant", lambda path, **kw: calls.append(("pickle", path))
     )
     pq._load_prequant_checkpoint("/x/Model-FP8.safetensors")
-    pq._load_prequant_checkpoint("/x/Model-FP8.pt", map_location = "cpu")
+    pq._load_prequant_checkpoint("/x/Model-FP8.pt", map_location="cpu")
     assert calls == [("safetensors", "/x/Model-FP8.safetensors"), ("pickle", "/x/Model-FP8.pt")]
 
 
@@ -101,8 +101,8 @@ def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
     pre-quant is then invisible to memory planning and the load silently runs dense.
     """
     fam = _family(
-        prequant_repos = (("fp8", "org/model-fp8"),),
-        prequant_filenames = (("fp8", "Model-FP8.safetensors"),),
+        prequant_repos=(("fp8", "org/model-fp8"),),
+        prequant_filenames=(("fp8", "Model-FP8.safetensors"),),
     )
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
@@ -122,7 +122,7 @@ def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
     load would fall back to dense under a plan that never budgeted it: the evict-then-OOM this
     function exists to prevent. A derived name is a guess and does not count as evidence.
     """
-    fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
+    fam = _family(prequant_repos=(("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, **kw: None)
@@ -132,7 +132,7 @@ def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
 def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
     """The other side of that guard: once the file is actually THERE, the pickle-less install may
     plan for it. A cached candidate is evidence, exactly as a family-declared name is."""
-    fam = _family(prequant_repos = (("fp8", "org/model-fp8"),))
+    fam = _family(prequant_repos=(("fp8", "org/model-fp8"),))
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: False)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
     monkeypatch.setattr(
@@ -145,7 +145,7 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
 def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
     """The preference itself, and the promise that nothing is dropped behind it: an existing
     .pt-only repo still resolves both of the names it resolves today."""
-    fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
+    fam = _family(prequant_repos=(("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
         "Model-FP8.safetensors",
@@ -209,7 +209,7 @@ def test_plain_tensor_round_trip(tmp_path):
     sd = {"enc.layer.weight": torch.ones(4, 4), "enc.layer.bias": torch.zeros(4)}
     meta = {"scheme": "fp8", "base_model_id": "org/base", "min_features": 512}
     path = str(tmp_path / "te.safetensors")
-    ps.save_prequant_safetensors(path, fmt = pq.PREQUANT_FORMAT, state_dict = sd, metadata = meta)
+    ps.save_prequant_safetensors(path, fmt=pq.PREQUANT_FORMAT, state_dict=sd, metadata=meta)
 
     header = ps.read_prequant_header(path)
     assert header == {"format": pq.PREQUANT_FORMAT, "metadata": meta}
@@ -237,11 +237,11 @@ def test_header_is_readable_as_a_torchao_checkpoint(tmp_path):
     path = str(tmp_path / "x.safetensors")
     ps.save_prequant_safetensors(
         path,
-        fmt = pq.PREQUANT_FORMAT,
-        state_dict = {"enc.layer.weight": torch.ones(2, 2)},
-        metadata = {"scheme": "fp8"},
+        fmt=pq.PREQUANT_FORMAT,
+        state_dict={"enc.layer.weight": torch.ones(2, 2)},
+        metadata={"scheme": "fp8"},
     )
-    with safe_open(path, framework = "pt") as handle:
+    with safe_open(path, framework="pt") as handle:
         raw = handle.metadata() or {}
 
     assert is_metadata_torchao(raw)
@@ -262,20 +262,20 @@ def test_truncated_checkpoint_is_named_not_silently_partial(tmp_path):
     path = str(tmp_path / "x.safetensors")
     ps.save_prequant_safetensors(
         path,
-        fmt = pq.PREQUANT_FORMAT,
-        state_dict = {"enc.layer.weight": torch.ones(2, 2)},
-        metadata = {"scheme": "fp8"},
+        fmt=pq.PREQUANT_FORMAT,
+        state_dict={"enc.layer.weight": torch.ones(2, 2)},
+        metadata={"scheme": "fp8"},
     )
-    with safe_open(path, framework = "pt") as handle:
+    with safe_open(path, framework="pt") as handle:
         raw = dict(handle.metadata() or {})
         tensors = {k: handle.get_tensor(k) for k in handle.keys()}
 
     # An extra tensor the header never describes: the shape a truncated or edited artifact takes.
     tensors["enc.layer.stray"] = torch.zeros(2)
     stray = str(tmp_path / "stray.safetensors")
-    save_file(tensors, stray, metadata = raw)
+    save_file(tensors, stray, metadata=raw)
 
-    with pytest.raises(ValueError, match = "does not account for"):
+    with pytest.raises(ValueError, match="does not account for"):
         ps.load_prequant_safetensors(stray)
 
 
@@ -295,13 +295,13 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
     def build():
         module = (
             torch.nn.Sequential(
-                torch.nn.Linear(1024, 1024, bias = False),
-                torch.nn.Linear(1024, 1024, bias = True),
+                torch.nn.Linear(1024, 1024, bias=False),
+                torch.nn.Linear(1024, 1024, bias=True),
             )
             .cuda()
             .bfloat16()
         )
-        quantize_(module, _make_quant_config(scheme), filter_fn = make_filter_fn(512))
+        quantize_(module, _make_quant_config(scheme), filter_fn=make_filter_fn(512))
         return module
 
     source = build()
@@ -312,7 +312,7 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
     path = str(tmp_path / f"{scheme}.safetensors")
     try:
         ps.save_prequant_safetensors(
-            path, fmt = pq.PREQUANT_FORMAT, state_dict = state, metadata = {"scheme": scheme}
+            path, fmt=pq.PREQUANT_FORMAT, state_dict=state, metadata={"scheme": scheme}
         )
     except ValueError as exc:
         # A torchao too old to QUANTISE into a flattenable subclass (int8 before 0.18) must say so
@@ -330,7 +330,7 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
             got, want = got.dequantize(), want.dequantize()
         assert torch.equal(got, want)
 
-    build().load_state_dict(loaded, strict = True, assign = True)
+    build().load_state_dict(loaded, strict=True, assign=True)
 
 
 def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
@@ -343,7 +343,7 @@ def test_the_windows_rocm_torchao_stub_is_not_safetensors_support(monkeypatch):
     from core.inference.diffusion_prequant import restricted_prequant_load_supported
 
     for name in [k for k in list(sys.modules) if k == "torchao" or k.startswith("torchao.")]:
-        monkeypatch.delitem(sys.modules, name, raising = False)
+        monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setattr(stub, "_is_windows_rocm", lambda: True)
     stub.install_torchao_windows_rocm_stub()
     assert stub.is_stubbed("torchao"), "the stub did not install, so this proves nothing"
@@ -434,14 +434,14 @@ def test_a_root_level_plain_tensor_round_trips_instead_of_failing_the_build(tmp_
         pytest.skip("this install cannot write safetensors pre-quant checkpoints")
 
     state = {
-        "blocks.0.linear.weight": torch.arange(16, dtype = torch.float32).reshape(4, 4),
+        "blocks.0.linear.weight": torch.arange(16, dtype=torch.float32).reshape(4, 4),
         "x_pad_token": torch.tensor([1.0, 2.0, 3.0]),
         "cap_pad_token": torch.tensor([[4.0, 5.0]]),
     }
     assert ps.unsupported_state_dict_keys(state) == []
 
     path = str(tmp_path / "roots.safetensors")
-    ps.save_prequant_safetensors(path, fmt = "fp8", state_dict = state, metadata = {"scheme": "fp8"})
+    ps.save_prequant_safetensors(path, fmt="fp8", state_dict=state, metadata={"scheme": "fp8"})
     back = ps.load_prequant_safetensors(path)["state_dict"]
 
     assert set(back) == set(state)
@@ -495,7 +495,7 @@ def test_a_field_a_newer_torchao_added_is_dropped_when_it_is_inert(monkeypatch):
         ps.UNSLOTH_FORMAT_KEY: "fp8_v1",
     }
     pruned = ps._header_without_unconstructible_fields(
-        _unflatten, {}, header, path = "artifact.safetensors"
+        _unflatten, {}, header, path="artifact.safetensors"
     )
     assert "reduce_range" not in pruned["w.weight"]
     # The rest of the description survives, and our own header keys are never parsed as torchao's.
@@ -512,7 +512,7 @@ def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
         raise ValueError("unexpected keyword argument 'reduce_range'")
 
     header = {"w.weight": json.dumps({"_data": {"reduce_range": True}})}
-    with pytest.raises(ValueError, match = "reduce_range"):
+    with pytest.raises(ValueError, match="reduce_range"):
         ps._header_without_unconstructible_fields(
-            _unflatten, {}, header, path = "artifact.safetensors"
+            _unflatten, {}, header, path="artifact.safetensors"
         )

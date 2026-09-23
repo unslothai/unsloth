@@ -84,7 +84,7 @@ class HandoffVideoBackend:
             self.progress = dict(BOB_FRESH)
         return current
 
-    def generate_progress(self, expected_account = None):
+    def generate_progress(self, expected_account=None):
         if expected_account is not None and self.job_account != expected_account:
             return None
         return dict(self.progress)
@@ -103,14 +103,14 @@ class SoloVideoBackend:
         return dict(self.progress)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    monkeypatch.setattr(video, "_generation_account", None, raising = False)
+    monkeypatch.setattr(video, "_generation_account", None, raising=False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
     monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
@@ -128,12 +128,13 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
 def _install(monkeypatch, backend):
     import core.inference.video as video_module
+
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
 
 
@@ -142,7 +143,7 @@ PROGRESS = "/api/inference/video/generate-progress"
 
 def test_progress_does_not_follow_a_reservation_that_changed_hands(monkeypatch):
     """BOB reserves after ALICE's poll passed authorization; ALICE must not get BOB's job."""
-    backend = HandoffVideoBackend(hand_off = True)
+    backend = HandoffVideoBackend(hand_off=True)
     _install(monkeypatch, backend)
 
     with _client(ALICE) as client:
@@ -167,7 +168,7 @@ def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
     """
     from models.inference import VideoGenerateProgressResponse
 
-    backend = HandoffVideoBackend(hand_off = True)
+    backend = HandoffVideoBackend(hand_off=True)
     _install(monkeypatch, backend)
 
     with _client(ALICE) as client:
@@ -177,7 +178,7 @@ def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
         assert field in body, f"hidden poll dropped {field!r} from the declared shape: {body}"
     # Every declared field is at its idle default, so the shape costs no privacy.
     assert body == {
-        **VideoGenerateProgressResponse().model_dump(mode = "json"),
+        **VideoGenerateProgressResponse().model_dump(mode="json"),
         "loaded": True,
         "yours": False,
     }
@@ -185,7 +186,7 @@ def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
 
 def test_progress_still_returns_the_owners_own_terminal_record(monkeypatch):
     """No handoff: ALICE keeps seeing the completed clip the Video page merges."""
-    backend = HandoffVideoBackend(hand_off = False)
+    backend = HandoffVideoBackend(hand_off=False)
     _install(monkeypatch, backend)
 
     with _client(ALICE) as client:
@@ -213,6 +214,6 @@ def test_real_backend_returns_none_when_the_reservation_moved():
     backend = VideoBackend()
     backend._gen = dict(ALICE_TERMINAL)
     backend._generate_job_account = BOB.account_id
-    assert backend.generate_progress(expected_account = ALICE.account_id) is None
-    assert backend.generate_progress(expected_account = BOB.account_id)["phase"] == "completed"
+    assert backend.generate_progress(expected_account=ALICE.account_id) is None
+    assert backend.generate_progress(expected_account=BOB.account_id)["phase"] == "completed"
     assert backend.generate_progress()["phase"] == "completed"

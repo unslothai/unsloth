@@ -19,7 +19,7 @@ from hub.utils import download_manifest, download_registry
 from utils import hf_cache_settings
 
 
-@pytest.fixture(params = ["model", "dataset"])
+@pytest.fixture(params=["model", "dataset"])
 def download(monkeypatch, tmp_path, request):
     model = request.param == "model"
     service = models if model else datasets
@@ -32,14 +32,14 @@ def download(monkeypatch, tmp_path, request):
     monkeypatch.setattr(models, "_load_in_flight", lambda repo: False)
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *a, **kw: None)
     paths = SimpleNamespace(
-        hub_cache = tmp_path / "hub",
-        xet_cache = tmp_path / "xet",
-        child_env = lambda *a: {},
+        hub_cache=tmp_path / "hub",
+        xet_cache=tmp_path / "xet",
+        child_env=lambda *a: {},
     )
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
     spawned = []
     registered = threading.Event()
-    proc = SimpleNamespace(pid = 4242, poll = lambda: None)
+    proc = SimpleNamespace(pid=4242, poll=lambda: None)
 
     def popen(*args, **kwargs):
         spawned.append(kwargs["env"].get("HF_TOKEN"))
@@ -54,16 +54,16 @@ def download(monkeypatch, tmp_path, request):
     monkeypatch.setattr(download_lifecycle, "register_worker", register)
     monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", lambda token: "hf_fixture")
     return SimpleNamespace(
-        handler = handler,
-        body = request_cls(repo_id = "fixture/public", use_xet = False),
-        registry = registry,
-        key = models._download_job_key("fixture/public", None)
+        handler=handler,
+        body=request_cls(repo_id="fixture/public", use_xet=False),
+        registry=registry,
+        key=models._download_job_key("fixture/public", None)
         if model
         else datasets._download_job_key("fixture/public"),
-        repo_type = request.param,
-        proc = proc,
-        spawned = spawned,
-        registered = registered,
+        repo_type=request.param,
+        proc=proc,
+        spawned=spawned,
+        registered=registered,
     )
 
 
@@ -100,7 +100,7 @@ def test_slow_token_resolution_keeps_loop_responsive(monkeypatch, download, canc
             finally:
                 release.set()
 
-        thread = threading.Thread(target = observer, daemon = True)
+        thread = threading.Thread(target=observer, daemon=True)
         thread.start()
         try:
             if cancel_request:
@@ -125,7 +125,7 @@ def test_cancellation_while_executor_busy_leaves_no_claim(monkeypatch, download)
 
     async def run():
         loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers = 1))
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
         task = asyncio.current_task()
         blocker = None
 
@@ -160,8 +160,8 @@ def test_cancel_stops_worker_registered_after_initial_lookup(monkeypatch, downlo
     assert registry.claim(
         download.key,
         download_registry.TRANSPORT_HTTP,
-        repo_type = download.repo_type,
-        repo_id = "fixture/public",
+        repo_type=download.repo_type,
+        repo_id="fixture/public",
     )[0]
     killed = []
     download.proc.kill = lambda: killed.append(True)
@@ -184,9 +184,9 @@ def test_cancel_stops_worker_registered_after_initial_lookup(monkeypatch, downlo
         download_lifecycle.cancel_worker(
             registry,
             download.key,
-            generation = registry.current_generation(download.key),
-            label = "fixture/public",
-            logger = logging.getLogger(__name__),
+            generation=registry.current_generation(download.key),
+            label="fixture/public",
+            logger=logging.getLogger(__name__),
         )
         == "cancelling"
     )
@@ -247,8 +247,8 @@ def test_launch_failure_preserves_download_cancellation(monkeypatch, download, c
                 request_cls = CancelDownloadRequest if model else CancelDatasetDownloadRequest
                 result = await handler(
                     request_cls(
-                        repo_id = "fixture/public",
-                        generation = download.registry.current_generation(download.key),
+                        repo_id="fixture/public",
+                        generation=download.registry.current_generation(download.key),
                     )
                 )
                 assert result["state"] == "cancelling"
@@ -263,7 +263,7 @@ def test_launch_failure_preserves_download_cancellation(monkeypatch, download, c
         finally:
             release.set()
             if not task.done():
-                await asyncio.gather(task, return_exceptions = True)
+                await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(run())
     state = download.registry.get_job(download.key)
@@ -281,7 +281,7 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(
-        hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(child_env = lambda: {})
+        hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(child_env=lambda: {})
     )
     error = (
         RuntimeError("fixture token exchange failed")
@@ -310,7 +310,7 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
     def popen(args, **kwargs):
         commands.append(args)
         path = Path(args[args.index("--files-json") + 1])
-        assert json.loads(path.read_text(encoding = "utf-8")) == files
+        assert json.loads(path.read_text(encoding="utf-8")) == files
         if failure_at == "popen":
             raise error
         return proc
@@ -323,7 +323,7 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
 
     def spawn():
         return models._spawn_download_worker(
-            "fixture/public", "@diffusion", None, use_xet = False, files = files
+            "fixture/public", "@diffusion", None, use_xet=False, files=files
         )
 
     if failure_at in (None, "token"):
@@ -357,10 +357,10 @@ def test_exited_worker_releases_unread_scoped_manifest(monkeypatch, tmp_path, ph
     assert registry.claim(
         key,
         download_registry.TRANSPORT_HTTP,
-        repo_type = "model",
-        repo_id = "fixture/public",
-        variant = "@diffusion",
-        hub_cache = str(tmp_path / "hub"),
+        repo_type="model",
+        repo_id="fixture/public",
+        variant="@diffusion",
+        hub_cache=str(tmp_path / "hub"),
     )[0]
     exited = False
 
@@ -370,27 +370,27 @@ def test_exited_worker_releases_unread_scoped_manifest(monkeypatch, tmp_path, ph
             raise PermissionError("fixture kill failed")
         exited = True
 
-    def wait(timeout = None):
+    def wait(timeout=None):
         if not exited:
             raise subprocess.TimeoutExpired("fixture-worker", timeout or 0)
         return -9
 
     proc = SimpleNamespace(
-        pid = 4242,
-        args = ["python", "worker", "--files-json", str(path)],
-        stderr = io.BytesIO(),
-        kill = kill,
-        wait = wait,
-        poll = lambda: -9 if exited else None,
+        pid=4242,
+        args=["python", "worker", "--files-json", str(path)],
+        stderr=io.BytesIO(),
+        kill=kill,
+        wait=wait,
+        poll=lambda: -9 if exited else None,
     )
     kwargs = dict(
-        hf_token = None,
-        label = "fixture/public",
-        log_prefix = "Download",
-        logger = logging.getLogger(__name__),
-        repo_type = "model",
-        repo_id = "fixture/public",
-        transport = download_registry.TRANSPORT_HTTP,
+        hf_token=None,
+        label="fixture/public",
+        log_prefix="Download",
+        logger=logging.getLogger(__name__),
+        repo_type="model",
+        repo_id="fixture/public",
+        transport=download_registry.TRANSPORT_HTTP,
     )
     if phase == "cancelled_after_registration":
         assert registry.register_process(key, proc)
@@ -401,7 +401,7 @@ def test_exited_worker_releases_unread_scoped_manifest(monkeypatch, tmp_path, ph
         assert registry.mark_pending_cancel(key, registry.current_generation(key))
         assert (
             download_lifecycle.register_worker(
-                registry, key, proc, watch_name = "fixture-watch", **kwargs
+                registry, key, proc, watch_name="fixture-watch", **kwargs
             )
             is False
         )

@@ -137,7 +137,7 @@ def _load_tokenizer(repo):
             from huggingface_hub import hf_hub_download
             from transformers import PreTrainedTokenizerFast
 
-            with open(hf_hub_download(repo, "tokenizer_config.json"), encoding = "utf-8") as f:
+            with open(hf_hub_download(repo, "tokenizer_config.json"), encoding="utf-8") as f:
                 cfg = _json.load(f)
             tok_file = hf_hub_download(repo, "tokenizer.json")
 
@@ -145,8 +145,8 @@ def _load_tokenizer(repo):
                 return v["content"] if isinstance(v, dict) else v
 
             return PreTrainedTokenizerFast(
-                tokenizer_file = tok_file,
-                chat_template = cfg.get("chat_template"),
+                tokenizer_file=tok_file,
+                chat_template=cfg.get("chat_template"),
                 **{
                     k: _tokval(cfg[k])
                     for k in ("bos_token", "eos_token", "pad_token", "unk_token")
@@ -176,20 +176,20 @@ def test_fixed_markers_token_level(template, repo):
 
     msgs = [{"role": "system", "content": "You are a terse assistant."}] + FIXTURE
     try:
-        ids = tok.apply_chat_template(msgs, tokenize = True, add_generation_prompt = False)
+        ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=False)
         if hasattr(ids, "keys"):
             ids = ids["input_ids"]  # transformers 5.x returns a BatchEncoding
     except Exception:
-        ids = tok.apply_chat_template(FIXTURE, tokenize = True, add_generation_prompt = False)
+        ids = tok.apply_chat_template(FIXTURE, tokenize=True, add_generation_prompt=False)
         if hasattr(ids, "keys"):
             ids = ids["input_ids"]
 
     fn = tor(
         None,
-        instruction_part = parts["instruction"],
-        response_part = parts["response"],
-        tokenizer = tok,
-        return_function = True,
+        instruction_part=parts["instruction"],
+        response_part=parts["response"],
+        tokenizer=tok,
+        return_function=True,
     )
     labels = fn({"input_ids": [list(ids)]})["labels"][0]
 

@@ -30,7 +30,7 @@ class FakeUploadFile:
         return self._chunks.pop(0)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolate_upload_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(datasets_route.local, "DATASET_UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(datasets_route.local, "get_upload_limit_mb", lambda: 1)
@@ -55,27 +55,27 @@ def test_legacy_format_alias_preserves_body_token(monkeypatch):
 
     def check_format(request, token, *, allow_unlabeled_tier1_fallback):
         captured.update(
-            request = request,
-            token = token,
-            allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
+            request=request,
+            token=token,
+            allow_unlabeled_tier1_fallback=allow_unlabeled_tier1_fallback,
         )
         return datasets_route.CheckFormatResponse(
-            requires_manual_mapping = False,
-            detected_format = "alpaca",
-            columns = ["instruction", "output"],
+            requires_manual_mapping=False,
+            detected_format="alpaca",
+            columns=["instruction", "output"],
         )
 
     monkeypatch.setattr(datasets_route.formatting, "check_format_response", check_format)
     request = datasets_route.CheckFormatRequest(
-        dataset_name = "org/data",
-        hf_token = "body-token",
-        split = "validation",
+        dataset_name="org/data",
+        hf_token="body-token",
+        split="validation",
     )
 
     datasets_route.check_format(
         request,
-        hf_token = "header-token",
-        current_subject = "test-user",
+        hf_token="header-token",
+        current_subject="test-user",
     )
 
     assert captured["token"] == "body-token"
@@ -119,9 +119,9 @@ def test_legacy_format_alias_preserves_single_source_file_column_order(monkeypat
     monkeypatch.setitem(
         sys.modules,
         "datasets",
-        SimpleNamespace(Dataset = Dataset, load_dataset = load_dataset),
+        SimpleNamespace(Dataset=Dataset, load_dataset=load_dataset),
     )
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi=HfApi))
     monkeypatch.setattr(
         datasets_route.formatting,
         "resolve_dataset_path",
@@ -146,9 +146,9 @@ def test_legacy_format_alias_preserves_single_source_file_column_order(monkeypat
     )
 
     response = datasets_route.check_format(
-        datasets_route.CheckFormatRequest(dataset_name = "yahma/alpaca-cleaned"),
-        hf_token = None,
-        current_subject = "test-user",
+        datasets_route.CheckFormatRequest(dataset_name="yahma/alpaca-cleaned"),
+        hf_token=None,
+        current_subject="test-user",
     )
 
     assert response.columns == ["instruction", "input", "output"]
@@ -158,8 +158,8 @@ def test_legacy_ai_assist_alias_preserves_body_token(monkeypatch):
     captured = {}
 
     def ai_assist(request, token):
-        captured.update(request = request, token = token)
-        return datasets_route.AiAssistMappingResponse(success = True)
+        captured.update(request=request, token=token)
+        return datasets_route.AiAssistMappingResponse(success=True)
 
     monkeypatch.setattr(
         datasets_route.formatting,
@@ -167,15 +167,15 @@ def test_legacy_ai_assist_alias_preserves_body_token(monkeypatch):
         ai_assist,
     )
     request = datasets_route.AiAssistMappingRequest(
-        columns = ["text"],
-        samples = [{"text": "hello"}],
-        hf_token = "body-token",
+        columns=["text"],
+        samples=[{"text": "hello"}],
+        hf_token="body-token",
     )
 
     datasets_route.ai_assist_mapping(
         request,
-        hf_token = "header-token",
-        current_subject = "test-user",
+        hf_token="header-token",
+        current_subject="test-user",
     )
 
     assert captured["token"] == "body-token"
@@ -184,18 +184,18 @@ def test_legacy_ai_assist_alias_preserves_body_token(monkeypatch):
 
 def test_legacy_local_alias_preserves_recipe_only_response(monkeypatch):
     result = datasets_route.local.LocalDatasetsResponse(
-        datasets = [
+        datasets=[
             datasets_route.local.LocalDatasetItem(
-                id = "recipe_one",
-                label = "Recipe One",
-                path = "/datasets/recipe_one",
-                source = "recipe",
+                id="recipe_one",
+                label="Recipe One",
+                path="/datasets/recipe_one",
+                source="recipe",
             ),
             datasets_route.local.LocalDatasetItem(
-                id = "upload.jsonl",
-                label = "upload.jsonl",
-                path = "/uploads/upload.jsonl",
-                source = "upload",
+                id="upload.jsonl",
+                label="upload.jsonl",
+                path="/uploads/upload.jsonl",
+                source="upload",
             ),
         ]
     )
@@ -205,7 +205,7 @@ def test_legacy_local_alias_preserves_recipe_only_response(monkeypatch):
         lambda: result,
     )
 
-    response = datasets_route.list_local_datasets(current_subject = "test-user")
+    response = datasets_route.list_local_datasets(current_subject="test-user")
 
     assert [item.id for item in response.datasets] == ["recipe_one"]
     assert not hasattr(response.datasets[0], "source")
@@ -216,8 +216,8 @@ def test_dataset_upload_under_configured_cap_succeeds(isolate_upload_dir):
     response = asyncio.run(
         datasets_route.upload_dataset(
             cast(UploadFile, upload),
-            native_path_lease = None,
-            current_subject = "test-user",
+            native_path_lease=None,
+            current_subject="test-user",
         )
     )
     stored = Path(response.stored_path)
@@ -236,8 +236,8 @@ def test_dataset_upload_over_configured_cap_removes_partial_file(isolate_upload_
         asyncio.run(
             datasets_route.upload_dataset(
                 cast(UploadFile, upload),
-                native_path_lease = None,
-                current_subject = "test-user",
+                native_path_lease=None,
+                current_subject="test-user",
             )
         )
     assert exc.value.status_code == 413
@@ -257,8 +257,8 @@ def test_cancelled_dataset_upload_removes_partial_file(isolate_upload_dir):
         asyncio.run(
             datasets_route.upload_dataset(
                 cast(UploadFile, upload),
-                native_path_lease = None,
-                current_subject = "test-user",
+                native_path_lease=None,
+                current_subject="test-user",
             )
         )
 
@@ -266,7 +266,7 @@ def test_cancelled_dataset_upload_removes_partial_file(isolate_upload_dir):
 
 
 def test_hub_upload_path_has_multipart_streaming_headroom():
-    source = (_BACKEND_ROOT / "main.py").read_text(encoding = "utf-8")
+    source = (_BACKEND_ROOT / "main.py").read_text(encoding="utf-8")
 
     prefixes = source.split("_DATASET_UPLOAD_PASSTHROUGH_PREFIXES =", 1)[1].split(")", 1)[0]
     assert '"/api/datasets/upload"' in prefixes

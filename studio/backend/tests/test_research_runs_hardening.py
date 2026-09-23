@@ -54,7 +54,7 @@ def _shared_setup_1():
 
     started = time.monotonic()
     with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+        _run_stream(supervisor, timeout_seconds=30.0)
     return started
 
 
@@ -62,7 +62,7 @@ def _shared_setup_2():
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+        _run_stream(supervisor, timeout_seconds=1.0)
 
 
 def test_sanitize_query_redacts_payment_card():
@@ -271,11 +271,11 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     # Budgeting only the evidence cannot prevent an overflow: at a small context the
     # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
     # the window, and the old floor added 1500 chars on top of that.
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: None)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: None)
     assert research_runs._prompt_char_budget(4096) is None
     assert research_runs._trimmable_budget(None, 99_999, 500) == 500
 
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 16384)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: 16384)
     total = research_runs._prompt_char_budget(4096)
     assert total == int((16384 - 4096) * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
     # A trimmable section never exceeds what is left, and never goes negative.
@@ -285,7 +285,7 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
 
 
 def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 12_288)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: 12_288)
     messages = [{"role": "user", "content": "x" * 33_000}]
     prompt_tokens = _estimate_prompt_tokens(messages)
     resolved = _resolve_max_tokens(16_384, {}, messages)
@@ -295,10 +295,11 @@ def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
 
 def _pin_local_context(monkeypatch, tokens: int) -> None:
     import routes.inference as inference_routes
+
     monkeypatch.setattr(
         inference_routes,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, context_length = tokens),
+        lambda: SimpleNamespace(is_loaded=True, context_length=tokens),
     )
 
 
@@ -332,12 +333,12 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
     _pin_local_context(monkeypatch, 4096)
     usage = {"prompt_tokens": 3_000, "completion_tokens": 1_096, "total_tokens": 4_096}
 
-    assert _completion_hit_context_wall(usage, requested_max_tokens = 16_384)
+    assert _completion_hit_context_wall(usage, requested_max_tokens=16_384)
     assert not _completion_hit_context_wall(
-        usage, requested_max_tokens = 1_096, inference = _EXTERNAL_INFERENCE
+        usage, requested_max_tokens=1_096, inference=_EXTERNAL_INFERENCE
     )
     assert "Increase Context Length" not in _synthesis_length_limit_error(
-        usage, requested_max_tokens = 1_096, inference = _EXTERNAL_INFERENCE
+        usage, requested_max_tokens=1_096, inference=_EXTERNAL_INFERENCE
     )
 
     # Synthesis asks for 16_384 and a provider stops at its own output cap, so
@@ -345,7 +346,7 @@ def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch)
     # shape the notice has to get right, and the case above cannot see it.
     capped = {"prompt_tokens": 40_000, "completion_tokens": 8_192, "total_tokens": 48_192}
     message = _synthesis_length_limit_error(
-        capped, requested_max_tokens = 16_384, inference = _EXTERNAL_INFERENCE
+        capped, requested_max_tokens=16_384, inference=_EXTERNAL_INFERENCE
     )
     assert "Increase Context Length" not in message
     assert "Local model" not in message
@@ -370,7 +371,7 @@ def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch)
     monkeypatch.setattr(
         research_runs,
         "_loaded_context_length",
-        lambda _inf = None: None if (_inf or {}).get("providerType") else 8_192,
+        lambda _inf=None: None if (_inf or {}).get("providerType") else 8_192,
     )
     inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
     messages = [{"role": "user", "content": "x" * 30_000}]
@@ -378,7 +379,7 @@ def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch)
 
 
 def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: 8_192)
     messages = [{"role": "user", "content": "x" * 30_000}]
     assert _resolve_max_tokens(16_384, {}, messages) < 16_384
 
@@ -578,21 +579,21 @@ def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
 
 
 def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
     notice = _synthesis_length_limit_error(
         usage,
-        requested_max_tokens = 32_768,
-        inference = {"providerType": "gemini", "providerId": "p1"},
+        requested_max_tokens=32_768,
+        inference={"providerType": "gemini", "providerId": "p1"},
     )
     assert "Context Length" not in notice
     assert "Local model" not in notice
 
 
 def test_a_local_truncation_still_names_the_context_window(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
-    notice = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    notice = _synthesis_length_limit_error(usage, requested_max_tokens=16_384)
     assert "Context Length" in notice
 
 
@@ -643,7 +644,7 @@ def test_the_provider_floor_table_matches_the_client_one_it_mirrors():
         / "features"
         / "chat"
         / "provider-capabilities.ts"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
     table = re.search(
         r"const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = \{(.*?)\};",
         source,
@@ -710,7 +711,7 @@ def test_the_report_budget_never_falls_below_what_a_run_used_to_get(monkeypatch)
         monkeypatch.setattr(
             research_runs.providers_db,
             "get_provider",
-            lambda _id, cap = saved: {"max_output_tokens": cap} if cap else None,
+            lambda _id, cap=saved: {"max_output_tokens": cap} if cap else None,
         )
         for client in (None, 32_768, 65_536, 384_000):
             inference = {"providerType": "gemini", "providerId": "p1"}
@@ -810,7 +811,7 @@ def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch
 @pytest.mark.parametrize(
     "provider",
     [None, {}, {"max_output_tokens": None}, {"max_output_tokens": 0}],
-    ids = ["missing", "unset", "null", "zero"],
+    ids=["missing", "unset", "null", "zero"],
 )
 def test_a_connection_without_a_saved_cap_keeps_the_default(monkeypatch, provider):
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: provider)
@@ -835,8 +836,8 @@ def test_completion_hit_context_wall_matches_live_probe():
     }
     assert _completion_hit_context_wall(
         usage,
-        requested_max_tokens = 16_384,
-        context_length = 12_288,
+        requested_max_tokens=16_384,
+        context_length=12_288,
     )
     assert not _completion_hit_context_wall(
         {
@@ -844,8 +845,8 @@ def test_completion_hit_context_wall_matches_live_probe():
             "completion_tokens": 16_384,
             "total_tokens": 17_384,
         },
-        requested_max_tokens = 16_384,
-        context_length = 32_768,
+        requested_max_tokens=16_384,
+        context_length=32_768,
     )
 
 
@@ -855,7 +856,7 @@ def test_synthesis_length_limit_error_names_context_window():
         "completion_tokens": 1_256,
         "total_tokens": 12_288,
     }
-    message = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    message = _synthesis_length_limit_error(usage, requested_max_tokens=16_384)
     assert "context window" in message.lower()
     assert "Increase Context Length" in message
 
@@ -864,7 +865,7 @@ def test_every_research_prompt_path_is_budgeted():
     # Planning, decision and synthesis all build prompts from unbounded inputs (a pasted
     # question, up to 12k of history, a 40-source catalog). Each must measure its trimmable
     # sections against the loaded context, else the run dies before or after doing the work.
-    src = Path(research_runs.__file__).read_text(encoding = "utf-8")
+    src = Path(research_runs.__file__).read_text(encoding="utf-8")
     for budget in ("planning_total = ", "decision_total = ", "total_budget = "):
         assert f"{budget}_prompt_char_budget(" in src
         call = src.split(f"{budget}_prompt_char_budget(", 1)[1].split(")", 1)[0]
@@ -887,7 +888,7 @@ def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
     # A flat 4096-token reserve on the 4096-token GGUF floor made the budget 0, which sliced the
     # question to "" so the planner never saw the request. Reserve at most half the window.
     for ctx in (1024, 2048, 4096):
-        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None, c = ctx: c)
+        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf=None, c=ctx: c)
         total = research_runs._prompt_char_budget(research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         assert total is not None and total > 0
         assert total < int(ctx * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
@@ -941,7 +942,7 @@ def test_decision_inputs_fit_question_and_complete_plan_steps():
 def test_decision_inputs_preserve_an_ordinary_plan_before_extra_question_text():
     question = "Q" * 20_000
     plan = {"title": "Research plan", "steps": [{"title": "Verify", "query": "primary source"}]}
-    full_plan = json.dumps(plan, ensure_ascii = False)
+    full_plan = json.dumps(plan, ensure_ascii=False)
 
     fitted_question, fitted_plan = research_runs._fit_decision_inputs(
         question,
@@ -970,7 +971,7 @@ def test_decision_plan_remains_valid_json_when_the_budget_is_tiny():
 
 
 def test_decision_inputs_reject_an_impossible_budget():
-    with pytest.raises(ValueError, match = "context is too small"):
+    with pytest.raises(ValueError, match="context is too small"):
         research_runs._fit_decision_inputs("question", {"title": "plan", "steps": []}, 100, 101)
 
 
@@ -982,9 +983,9 @@ def _make_payload(**overrides) -> CreateResearchRun:
 
 def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
     # bool subclasses int, so False would land on the 0 sentinel and drop the deadline.
-    with pytest.raises(Exception, match = "not a boolean"):
-        _make_payload(budgets = {"modelTimeoutSeconds": False})
-    assert _make_payload(budgets = {"modelTimeoutSeconds": 0}).budgets == {
+    with pytest.raises(Exception, match="not a boolean"):
+        _make_payload(budgets={"modelTimeoutSeconds": False})
+    assert _make_payload(budgets={"modelTimeoutSeconds": 0}).budgets == {
         "modelTimeoutSeconds": 0,
     }
 
@@ -993,14 +994,14 @@ def test_sanitize_config_rejects_a_non_integer_report_ceiling():
     for bad in (True, 64.9, float("inf"), float("nan"), "32768"):
         with pytest.raises(HTTPException):
             _sanitize_config(
-                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": bad}),
+                _make_payload(inferenceRequest={"model": "m", "maxOutputTokens": bad}),
                 {"modelId": "m"},
             )
 
 
 def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
     config = _sanitize_config(
-        _make_payload(inferenceRequest = {"model": "m", "maxOutputTokens": 32_768}),
+        _make_payload(inferenceRequest={"model": "m", "maxOutputTokens": 32_768}),
         {"modelId": "m"},
     )
     assert config["inferenceRequest"]["maxOutputTokens"] == 32_768
@@ -1009,7 +1010,7 @@ def test_sanitize_config_keeps_a_strict_integer_report_ceiling():
 def test_sanitize_config_keeps_the_grounding_flag_and_refuses_a_non_boolean():
     config = _sanitize_config(
         _make_payload(
-            inferenceRequest = {
+            inferenceRequest={
                 "model": "m",
                 "maxOutputTokens": 32_768,
                 "maxOutputTokensFromSavedCap": True,
@@ -1021,13 +1022,13 @@ def test_sanitize_config_keeps_the_grounding_flag_and_refuses_a_non_boolean():
     for bad in (1, 0, "true", None, []):
         with pytest.raises(HTTPException):
             _sanitize_config(
-                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokensFromSavedCap": bad}),
+                _make_payload(inferenceRequest={"model": "m", "maxOutputTokensFromSavedCap": bad}),
                 {"modelId": "m"},
             )
 
 
 def test_sanitize_config_rejects_nested_inference_credential():
-    payload = _make_payload(inferenceRequest = {"model": {"api_key": "sk-should-not-persist"}})
+    payload = _make_payload(inferenceRequest={"model": {"api_key": "sk-should-not-persist"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
 
@@ -1038,7 +1039,7 @@ def test_sanitize_config_rejects_nonscalar_inference_request_value():
     # not) was stringified into the durable run config as the model id.
     for request in ({"model": {"auth": "sk-private-value"}}, {"model": ["sk-private-value"]}):
         with pytest.raises(Exception):
-            _sanitize_config(_make_payload(inferenceRequest = request), {"modelId": "m"})
+            _sanitize_config(_make_payload(inferenceRequest=request), {"modelId": "m"})
 
 
 def test_sanitize_config_accepts_scalar_inference_request():
@@ -1051,12 +1052,12 @@ def test_sanitize_config_accepts_scalar_inference_request():
         "enableThinking": True,
         "reasoningEffort": "high",
     }
-    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    config = _sanitize_config(_make_payload(inferenceRequest=dict(request)), {"modelId": "other"})
     assert config["inferenceRequest"] == request
 
 
 def test_sanitize_config_rejects_nested_rag_scope_secret():
-    payload = _make_payload(ragScope = {"kb_id": {"token": "rag-secret"}})
+    payload = _make_payload(ragScope={"kb_id": {"token": "rag-secret"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
 
@@ -1065,17 +1066,17 @@ def test_sanitize_config_rejects_nonscalar_rag_scope_value():
     # A nested container under an allowed key evades the sensitive-key scan when its inner key is
     # not on the sensitive list ("auth" is not), and a dict where a scalar scope id is expected
     # would reach retrieval code. Non-scalar ragScope values must be rejected outright.
-    payload = _make_payload(ragScope = {"kb_id": {"auth": "sk-private-value"}})
+    payload = _make_payload(ragScope={"kb_id": {"auth": "sk-private-value"}})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
-    payload = _make_payload(ragScope = {"kb_id": ["a", "b"]})
+    payload = _make_payload(ragScope={"kb_id": ["a", "b"]})
     with pytest.raises(Exception):
         _sanitize_config(payload, {"modelId": "m"})
 
 
 def test_sanitize_config_accepts_scalar_rag_scope():
     # A well-formed scalar ragScope must still validate so ordinary grounded runs are unaffected.
-    payload = _make_payload(ragScope = {"kb_id": "kb-123", "default_top_k": 5})
+    payload = _make_payload(ragScope={"kb_id": "kb-123", "default_top_k": 5})
     config = _sanitize_config(payload, {"modelId": "m"})
     assert config["ragScope"] == {"kb_id": "kb-123", "default_top_k": 5}
 
@@ -1226,20 +1227,20 @@ def _install_probe_backends(monkeypatch, llama, native) -> None:
         return _get
 
     monkeypatch.setitem(
-        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = _getter(llama))
+        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend=_getter(llama))
     )
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = _getter(native))
+        sys.modules, "core.inference", SimpleNamespace(get_inference_backend=_getter(native))
     )
 
 
 def test_local_model_ready_mirrors_the_chat_endpoint_checks(monkeypatch):
     # Same two checks routes.inference.openai_chat_completions makes before it 400s.
-    unloaded = SimpleNamespace(is_loaded = False)
-    idle = SimpleNamespace(active_model_name = None)
-    _install_probe_backends(monkeypatch, SimpleNamespace(is_loaded = True), idle)
+    unloaded = SimpleNamespace(is_loaded=False)
+    idle = SimpleNamespace(active_model_name=None)
+    _install_probe_backends(monkeypatch, SimpleNamespace(is_loaded=True), idle)
     assert research_runs._local_model_ready() is True
-    _install_probe_backends(monkeypatch, unloaded, SimpleNamespace(active_model_name = "m"))
+    _install_probe_backends(monkeypatch, unloaded, SimpleNamespace(active_model_name="m"))
     assert research_runs._local_model_ready() is True
     _install_probe_backends(monkeypatch, unloaded, idle)
     assert research_runs._local_model_ready() is False
@@ -1259,20 +1260,20 @@ def _response(
 ) -> httpx.Response:
     request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
     if detail:
-        return httpx.Response(status, json = {"detail": detail}, request = request)
-    return httpx.Response(status, text = body, request = request)
+        return httpx.Response(status, json={"detail": detail}, request=request)
+    return httpx.Response(status, text=body, request=request)
 
 
 _NO_MODEL = "No model loaded. Call POST /inference/load first."
 
 
 def test_model_unloaded_only_matches_the_no_model_refusal():
-    assert asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) == "empty"
+    assert asyncio.run(research_runs._model_unloaded(_response(400, detail=_NO_MODEL))) == "empty"
     # Any other 400 is a real bad request and must stay non-retryable.
     assert (
-        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'"))) is None
+        asyncio.run(research_runs._model_unloaded(_response(400, detail="Invalid 'tools'"))) is None
     )
-    assert asyncio.run(research_runs._model_unloaded(_response(500, body = _NO_MODEL))) is None
+    assert asyncio.run(research_runs._model_unloaded(_response(500, body=_NO_MODEL))) is None
 
 
 # Observed live: a run started with no model loaded failed outright on the 404 variant.
@@ -1280,9 +1281,9 @@ def test_model_unloaded_matches_the_model_not_found_refusal():
     not_found = json.dumps(
         {"error": {"message": "The model 'local' does not exist", "code": "model_not_found"}}
     )
-    assert asyncio.run(research_runs._model_unloaded(_response(404, body = not_found))) == "named"
+    assert asyncio.run(research_runs._model_unloaded(_response(404, body=not_found))) == "named"
     # A 404 that is not about the model stays non-retryable.
-    assert asyncio.run(research_runs._model_unloaded(_response(404, detail = "Not found"))) is None
+    assert asyncio.run(research_runs._model_unloaded(_response(404, detail="Not found"))) is None
 
 
 def test_named_model_refusal_does_not_spend_the_whole_model_budget(monkeypatch):
@@ -1323,7 +1324,7 @@ def test_stream_completion_waits_out_a_model_not_found_refusal(monkeypatch):
     chunk = json.dumps({"choices": [{"delta": {"content": "report"}, "finish_reason": "stop"}]})
     sent = _install_fake_client(
         monkeypatch,
-        [_response(404, body = not_found), _response(200, body = f"data: {chunk}\n\ndata: [DONE]\n\n")],
+        [_response(404, body=not_found), _response(200, body=f"data: {chunk}\n\ndata: [DONE]\n\n")],
     )
 
     async def _check_active(run_id: str) -> None:
@@ -1331,15 +1332,15 @@ def test_stream_completion_waits_out_a_model_not_found_refusal(monkeypatch):
 
     supervisor = _make_supervisor(_check_active)
     report, _reasoning, finish_reason, _usage = asyncio.run(
-        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress=False)
     )
     assert (report, finish_reason) == ("report", "stop")
     assert len(sent) == 2
 
 
-def _make_supervisor(check_active = None) -> ResearchSupervisor:
+def _make_supervisor(check_active=None) -> ResearchSupervisor:
     supervisor = ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1)),
+        SimpleNamespace(state=SimpleNamespace(server_port=1)),
     )
     if check_active is not None:
         supervisor._check_active = check_active
@@ -1430,7 +1431,7 @@ def _install_fake_client(
             self,
             request,
             *,
-            stream = False,
+            stream=False,
         ):
             sent.append(request)
             return _serve(responses.pop(0))
@@ -1453,7 +1454,7 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
     chunk = json.dumps({"choices": [{"delta": {"content": "report"}, "finish_reason": "stop"}]})
     stream = f"data: {chunk}\n\ndata: [DONE]\n\n"
     sent = _install_fake_client(
-        monkeypatch, [_response(400, detail = _NO_MODEL), _response(200, body = stream)]
+        monkeypatch, [_response(400, detail=_NO_MODEL), _response(200, body=stream)]
     )
 
     async def _check_active(run_id: str) -> None:
@@ -1461,7 +1462,7 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
 
     supervisor = _make_supervisor(_check_active)
     report, reasoning, finish_reason, usage = asyncio.run(
-        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress=False)
     )
     assert (report, reasoning, finish_reason, usage) == ("report", "", "stop", None)
     assert len(sent) == 2
@@ -1490,20 +1491,20 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
         supervisor._stream_completion(
             _waiting_run(timeout_seconds),
             [{"role": "user"}],
-            report_progress = False,
+            report_progress=False,
         )
     )
 
 
 def test_unlimited_stream_keeps_header_and_idle_timeouts(monkeypatch):
     timeouts: list[httpx.Timeout] = []
-    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    _install_fake_client(monkeypatch, [_response(200, body=_stream_body())], timeouts)
     supervisor = _make_supervisor(_noop_check_active)
     run = _waiting_run(0)
     run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 10
 
     assert asyncio.run(
-        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress=False)
     ) == ("report", "", "stop", None)
     assert len(timeouts) == 1
     assert timeouts[0].connect == 10
@@ -1539,8 +1540,8 @@ def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
     with pytest.raises(research_runs.ModelFirstOutputTimeout):
         asyncio.run(
             asyncio.wait_for(
-                supervisor._stream_completion(run, [{"role": "user"}], report_progress = False),
-                timeout = 30,
+                supervisor._stream_completion(run, [{"role": "user"}], report_progress=False),
+                timeout=30,
             )
         )
 
@@ -1550,7 +1551,7 @@ class _ReadTimeoutResponse:
 
     status_code = 200
 
-    def __init__(self, lines = ()):
+    def __init__(self, lines=()):
         self._lines = list(lines)
 
     def raise_for_status(self):
@@ -1583,7 +1584,7 @@ def test_a_bare_read_timeout_is_reported_as_a_named_stall(monkeypatch, lines, ex
     with pytest.raises(expected):
         asyncio.run(
             supervisor._stream_completion(
-                _waiting_run(0), [{"role": "user"}], report_progress = False
+                _waiting_run(0), [{"role": "user"}], report_progress=False
             )
         )
 
@@ -1609,7 +1610,7 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             ("content", content_chunks[2]),
         ]
     )
-    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    _install_fake_client(monkeypatch, [_response(200, body=stream)])
     monkeypatch.setattr(
         research_runs.db,
         "append_worker_event",
@@ -1646,109 +1647,109 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
         pytest.param(
             "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\r\n# Bericht\r\nInhalt",
             "# Bericht\r\nInhalt",
-            id = "crlf",
+            id="crlf",
         ),
         pytest.param(
             "Inline <!-- UNSLOTH_FINAL_REPORT --> mention.\n"
             "<!-- UNSLOTH_FINAL_REPORT -->\n# First\nDiscarded\n"
             "<!-- UNSLOTH_FINAL_REPORT -->\n# Final\nKept",
             "# Final\nKept",
-            id = "last-standalone-marker",
+            id="last-standalone-marker",
         ),
         pytest.param(
             "```html\n<!-- UNSLOTH_FINAL_REPORT -->\n```\n# Report\nBody",
             None,
-            id = "backtick-fence",
+            id="backtick-fence",
         ),
         pytest.param(
             "~~~\n<!-- UNSLOTH_FINAL_REPORT -->\n~~~\n# Report\nBody",
             None,
-            id = "tilde-fence",
+            id="tilde-fence",
         ),
         pytest.param(
             "    <!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
             None,
-            id = "indented-code",
+            id="indented-code",
         ),
         # A tab expands to a four-column tab stop, so these open an indented code block just as
         # four spaces do. Accepting them would publish what followed a merely quoted marker.
         pytest.param(
             "Analysis.\n\n\t<!-- UNSLOTH_FINAL_REPORT -->\nPrivate tail",
             None,
-            id = "tab-indented-code",
+            id="tab-indented-code",
         ),
         pytest.param(
             "Analysis.\n\n  \t<!-- UNSLOTH_FINAL_REPORT -->\nPrivate tail",
             None,
-            id = "tab-completes-the-fourth-column",
+            id="tab-completes-the-fourth-column",
         ),
         # Three columns is still a paragraph, so the marker there is the real boundary.
         pytest.param(
             "Planning.\n   <!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
             "# Report\nBody",
-            id = "three-space-indent-is-not-code",
+            id="three-space-indent-is-not-code",
         ),
         pytest.param(
             "Reasoning\n<!-- UNSLOTH_FINAL_REPORT -->",
             "",
-            id = "unterminated-marker-only",
+            id="unterminated-marker-only",
         ),
         pytest.param(
             "```bad`info\n<!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
             "# Report\nBody",
-            id = "invalid-backtick-info-is-not-a-fence",
+            id="invalid-backtick-info-is-not-a-fence",
         ),
         # The prompt shows the marker in backticks, so a model copying it verbatim emits it
         # that way; without this the preamble ships instead.
         pytest.param(
             "Planning.\n`<!-- UNSLOTH_FINAL_REPORT -->`\n## Zusammenfassung\nBericht",
             "## Zusammenfassung\nBericht",
-            id = "backticked-marker",
+            id="backticked-marker",
         ),
         # A fence inside a list item or quote was missed, so a marker quoted in it read as
         # ordinary text and published the private lines that followed.
         pytest.param(
             "Analysis.\n\n- ```\n  <!-- UNSLOTH_FINAL_REPORT -->\n  Private tail\n",
             None,
-            id = "fence-nested-in-a-list",
+            id="fence-nested-in-a-list",
         ),
         pytest.param(
             "Analysis.\n\n1. ```\n   <!-- UNSLOTH_FINAL_REPORT -->\n   Private tail\n",
             None,
-            id = "fence-nested-in-a-numbered-list",
+            id="fence-nested-in-a-numbered-list",
         ),
         pytest.param(
             "Analysis.\n\n> ```\n> <!-- UNSLOTH_FINAL_REPORT -->\n> Private tail\n",
             None,
-            id = "fence-nested-in-a-quote",
+            id="fence-nested-in-a-quote",
         ),
         # A list that never opens a fence must still leave a later marker usable.
         pytest.param(
             "- item one\n- item two\n<!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
             "# Report\nBody",
-            id = "list-without-a-fence",
+            id="list-without-a-fence",
         ),
         # splitlines breaks on these but rstrip("\r\n") leaves them, so without a full strip
         # the boundary is missed and the preamble ships instead.
         pytest.param(
             "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\x0c# Report\nBody",
             "# Report\nBody",
-            id = "form-feed-terminated-marker",
+            id="form-feed-terminated-marker",
         ),
         pytest.param(
             "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\x85# Report\nBody",
             "# Report\nBody",
-            id = "next-line-terminated-marker",
+            id="next-line-terminated-marker",
         ),
         pytest.param(
             "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\u2028# Report\nBody",
             "# Report\nBody",
-            id = "line-separator-terminated-marker",
+            id="line-separator-terminated-marker",
         ),
         pytest.param(
             "Planning.\n\u00a0<!-- UNSLOTH_FINAL_REPORT -->\u00a0\n# Report\nBody",
             "# Report\nBody",
-            id = "non-breaking-space-padded-marker",
+            id="non-breaking-space-padded-marker",
         ),
     ),
 )
@@ -1781,7 +1782,7 @@ def test_empty_or_truncated_synthesis_requires_recovery():
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
     # Gathered page text lands in these prompts, and --enable-tools would otherwise
     # override the request and expand an omitted enabled_tools to every built-in.
-    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    sent = _install_fake_client(monkeypatch, [_response(200, body=_stream_body())])
     supervisor = _make_supervisor(_noop_check_active)
     assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 1
@@ -1792,7 +1793,7 @@ def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
 
 
 def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypatch):
-    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    sent = _install_fake_client(monkeypatch, [_response(200, body=_stream_body())])
     supervisor = _make_supervisor(_noop_check_active)
     run = _waiting_run(30.0)
     run["config"]["inferenceRequest"] = {
@@ -1803,7 +1804,7 @@ def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypa
     }
 
     assert asyncio.run(
-        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress=False)
     ) == ("report", "", "stop", None)
     body = sent[0]["json"]
     assert body["provider_id"] == "provider-1"
@@ -1832,7 +1833,7 @@ def test_stream_completion_retries_a_transport_error_before_any_bytes_stream(mon
     delays = _capture_backoff(monkeypatch)
     sent = _install_fake_client(
         monkeypatch,
-        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
+        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body=_stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
     assert _run_stream(supervisor) == ("report", "", "stop", None)
@@ -1844,7 +1845,7 @@ def test_stream_completion_retries_a_transient_server_error(monkeypatch):
     delays = _capture_backoff(monkeypatch)
     sent = _install_fake_client(
         monkeypatch,
-        [_response(503, body = "overloaded"), _response(200, body = _stream_body())],
+        [_response(503, body="overloaded"), _response(200, body=_stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
     assert _run_stream(supervisor) == ("report", "", "stop", None)
@@ -1867,7 +1868,7 @@ def test_stream_completion_stops_after_three_transport_attempts(monkeypatch):
 
 def test_stream_completion_still_fails_fast_on_a_real_bad_request(monkeypatch):
     delays = _capture_backoff(monkeypatch)
-    sent = _install_fake_client(monkeypatch, [_response(400, detail = "Invalid 'tools'")])
+    sent = _install_fake_client(monkeypatch, [_response(400, detail="Invalid 'tools'")])
     supervisor = _make_supervisor(_noop_check_active)
     with pytest.raises(httpx.HTTPStatusError):
         _run_stream(supervisor)
@@ -1895,7 +1896,7 @@ def test_stream_completion_never_retries_once_the_report_has_streamed(monkeypatc
             raise httpx.ReadError("connection reset")
 
     sent = _install_fake_client(
-        monkeypatch, [_DropsMidStream(), _response(200, body = _stream_body())]
+        monkeypatch, [_DropsMidStream(), _response(200, body=_stream_body())]
     )
     supervisor = _make_supervisor(_noop_check_active)
     with pytest.raises(httpx.ReadError):
@@ -1908,12 +1909,12 @@ def test_stream_completion_rejects_in_band_error_after_partial_report(monkeypatc
     chunk = json.dumps({"choices": [{"delta": {"content": "half"}}]})
     error = json.dumps({"error": {"message": "generation failed"}})
     stream = f"data: {chunk}\n\ndata: {error}\n\ndata: [DONE]\n\n"
-    sent = _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    sent = _install_fake_client(monkeypatch, [_response(200, body=stream)])
     supervisor = _make_supervisor(_noop_check_active)
 
     # The server's own text is the only account of the cause there is, so it is what the
     # user must be shown. This used to be replaced with "Local model stream failed".
-    with pytest.raises(RuntimeError, match = "generation failed"):
+    with pytest.raises(RuntimeError, match="generation failed"):
         _run_stream(supervisor)
 
     assert len(sent) == 1
@@ -1933,7 +1934,7 @@ def test_stream_completion_reports_an_oversize_context_refusal_with_its_counts(m
         }
     )
     stream = f"data: {error}\n\ndata: [DONE]\n\n"
-    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    _install_fake_client(monkeypatch, [_response(200, body=stream)])
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -1953,7 +1954,7 @@ def test_stream_completion_explains_a_shared_kv_starvation(monkeypatch):
     # would have misdirected the user.
     error = json.dumps({"error": {"message": "Context size has been exceeded."}})
     stream = f"data: {error}\n\ndata: [DONE]\n\n"
-    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    _install_fake_client(monkeypatch, [_response(200, body=stream)])
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -1991,7 +1992,7 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
             supervisor._stream_completion(
                 _waiting_run(0.05),
                 [{"role": "user"}],
-                report_progress = False,
+                report_progress=False,
             ),
             # A hang guard, not the assertion. What is under test is that the run's own
             # 0.05s deadline is absolute even though keepalives keep arriving, and that
@@ -2000,7 +2001,7 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
             # loaded runner, so it fired first and the test failed with TimeoutError
             # instead of the ReadTimeout it was asserting -- a false failure about the
             # runner. An actual hang is unbounded, so 30s catches it just as well.
-            timeout = 30,
+            timeout=30,
         )
 
     with pytest.raises(httpx.ReadTimeout):
@@ -2032,7 +2033,7 @@ def test_stream_completion_times_out_when_output_stalls(monkeypatch):
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(research_runs.ModelOutputIdleTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+        _run_stream(supervisor, timeout_seconds=1.0)
 
 
 def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
@@ -2086,7 +2087,7 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenServedStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=5.0) == ("report", "", "stop", None)
 
 
 def _comment_only_stream(comment: str):
@@ -2149,7 +2150,7 @@ def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenAdmitted()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=10.0) == ("report", "", "stop", None)
 
 
 def test_the_budget_starts_when_admission_ends(monkeypatch):
@@ -2183,7 +2184,7 @@ def test_endless_admission_waits_still_end_at_the_wall_clock(monkeypatch):
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(research_runs.ModelWallClockTimeout):
-        _run_stream(supervisor, timeout_seconds = 0.4)
+        _run_stream(supervisor, timeout_seconds=0.4)
 
 
 def test_a_task_outliving_cleanup_has_its_outcome_absorbed(monkeypatch):
@@ -2261,7 +2262,7 @@ def test_a_configured_first_output_budget_reaches_the_stream(monkeypatch):
 
     started = time.monotonic()
     with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress=False))
     assert time.monotonic() - started < 5.0, "the configured budget must win over the constant"
 
 
@@ -2370,12 +2371,12 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
             return False
 
         def build_request(self, *args, **kwargs):
-            return SimpleNamespace(headers = {})
+            return SimpleNamespace(headers={})
 
         async def send(
             self,
             request,
-            stream = False,
+            stream=False,
         ):
             supervisor._cancel_event(run["id"]).set()
             try:
@@ -2392,7 +2393,7 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
     supervisor._check_active = _cancelled
 
     with pytest.raises(research_runs.RunCancelled):
-        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress=False))
     assert [w for w, _ in discards if w == "send"] == ["send"], f"discards: {discards}"
     # Measured over the cleanup itself rather than over the test's wall clock. The bound is a
     # TIMER, so a second one shows up as time spent waiting; everything before the cancellation
@@ -2453,7 +2454,7 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
     supervisor._check_active = _cancelled
 
     with pytest.raises(research_runs.RunCancelled):
-        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress=False))
     iterator_discards = [w for w, _ in discards if w == "stream_iterator"]
     assert len(iterator_discards) == 1, f"discarded {len(iterator_discards)} times: {discards}"
     # The time spent WAITING on cleanup, not the test's wall clock: see the send-side test above.
@@ -2486,7 +2487,7 @@ def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkey
 
 @pytest.mark.parametrize("body", ("data: [DONE]\n\n", ""))
 def test_stream_completion_rejects_zero_output_terminal_stream(monkeypatch, body):
-    _install_fake_client(monkeypatch, [_response(200, body = body)])
+    _install_fake_client(monkeypatch, [_response(200, body=body)])
     _shared_setup_2()
 
 
@@ -2497,7 +2498,7 @@ def test_stream_cancellation_wins_at_first_output_deadline():
     async def run():
         supervisor = _make_supervisor(_cancelled)
         supervisor._cancel_event("run-1").set()
-        response = _response(200, body = "")
+        response = _response(200, body="")
 
         def expired_deadline() -> float:
             raise research_runs.ModelFirstOutputTimeout()
@@ -2535,7 +2536,7 @@ def test_stream_cleanup_error_does_not_replace_output_stall(monkeypatch):
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(research_runs.ModelOutputIdleTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+        _run_stream(supervisor, timeout_seconds=1.0)
 
 
 def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
@@ -2563,7 +2564,7 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
     _install_fake_client(monkeypatch, [_ProgressStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=1.0) == ("report", "thinking", "stop", None)
 
 
 def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
@@ -2591,7 +2592,7 @@ def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch
     _install_fake_client(monkeypatch, [_SlowPrefillStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=1.0) == ("report", "", "stop", None)
 
 
 def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
@@ -2620,7 +2621,7 @@ def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
     _install_fake_client(monkeypatch, [_LongGenerationStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, _reasoning, finish_reason, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, _reasoning, finish_reason, _usage = _run_stream(supervisor, timeout_seconds=30.0)
     assert finish_reason == "stop"
     assert report.startswith("start w0 w1")
     assert report.endswith("w11")
@@ -2654,7 +2655,7 @@ def test_reasoning_only_prefix_disarms_the_first_output_deadline(monkeypatch):
     _install_fake_client(monkeypatch, [_LongThinkStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, reasoning, _finish, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, reasoning, _finish, _usage = _run_stream(supervisor, timeout_seconds=30.0)
     assert report == "answer"
     assert reasoning.startswith("t0 ")
 
@@ -2692,7 +2693,7 @@ def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
     _install_fake_client(monkeypatch, [_WhitespaceStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=1.0) == (" \n\treport", "", "stop", None)
 
 
 def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
@@ -2719,7 +2720,7 @@ def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
     _install_fake_client(monkeypatch, [_OpenSocketAfterDone()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=1.0) == ("report", "", "stop", None)
     assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
@@ -2747,7 +2748,7 @@ def test_research_timeout_errors_are_distinct(exc, message):
 def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch):
     # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
     # which is the very case these tests cover.
-    monkeypatch.delattr(research_runs.asyncio, "timeout", raising = False)
+    monkeypatch.delattr(research_runs.asyncio, "timeout", raising=False)
 
     async def run():
         async with research_runs._wall_clock_timeout(0.01):
@@ -2768,7 +2769,7 @@ def test_wall_clock_timeout_can_be_disabled():
 def test_wall_clock_timeout_does_not_swallow_shutdown_cancellation(monkeypatch):
     # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
     # which is the very case these tests cover.
-    monkeypatch.delattr(research_runs.asyncio, "timeout", raising = False)
+    monkeypatch.delattr(research_runs.asyncio, "timeout", raising=False)
 
     async def run(cleanup_started: asyncio.Event):
         async with research_runs._wall_clock_timeout(0.01):
@@ -2796,9 +2797,9 @@ def test_stream_completion_model_waits_do_not_refund_transport_attempts(monkeypa
     sent = _install_fake_client(
         monkeypatch,
         [
-            _response(400, detail = _NO_MODEL),
+            _response(400, detail=_NO_MODEL),
             httpx.ConnectError(_TRANSPORT_BLIP),
-            _response(400, detail = _NO_MODEL),
+            _response(400, detail=_NO_MODEL),
             httpx.ConnectError(_TRANSPORT_BLIP),
             httpx.ConnectError(_TRANSPORT_BLIP),
         ],
@@ -2821,7 +2822,7 @@ def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypa
 
     sent = _install_fake_client(
         monkeypatch,
-        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
+        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body=_stream_body())],
     )
     supervisor = _make_supervisor(_check_active)
     with pytest.raises(RunCancelled):
@@ -2834,25 +2835,25 @@ def _switch_failed(retry_after: str | None = "5") -> httpx.Response:
     """The 503 routes.inference returns while an auto-switch to the run's model is still loading."""
     return httpx.Response(
         503,
-        json = {
+        json={
             "error": {
                 "message": "The model 'local' is downloaded, but this server could not switch to it.",
                 "code": "model_switch_failed",
             }
         },
-        headers = {"Retry-After": retry_after} if retry_after else {},
-        request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions"),
+        headers={"Retry-After": retry_after} if retry_after else {},
+        request=httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions"),
     )
 
 
 def test_model_unloaded_matches_the_model_switch_refusal():
     assert asyncio.run(research_runs._model_unloaded(_switch_failed())) == "switching"
     # Any other 503 is a generic overload and keeps the plain transport backoff.
-    assert asyncio.run(research_runs._model_unloaded(_response(503, body = "overloaded"))) is None
+    assert asyncio.run(research_runs._model_unloaded(_response(503, body="overloaded"))) is None
 
 
 def _http_date_in(seconds):
-    at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds = seconds)
+    at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
     return at.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 
@@ -2873,7 +2874,7 @@ def test_stream_completion_waits_out_an_in_flight_model_switch(monkeypatch):
     monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
     delays = _capture_backoff(monkeypatch)
     sent = _install_fake_client(
-        monkeypatch, [_switch_failed(), _response(200, body = _stream_body())]
+        monkeypatch, [_switch_failed(), _response(200, body=_stream_body())]
     )
     supervisor = _make_supervisor(_noop_check_active)
 
@@ -2891,7 +2892,7 @@ def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(mo
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(httpx.HTTPStatusError):
-        _run_stream(supervisor, timeout_seconds = 900.0)
+        _run_stream(supervisor, timeout_seconds=900.0)
     assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
     # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
     assert sum(delays) == 30.0
@@ -2924,10 +2925,10 @@ def test_a_slow_admission_heartbeat_widens_the_queue_gap_bound(monkeypatch):
     """The gap between queue notices is bounded by the heartbeat operators configured."""
     monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "300")
     timeouts: list[httpx.Timeout] = []
-    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    _install_fake_client(monkeypatch, [_response(200, body=_stream_body())], timeouts)
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=0) == ("report", "", "stop", None)
     assert timeouts[0].read == 300 * 3 + research_runs._STREAM_READ_TIMEOUT_MARGIN_SECONDS
 
 
@@ -2939,19 +2940,19 @@ def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatc
     _install_fake_client(monkeypatch, [_slow_admission_stream(0.15)])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert _run_stream(supervisor, timeout_seconds=0) == ("report", "", "stop", None)
 
 
 def _send_attempts(
     monkeypatch,
     status,
-    headers = None,
-    model_timeout = 900.0,
-    first_output = 5.0,
-    on_wait = None,
-    on_check = None,
-    body = b"{}",
-    errors = None,
+    headers=None,
+    model_timeout=900.0,
+    first_output=5.0,
+    on_wait=None,
+    on_check=None,
+    body=b"{}",
+    errors=None,
 ):
     """Drive the real send/retry loop against a canned response; return (attempts, waits).
 
@@ -2986,13 +2987,13 @@ def _send_attempts(
     async def _send(
         self,
         request,
-        stream = False,
+        stream=False,
     ):
         if waited["t"]:
             waits.append(round(waited["t"], 2))
             waited["t"] = 0.0
         attempts.append(request.url)
-        return httpx.Response(status, headers = headers or {}, content = body, request = request)
+        return httpx.Response(status, headers=headers or {}, content=body, request=request)
 
     async def _check_active(run_id):
         if on_check is not None:
@@ -3007,7 +3008,7 @@ def _send_attempts(
     monkeypatch.setattr(research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None)
     supervisor._note_phase = lambda *a, **k: real_sleep(0)
     supervisor._check_active = _check_active
-    supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set = lambda: False)
+    supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set=lambda: False)
     supervisor._endpoint = lambda: "http://127.0.0.1:9/v1/chat/completions"
     supervisor._discard_task = lambda *a, **k: real_sleep(0)
 
@@ -3030,7 +3031,7 @@ def test_rate_limit_honours_retry_after(monkeypatch):
 def test_rate_limit_wait_is_capped_by_what_is_left_of_the_call(monkeypatch):
     # The cap is the call's own wall clock less the room the re-send needs (20 - 5, shrinking
     # as the call runs), not the model-load share a 20s budget would allow (5).
-    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout=20.0)
     assert len(waits) == 2
     assert all(13.0 < wait <= 15.0 for wait in waits), waits
 
@@ -3044,8 +3045,8 @@ def test_a_wall_clock_no_larger_than_the_first_output_budget_still_waits(monkeyp
         monkeypatch,
         429,
         {"Retry-After": "30"},
-        model_timeout = 120.0,
-        first_output = 120.0,
+        model_timeout=120.0,
+        first_output=120.0,
     )
     assert waits == [30.0, 30.0]
 
@@ -3089,13 +3090,13 @@ def test_a_retry_after_date_already_past_falls_back_to_the_backoff(monkeypatch):
 
 def test_an_unlimited_run_honours_the_whole_retry_after(monkeypatch):
     # No wall clock to divide, so nothing may trim the provider's delay to a model-load share.
-    unlimited = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 0.0)
+    unlimited = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout=0.0)
     assert unlimited == (3, [300.0, 300.0])
 
 
 def test_an_unlimited_rate_limit_wait_still_has_a_ceiling(monkeypatch):
     # Unlimited is not "park this run for a day on one header".
-    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "86400"}, model_timeout = 0.0)
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "86400"}, model_timeout=0.0)
     assert waits == [research_runs._MAX_RATE_LIMIT_WAIT_SECONDS] * 2
 
 
@@ -3104,15 +3105,15 @@ def test_a_rate_limit_delivered_inside_the_stream_is_retried(monkeypatch):
     # the status line never shows it and the run used to end on the first send.
     errors = []
     body = _provider_error_sse(_PROVIDER_429)
-    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (3, [1, 2])
+    assert _send_attempts(monkeypatch, 200, body=body, errors=errors) == (3, [1, 2])
     assert "Rate limit reached for gpt-4o" in str(errors[0])
 
 
 def test_an_in_band_rate_limit_honours_the_forwarded_retry_after(monkeypatch):
     # The proxy carries the provider's Retry-After in the error line, since the 200 the stream
     # rides on has no status line left to put it on.
-    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = "30"))
-    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after="30"))
+    assert _send_attempts(monkeypatch, 200, body=body) == (3, [30.0, 30.0])
 
 
 def test_a_chatgpt_quota_refusal_in_the_stream_is_retried(monkeypatch):
@@ -3124,12 +3125,12 @@ def test_a_chatgpt_quota_refusal_in_the_stream_is_retried(monkeypatch):
             "metadata": {"retry_after": "30"},
         }
     )
-    assert _send_attempts(monkeypatch, 200, body = body) == (3, [30.0, 30.0])
+    assert _send_attempts(monkeypatch, 200, body=body) == (3, [30.0, 30.0])
 
 
 def test_an_in_band_retry_after_http_date_is_read_as_a_delay(monkeypatch):
-    body = _provider_error_sse(dict(_PROVIDER_429, retry_after = _http_date_in(30)))
-    _, waits = _send_attempts(monkeypatch, 200, body = body)
+    body = _provider_error_sse(dict(_PROVIDER_429, retry_after=_http_date_in(30)))
+    _, waits = _send_attempts(monkeypatch, 200, body=body)
     assert len(waits) == 2
     assert all(27.0 < wait <= 30.0 for wait in waits), waits
 
@@ -3144,14 +3145,14 @@ def test_a_terminal_quota_refusal_is_not_retried(monkeypatch):
             "metadata": {"retry_after": "30", "terminal": True},
         }
     )
-    assert _send_attempts(monkeypatch, 200, body = body) == (1, [])
+    assert _send_attempts(monkeypatch, 200, body=body) == (1, [])
 
 
 def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
     # A wait past the call key's expiry would fail auth without reaching the provider, and an
     # unlimited run has no wall clock, which leaves the key as the only thing bounding it.
     monkeypatch.setattr(research_runs, "_MODEL_CALL_KEY_LIFETIME_SECONDS", 100)
-    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout = 0.0)
+    _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "3000"}, model_timeout=0.0)
     # 100 less the 5s reserve: not the 3000s asked for, and not the standing ceiling.
     assert len(waits) == 2
     assert all(93.0 < wait <= 95.0 for wait in waits), waits
@@ -3179,9 +3180,9 @@ def test_a_blank_first_line_survives_the_peek_and_replay():
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):
     # Only a rate limit is transient; anything else must surface on the first send.
     errors = []
-    other = dict(_PROVIDER_429, code = "400", message = "Unsupported parameter")
+    other = dict(_PROVIDER_429, code="400", message="Unsupported parameter")
     body = _provider_error_sse(other)
-    assert _send_attempts(monkeypatch, 200, body = body, errors = errors) == (1, [])
+    assert _send_attempts(monkeypatch, 200, body=body, errors=errors) == (1, [])
     assert "Unsupported parameter" in str(errors[0])
 
 
@@ -3203,8 +3204,8 @@ def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(mon
         monkeypatch,
         429,
         {"Retry-After": "30"},
-        on_wait = _cancel_once_the_wait_starts,
-        on_check = _end_when_cancelled,
+        on_wait=_cancel_once_the_wait_starts,
+        on_check=_end_when_cancelled,
     )
 
     assert ended, "the wait never re-checked the run"
@@ -3215,7 +3216,7 @@ def test_a_cancel_during_the_rate_limit_wait_is_not_held_for_the_retry_after(mon
 
 
 def _endpoint_supervisor(**state) -> ResearchSupervisor:
-    return ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 8889, **state)))
+    return ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=8889, **state)))
 
 
 @pytest.mark.parametrize(
@@ -3228,19 +3229,19 @@ def _endpoint_supervisor(**state) -> ResearchSupervisor:
     ],
 )
 def test_endpoint_dials_the_address_the_server_is_bound_to(bound_host, expected_authority):
-    supervisor = _endpoint_supervisor(server_request_host = bound_host)
+    supervisor = _endpoint_supervisor(server_request_host=bound_host)
     assert supervisor._endpoint() == f"http://{expected_authority}/v1/chat/completions"
 
 
 def test_endpoint_falls_back_to_the_noted_request_host():
-    supervisor = _endpoint_supervisor(research_request_host = "10.1.2.3")
+    supervisor = _endpoint_supervisor(research_request_host="10.1.2.3")
     assert supervisor._endpoint() == "http://10.1.2.3:8889/v1/chat/completions"
 
 
 def test_endpoint_prefers_the_bound_host_over_a_noted_one():
     supervisor = _endpoint_supervisor(
-        server_request_host = "192.168.1.239",
-        research_request_host = "10.1.2.3",
+        server_request_host="192.168.1.239",
+        research_request_host="10.1.2.3",
     )
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
 
@@ -3251,7 +3252,7 @@ def test_endpoint_uses_loopback_when_no_address_was_published():
 
 def test_note_server_address_records_the_accepting_address_outside_run_server():
     state = SimpleNamespace()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(("192.168.1.239", 8889))
     assert state.research_request_host == "192.168.1.239"
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
@@ -3259,7 +3260,7 @@ def test_note_server_address_records_the_accepting_address_outside_run_server():
 
 def test_note_server_address_maps_a_wildcard_bind_back_to_loopback():
     state = SimpleNamespace()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(("0.0.0.0", 8889))
     # On the recorded address, not the endpoint: loopback is also the fallback.
     assert state.research_request_host == "127.0.0.1"
@@ -3268,8 +3269,8 @@ def test_note_server_address_maps_a_wildcard_bind_back_to_loopback():
 
 def test_note_server_address_records_the_address_when_only_the_port_is_published():
     # run_server publishes the port before it binds, the address only once bound.
-    state = SimpleNamespace(server_port = 8889, server_request_host = None)
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    state = SimpleNamespace(server_port=8889, server_request_host=None)
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(("192.168.1.239", 8889))
     assert state.research_request_host == "192.168.1.239"
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
@@ -3284,7 +3285,7 @@ def test_note_server_address_records_the_address_when_only_the_port_is_published
 )
 def test_a_wildcard_bind_settles_on_loopback_in_either_arrival_order(arrivals):
     state = SimpleNamespace()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     for server in arrivals:
         supervisor.note_server_address(server)
     assert state.research_request_host == "127.0.0.1"
@@ -3293,7 +3294,7 @@ def test_a_wildcard_bind_settles_on_loopback_in_either_arrival_order(arrivals):
 
 def test_a_single_interface_bind_still_latches_its_own_address():
     state = SimpleNamespace()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(("192.168.1.239", 8889))
     supervisor.note_server_address(("192.168.1.239", 8889))
     assert state.research_request_host == "192.168.1.239"
@@ -3302,14 +3303,14 @@ def test_a_single_interface_bind_still_latches_its_own_address():
 @pytest.mark.parametrize("server", [None, (), ("",), ("192.168.1.239",), ("", 8889), (8889,)])
 def test_note_server_address_ignores_scope_values_that_carry_no_address(server):
     state = SimpleNamespace()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(server)
     assert getattr(state, "research_request_host", None) is None
 
 
 def test_note_server_address_defers_to_run_server_published_state():
-    state = SimpleNamespace(server_port = 8889, server_request_host = "192.168.1.239")
-    supervisor = ResearchSupervisor(SimpleNamespace(state = state))
+    state = SimpleNamespace(server_port=8889, server_request_host="192.168.1.239")
+    supervisor = ResearchSupervisor(SimpleNamespace(state=state))
     supervisor.note_server_address(("127.0.0.1", 9999))
     assert getattr(state, "research_request_host", None) is None
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
@@ -3645,10 +3646,10 @@ def test_restoring_many_code_spans_stays_linear():
 
 def test_sanitize_config_keeps_the_reasoning_support_flags():
     request = {"model": "m", "supportsReasoning": True, "supportsReasoningOff": False}
-    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    config = _sanitize_config(_make_payload(inferenceRequest=dict(request)), {"modelId": "other"})
     assert config["inferenceRequest"] == request
     with pytest.raises(Exception):
         _sanitize_config(
-            _make_payload(inferenceRequest = {"model": "m", "supportsReasoningOff": "no"}),
+            _make_payload(inferenceRequest={"model": "m", "supportsReasoningOff": "no"}),
             {"modelId": "m"},
         )

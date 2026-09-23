@@ -22,17 +22,17 @@ _FAKE_HF_TOKEN = "not-a-real-hf-token-0000"
 _FAKE_WANDB_TOKEN = "not-a-real-wandb-token-1111"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_ambient_tokens(monkeypatch):
     """HF_TOKEN/WANDB_API_KEY are envvars on --hf-token/--wandb-token, and the generated
     options feed them into cfg.logging, so a developer who exports one fails the unset cases."""
     for var in ("HF_TOKEN", "WANDB_API_KEY"):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
 
 
 def _write(tmp_path, body: str) -> Path:
     path = tmp_path / "config.yaml"
-    path.write_text(body, encoding = "utf-8")
+    path.write_text(body, encoding="utf-8")
     return path
 
 

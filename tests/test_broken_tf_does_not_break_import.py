@@ -29,7 +29,7 @@ import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INIT = _ROOT / "unsloth" / "__init__.py"
-_SOURCE = _INIT.read_text(encoding = "utf-8")
+_SOURCE = _INIT.read_text(encoding="utf-8")
 
 _BROKEN_TF = "raise ImportError(\"cannot import name 'runtime_version' from 'google.protobuf'\")\n"
 
@@ -40,13 +40,13 @@ def _fake_tensorflow(tmp_path):
     `.dist-info/METADATA`. Never touches site-packages."""
     site = tmp_path / "fakesite"
     package = site / "tensorflow"
-    package.mkdir(parents = True)
-    (package / "__init__.py").write_text(_BROKEN_TF, encoding = "utf-8")
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(_BROKEN_TF, encoding="utf-8")
     dist = site / "tensorflow-2.20.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: tensorflow\nVersion: 2.20.0\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return site
 
@@ -55,13 +55,13 @@ def _working_tensorflow(tmp_path):
     """A `tensorflow` that Transformers detects *and* imports cleanly."""
     site = tmp_path / "worksite"
     package = site / "tensorflow"
-    package.mkdir(parents = True)
-    (package / "__init__.py").write_text('__version__ = "2.20.0"\n', encoding = "utf-8")
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "2.20.0"\n', encoding="utf-8")
     dist = site / "tensorflow-2.20.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: tensorflow\nVersion: 2.20.0\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return site
 
@@ -74,7 +74,7 @@ _BACKEND_ENV = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
 
 def _run(
     code,
-    site = None,
+    site=None,
     **env,
 ):
     """Run `code` in a fresh interpreter, so no module state leaks between cases."""
@@ -85,10 +85,10 @@ def _run(
     clean = {k: v for k, v in os.environ.items() if k not in _BACKEND_ENV}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output = True,
-        text = True,
-        env = dict(clean, PYTHONPATH = os.pathsep.join(path), **env),
-        timeout = 900,
+        capture_output=True,
+        text=True,
+        env=dict(clean, PYTHONPATH=os.pathsep.join(path), **env),
+        timeout=900,
     )
 
 
@@ -115,7 +115,7 @@ def _v4_names():
         from transformers.utils import import_utils
         for name in {names!r}:
             print("HAS", name, hasattr(import_utils, name))
-        """.format(names = _V4_ONLY),
+        """.format(names=_V4_ONLY),
     )
     if out.returncode != 0:
         return {}
@@ -135,8 +135,8 @@ def _needs_v4_flag(name):
 def _exec_guard(modules, environ):
     """Execute the opt-out block against a synthetic `sys.modules` / environment."""
     scope = {
-        "os": types.SimpleNamespace(environ = environ),
-        "sys": types.SimpleNamespace(modules = modules),
+        "os": types.SimpleNamespace(environ=environ),
+        "sys": types.SimpleNamespace(modules=modules),
     }
     exec(ast.unparse(_guard_block()), scope)
 
@@ -166,7 +166,7 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
             for node in ast.walk(ast.parse(_SOURCE))
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers")
         ),
-        default = 10**9,
+        default=10**9,
     )
     assert block.lineno < first_import
 
@@ -212,17 +212,17 @@ def test_a_value_that_means_off_is_normalised_rather_than_preserved():
 def test_transformers_reads_the_variable_from_the_environment(value):
     """The half in Transformers: read once at import, so ours must land first."""
     _needs_v4_flag("USE_TF")
-    env = dict(os.environ, USE_TF = value)
+    env = dict(os.environ, USE_TF=value)
     out = subprocess.run(
         [
             sys.executable,
             "-c",
             "from transformers.utils import import_utils; print(import_utils.USE_TF)",
         ],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 300,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
     )
     if out.returncode != 0:
         pytest.skip(f"transformers not importable here: {out.stderr.strip()[:200]}")
@@ -264,7 +264,7 @@ def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
         print("TF_LOADED", "tensorflow" in sys.modules)
         print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
         """,
-        site = _fake_tensorflow(tmp_path),
+        site=_fake_tensorflow(tmp_path),
     )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "TF_LOADED False" in out.stdout, out.stdout
@@ -285,7 +285,7 @@ def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_
         print("USE_TF", getattr(import_utils, "USE_TF", "ABSENT"))
         print("TF_LOADED", "tensorflow" in sys.modules)
         """,
-        site = _fake_tensorflow(tmp_path),
+        site=_fake_tensorflow(tmp_path),
     )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF 0" in out.stdout, out.stdout
@@ -300,7 +300,7 @@ def _run_env_branch(tmp_path, preamble, site, **env):
     leaving TF enabled makes Transformers import `TFPreTrainedModel`, which needs
     a genuine `tf.keras` (and h5py), not a stub."""
     guard = tmp_path / "env_guard.py"
-    guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
+    guard.write_text(ast.unparse(_guard_block()), encoding="utf-8")
     return _run(
         f"""
         import os, sys
@@ -310,7 +310,7 @@ def _run_env_branch(tmp_path, preamble, site, **env):
         print("ENV_USE_TF", os.environ.get("USE_TF"))
         print("ENV_USE_FLAX", os.environ.get("USE_FLAX"))
         """,
-        site = site,
+        site=site,
         **env,
     )
 
@@ -330,7 +330,7 @@ def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_
             from transformers.utils import import_utils
             print("TF_AVAILABLE", getattr(import_utils, "_tf_available", "ABSENT"))
             """,
-            site = site,
+            site=site,
         )
         assert probe.returncode == 0, probe.stderr[-3000:]
         assert "TF_AVAILABLE True" in probe.stdout, probe.stdout
@@ -349,7 +349,7 @@ def _run_guard(tmp_path, preamble, **env):
     """Run the block against a real, already-imported Transformers (v4 only)."""
     _needs_v4_flag("_tf_available")
     guard = tmp_path / "guard.py"
-    guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
+    guard.write_text(ast.unparse(_guard_block()), encoding="utf-8")
     return _run(
         f"""
         import os, sys, types, transformers
@@ -359,7 +359,7 @@ def _run_guard(tmp_path, preamble, **env):
         exec(open({str(guard)!r}).read())
         print("AFTER", import_utils._tf_available)
         """,
-        site = _fake_tensorflow(tmp_path),
+        site=_fake_tensorflow(tmp_path),
         **env,
     )
 
@@ -367,7 +367,7 @@ def _run_guard(tmp_path, preamble, **env):
 def test_an_explicit_opt_in_keeps_the_backend(tmp_path):
     """FORCE_TF_AVAILABLE=1 means the user wants TensorFlow; never sabotage that.
     Not USE_TF=1, which Transformers also reads as "disable PyTorch"."""
-    out = _run_guard(tmp_path, "", FORCE_TF_AVAILABLE = "1")
+    out = _run_guard(tmp_path, "", FORCE_TF_AVAILABLE="1")
     assert out.returncode == 0, out.stderr[-3000:]
     assert "BEFORE True" in out.stdout and "AFTER True" in out.stdout, out.stdout
 
@@ -392,7 +392,7 @@ def test_an_opt_in_that_was_consumed_and_restored_still_counts(tmp_path):
     out = _run_guard(
         tmp_path,
         'del os.environ["FORCE_TF_AVAILABLE"]',
-        FORCE_TF_AVAILABLE = "1",
+        FORCE_TF_AVAILABLE="1",
     )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "BEFORE True" in out.stdout and "AFTER True" in out.stdout, out.stdout
@@ -463,7 +463,7 @@ def test_the_partial_window_write_leaves_an_imported_backend_alone():
         ({"tensorflow": object(), "flax": object()}, {}),
     ):
         environ = {}
-        _exec_guard(dict(modules, transformers = types.ModuleType("transformers")), environ)
+        _exec_guard(dict(modules, transformers=types.ModuleType("transformers")), environ)
         assert environ == expected, modules
 
 
@@ -492,7 +492,7 @@ def test_the_subprocess_environment_drops_every_backend_variable(monkeypatch):
         import os
         for name in {names!r}:
             print("ENV", name, os.environ.get(name))
-        """.format(names = names),
+        """.format(names=names),
     )
     assert out.returncode == 0, out.stderr[-3000:]
     for name in names:
@@ -509,7 +509,7 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
     assert import_utils._flax_available is False
     # jax in play means Flax is genuinely in use.
     import_utils._flax_available = True
-    _exec_guard(dict(modules, jax = object()), {})
+    _exec_guard(dict(modules, jax=object()), {})
     assert import_utils._flax_available is True
     import_utils._flax_available = True
     _exec_guard(modules, {"USE_FLAX": "yes"})
@@ -520,7 +520,7 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
         assert import_utils._tf_available is True, _var
     # An imported TensorFlow is one in use.
     import_utils._tf_available = True
-    _exec_guard(dict(modules, tensorflow = object()), {})
+    _exec_guard(dict(modules, tensorflow=object()), {})
     assert import_utils._tf_available is True
 
 
@@ -624,8 +624,8 @@ def test_a_broken_backend_loses_inside_the_real_import_utils_window(tmp_path):
 
         exec(compile(tail, real.__file__, "exec"), window.__dict__)
         print("TF", window.__dict__["_tf_available"])
-        """.format(root = str(_ROOT)),
-        site = _fake_tensorflow(tmp_path),
+        """.format(root=str(_ROOT)),
+        site=_fake_tensorflow(tmp_path),
     )
     assert out.returncode == 0, out.stderr[-3000:]
     assert "WINDOW AUTO False" in out.stdout, out.stdout

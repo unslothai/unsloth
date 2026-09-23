@@ -46,7 +46,7 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _capturing_handler(captured: dict):
@@ -54,8 +54,8 @@ def _capturing_handler(captured: dict):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     return handler
@@ -110,7 +110,7 @@ def test_registry_default_still_hides_self_hosted_presets():
 def test_registry_include_hidden_returns_presets_flagged():
     """``include_hidden=true`` is how a bundle that *does* know asks."""
     entries = {
-        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry for entry in list_available_providers(include_hidden=True)
     }
     for preset in SELF_HOSTED_PRESETS:
         assert preset in entries, f"{preset} missing from include_hidden payload"
@@ -120,7 +120,7 @@ def test_registry_include_hidden_returns_presets_flagged():
 
 def test_hidden_flag_matches_the_registry_source_of_truth():
     """Every row's ``hidden`` mirrors the registry, so the UI filter is total."""
-    for entry in list_available_providers(include_hidden = True):
+    for entry in list_available_providers(include_hidden=True):
         expected = bool(PROVIDER_REGISTRY[entry["provider_type"]].get("hidden"))
         assert entry["hidden"] is expected
 
@@ -129,7 +129,7 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
     """Asking for hidden rows must not perturb the rows the old bundle reads."""
     default_rows = list_available_providers()
     widened = {
-        entry["provider_type"]: entry for entry in list_available_providers(include_hidden = True)
+        entry["provider_type"]: entry for entry in list_available_providers(include_hidden=True)
     }
     for row in default_rows:
         assert row == widened[row["provider_type"]]
@@ -137,7 +137,7 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
 
 def test_registry_rows_keep_every_pre_change_key():
     """Additive only. A cached bundle reads these keys off every row."""
-    for entry in list_available_providers(include_hidden = True):
+    for entry in list_available_providers(include_hidden=True):
         missing = LEGACY_REGISTRY_KEYS - set(entry)
         assert not missing, f"{entry['provider_type']} lost legacy keys {missing}"
 
@@ -197,7 +197,7 @@ def test_unknown_provider_types_degrade_closed(provider_type):
 
 
 def test_capability_flag_agrees_with_the_registry_entry():
-    for entry in list_available_providers(include_hidden = True):
+    for entry in list_available_providers(include_hidden=True):
         assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
 
 
@@ -263,17 +263,17 @@ def test_response_format_is_omitted_when_the_caller_does_not_ask(monkeypatch):
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "custom",
-            base_url = "http://custom.example/v1",
-            api_key = "",
+            provider_type="custom",
+            base_url="http://custom.example/v1",
+            api_key="",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "local-model",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "ping"}],
+                model="local-model",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
             )
         )
         await client.close()
@@ -289,18 +289,18 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "custom",
-            base_url = "http://custom.example/v1",
-            api_key = "",
+            provider_type="custom",
+            base_url="http://custom.example/v1",
+            api_key="",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "local-model",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
-                response_format = {"type": "json_object"},
+                messages=[{"role": "user", "content": "ping"}],
+                model="local-model",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
+                response_format={"type": "json_object"},
             )
         )
         await client.close()
@@ -323,17 +323,17 @@ def test_gemini_translates_response_format_to_a_response_mime_type(monkeypatch):
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "gemini",
-            base_url = "https://generativelanguage.googleapis.com/v1beta",
-            api_key = "k",
+            provider_type="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="k",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "Return only strict JSON"}],
-                model = "gemini-3-pro",
-                tool_choice = "none",
-                enabled_tools = [],
-                response_format = {"type": "json_object"},
+                messages=[{"role": "user", "content": "Return only strict JSON"}],
+                model="gemini-3-pro",
+                tool_choice="none",
+                enabled_tools=[],
+                response_format={"type": "json_object"},
             )
         )
         await client.close()
@@ -350,22 +350,22 @@ def test_gemini_skips_the_json_mime_type_when_tools_are_sent(monkeypatch):
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "gemini",
-            base_url = "https://generativelanguage.googleapis.com/v1beta",
-            api_key = "k",
+            provider_type="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="k",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gemini-3-pro",
-                tools = [
+                messages=[{"role": "user", "content": "hi"}],
+                model="gemini-3-pro",
+                tools=[
                     {
                         "type": "function",
                         "function": {"name": "web_search", "parameters": {"type": "object"}},
                     }
                 ],
-                tool_choice = "auto",
-                response_format = {"type": "json_object"},
+                tool_choice="auto",
+                response_format={"type": "json_object"},
             )
         )
         await client.close()
@@ -406,15 +406,15 @@ def test_openai_responses_translates_response_format_to_text_format(
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "k",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="k",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "Return only strict JSON"}],
-                model = "gpt-5.1",
-                response_format = response_format,
+                messages=[{"role": "user", "content": "Return only strict JSON"}],
+                model="gpt-5.1",
+                response_format=response_format,
             )
         )
         await client.close()

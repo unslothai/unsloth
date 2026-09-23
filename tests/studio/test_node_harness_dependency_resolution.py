@@ -40,7 +40,7 @@ def test_an_imported_helper_is_followed_out_of_its_own_module():
 
 def test_the_helper_is_carried_verbatim():
     """Sliced, not restated: a paraphrase would pass while testing a different function."""
-    body = SEARCH_IMAGES.read_text(encoding = "utf-8")
+    body = SEARCH_IMAGES.read_text(encoding="utf-8")
     start = body.index("export function stripSearchImageTokens(")
     end = body.index("\n}", start) + 2
     verbatim = body[start:end].removeprefix("export ")
@@ -88,12 +88,12 @@ def test_braces_inside_strings_and_regexes_do_not_end_a_declaration():
 @pytest.mark.parametrize(
     "source",
     [
-        pytest.param("function f() {\n  return `a${b}c`;\n}\n", id = "template_hole"),
-        pytest.param("function f() {\n  return `${`${x}`}`;\n}\n", id = "nested_template"),
-        pytest.param("function f() {\n  return /^F\\d{1,2}$/.test(k);\n}\n", id = "returned_regex"),
-        pytest.param("function f() {\n  return /a'b/.test(k);\n}\n", id = "quote_in_regex"),
-        pytest.param("const r = x / y / z;\nconst s = 1;\n", id = "division"),
-        pytest.param('const c = { "}": 1 };\n', id = "brace_key"),
+        pytest.param("function f() {\n  return `a${b}c`;\n}\n", id="template_hole"),
+        pytest.param("function f() {\n  return `${`${x}`}`;\n}\n", id="nested_template"),
+        pytest.param("function f() {\n  return /^F\\d{1,2}$/.test(k);\n}\n", id="returned_regex"),
+        pytest.param("function f() {\n  return /a'b/.test(k);\n}\n", id="quote_in_regex"),
+        pytest.param("const r = x / y / z;\nconst s = 1;\n", id="division"),
+        pytest.param('const c = { "}": 1 };\n', id="brace_key"),
     ],
 )
 def test_the_scanner_leaves_every_shape_balanced(source):
@@ -109,7 +109,7 @@ def test_the_whole_frontend_scans_balanced():
     unbalanced = [
         path
         for path in sorted(root.rglob("*.ts"))
-        if not _balanced(_blank_noise(path.read_text(encoding = "utf-8")))
+        if not _balanced(_blank_noise(path.read_text(encoding="utf-8")))
     ]
     assert unbalanced == []
 
@@ -126,10 +126,10 @@ def test_a_declaration_is_refused_rather_than_sliced_into_its_neighbour():
 def test_a_pulled_const_that_needs_a_fixture_is_dropped_not_emitted(tmp_path):
     """The fixtures sit below this block, so reading one from it is a TDZ crash."""
     module = tmp_path / "src" / "m.ts"
-    module.parent.mkdir(parents = True)
+    module.parent.mkdir(parents=True)
     module.write_text('export const BASE = "real";\nexport const HEADERS = [BASE, "x"];\n')
     resolved = resolve_dependencies(
-        'const BASE = "STUB";\nconst used = HEADERS;\n', (module,), root = tmp_path / "src"
+        'const BASE = "STUB";\nconst used = HEADERS;\n', (module,), root=tmp_path / "src"
     )
     assert "const HEADERS" not in resolved.replace("const used = HEADERS;", "")
 
@@ -137,10 +137,10 @@ def test_a_pulled_const_that_needs_a_fixture_is_dropped_not_emitted(tmp_path):
 def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
     """``const { only, ...rest } = ...`` is a binding a declaration regex does not see."""
     module = tmp_path / "src" / "m.ts"
-    module.parent.mkdir(parents = True)
+    module.parent.mkdir(parents=True)
     module.write_text("export function only() {\n  return 1;\n}\nexport const pair = { only };\n")
     resolved = resolve_dependencies(
-        "const { only } = fixtures;\nconst used = only();\n", (module,), root = tmp_path / "src"
+        "const { only } = fixtures;\nconst used = only();\n", (module,), root=tmp_path / "src"
     )
     assert "function only(" not in resolved
 
@@ -148,7 +148,7 @@ def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
 def test_every_harness_test_asks_for_resolution():
     """A suite that slices source without passing ``sources`` is one refactor from #9490 again."""
     for path in sorted((WORKDIR / "tests" / "studio").glob("test_*.py")):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         for call in re.findall(r"run_harness\((?:[^()]|\([^()]*\))*\)", text):
             if "_harness_source()" not in call:
                 continue  # No slices to follow: this one builds its script inline.

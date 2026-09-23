@@ -25,9 +25,9 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
@@ -43,14 +43,14 @@ def _capture(monkeypatch, events: list[dict]) -> list[str]:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     lines: list[str] = []
@@ -59,9 +59,9 @@ def _capture(monkeypatch, events: list[dict]) -> list[str]:
         client = _make_client()
         try:
             async for line in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "what color is grass?"}],
-                model = "claude-opus-4-7",
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "what color is grass?"}],
+                model="claude-opus-4-7",
+                max_tokens=64,
             ):
                 lines.append(line)
         finally:

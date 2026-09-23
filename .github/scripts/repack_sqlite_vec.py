@@ -25,7 +25,7 @@ def record_line(name: str, blob: bytes) -> str:
     return f"{name},sha256={digest},{len(blob)}"
 
 
-out.mkdir(parents = True, exist_ok = True)
+out.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
     names = zin.namelist()
     record_name = next(n for n in names if n.endswith(".dist-info/RECORD"))

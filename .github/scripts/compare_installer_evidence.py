@@ -273,7 +273,7 @@ def _unified(
 
     diff = list(
         difflib.unified_diff(
-            base, head, fromfile = f"base/{label}", tofile = f"head/{label}", lineterm = "", n = 2
+            base, head, fromfile=f"base/{label}", tofile=f"head/{label}", lineterm="", n=2
         )
     )
     if len(diff) > limit:
@@ -690,8 +690,8 @@ def _load(path: Path, verdict: Verdict, what: str):
         # utf-8-sig, not utf-8: Windows PowerShell 5.1 writes a BOM for `Set-Content -Encoding
         # utf8`, and a BOM makes json.loads fail on a file that is otherwise perfectly good.
         if path.suffix == ".json":
-            return json.loads(path.read_text(encoding = "utf-8-sig", errors = "replace"))
-        return path.read_text(encoding = "utf-8-sig", errors = "replace")
+            return json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, ValueError) as exc:
         verdict.void.append(f"{what} at {path} could not be read: {exc}")
         return None
@@ -906,13 +906,13 @@ def self_test() -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--base", type = Path, help = "directory holding the base side's evidence")
-    parser.add_argument("--head", type = Path, help = "directory holding the head side's evidence")
-    parser.add_argument("--base-sha", default = "")
-    parser.add_argument("--head-sha", default = "")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", type=Path, help="directory holding the base side's evidence")
+    parser.add_argument("--head", type=Path, help="directory holding the head side's evidence")
+    parser.add_argument("--base-sha", default="")
+    parser.add_argument("--head-sha", default="")
     parser.add_argument(
-        "--self-test", action = "store_true", help = "run the positive controls and exit"
+        "--self-test", action="store_true", help="run the positive controls and exit"
     )
     args = parser.parse_args(argv)
 

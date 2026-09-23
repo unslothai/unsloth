@@ -25,7 +25,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
 
 _BODY = next(
     node.body
-    for node in ast.parse(open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()).body
+    for node in ast.parse(open(CHAT_TEMPLATES_PATH, encoding="utf-8").read()).body
     if isinstance(node, ast.FunctionDef) and node.name == "construct_chat_template"
 )
 
@@ -49,7 +49,7 @@ def _unwrap_branch():
 def _run(tokenizer):
     namespace = {"tokenizer": tokenizer, "ProcessorMixin": _ProcessorMixin}
     exec(
-        compile(ast.Module(body = [_unwrap_branch()], type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
+        compile(ast.Module(body=[_unwrap_branch()], type_ignores=[]), CHAT_TEMPLATES_PATH, "exec"),
         namespace,
     )
     return namespace["tokenizer"]
@@ -104,7 +104,7 @@ def test_the_unwrap_precedes_every_tokenizer_shaped_use():
     unwrap = _unwrap_branch()
     uses = [
         node.lineno
-        for node in ast.walk(ast.Module(body = _BODY, type_ignores = []))
+        for node in ast.walk(ast.Module(body=_BODY, type_ignores=[]))
         if isinstance(node, ast.Attribute)
         and getattr(node.value, "id", None) == "tokenizer"
         and node.attr in ("get_vocab", "name_or_path", "bos_token", "eos_token")

@@ -26,11 +26,11 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 def _source() -> str:
-    return INSTALL_PS1.read_text(encoding = "utf-8")
+    return INSTALL_PS1.read_text(encoding="utf-8")
 
 
 def _extract(pattern: str, source: str) -> str:
-    match = re.search(pattern, source, flags = re.DOTALL | re.MULTILINE)
+    match = re.search(pattern, source, flags=re.DOTALL | re.MULTILINE)
     assert match is not None, f"installer block not found: {pattern}"
     return match.group(0)
 
@@ -58,9 +58,9 @@ def _run_pwsh(script: str) -> str:
     # which reads as the selector being wrong. See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 
@@ -107,7 +107,7 @@ SELECTION_CASES = [
 ]
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 @pytest.mark.parametrize(("torch_version", "expected"), SELECTION_CASES)
 def test_selector_picks_the_matching_wheel(torch_version: str, expected: str):
     out = _run_pwsh(
@@ -120,7 +120,7 @@ def test_selector_picks_the_matching_wheel(torch_version: str, expected: str):
     assert out == f"[{expected}]", f"{torch_version} selected {out}, expected [{expected}]"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 def test_selector_refuses_a_missing_or_blank_input():
     out = _run_pwsh(
         f"{_selector_harness()}\n"
@@ -209,7 +209,7 @@ def test_the_index_fallback_hides_the_machine_level_indexes():
     assert "} finally {" in block, "the restore must survive a failing install"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 def test_the_url_join_keeps_a_tokenized_mirrors_query():
     """Executed, not read: a private mirror may authenticate by query string, and appending
     after the query put the wheel path inside the token value -- request path still /whl,
@@ -305,7 +305,7 @@ STABLE_ABI_PARITY_CASES = [
 ]
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 @pytest.mark.parametrize(("torch_version", "cuda_version", "expected"), STABLE_ABI_PARITY_CASES)
 def test_both_selectors_agree_outside_the_exact_tables(torch_version, cuda_version, expected):
     import sys
@@ -328,7 +328,7 @@ def test_both_selectors_agree_outside_the_exact_tables(torch_version, cuda_versi
     assert ps_side == f"[{expected}]"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 def test_the_already_installed_check_uses_the_wheels_own_build_target():
     """A resident 0.0.35 records the torch it was COMPILED against (the stable-ABI floor),
     not the torch it is running under. Comparing against the resident torch made every
@@ -346,7 +346,7 @@ def test_the_already_installed_check_uses_the_wheels_own_build_target():
     assert out.splitlines() == ["[2.10.0+cu130]", "[2.10.0+cu128]"]
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 def test_the_direct_wheel_filename_tag_matches_the_python_resolver():
     import sys
 

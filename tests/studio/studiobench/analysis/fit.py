@@ -39,7 +39,7 @@ from typing import Any, Iterable, Sequence
 from . import CellFailure
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Point:
     """One rung of one series, tagged with the session that produced it."""
 
@@ -49,7 +49,7 @@ class Point:
     rung: str = ""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Fit:
     a: float  # intercept in log space
     b: float  # exponent
@@ -146,14 +146,14 @@ def fit_loglog(
             ci = (lo, hi)
 
     return Fit(
-        a = a,
-        b = b,
-        r2 = r2,
-        n = len(usable),
-        session = next(iter(sessions)) if sessions else "",
-        b_ci = ci,
-        x_min = min(p.length for p in usable),
-        x_max = max(p.length for p in usable),
+        a=a,
+        b=b,
+        r2=r2,
+        n=len(usable),
+        session=next(iter(sessions)) if sessions else "",
+        b_ci=ci,
+        x_min=min(p.length for p in usable),
+        x_max=max(p.length for p in usable),
     )
 
 
@@ -163,7 +163,7 @@ class FrameGrowth:
 
     frame_label: str
     frame_key: tuple[str, str, int, int]
-    points: list[Point] = field(default_factory = list)
+    points: list[Point] = field(default_factory=list)
     fit: Fit | None = None
     self_ms_at_max: float = 0.0
     severity: float = 0.0
@@ -211,27 +211,27 @@ def rank_frames(
     about coverage of the ladder, not a fact about the frame, and silently
     omitting it would make the ranking look more complete than it is.
     """
-    task_fit = fit_loglog(task_total_points, bootstrap = bootstrap, min_points = min_points)
+    task_fit = fit_loglog(task_total_points, bootstrap=bootstrap, min_points=min_points)
     rows: list[FrameGrowth] = []
     skipped: dict[str, str] = {}
     for key, pts in series.items():
         label = labels.get(key, str(key))
         try:
-            f = fit_loglog(pts, bootstrap = bootstrap, min_points = min_points)
+            f = fit_loglog(pts, bootstrap=bootstrap, min_points=min_points)
         except CellFailure as exc:
             skipped[label] = exc.detail
             continue
-        at_max = max(pts, key = lambda p: p.length)
+        at_max = max(pts, key=lambda p: p.length)
         g = FrameGrowth(
-            frame_label = label,
-            frame_key = key,
-            points = list(pts),
-            fit = f,
-            self_ms_at_max = at_max.value,
+            frame_label=label,
+            frame_key=key,
+            points=list(pts),
+            fit=f,
+            self_ms_at_max=at_max.value,
         )
         g.severity = severity(g.self_ms_at_max, f.b, task_fit.b)
         rows.append(g)
-    rows.sort(key = lambda g: -g.severity)
+    rows.sort(key=lambda g: -g.severity)
     diagnostics = {
         "task_total_fit": task_fit.as_row(),
         "frames_fitted": len(rows),
@@ -267,6 +267,6 @@ def collect_series(
     for rung, length, table in per_rung:
         for key, value in table.items():
             out.setdefault(key, []).append(
-                Point(length = length, value = value, session = session, rung = rung)
+                Point(length=length, value=value, session=session, rung=rung)
             )
     return out

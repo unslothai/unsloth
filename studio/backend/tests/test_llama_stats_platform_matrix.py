@@ -45,13 +45,13 @@ def _drive(
     snaps,
     monkeypatch,
     *,
-    tick_s = 10.0,
-    stall_timeout_s = 600.0,
+    tick_s=10.0,
+    stall_timeout_s=600.0,
 ):
     cap = _Capture()
     clock = {"t": 1000.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
-    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s = stall_timeout_s)
+    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s=stall_timeout_s)
     lg._interval = 0.001
     state = {"i": 0}
 
@@ -196,7 +196,7 @@ def test_scrape_failures_do_not_advance_the_stall_clock(monkeypatch):
     cap = _Capture()
     clock = {"t": 0.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
-    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s = 600.0)
+    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s=600.0)
     lg._interval = 0.001
     state = {"i": 0}
 
@@ -217,10 +217,10 @@ def test_stop_is_honoured_promptly(monkeypatch):
     lg = LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())
     lg._interval = 1.0
     lg._scrape = lambda: {"n_decode_total": 1.0, "requests_processing": 0.0}
-    t = threading.Thread(target = lg._run, daemon = True)
+    t = threading.Thread(target=lg._run, daemon=True)
     t.start()
     lg.stop()
-    t.join(timeout = 10)
+    t.join(timeout=10)
     assert not t.is_alive(), "stop() must end the poll loop"
 
 
@@ -230,7 +230,7 @@ def test_zero_and_negative_interval_are_clamped():
 
 
 def test_negative_stall_timeout_is_clamped_to_disabled():
-    lg = LlamaServerStatsLogger("http://x", _Capture(), stall_timeout_s = -1.0)
+    lg = LlamaServerStatsLogger("http://x", _Capture(), stall_timeout_s=-1.0)
     assert lg._stall_timeout == 0.0
 
 
@@ -246,7 +246,7 @@ def test_env_defaults_are_read(monkeypatch):
     monkeypatch.setattr(
         LlamaServerStatsLogger,
         "start",
-        lambda self: started.update(timeout = self._stall_timeout, interval = self._interval),
+        lambda self: started.update(timeout=self._stall_timeout, interval=self._interval),
     )
     ls.maybe_start_stats_logger("http://127.0.0.1:1", _Capture())
     assert started == {"timeout": 42.0, "interval": 7.0}
@@ -259,7 +259,7 @@ def test_garbage_env_falls_back_to_defaults(monkeypatch):
     monkeypatch.setattr(
         LlamaServerStatsLogger,
         "start",
-        lambda self: started.update(timeout = self._stall_timeout, interval = self._interval),
+        lambda self: started.update(timeout=self._stall_timeout, interval=self._interval),
     )
     ls.maybe_start_stats_logger("http://127.0.0.1:1", _Capture())
     assert started["timeout"] == 600.0

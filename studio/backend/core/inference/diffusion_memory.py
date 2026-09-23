@@ -65,7 +65,7 @@ except Exception:  # noqa: BLE001
     ctypes = None  # type: ignore[assignment]
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
     """Resolve this process allocator's native pressure API once, if the OS exposes one."""
     if ctypes is None:
@@ -162,7 +162,7 @@ def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class DeviceMemory:
     """Point-in-time view of the active device's memory, in MiB.
 
@@ -189,7 +189,7 @@ class DeviceMemory:
         }
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class MemoryPlan:
     """The chosen runtime profile for one load."""
 
@@ -274,6 +274,7 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         return snapshot
     try:
         import torch
+
         reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot
@@ -333,6 +334,7 @@ def settled_snapshot_device_memory(
     if device == "mps":
         try:
             import torch
+
             empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
             if callable(empty_cache):
                 empty_cache()
@@ -343,6 +345,7 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     try:
         import torch
+
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
@@ -356,6 +359,7 @@ def settled_snapshot_device_memory(
                 break
         try:
             import time
+
             time.sleep(delay_s)
         except Exception:  # noqa: BLE001
             break
@@ -405,6 +409,7 @@ def _torch_is_rocm(torch) -> bool:
     """
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._torch_is_rocm(torch)
     except Exception:  # noqa: BLE001 - the answer still has to be right
         return (
@@ -461,6 +466,7 @@ def _available_system_memory_mib() -> Optional[int]:
     """Available host RAM in MiB, capped by any enforcing cgroup limit."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._available_system_memory_mib()
     except Exception:  # noqa: BLE001 - the host reading still stands
         return _system_memory_mib()[1]
@@ -470,6 +476,7 @@ def _cgroup_available_memory_mib() -> Optional[int]:
     """What an enforcing cgroup will still let this process charge, else None."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._cgroup_available_memory_mib()
     except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
         return None
@@ -479,6 +486,7 @@ def _cgroup_memory_limit_mib() -> Optional[int]:
     """The capacity an enforcing cgroup allows, else None. Not the remainder above."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._cgroup_memory_limit_mib()
     except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
         return None
@@ -487,6 +495,7 @@ def _cgroup_memory_limit_mib() -> Optional[int]:
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
+
         mem_get_info = getattr(getattr(torch, "xpu", None), "mem_get_info", None)
         if callable(mem_get_info):
             free, total = mem_get_info()
@@ -500,6 +509,7 @@ def _system_memory_mib() -> tuple[Optional[int], Optional[int]]:
     """(total, available) host RAM in MiB, via psutil then POSIX sysconf."""
     try:
         import psutil
+
         vm = psutil.virtual_memory()
         return int(vm.total // (1024 * 1024)), int(vm.available // (1024 * 1024))
     except Exception:
@@ -517,6 +527,7 @@ def file_size_mib(path: Any) -> Optional[int]:
     """On-disk size of ``path`` in MiB, or None if it can't be stat'd."""
     try:
         from pathlib import Path
+
         return max(1, int(Path(path).expanduser().stat().st_size // (1024 * 1024)))
     except Exception:
         return None
@@ -710,7 +721,7 @@ def raise_on_unified_memory_shortfall(
     into load failures instead of letting a smaller candidate win. Call this once, on the plan
     the loader has committed to, after the previous pipeline has been evicted so the free
     reading is the memory the load actually gets."""
-    message = unified_memory_shortfall_message(plan, family = family)
+    message = unified_memory_shortfall_message(plan, family=family)
     if message is None:
         return
     if logger is not None:
@@ -887,15 +898,15 @@ def plan_diffusion_memory(
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
     return MemoryPlan(
-        requested_mode = mode,
-        offload_policy = policy,
-        vae_tiling = tile,
-        vae_slicing = any_offload,
-        device_memory = device_memory,
-        estimates = estimates,
-        reasons = tuple(reasons),
+        requested_mode=mode,
+        offload_policy=policy,
+        vae_tiling=tile,
+        vae_slicing=any_offload,
+        device_memory=device_memory,
+        estimates=estimates,
+        reasons=tuple(reasons),
         # only ever meaningful under group offload; every other tier already places the encoders
-        stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
+        stream_text_encoders=stream_text_encoders and policy == OFFLOAD_GROUP,
     )
 
 
@@ -950,8 +961,8 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
                 continue
             seen: set[int] = set()
             storage_bytes = 0
-            tensors = list(component.parameters(recurse = True)) + list(
-                component.buffers(recurse = True)
+            tensors = list(component.parameters(recurse=True)) + list(
+                component.buffers(recurse=True)
             )
             for tensor in tensors:
                 marker = id(tensor)
@@ -966,7 +977,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
     if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
+    largest_name, largest_mib = max(streamed_sizes.items(), key=lambda item: item[1])
     if largest_mib <= int(budget):
         return plan
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
@@ -979,9 +990,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     estimates["streaming_resident_mib"] = resident_mib
     return replace(
         plan,
-        offload_policy = OFFLOAD_STREAMING,
-        estimates = estimates,
-        reasons = plan.reasons
+        offload_policy=OFFLOAD_STREAMING,
+        estimates=estimates,
+        reasons=plan.reasons
         + (
             f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
             "device budget; streaming transformer blocks and text-encoder layers",
@@ -1021,20 +1032,20 @@ def apply_memory_plan(
         # The GROUP plan set vae_tiling=False (the VAE stays resident). Dropping to whole-module offload is the low-VRAM
         # case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload(device = placement)
+        pipe.enable_model_cpu_offload(device=placement)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload(device = placement)
+        pipe.enable_model_cpu_offload(device=placement)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         if not _apply_group_offload(
             pipe,
             placement,
             logger,
-            stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
+            stream_text_encoders=bool(getattr(plan, "stream_text_encoders", False)),
         ):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
@@ -1042,7 +1053,7 @@ def apply_memory_plan(
         _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload(device = placement)
+            pipe.enable_sequential_cpu_offload(device=placement)
         except Exception as exc:  # noqa: BLE001 - keep the model loadable
             if logger is not None:
                 logger.warning(
@@ -1319,20 +1330,20 @@ def image_activation_shortfall_message(
         if budget is None:
             return None
         needed = estimate_image_runtime_mib(
-            width = width,
-            height = height,
-            batch_size = batch_size,
-            family = family,
-            condition_pixels = condition_pixels,
+            width=width,
+            height=height,
+            batch_size=batch_size,
+            family=family,
+            condition_pixels=condition_pixels,
         )
         # What the LOAD budgeted: the same estimator at the default resolution, i.e. the exact call _plan_memory makes.
         # Same function and same family hint, so the comparison is between two points on one curve rather than between
         # two different guesses.
         planned = estimate_image_runtime_mib(
-            width = None,
-            height = None,
-            batch_size = 1,
-            family = family,
+            width=None,
+            height=None,
+            batch_size=1,
+            family=family,
         )
     except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
         return None
@@ -1391,14 +1402,14 @@ def raise_on_image_activation_shortfall(
     reserved for the two client-state sentinels (not loaded / cancelled) and otherwise becomes an
     opaque 500."""
     message = image_activation_shortfall_message(
-        device_memory = device_memory,
-        width = width,
-        height = height,
-        batch_size = batch_size,
-        family = family,
-        base_overhead_mib = base_overhead_mib,
-        source_driven = source_driven,
-        condition_pixels = condition_pixels,
+        device_memory=device_memory,
+        width=width,
+        height=height,
+        batch_size=batch_size,
+        family=family,
+        base_overhead_mib=base_overhead_mib,
+        source_driven=source_driven,
+        condition_pixels=condition_pixels,
     )
     if message is None:
         return

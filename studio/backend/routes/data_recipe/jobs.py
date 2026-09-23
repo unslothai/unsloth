@@ -142,10 +142,10 @@ def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
 async def _authorize_dataset_download(
     request: Request,
     job_id: str,
-    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
-    artifact_path: str | None = Query(default = None),
-    filename: str | None = Query(default = None),
-    token: str | None = Query(default = None),
+    export_format: ExportFormat = Query(default="jsonl", alias="format"),
+    artifact_path: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
+    token: str | None = Query(default=None),
 ):
     """A signed link for exactly this export, or the ordinary Authorization header for an API
     client. The session bearer is deliberately not read from the query."""
@@ -156,10 +156,10 @@ async def _authorize_dataset_download(
         await run_in_threadpool(
             _download_link_account,
             token,
-            job_id = job_id,
-            export_format = export_format,
-            artifact_path = artifact_path,
-            filename = filename,
+            job_id=job_id,
+            export_format=export_format,
+            artifact_path=artifact_path,
+            filename=filename,
         )
         if token
         else None
@@ -177,7 +177,7 @@ async def _authorize_dataset_download(
     yield
 
 
-download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
+download_router = APIRouter(dependencies=[Depends(_authorize_dataset_download)])
 
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
@@ -279,6 +279,7 @@ def _single_used_local_model_selection(
 
 def _local_chat_serves_gguf() -> bool:
     from routes.inference import get_llama_cpp_backend
+
     return bool(get_llama_cpp_backend().is_loaded)
 
 
@@ -449,13 +450,13 @@ def _inject_local_providers(
 
         # Mint an internal sk-unsloth-* key scoped to this run via the unified API-key path. Marked internal so it's
         # hidden from the user's key list; the caller revokes it when the job terminates.
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
         token, row = storage.create_api_key(
-            username = current_account().username,
-            name = "data-recipe workflow",
-            expires_at = expires_at,
-            internal = True,
-            expect_gen = expect_gen,
+            username=current_account().username,
+            name="data-recipe workflow",
+            expires_at=expires_at,
+            internal=True,
+            expect_gen=expect_gen,
         )
         internal_key_id = int(row["id"])
 
@@ -507,7 +508,7 @@ def _normalize_run_name(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise HTTPException(status_code = 400, detail = "invalid run_name: must be a string")
+        raise HTTPException(status_code=400, detail="invalid run_name: must be a string")
     trimmed = value.strip()
     if not trimmed:
         return None
@@ -534,7 +535,7 @@ def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
         source["endpoint"] = get_hf_endpoint()
 
 
-@router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
+@router.post("/jobs", response_class=JSONResponse, response_model=JobCreateResponse)
 def create_job(
     payload: RecipePayload,
     request: Request,
@@ -543,7 +544,7 @@ def create_job(
 ):
     recipe = payload.recipe
     if not recipe.get("columns"):
-        raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+        raise HTTPException(status_code=400, detail="Recipe must include columns.")
     if recipe_has_stdio_mcp(recipe):
         require_ui_session_for_local_commands(via_api_key)
 
@@ -553,8 +554,8 @@ def create_job(
     execution_type = str(run.get("execution_type") or "full").strip().lower()
     if execution_type not in {"preview", "full"}:
         raise HTTPException(
-            status_code = 400,
-            detail = "invalid execution_type: must be 'preview' or 'full'",
+            status_code=400,
+            detail="invalid execution_type: must be 'preview' or 'full'",
         )
     run["execution_type"] = execution_type
     run["run_name"] = _normalize_run_name(run.get("run_name"))
@@ -562,14 +563,15 @@ def create_job(
     if run_config_raw is not None:
         try:
             from data_designer.config.run_config import RunConfig
+
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
             raise log_and_http_error(
                 exc,
                 400,
                 "invalid run_config",
-                event = "data_recipe.jobs.run_config_invalid",
-                log = logger,
+                event="data_recipe.jobs.run_config_invalid",
+                log=logger,
             ) from exc
 
     _resolve_seed_endpoint(recipe)
@@ -579,14 +581,14 @@ def create_job(
     except CredentialRotated as exc:
         # A reset-password landed after this request authenticated; the workflow key
         # is refused, so answer like any other revoked credential rather than 500.
-        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.inject_local_providers_failed",
-            log = logger,
+            event="data_recipe.jobs.inject_local_providers_failed",
+            log=logger,
         ) from exc
 
     # One try over get_job_manager() AND mgr.start(), so an unexpected exception cannot leave
@@ -594,9 +596,9 @@ def create_job(
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
-            recipe = recipe,
-            run = run,
-            internal_api_key_id = internal_api_key_id,
+            recipe=recipe,
+            run=run,
+            internal_api_key_id=internal_api_key_id,
         )
     except RuntimeError as exc:
         if internal_api_key_id is not None:
@@ -605,8 +607,8 @@ def create_job(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.start_conflict",
-            log = logger,
+            event="data_recipe.jobs.start_conflict",
+            log=logger,
         ) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
@@ -615,8 +617,8 @@ def create_job(
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.start_failed",
-            log = logger,
+            event="data_recipe.jobs.start_failed",
+            log=logger,
         ) from exc
     except Exception:
         if internal_api_key_id is not None:
@@ -630,6 +632,7 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
     """Best-effort revoke of a workflow-minted key; never mask the caller's error."""
     try:
         from auth import storage
+
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
@@ -640,7 +643,7 @@ def job_status(job_id: str):
     mgr = get_job_manager()
     state = mgr.get_status(job_id)
     if state is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return state
 
 
@@ -649,7 +652,7 @@ def current_job():
     mgr = get_job_manager()
     state = mgr.get_current_status()
     if state is None:
-        raise HTTPException(status_code = 404, detail = "no job")
+        raise HTTPException(status_code=404, detail="no job")
     return state
 
 
@@ -658,7 +661,7 @@ def cancel_job(job_id: str):
     mgr = get_job_manager()
     ok = mgr.cancel(job_id)
     if not ok:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
     return mgr.get_status(job_id)
 
 
@@ -667,22 +670,22 @@ def job_analysis(job_id: str):
     mgr = get_job_manager()
     analysis = mgr.get_analysis(job_id)
     if analysis is None:
-        raise HTTPException(status_code = 404, detail = "analysis not ready")
+        raise HTTPException(status_code=404, detail="analysis not ready")
     return analysis
 
 
 @router.get("/jobs/{job_id}/dataset")
 def job_dataset(
     job_id: str,
-    limit: int = Query(default = 20, ge = 1, le = 500),
-    offset: int = Query(default = 0, ge = 0),
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     mgr = get_job_manager()
-    result = mgr.get_dataset(job_id, limit = limit, offset = offset)
+    result = mgr.get_dataset(job_id, limit=limit, offset=offset)
     if result is None:
-        raise HTTPException(status_code = 404, detail = "dataset not ready")
+        raise HTTPException(status_code=404, detail="dataset not ready")
     if "error" in result:
-        raise HTTPException(status_code = 422, detail = result["error"])
+        raise HTTPException(status_code=422, detail=result["error"])
     return {
         "dataset": result["dataset"],
         "total": result["total"],
@@ -708,27 +711,27 @@ _IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
 def _build_in_memory_job_dataset_download(
     mgr, job_id: str, *, filename_stem: str
 ) -> tuple[Path, str, str]:
-    tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
     tmp.close()
     jsonl_path = Path(tmp.name)
     offset = 0
     total: int | None = None
     # Nothing has registered the temp file for cleanup yet, so an early return has to unlink it.
     try:
-        with jsonl_path.open("w", encoding = "utf-8") as handle:
+        with jsonl_path.open("w", encoding="utf-8") as handle:
             while True:
                 result = mgr.get_dataset(
                     job_id,
-                    limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
-                    offset = offset,
+                    limit=_IN_MEMORY_DOWNLOAD_PAGE_SIZE,
+                    offset=offset,
                 )
                 if result is None:
-                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                    raise HTTPException(status_code=404, detail="dataset not ready")
                 if "error" in result:
-                    raise HTTPException(status_code = 422, detail = result["error"])
+                    raise HTTPException(status_code=422, detail=result["error"])
                 rows = result.get("dataset")
                 if not isinstance(rows, list):
-                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                    raise HTTPException(status_code=404, detail="dataset not ready")
                 if total is None:
                     total_value = result.get("total")
                     total = int(total_value) if isinstance(total_value, int) else len(rows)
@@ -739,9 +742,9 @@ def _build_in_memory_job_dataset_download(
                 if offset >= total:
                     break
         if offset == 0:
-            raise HTTPException(status_code = 404, detail = "dataset not ready")
+            raise HTTPException(status_code=404, detail="dataset not ready")
     except BaseException:
-        jsonl_path.unlink(missing_ok = True)
+        jsonl_path.unlink(missing_ok=True)
         raise
     stem = safe_filename_stem(filename_stem.strip() or job_id)
     return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
@@ -756,8 +759,8 @@ def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -
     if status is not None:
         if status.get("status") != "completed":
             raise HTTPException(
-                status_code = 409,
-                detail = "Only completed runs can be downloaded.",
+                status_code=409,
+                detail="Only completed runs can be downloaded.",
             )
         status_artifact = status.get("artifact_path")
         if isinstance(status_artifact, str) and status_artifact.strip():
@@ -768,9 +771,9 @@ def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -
 @router.get("/jobs/{job_id}/download-url")
 def create_job_dataset_download_url(
     job_id: str,
-    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
-    artifact_path: str | None = Query(default = None),
-    filename: str | None = Query(default = None),
+    export_format: ExportFormat = Query(default="jsonl", alias="format"),
+    artifact_path: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
     no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
 ):
     """Mint the signed link the browser or the native downloader then fetches.
@@ -781,40 +784,40 @@ def create_job_dataset_download_url(
     if no_credential:
         # The capability outlives the setting that admitted this caller. As the video links do.
         raise HTTPException(
-            status_code = 403,
-            detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
+            status_code=403,
+            detail="Dataset download links can only be created from the Unsloth UI or with an API key.",
         )
-    resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    resolved = _resolve_download_artifact_path(job_id=job_id, artifact_path=artifact_path)
     stem = safe_filename_stem(
         filename.strip() if isinstance(filename, str) and filename.strip() else job_id
     )
     if resolved:
         try:
-            name = download_filename(artifact_path = resolved, export_format = export_format, stem = stem)
+            name = download_filename(artifact_path=resolved, export_format=export_format, stem=stem)
         except RecipeDatasetExportError as exc:
             raise log_and_http_error(
                 exc,
                 400,
                 safe_curated_detail(exc),
-                event = "data_recipe.jobs.download_url_failed",
-                log = logger,
+                event="data_recipe.jobs.download_url_failed",
+                log=logger,
             ) from exc
     else:
         if export_format == "parquet":
             raise HTTPException(
-                status_code = 400,
-                detail = "Parquet download requires persisted recipe artifacts.",
+                status_code=400,
+                detail="Parquet download requires persisted recipe artifacts.",
             )
         # An in-memory preview lives only while its job is current: ask before the chooser opens.
-        if get_job_manager().get_dataset(job_id, limit = 1, offset = 0) is None:
-            raise HTTPException(status_code = 404, detail = "dataset not ready")
+        if get_job_manager().get_dataset(job_id, limit=1, offset=0) is None:
+            raise HTTPException(status_code=404, detail="dataset not ready")
         name = f"{stem}.jsonl"
 
     token = _sign_download_link(
-        job_id = job_id,
-        export_format = export_format,
-        artifact_path = artifact_path,
-        filename = filename,
+        job_id=job_id,
+        export_format=export_format,
+        artifact_path=artifact_path,
+        filename=filename,
     )
     query = {"format": export_format, "token": token}
     if artifact_path:
@@ -829,13 +832,13 @@ def create_job_dataset_download_url(
 def download_job_dataset(
     job_id: str,
     background_tasks: BackgroundTasks,
-    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
-    artifact_path: str | None = Query(default = None),
-    filename: str | None = Query(default = None),
+    export_format: ExportFormat = Query(default="jsonl", alias="format"),
+    artifact_path: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
 ):
     resolved_artifact = _resolve_download_artifact_path(
-        job_id = job_id,
-        artifact_path = artifact_path,
+        job_id=job_id,
+        artifact_path=artifact_path,
     )
     filename_stem = filename.strip() if isinstance(filename, str) and filename.strip() else job_id
 
@@ -843,35 +846,35 @@ def download_job_dataset(
         if resolved_artifact:
             if export_format == "parquet":
                 file_path, media_type, download_name = build_dataset_download(
-                    artifact_path = resolved_artifact,
-                    export_format = "parquet",
-                    filename_stem = filename_stem,
+                    artifact_path=resolved_artifact,
+                    export_format="parquet",
+                    filename_stem=filename_stem,
                 )
             else:
                 file_path, media_type, download_name = build_dataset_download(
-                    artifact_path = resolved_artifact,
-                    export_format = "jsonl",
-                    filename_stem = filename_stem,
+                    artifact_path=resolved_artifact,
+                    export_format="jsonl",
+                    filename_stem=filename_stem,
                 )
         else:
             if export_format == "parquet":
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Parquet download requires persisted recipe artifacts.",
+                    status_code=400,
+                    detail="Parquet download requires persisted recipe artifacts.",
                 )
             mgr = get_job_manager()
             file_path, media_type, download_name = _build_in_memory_job_dataset_download(
                 mgr,
                 job_id,
-                filename_stem = filename_stem,
+                filename_stem=filename_stem,
             )
     except RecipeDatasetExportError as exc:
         raise log_and_http_error(
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.download_failed",
-            log = logger,
+            event="data_recipe.jobs.download_failed",
+            log=logger,
         ) from exc
     except HTTPException:
         raise
@@ -880,23 +883,23 @@ def download_job_dataset(
             exc,
             500,
             safe_error_detail(exc),
-            event = "data_recipe.jobs.download_error",
-            log = logger,
+            event="data_recipe.jobs.download_error",
+            log=logger,
         ) from exc
 
-    background_tasks.add_task(file_path.unlink, missing_ok = True)
+    background_tasks.add_task(file_path.unlink, missing_ok=True)
     return FileResponse(
         file_path,
-        media_type = media_type,
-        filename = download_name,
-        headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+        media_type=media_type,
+        filename=download_name,
+        headers={"Content-Disposition": _content_disposition_attachment(download_name)},
     )
 
 
 @router.post(
     "/jobs/{job_id}/publish",
-    response_class = JSONResponse,
-    response_model = PublishDatasetResponse,
+    response_class=JSONResponse,
+    response_model=PublishDatasetResponse,
 )
 def publish_job_dataset(
     request: Request,
@@ -911,25 +914,25 @@ def publish_job_dataset(
     # publish_recipe_dataset hands this to the Hub client, so None publishes as the host.
     if hf_token is None and not allow_ambient:
         raise HTTPException(
-            status_code = 400,
-            detail = "Hugging Face token is required to publish datasets when authenticated via API key.",
+            status_code=400,
+            detail="Hugging Face token is required to publish datasets when authenticated via API key.",
         )
     artifact_path = (
         payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
     )
 
     if not repo_id:
-        raise HTTPException(status_code = 400, detail = "repo_id is required")
+        raise HTTPException(status_code=400, detail="repo_id is required")
     if not description:
-        raise HTTPException(status_code = 400, detail = "description is required")
+        raise HTTPException(status_code=400, detail="description is required")
 
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:
         if status.get("status") != "completed" or status.get("execution_type") != "full":
             raise HTTPException(
-                status_code = 409,
-                detail = "Only completed full runs can be published.",
+                status_code=409,
+                detail="Only completed full runs can be published.",
             )
         status_artifact = status.get("artifact_path")
         if isinstance(status_artifact, str) and status_artifact.strip():
@@ -937,36 +940,36 @@ def publish_job_dataset(
 
     if not artifact_path:
         raise HTTPException(
-            status_code = 400,
-            detail = "This execution does not have publishable dataset artifacts.",
+            status_code=400,
+            detail="This execution does not have publishable dataset artifacts.",
         )
 
     try:
         url = publish_recipe_dataset(
-            artifact_path = artifact_path,
-            repo_id = repo_id,
-            description = description,
-            hf_token = hf_token or None,
-            private = payload.private,
+            artifact_path=artifact_path,
+            repo_id=repo_id,
+            description=description,
+            hf_token=hf_token or None,
+            private=payload.private,
             # client_ip, not the socket peer: through the managed tunnel the peer
             # is the local cloudflared process, not the visitor.
-            link_endpoint = client_reachable_endpoint(client_ip(request)),
+            link_endpoint=client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(
             exc,
             400,
             safe_curated_detail(exc),
-            event = "data_recipe.jobs.publish_failed",
-            log = logger,
+            event="data_recipe.jobs.publish_failed",
+            log=logger,
         ) from exc
     except Exception as exc:
         raise log_and_http_error(
             exc,
             500,
             safe_error_detail(exc),
-            event = "data_recipe.jobs.publish_error",
-            log = logger,
+            event="data_recipe.jobs.publish_error",
+            log=logger,
         ) from exc
 
     return {
@@ -978,7 +981,7 @@ def publish_job_dataset(
 
 # POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
 @router.post("/jobs/{job_id}/events")
-@router.get("/jobs/{job_id}/events", include_in_schema = False)
+@router.get("/jobs/{job_id}/events", include_in_schema=False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
@@ -996,9 +999,9 @@ async def job_events(request: Request, job_id: str):
         except (TypeError, ValueError):
             pass
 
-    sub = mgr.subscribe(job_id, after_seq = after_seq)
+    sub = mgr.subscribe(job_id, after_seq=after_seq)
     if sub is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        raise HTTPException(status_code=404, detail="job not found")
 
     async def gen():
         try:
@@ -1009,7 +1012,7 @@ async def job_events(request: Request, job_id: str):
             while True:
                 if await request.is_disconnected():
                     break
-                event = await sub.next_event(timeout_sec = 1.0)
+                event = await sub.next_event(timeout_sec=1.0)
                 if event is None:
                     # A quiet job would otherwise go silent for minutes and take a tunnel 524.
                     if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
@@ -1023,6 +1026,6 @@ async def job_events(request: Request, job_id: str):
 
     return StreamingResponse(
         account_event_stream(mgr, gen()),
-        media_type = "text/event-stream",
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

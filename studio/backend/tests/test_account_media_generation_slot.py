@@ -26,7 +26,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -54,7 +54,7 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    app.include_router(inference.studio_router, prefix = "/api/inference")
+    app.include_router(inference.studio_router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -87,7 +87,7 @@ class SharedEngine:
     def generate_progress(self):
         return {"active": True, "step": 3, "total_steps": 10, "fraction": 0.3, "eta_seconds": 1.0}
 
-    def cancel_generate(self, expected_account = None):
+    def cancel_generate(self, expected_account=None):
         return self.slots.cancel_generate()
 
 
@@ -103,11 +103,11 @@ def engine(monkeypatch):
 def _post_generate(account, engine, results, key):
     def run():
         with client_for(account) as client:
-            results[key] = client.post("/api/inference/images/generate", json = {"prompt": "a sloth"})
+            results[key] = client.post("/api/inference/images/generate", json={"prompt": "a sloth"})
 
-    thread = threading.Thread(target = run, daemon = True)
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    assert engine.entered.acquire(timeout = 20)
+    assert engine.entered.acquire(timeout=20)
     return thread
 
 
@@ -148,12 +148,13 @@ def test_cancel_rechecks_the_authorized_account_under_the_lock(engine):
         backend._generation_owns_slot = True
     else:
         from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
         backend = object.__new__(SdCppDiffusionBackend)
         backend._lock = threading.RLock()
     event = threading.Event()
     backend._active_generate_cancel = event
     backend._active_generate_account = BOB.account_id
-    assert backend.cancel_generate(expected_account = ALICE.account_id) is False
+    assert backend.cancel_generate(expected_account=ALICE.account_id) is False
     assert not event.is_set()
-    assert backend.cancel_generate(expected_account = BOB.account_id) is True
+    assert backend.cancel_generate(expected_account=BOB.account_id) is True
     assert event.is_set()

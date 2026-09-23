@@ -93,6 +93,7 @@ def _machine_arch_from_registry() -> str:
         return ""
     try:
         import winreg
+
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
@@ -121,7 +122,7 @@ def _is_windows_arm64() -> bool:
     )
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _is_win_arm64_interpreter() -> bool:
     """Windows on ARM, the arch of THIS INTERPRETER rather than of the machine.
 
@@ -175,7 +176,7 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
 def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
     """Newest download.pytorch.org rocmX.Y tag for a host ROCm version."""
     return next(
-        (t for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True) if ver >= (maj, mn)),
+        (t for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse=True) if ver >= (maj, mn)),
         None,
     )
 
@@ -191,7 +192,7 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
 
     A version below every tag (what an unreadable one reads as, on a bundled-runtime host)
     resolves no generic index at all, so the per-arch index is the only route left."""
-    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse=True) if ver >= k), None)
     return key is None or key < _ROCM_ARCH_INDEX_FLOOR
 
 
@@ -207,7 +208,7 @@ _GFX906_LEGACY_TAG = "rocm6.3"
 def _gfx906_needs_legacy_index(ver: tuple[int, int]) -> bool:
     """True when the generic tag picked for the host ROCm version is newer than
     rocm6.3, i.e. its wheels lack gfx906 kernels and must be rerouted."""
-    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse=True) if ver >= k), None)
     return key is not None and key > (6, 3)
 
 
@@ -235,7 +236,7 @@ def _runtime_target_is_gfx906() -> bool:
     # Unmasked: "the SOLE arch" is a question about the machine. ROCR_VISIBLE_DEVICES filters
     # rocminfo before it answers, so a mask naming the MI50 on a mixed host would present it
     # as the only card and unlock the downgrade the sole-arch rule exists to withhold there.
-    return set(_detect_amd_gfx_codes(ignore_visible_masks = True)) == {"gfx906"}
+    return set(_detect_amd_gfx_codes(ignore_visible_masks=True)) == {"gfx906"}
 
 
 def _torch_below_211(installed_ver: str) -> bool:
@@ -325,7 +326,7 @@ def _redact_install_output(output: "bytes | str") -> str:
     installer output before printing. uv/pip failure text embeds the failing --index-url
     verbatim, which can carry a user:token@, ?token= or #token= secret. MUST match
     install.sh / setup.ps1 / install.ps1's output sanitizers."""
-    text = output.decode(errors = "replace") if isinstance(output, bytes) else output
+    text = output.decode(errors="replace") if isinstance(output, bytes) else output
     text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
     text = _URL_QUERY_VALUE_RE.sub(r"\1=<redacted>", text)
     return _URL_FRAGMENT_RE.sub(r"\1#<redacted>", text)
@@ -632,6 +633,7 @@ def _torchcodec_distribution_for_probe():
     """The installed torchcodec distribution, or None when it cannot be read."""
     try:
         from importlib.metadata import PackageNotFoundError, distribution
+
         return distribution("torchcodec")
     except (PackageNotFoundError, ValueError, OSError):
         return None
@@ -815,7 +817,8 @@ def _codec_spec_is_satisfied(spec: str, installed: str) -> bool:
     base = installed.partition("+")[0]
     try:
         from packaging.requirements import Requirement
-        return Requirement(spec).specifier.contains(base, prereleases = True)
+
+        return Requirement(spec).specifier.contains(base, prereleases=True)
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
 
@@ -913,16 +916,16 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
                     f"print('{_TORCH_PROBE_MARKER}' + '|'.join((v, h, c, x)))"
                 ),
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
             # The probes this replaced each decoded with errors="replace". text=True alone
             # decodes strictly, and a UnicodeDecodeError is a ValueError, so an undecodable
             # byte in torch's import chatter would escape the except below and take the
             # installer down instead of falling back to the on-disk classifier. Reachable
             # wherever the console code page and the child's output disagree.
-            errors = "replace",
-            timeout = 90,
+            errors="replace",
+            timeout=90,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -961,6 +964,7 @@ def _installed_distribution_version(name: str) -> str | None:
     """Return installed distribution metadata without importing the package."""
     try:
         from importlib.metadata import PackageNotFoundError, version
+
         return version(name)
     except (PackageNotFoundError, ValueError):
         return None
@@ -1025,6 +1029,7 @@ _ANYIO_BAD_FLOOR = (4, 14)
 def _installed_version(package: str) -> tuple[int, int] | None:
     try:
         from importlib.metadata import version as _pkg_version
+
         raw = _pkg_version(package)
     except Exception:
         return None
@@ -1047,7 +1052,7 @@ def _repair_bad_anyio() -> None:
         "--no-cache-dir",
         "--force-reinstall",
         "anyio<4.14.0",
-        constrain = False,
+        constrain=False,
     )
 
 
@@ -1070,7 +1075,7 @@ def _repair_bad_accelerate() -> None:
         "--no-cache-dir",
         "--no-deps",
         "accelerate<1.15.0",
-        constrain = False,
+        constrain=False,
     ):
         _note(
             "could not install accelerate<1.15 -- training on a Windows AMD GPU will fail "
@@ -1165,6 +1170,7 @@ def _installed_direct_url(dist_name: str) -> "str | None":
     """
     try:
         from importlib.metadata import distribution
+
         recorded = distribution(dist_name).read_text("direct_url.json")
     except Exception:  # noqa: BLE001 - absent metadata is a reason to install
         return None
@@ -1192,9 +1198,9 @@ def _bnb_asset_identity(url: str) -> "str | None":
 
     try:
         request = urllib.request.Request(
-            url, method = "HEAD", headers = {"User-Agent": "unsloth-studio-installer"}
+            url, method="HEAD", headers={"User-Agent": "unsloth-studio-installer"}
         )
-        with urllib.request.urlopen(request, timeout = 15) as response:
+        with urllib.request.urlopen(request, timeout=15) as response:
             etag = (response.headers.get("ETag") or "").strip()
             size = (response.headers.get("Content-Length") or "").strip()
     except Exception:  # noqa: BLE001 - unreachable is "cannot say"; the caller decides
@@ -1229,7 +1235,7 @@ def _installed_bnb_provenance() -> "str | None":
         return None
     # Metadata survives a quarantined payload; the skipped reinstall is what would restore it.
     try:
-        if install_manifest.damaged_payload_files("bitsandbytes", limit = 1):
+        if install_manifest.damaged_payload_files("bitsandbytes", limit=1):
             return None
     except Exception:  # noqa: BLE001 - an environment nobody can scan is not evidence
         return None
@@ -1324,6 +1330,7 @@ def _versions_are_same_release(installed: str, wheel: str) -> bool:
         return True
     try:
         from packaging.version import Version
+
         return Version(installed) == Version(wheel)
     except Exception:  # noqa: BLE001 - unparseable is not a match
         return False
@@ -1333,7 +1340,8 @@ def _spec_is_satisfied(spec: str, installed: str) -> bool:
     """Whether *installed* satisfies a requirement string such as `name>=0.50.0`."""
     try:
         from packaging.requirements import Requirement
-        return Requirement(spec).specifier.contains(installed, prereleases = True)
+
+        return Requirement(spec).specifier.contains(installed, prereleases=True)
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
 
@@ -1451,7 +1459,7 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            with open(path, encoding = "utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
             if len(parts) >= 2:
                 _record("ROCm version file", int(parts[0]), int(parts[1]))
@@ -1465,13 +1473,13 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [amd_smi, "version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
-                env = _amd_smi_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                env=_amd_smi_env(),
             )
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
@@ -1490,9 +1498,9 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [hipconfig, "--version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                timeout = 5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
             )
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
@@ -1520,12 +1528,12 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
                     "rocm-core",
                     "libhsa-runtime64-1",
                 ],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             # dpkg-query exits nonzero when either package is absent but still prints
             # the other's line, so parse stdout regardless of the return code.
@@ -1563,12 +1571,12 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
                     "%{VERSION}\n",
                     "rocm-core",
                 ],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 raw = result.stdout.strip()
@@ -1595,7 +1603,7 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         _safe_print(
             f"WARNING: ROCm version sources disagree ({details}) -- "
             f"using the highest, rocm{best[0]}.{best[1]}.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
 
     return best
@@ -1718,7 +1726,7 @@ def _detect_windows_gfx_arch() -> str | None:
         # renumbered from 0. Indexing that again applies the mask twice, so
         # CUDA_VISIBLE_DEVICES=1,0 would read token 1 (the iGPU) on a host whose mask
         # put the dGPU first. amd-smi and WMI list every GPU, so those keep the index.
-        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens), warn = warn)]
+        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens), warn=warn)]
         _distinct = list(dict.fromkeys(tokens))
         if len(_distinct) < 2 or _visible_devices_pinned():
             # A pin is honoured verbatim, but say so when it selected a card with no AMD
@@ -1790,12 +1798,12 @@ def _detect_windows_gfx_arch() -> str | None:
         try:
             result = subprocess.run(
                 [hipinfo],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                timeout = 10,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
             )
             # Accept partial output when hipinfo crashes (0xC0000005 on some RDNA 4, #6043).
-            text = result.stdout.decode(errors = "replace")
+            text = result.stdout.decode(errors="replace")
             # findall gets every gcnArchName line so multi-GPU hosts are
             # enumerable and HIP_VISIBLE_DEVICES selects correctly.
             # Split on ':' like setup.ps1: "gfx90a:sramecc+:xnack-" matches neither
@@ -1805,7 +1813,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
             ]
             # hipinfo already applied the mask, so do not apply it again.
-            _pick = _dedup_pick(_tokens, mask_resolved = True)
+            _pick = _dedup_pick(_tokens, mask_resolved=True)
             if _pick:
                 return _pick
         except Exception:
@@ -1817,14 +1825,14 @@ def _detect_windows_gfx_arch() -> str | None:
             try:
                 result = subprocess.run(
                     [amd_smi, *_args],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    timeout = 10,
-                    env = _amd_smi_env(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    env=_amd_smi_env(),
                 )
                 if result.returncode != 0:
                     continue
-                text = result.stdout.decode(errors = "replace")
+                text = result.stdout.decode(errors="replace")
                 # Prefer labelled gfx lines; fall back to bare tokens.
                 _labelled = re.findall(
                     r"(?im)^\s*(?:target_graphics_version|gfx|arch|asic)\b[^:\r\n]*:\s*(gfx[1-9][0-9a-z]{2,3})\b",
@@ -1861,16 +1869,16 @@ def _detect_windows_gfx_arch() -> str | None:
                 "$_.Name -match 'AMD|Radeon' } | ForEach-Object { "
                 '"$($_.Name)|$($_.ConfigManagerErrorCode)" }',
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 30,
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
             # Lines are "<name>|<ConfigManagerErrorCode>"; a bare name (older probe
             # output, and the shape most tests use) counts as healthy.
             _all_names, _healthy = [], []
-            for _line in result.stdout.decode(errors = "replace").splitlines():
+            for _line in result.stdout.decode(errors="replace").splitlines():
                 _line = _line.strip()
                 if not _line:
                     continue
@@ -1906,7 +1914,7 @@ def _detect_windows_gfx_arch() -> str | None:
             # discrete card, so skipping the iGPU could pick the wrong one and the index
             # would count arches, not devices. warn=False since the mask was already
             # resolved and reported against the adapter list above.
-            _pick = _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
+            _pick = _dedup_pick(_tokens, warn=False) if len(_tokens) == len(_names) else _named
             if _pick:
                 _safe_print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
@@ -2041,7 +2049,7 @@ def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
 def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
-        text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return None
     if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
@@ -2067,12 +2075,12 @@ def _linux_amd_gfx_from_lspci() -> "str | None":
     try:
         result = subprocess.run(
             [lspci, "-nn"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         )
     except Exception:
         return None
@@ -2094,7 +2102,7 @@ def _is_wsl() -> bool:
     if os.path.exists("/dev/dxg"):
         return True
     try:
-        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+        with open("/proc/version", encoding="utf-8", errors="replace") as fh:
             return "microsoft" in fh.read().lower()
     except (OSError, UnicodeDecodeError):
         return False
@@ -2120,9 +2128,9 @@ def _linux_amd_display_device_present() -> bool:
     try:
         for dev in Path("/sys/bus/pci/devices").iterdir():
             try:
-                if (dev / "vendor").read_text(encoding = "utf-8").strip() != "0x1002":
+                if (dev / "vendor").read_text(encoding="utf-8").strip() != "0x1002":
                     continue
-                if (dev / "class").read_text(encoding = "utf-8").strip().startswith("0x03"):
+                if (dev / "class").read_text(encoding="utf-8").strip().startswith("0x03"):
                     return True
             except (OSError, UnicodeDecodeError):
                 continue
@@ -2234,7 +2242,7 @@ def _physical_amd_gfx_archs() -> "list[str]":
     """
     _archs = [
         _code.strip().lower().split(":")[0]
-        for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
+        for _code in _detect_amd_gfx_codes(ignore_hsa_override=True, ignore_visible_masks=True)
     ]
     if not _archs:
         _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
@@ -2336,6 +2344,7 @@ def _installed_rocm_wheel_family() -> str | None:
     """
     try:
         from importlib import metadata
+
         for _req in metadata.requires("rocm") or []:
             _fam = _rocm_family_token(_req)
             if _fam:
@@ -2372,6 +2381,7 @@ def _torch_requires_rocm_sdk() -> bool:
     """
     try:
         from importlib import metadata
+
         for _req in metadata.requires("torch") or []:
             # The distribution named exactly `rocm` ("rocm[libraries]==7.13.0"), anchored so
             # rocm-sdk-core and triton-rocm do not match. Case-insensitive: Requires-Dist
@@ -2404,7 +2414,7 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
             if m:
                 all_vers.append(m.group(1))
     # Highest numeric suffix wins ("713" over "72"); glob order is not guaranteed.
-    return max(all_vers, key = lambda v: int(v)) if all_vers else None
+    return max(all_vers, key=lambda v: int(v)) if all_vers else None
 
 
 # Set right before the base unsloth install (which resolves its unconditional
@@ -2426,8 +2436,8 @@ def _bitsandbytes_installed() -> bool:
                     "import importlib.util, sys; "
                     "sys.exit(0 if importlib.util.find_spec('bitsandbytes') else 1)",
                 ],
-                capture_output = True,
-                timeout = 60,
+                capture_output=True,
+                timeout=60,
             ).returncode
             == 0
         )
@@ -2468,9 +2478,9 @@ def _persist_bnb_rocm_version(version: str) -> bool:
     )
 
     try:
-        sitecustomize_path.parent.mkdir(parents = True, exist_ok = True)
+        sitecustomize_path.parent.mkdir(parents=True, exist_ok=True)
         existing = (
-            sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
+            sitecustomize_path.read_text(encoding="utf-8") if sitecustomize_path.exists() else ""
         )
         # Strip all managed regions (even END-less, from an interrupted write), append one block.
         pattern = re.compile(
@@ -2485,12 +2495,12 @@ def _persist_bnb_rocm_version(version: str) -> bool:
             f"{sitecustomize_path.name}.unsloth-tmp{os.getpid()}"
         )
         try:
-            tmp_path.write_text(updated, encoding = "utf-8")
+            tmp_path.write_text(updated, encoding="utf-8")
             if sitecustomize_path.exists():
                 shutil.copymode(sitecustomize_path, tmp_path)
             os.replace(tmp_path, sitecustomize_path)
         finally:
-            tmp_path.unlink(missing_ok = True)
+            tmp_path.unlink(missing_ok=True)
     except (OSError, UnicodeDecodeError) as exc:
         _safe_print(
             f"   Warning: could not persist BNB_ROCM_VERSION={version} "
@@ -2548,13 +2558,13 @@ def _has_rocm_gpu() -> bool:
         try:
             result = subprocess.run(
                 [exe, *cmd[1:]],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                env=_amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
@@ -2570,7 +2580,7 @@ def _has_rocm_gpu() -> bool:
                 for entry in os.listdir(kfd_nodes):
                     gpu_id_path = os.path.join(kfd_nodes, entry, "gpu_id")
                     try:
-                        with open(gpu_id_path, encoding = "utf-8") as fh:
+                        with open(gpu_id_path, encoding="utf-8") as fh:
                             gpu_id = fh.read().strip()
                     except (OSError, UnicodeDecodeError):
                         continue
@@ -2579,7 +2589,7 @@ def _has_rocm_gpu() -> bool:
                     # Require AMD vendor_id 4098 (0x1002); a missing properties file stays unconfirmed.
                     props_path = os.path.join(kfd_nodes, entry, "properties")
                     try:
-                        with open(props_path, encoding = "utf-8") as fh:
+                        with open(props_path, encoding="utf-8") as fh:
                             props = fh.read()
                     except (OSError, UnicodeDecodeError):
                         continue  # can't confirm vendor -- skip
@@ -2741,13 +2751,13 @@ def _detect_amd_gfx_codes(
         try:
             result = subprocess.run(
                 cmd,
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 15,
-                env = _env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                env=_env,
             )
         except Exception:
             continue
@@ -2980,7 +2990,7 @@ def _generic_tag_lacks_kernels(gfx: "str | None", ver: "tuple[int, int]") -> boo
     # Below the oldest known index nothing resolves, and a wheel older than every tag this
     # installer knows predates the arches those tags were measured to add; reading that as
     # "support unknown" preserves exactly the build that cannot run.
-    _tag_key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    _tag_key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse=True) if ver >= k), None)
     return _tag_key is None or _tag_key < _min
 
 
@@ -3048,7 +3058,7 @@ def _runtime_gfx_target(
             # KFD node order IS the order HIP and ROCr index, and answers on runtime-less hosts.
             # ignore_visible_masks because the ordinals below index the list BEFORE the ROCr mask.
             _mask_devices = _kfd_gfx_targets() or _detect_amd_gfx_codes(
-                dedup = False, ignore_visible_masks = True
+                dedup=False, ignore_visible_masks=True
             )
             if _mask_devices:
                 _LAST_ROCR_MASK_RESOLVED = _rocr_layer_mask_names_a_device(len(_mask_devices))
@@ -3056,7 +3066,7 @@ def _runtime_gfx_target(
                     len(_rocr_visible_subset(_mask_devices)[0])
                 )
         return _explicit_gfx, [_explicit_gfx], _spoofed, [_explicit_gfx]
-    gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    gfx_devices = _detect_amd_gfx_codes(dedup=False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
     if physical_gfx is not None:
@@ -3080,7 +3090,7 @@ def _runtime_gfx_target(
         # it. Decline, unless the arch was named outright. Probed against a length nothing
         # can exceed, so a real ordinal comes back as itself rather than folding onto 0.
         if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and _pick_visible_index(
-            _INDEX_PROBE_LEN, warn = False, masks = _HIP_LAYER_MASKS
+            _INDEX_PROBE_LEN, warn=False, masks=_HIP_LAYER_MASKS
         ):
             _safe_print(
                 f"   {_first_set_visible_mask()} selects a GPU past the only architecture\n"
@@ -3105,7 +3115,7 @@ def _runtime_gfx_target(
     _probe_source = _LAST_AMD_GFX_PROBE
     if _probe_source == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ:
         try:
-            _unmasked = _detect_amd_gfx_codes(dedup = False, ignore_visible_masks = True)
+            _unmasked = _detect_amd_gfx_codes(dedup=False, ignore_visible_masks=True)
         except Exception:
             _unmasked = []
         host_codes = list(dict.fromkeys(_unmasked or gfx_devices))
@@ -3181,7 +3191,7 @@ def _runtime_gfx_target(
     if gfx_devices:
         _LAST_HIP_MASK_RESOLVED = _hip_layer_mask_names_a_device(len(gfx_devices))
     runtime_gfx = (
-        gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
+        gfx_devices[_pick_visible_index(len(gfx_devices), masks=_HIP_LAYER_MASKS)]
         if gfx_devices
         else None
     )
@@ -3253,12 +3263,12 @@ def _kfd_gfx_targets() -> list[str]:
     nodes_dir = "/sys/class/kfd/kfd/topology/nodes"
     targets: list[str] = []
     try:
-        entries = sorted(os.listdir(nodes_dir), key = lambda e: (len(e), e))
+        entries = sorted(os.listdir(nodes_dir), key=lambda e: (len(e), e))
     except OSError:
         return []
     for entry in entries:
         try:
-            with open(os.path.join(nodes_dir, entry, "properties"), encoding = "utf-8") as fh:
+            with open(os.path.join(nodes_dir, entry, "properties"), encoding="utf-8") as fh:
                 props = fh.read()
         except (OSError, UnicodeDecodeError):
             continue
@@ -3320,7 +3330,7 @@ def _hsa_spoofed_physical_gfx(
     if not raw or not inferred_gfx or inferred_gfx not in _HSA_SPOOFABLE_PHYSICAL_GFX:
         return None
     if gfx_devices is None:
-        gfx_devices = _detect_amd_gfx_codes(dedup = False)
+        gfx_devices = _detect_amd_gfx_codes(dedup=False)
     if len(set(gfx_devices)) != 1:
         return None
     probed = gfx_devices[0]
@@ -3365,7 +3375,7 @@ def _hsa_spoofed_physical_gfx(
     _saved_probe = _LAST_AMD_GFX_PROBE
     try:
         reprobed = _detect_amd_gfx_codes(
-            dedup = False, ignore_hsa_override = True, ignore_visible_masks = True
+            dedup=False, ignore_hsa_override=True, ignore_visible_masks=True
         )
     except Exception:
         reprobed = []
@@ -3580,8 +3590,8 @@ def _install_bnb_windows_rocm() -> bool:
                 "--no-cache-dir",
                 "--no-deps",
                 _bnb_win_url,
-                constrain = False,
-                force_pip = True,
+                constrain=False,
+                force_pip=True,
             )
             if not _ok:
                 _safe_print(
@@ -3597,7 +3607,7 @@ def _install_bnb_windows_rocm() -> bool:
                 "--no-cache-dir",
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
-                constrain = False,
+                constrain=False,
             )
         # Only after an install landed, or two failed installs would record the new asset identity
         # against the old wheel.
@@ -3674,12 +3684,12 @@ def _nvidia_smi_lists_a_gpu(exe: str) -> bool:
     try:
         result = subprocess.run(
             [exe, "-L"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         )
     except Exception:
         return False
@@ -3716,12 +3726,12 @@ def _nvidia_compute_sms(exe: str) -> "list[int] | None":
     try:
         result = subprocess.run(
             [exe, "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         )
     except Exception:
         return None
@@ -3855,12 +3865,12 @@ def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
         try:
             result = subprocess.run(
                 [exe],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
             )
         except Exception:
             continue
@@ -4187,7 +4197,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
             _audio_pkg,
             "--index-url",
             index_url,
-            constrain = False,
+            constrain=False,
         )
         return
     if _version is None:
@@ -4242,7 +4252,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         _marker == "cpu"
         and not _deliberate_cpu_torch()
         and _is_cuda_family_leaf(
-            _torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or "")
+            _torch_index_leaf(_detect_cuda_torch_index_url(known_only=True) or "")
         )
     ):
         # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
@@ -4277,7 +4287,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         _audio_pkg,
         "--index-url",
         index_url,
-        constrain = False,
+        constrain=False,
     )
 
 
@@ -4342,7 +4352,7 @@ def _ensure_xpu_torch() -> None:
         _audio_pkg,
         "--index-url",
         pin,
-        constrain = False,
+        constrain=False,
     )
 
 
@@ -4365,7 +4375,7 @@ def _installed_torch_version_label() -> str:
         return ""
     try:
         text = (
-            Path(spec.origin).with_name("version.py").read_text(encoding = "utf-8", errors = "replace")
+            Path(spec.origin).with_name("version.py").read_text(encoding="utf-8", errors="replace")
         )
     except OSError:
         return ""
@@ -4399,9 +4409,9 @@ def _ensure_venv_pip() -> bool:
             return (
                 subprocess.run(
                     [sys.executable, "-m", "pip", "--version"],
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
-                    timeout = 90,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=90,
                 ).returncode
                 == 0
             )
@@ -4413,15 +4423,15 @@ def _ensure_venv_pip() -> bool:
     try:
         subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-            timeout = 300,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
     if _has_pip():
         return True
-    pip_install_try("pip (bootstrap)", "pip", constrain = False)
+    pip_install_try("pip (bootstrap)", "pip", constrain=False)
     return _has_pip()
 
 
@@ -4469,15 +4479,15 @@ def _ensure_xpu_triton() -> None:
                     "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton'), ''))\n"
                 ),
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
         )
     except (OSError, subprocess.TimeoutExpired):
         return
     if probe.returncode != 0:
         return
-    out = probe.stdout.decode(errors = "replace")
+    out = probe.stdout.decode(errors="replace")
     spec = next((ln[5:].strip() for ln in out.splitlines() if ln.startswith("SPEC=")), "")
     generic = next((ln[8:].strip() for ln in out.splitlines() if ln.startswith("GENERIC=")), "")
     # Act only when generic triton is present AND torch asks for an XPU triton; anything else
@@ -4499,7 +4509,7 @@ def _ensure_xpu_triton() -> None:
     # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
     # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
     # steps. uv has no `pip download`, hence pip here.
-    tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
+    tmp = tempfile.mkdtemp(prefix="unsloth_triton_xpu_")
     try:
         _dl_cmd = [
             sys.executable,
@@ -4521,10 +4531,10 @@ def _ensure_xpu_triton() -> None:
                 # --index-url outright, and PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS are consulted in
                 # addition to it, so an inherited environment could serve the wheel from
                 # somewhere the pin never named.
-                env = _install_env_for_cmd(_dl_cmd),
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                timeout = 900,
+                env=_install_env_for_cmd(_dl_cmd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=900,
             )
         except (OSError, subprocess.TimeoutExpired):
             dl = None
@@ -4541,8 +4551,8 @@ def _ensure_xpu_triton() -> None:
         _count_install_action()
         removed = subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         if removed.returncode != 0:
             # A read-only or locked venv leaves generic triton REGISTERED; installing over it
@@ -4564,10 +4574,10 @@ def _ensure_xpu_triton() -> None:
             "--force-reinstall",
             "--no-deps",
             wheels[0],
-            constrain = False,
+            constrain=False,
         )
     finally:
-        shutil.rmtree(tmp, ignore_errors = True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _installed_torch_label_on_disk() -> str:
@@ -4582,7 +4592,7 @@ def _installed_torch_label_on_disk() -> str:
         if spec is None or not spec.origin:
             return ""
         text = (Path(spec.origin).parent / "version.py").read_text(
-            encoding = "utf-8", errors = "replace"
+            encoding="utf-8", errors="replace"
         )
     except Exception:
         return ""
@@ -4641,7 +4651,7 @@ def _ensure_cpu_torch() -> None:
             _audio_pkg,
             "--index-url",
             pin,
-            constrain = False,
+            constrain=False,
         )
         return
     if _version is None:
@@ -4678,7 +4688,7 @@ def _ensure_cpu_torch() -> None:
         _audio_pkg,
         "--index-url",
         pin,
-        constrain = False,
+        constrain=False,
     )
 
 
@@ -5106,7 +5116,7 @@ def _uninstall_distribution(name: str) -> bool:
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", name]
     _count_install_action()
-    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    removed = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return removed.returncode == 0
 
 
@@ -5126,7 +5136,7 @@ def _resident_xformers_build_torch() -> "str | None":
     if not locations:
         return None
     try:
-        with open(os.path.join(locations[0], "cpp_lib.json"), encoding = "utf-8") as fh:
+        with open(os.path.join(locations[0], "cpp_lib.json"), encoding="utf-8") as fh:
             recorded = json.load(fh).get("version", {}).get("torch")
     except (OSError, ValueError, AttributeError):
         return None
@@ -5364,7 +5374,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         *_trio,
         "--index-url",
         index_url,
-        constrain = False,
+        constrain=False,
     )
 
     # The family: a mirror can answer /cu128 with a cached cu124 wheel, and
@@ -5433,7 +5443,7 @@ def _cuda_torch_needs_dependency_pass() -> bool:
     CUDA, and the repair already excludes both. Never installs, and fails closed.
     """
     try:
-        return bool(_ensure_cuda_torch(probe_only = True))
+        return bool(_ensure_cuda_torch(probe_only=True))
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the fast path
         return False
 
@@ -5730,7 +5740,7 @@ def _ensure_rocm_torch() -> None:
                 "--index-url",
                 index_url,
                 *_rocm_trio,
-                constrain = False,
+                constrain=False,
             ):
                 _safe_print(
                     f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch or 'the pinned index'}; "
@@ -5889,7 +5899,7 @@ def _ensure_rocm_torch() -> None:
                 _audio_pkg,
                 "--index-url",
                 index_url,
-                constrain = False,
+                constrain=False,
             )
             rocm_torch_ready = True
             _inferred_arch_installed = True
@@ -6223,7 +6233,7 @@ def _ensure_rocm_torch() -> None:
             _audio_pkg,
             "--index-url",
             index_url,
-            constrain = False,
+            constrain=False,
         )
         rocm_torch_ready = True
     # gfx906 fires even when has_hip_torch is True: a +rocm7.x build IS the broken
@@ -6246,7 +6256,7 @@ def _ensure_rocm_torch() -> None:
             _audio_pkg,
             "--index-url",
             index_url,
-            constrain = False,
+            constrain=False,
         )
         rocm_torch_ready = True
     elif not rocm_torch_ready:
@@ -6290,7 +6300,7 @@ def _ensure_rocm_torch() -> None:
                 _audio_pkg,
                 "--index-url",
                 index_url,
-                constrain = False,
+                constrain=False,
             )
             rocm_torch_ready = True
 
@@ -6315,7 +6325,7 @@ def _ensure_rocm_torch() -> None:
             _count_install_action()
             subprocess.run(
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
-                capture_output = True,
+                capture_output=True,
             )
     # bitsandbytes only when torch links ROCm; the pre-release wheel (bnb #1887) needs pip, not uv.
     elif rocm_torch_ready:
@@ -6335,8 +6345,8 @@ def _ensure_rocm_torch() -> None:
                     "--no-cache-dir",
                     "--no-deps",
                     _bnb_url,
-                    constrain = False,
-                    force_pip = True,
+                    constrain=False,
+                    force_pip=True,
                 )
                 if not _bnb_installed:
                     _fallback_note = (
@@ -6355,7 +6365,7 @@ def _ensure_rocm_torch() -> None:
                     "--no-cache-dir",
                     "--no-deps",
                     _BNB_ROCM_PYPI_FALLBACK,
-                    constrain = False,
+                    constrain=False,
                 )
             _record_bnb_rocm_provenance()
         if not _bnb_rocm_arch_has_binary():
@@ -6463,7 +6473,7 @@ def _torch_hip_version_on_disk() -> str:
         return ""
     try:
         text = (
-            Path(spec.origin).with_name("version.py").read_text(encoding = "utf-8", errors = "replace")
+            Path(spec.origin).with_name("version.py").read_text(encoding="utf-8", errors="replace")
         )
     except OSError:
         return ""
@@ -6559,8 +6569,8 @@ def _safe_print(*args: object, **kwargs: object) -> None:
             text = text.replace(uni, ascii_alt)
         # Final fallback: replace any remaining unencodable chars.
         print(
-            text.encode(sys.stdout.encoding or "ascii", errors = "replace").decode(
-                sys.stdout.encoding or "ascii", errors = "replace"
+            text.encode(sys.stdout.encoding or "ascii", errors="replace").decode(
+                sys.stdout.encoding or "ascii", errors="replace"
             ),
             **kwargs,
         )
@@ -6643,7 +6653,7 @@ def _end_progress_line() -> None:
     _PROGRESS_LINE_ACTIVE = False
 
 
-def _note(message: str, color_fn = None) -> None:
+def _note(message: str, color_fn=None) -> None:
     """Print a detail line under the current step, aligned to the value column."""
     if color_fn is None:
         color_fn = _dim
@@ -6652,9 +6662,9 @@ def _note(message: str, color_fn = None) -> None:
     wrap_width = max(24, shutil.get_terminal_size((100, 20)).columns - len(prefix))
     lines = textwrap.wrap(
         message,
-        width = wrap_width,
-        break_long_words = False,
-        break_on_hyphens = False,
+        width=wrap_width,
+        break_long_words=False,
+        break_on_hyphens=False,
     ) or [""]
     for line in lines:
         _safe_print(f"{prefix}{color_fn(line)}")
@@ -6663,7 +6673,7 @@ def _note(message: str, color_fn = None) -> None:
 def _step(
     label: str,
     value: str,
-    color_fn = None,
+    color_fn=None,
 ) -> None:
     """Print a single step line in the column format."""
     if color_fn is None:
@@ -6677,9 +6687,9 @@ def _step(
     )
     lines = textwrap.wrap(
         value,
-        width = wrap_width,
-        break_long_words = False,
-        break_on_hyphens = False,
+        width=wrap_width,
+        break_long_words=False,
+        break_on_hyphens=False,
     ) or [""]
     _safe_print(f"{prefix}{color_fn(lines[0])}")
     continuation_prefix = " " * plain_prefix_width
@@ -6726,9 +6736,9 @@ def run(
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
-        stdout = subprocess.PIPE if quiet else None,
-        stderr = subprocess.STDOUT if quiet else None,
-        env = _install_env_for_cmd(cmd) if env is _ENV_FOR_CMD else env,
+        stdout=subprocess.PIPE if quiet else None,
+        stderr=subprocess.STDOUT if quiet else None,
+        env=_install_env_for_cmd(cmd) if env is _ENV_FOR_CMD else env,
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -6760,7 +6770,7 @@ def _woa_overrides_are_load_bearing() -> bool:
         return False
     for path in os.environ.get("UV_OVERRIDE", "").split():
         try:
-            with open(path, encoding = "utf-8", errors = "replace") as handle:
+            with open(path, encoding="utf-8", errors="replace") as handle:
                 first = handle.readline()
         except OSError:
             continue
@@ -6894,7 +6904,7 @@ def _wheel_matches_interpreter(filename: str) -> bool:
     return False
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
     """Canonical name -> versions of the wheels in the configured find-links directories.
 
@@ -6964,7 +6974,7 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
         try:
             spec_set = module.SpecifierSet(specifier)
             # Prereleases off unless the specifier names one; packaging's default admits 0.13.0rc1.
-            return bool(spec_set.contains(version, prereleases = bool(spec_set.prereleases)))
+            return bool(spec_set.contains(version, prereleases=bool(spec_set.prereleases)))
         except Exception:
             break
     if not re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", version or ""):
@@ -7056,7 +7066,7 @@ def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
     if req is None:
         return pins
     try:
-        text = req.read_text(encoding = "utf-8-sig")
+        text = req.read_text(encoding="utf-8-sig")
     except OSError:
         return pins
     for line in text.splitlines():
@@ -7121,7 +7131,8 @@ def _wheelhouse_best_version(name: str, floor: str) -> "str | None":
         return None
     try:
         from packaging.version import Version
-        return max(usable, key = Version)
+
+        return max(usable, key=Version)
     except Exception:
         return sorted(usable)[-1]
 
@@ -7166,7 +7177,7 @@ def _install_wheelhouse_optionals() -> None:
             "--no-deps",
             "--no-cache-dir",
             f"{name}=={version}",
-            constrain = False,
+            constrain=False,
         )
         if not installed:
             _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
@@ -7227,7 +7238,7 @@ def _uv_config_files() -> "list[tuple[Path, str]]":
         pyproject = d / "pyproject.toml"
         if pyproject.is_file():
             try:
-                text = pyproject.read_text(encoding = "utf-8")
+                text = pyproject.read_text(encoding="utf-8")
             except OSError:
                 text = ""
             if re.search(r"(?m)^\s*\[+tool\.uv(\.|\])", text):
@@ -7326,6 +7337,7 @@ def _url_is_public_pypi(url: str) -> bool:
     ".../api/pypi/pypi.org/simple" both contain the name and neither is public PyPI."""
     try:
         from urllib.parse import urlsplit
+
         host = urlsplit(url.strip()).hostname
     except ValueError:
         return False
@@ -7477,9 +7489,9 @@ def _pip_config_index_policy() -> "dict[str, object]":
     try:
         done = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            capture_output=True,
+            text=True,
+            timeout=60,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
@@ -7676,9 +7688,9 @@ def _flash_attn_importable() -> bool:
     try:
         result = subprocess.run(
             [sys.executable, "-c", "import flash_attn"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -7701,7 +7713,7 @@ def _remove_rejected_flash_attn() -> bool:
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
     _count_install_action()
-    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    removed = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return removed.returncode == 0
 
 
@@ -7722,9 +7734,9 @@ def _ensure_flash_attn() -> None:
         _count_install_action()
         for installer, wheel_result in install_wheel(
             wheel_url,
-            python_executable = sys.executable,
-            use_uv = USE_UV,
-            uv_needs_system = UV_NEEDS_SYSTEM,
+            python_executable=sys.executable,
+            use_uv=USE_UV,
+            uv_needs_system=UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
                 # Verify rather than trust the exit code, so setup reports what happened.
@@ -7783,16 +7795,16 @@ def _bootstrap_uv() -> bool:
     # Explicit --python: uv can ignore the activated venv on some platforms.
     probe = subprocess.run(
         ["uv", "pip", "freeze", "--python", sys.executable],
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         **_windows_hidden_subprocess_kwargs(),
     )
     if probe.returncode != 0:
         # Retry with --system (some envs need it when uv can't find a venv)
         probe_sys = subprocess.run(
             ["uv", "pip", "freeze", "--system"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             **_windows_hidden_subprocess_kwargs(),
         )
         if probe_sys.returncode != 0:
@@ -7828,8 +7840,8 @@ def _venv_pip_is_usable() -> bool:
     try:
         probe = subprocess.run(
             [sys.executable, "-m", "pip", "--version"],
-            capture_output = True,
-            timeout = 60,
+            capture_output=True,
+            timeout=60,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
@@ -7839,21 +7851,21 @@ def _venv_pip_is_usable() -> bool:
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy, adjacent when writable, with certain packages removed."""
-    lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
+    lines = req.read_text(encoding="utf-8").splitlines(keepends=True)
     filtered = [
         line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     # Beside the source so relative -r/-c includes resolve; a read-only tree
     # (root-owned install, non-root user) falls back rather than aborting.
     kwargs = dict(
-        mode = "w",
-        prefix = f".{req.stem}-filtered-",
-        suffix = ".txt",
-        delete = False,
-        encoding = "utf-8",
+        mode="w",
+        prefix=f".{req.stem}-filtered-",
+        suffix=".txt",
+        delete=False,
+        encoding="utf-8",
     )
     try:
-        tmp = tempfile.NamedTemporaryFile(dir = req.parent, **kwargs)
+        tmp = tempfile.NamedTemporaryFile(dir=req.parent, **kwargs)
     except OSError:
         tmp = tempfile.NamedTemporaryFile(**kwargs)
     tmp.writelines(filtered)
@@ -7868,7 +7880,7 @@ def _shared_base_requirements() -> Path | None:
     req = REQ_ROOT / "base.txt"
     try:
         # utf-8-sig: a BOM would otherwise read as content, scheduling an empty step.
-        text = req.read_text(encoding = "utf-8-sig")
+        text = req.read_text(encoding="utf-8-sig")
     except OSError:
         return None  # missing or unreadable: nothing to apply
     for line in text.splitlines():
@@ -7927,8 +7939,8 @@ def _overlay_local_core_package(
         return False
     _step(_LABEL, step_label)
     if not strict:
-        return pip_install_try(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
-    pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
+        return pip_install_try(install_label, "--no-cache-dir", "--no-deps", *args, constrain=False)
+    pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain=False)
     return True
 
 
@@ -7943,9 +7955,9 @@ def _run_ok(label: str, cmd: list) -> bool:
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        env = _install_env_for_cmd(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=_install_env_for_cmd(cmd),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0 and result.stdout:
@@ -7992,7 +8004,7 @@ def _rewrite_minimal_metadata(path: str, name: str) -> bool:
     if not separator or not version:
         return False
     try:
-        with open(os.path.join(path, "METADATA"), "w", encoding = "utf-8") as handle:
+        with open(os.path.join(path, "METADATA"), "w", encoding="utf-8") as handle:
             handle.write(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
     except OSError:
         return False
@@ -8016,7 +8028,7 @@ class _QuarantinedMetadata:
 
     def _holding_dir(self) -> str:
         if not self._holding:
-            self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
+            self._holding = tempfile.mkdtemp(prefix="unsloth_metadata_quarantine_")
         return self._holding
 
     def back_up(self, path) -> bool:
@@ -8087,7 +8099,7 @@ class _QuarantinedMetadata:
 
     def discard(self) -> None:
         if self._holding:
-            shutil.rmtree(self._holding, ignore_errors = True)
+            shutil.rmtree(self._holding, ignore_errors=True)
             self._holding = ""
         self._moved.clear()
         self._copied.clear()
@@ -8119,18 +8131,18 @@ def _restore_from_staged(
         # pip, not uv: the wheel is already built and sitting in staged, and uv would
         # reject the unpinned name under UV_REQUIRE_HASHES with the package records
         # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
-        force_pip = True,
+        force_pip=True,
     ):
         # The wheel just wrote its own valid metadata at the same path the rewritten
         # record occupied, so the unwinding below must not put the original back over
         # it. See _QuarantinedMetadata.forget_copies.
         if quarantine is not None:
             quarantine.forget_copies()
-        _safe_print(_red(f"   restored {name} from the staged replacement"), file = sys.stderr)
+        _safe_print(_red(f"   restored {name} from the staged replacement"), file=sys.stderr)
     else:
         _safe_print(
             _red(f"   {name} is no longer installed. Re-run the installer to restore it."),
-            file = sys.stderr,
+            file=sys.stderr,
         )
 
 
@@ -8144,7 +8156,7 @@ def _requirement_args(requirement: str, staging: str) -> "list[str]":
     if "--hash=" not in requirement:
         return [requirement]
     path = os.path.join(staging, "requirement.txt")
-    with open(path, "w", encoding = "utf-8") as handle:
+    with open(path, "w", encoding="utf-8") as handle:
         handle.write(requirement + "\n")
     return ["-r", path]
 
@@ -8182,7 +8194,7 @@ def _stage_replacement(name: str):
                 "   UV_OFFLINE is set and pip has no offline mode, so repairing "
                 f"{name} would have to reach the network; leaving the install alone."
             ),
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return None
     if USE_UV and not _is_direct_reference(name):
@@ -8194,7 +8206,7 @@ def _stage_replacement(name: str):
                     f"   uv could not resolve a replacement for {name}, so its source "
                     "cannot be preserved; leaving the install alone."
                 ),
-                file = sys.stderr,
+                file=sys.stderr,
             )
             return None
         requirement, overrides, build_options = plan
@@ -8205,10 +8217,10 @@ def _stage_replacement(name: str):
                 "   UV_EXCLUDE_NEWER is set but this pip is too old to honour it "
                 "(needs 25.3 for --uploaded-prior-to); leaving the install alone."
             ),
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return None
-    staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
+    staging = tempfile.mkdtemp(prefix="unsloth_metadata_repair_")
     cmd = [
         sys.executable,
         "-m",
@@ -8229,16 +8241,16 @@ def _stage_replacement(name: str):
         env["PIP_CONFIG_FILE"] = _pip_config_without_sources(staging)
     result = subprocess.run(
         cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        env = env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode == 0 and glob.glob(os.path.join(staging, "*.whl")):
         return staging
     if VERBOSE and result.stdout:
         _safe_print(_redact_install_output(result.stdout))
-    shutil.rmtree(staging, ignore_errors = True)
+    shutil.rmtree(staging, ignore_errors=True)
     return None
 
 
@@ -8293,7 +8305,7 @@ def _repair_damaged_core_payload(
                         f"   {name} is not installed, so this environment cannot run. "
                         "Rerun the installer with the package index available."
                     ),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
     damaged: list[str] = []
@@ -8304,7 +8316,7 @@ def _repair_damaged_core_payload(
             continue
         seen.add(canonical)
         try:
-            if install_manifest.damaged_payload_files(name, limit = 1, budget_seconds = 0.0):
+            if install_manifest.damaged_payload_files(name, limit=1, budget_seconds=0.0):
                 damaged.append(name)
         except Exception:
             continue
@@ -8337,7 +8349,7 @@ def _repair_damaged_core_payload(
             remaining = []
         try:
             remaining = remaining or install_manifest.damaged_payload_files(
-                name, budget_seconds = 0.0
+                name, budget_seconds=0.0
             )
         except Exception:
             pass
@@ -8349,7 +8361,7 @@ def _repair_damaged_core_payload(
                     f"({remaining[0]}). An unreachable or offline index cannot "
                     "replace them; rerun with the index available."
                 ),
-                file = sys.stderr,
+                file=sys.stderr,
             )
     return not still_damaged
 
@@ -8432,7 +8444,7 @@ def _repair_duplicate_core_metadata(
                         + " cannot be read or rewritten, so the files that release owned "
                         "cannot be identified. Recreate the environment to repair it."
                     ),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
             # pip skips its own abandoned backup ("Ignoring invalid distribution
@@ -8445,7 +8457,7 @@ def _repair_duplicate_core_metadata(
             if backups and not quarantine.take(backups):
                 _safe_print(
                     _red(f"   could not move pip's leftover backup for {name} aside"),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
             if invalid_paths or backups:
@@ -8467,7 +8479,7 @@ def _repair_duplicate_core_metadata(
                         "files cannot be removed safely. Recreate the environment "
                         "to repair it."
                     ),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
 
@@ -8489,7 +8501,7 @@ def _repair_duplicate_core_metadata(
                         f"   could not fetch a replacement for {name}; leaving "
                         "the existing install in place"
                     ),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
             staging_dirs.append(staged)
@@ -8505,7 +8517,7 @@ def _repair_duplicate_core_metadata(
                 ):
                     _safe_print(
                         _red(f"   could not uninstall a metadata record for {name}"),
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     _restore_from_staged(name, staged, removed_any, quarantine)
                     return False
@@ -8514,7 +8526,7 @@ def _repair_duplicate_core_metadata(
                 if remaining >= record_count:
                     _safe_print(
                         _red(f"   could not remove every metadata record for {name}"),
-                        file = sys.stderr,
+                        file=sys.stderr,
                     )
                     _restore_from_staged(name, staged, removed_any, quarantine)
                     return False
@@ -8523,7 +8535,7 @@ def _repair_duplicate_core_metadata(
 
             # Installer handoffs may already have applied a local or CI source.
             # Restore that provenance now that no ambiguous record remains.
-            restored = overlaid and _overlay_local_core_package(name, source_repo, strict = False)
+            restored = overlaid and _overlay_local_core_package(name, source_repo, strict=False)
             if not restored:
                 # The overlay install is preferred because it keeps the editable
                 # or git provenance, but the staged wheel was built from that
@@ -8539,7 +8551,7 @@ def _repair_duplicate_core_metadata(
                     name,
                     # As _restore_from_staged: pip, so a uv hash policy cannot reject the
                     # already-built wheel once every record has been removed.
-                    force_pip = True,
+                    force_pip=True,
                 )
             if not restored:
                 _safe_print(
@@ -8548,7 +8560,7 @@ def _repair_duplicate_core_metadata(
                         "metadata; it is no longer installed. Re-run the installer "
                         "to restore it."
                     ),
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 return False
             repaired.append(name)
@@ -8564,14 +8576,14 @@ def _repair_duplicate_core_metadata(
                 _red(
                     "   package metadata is inconsistent after reinstall: " + ", ".join(unresolved)
                 ),
-                file = sys.stderr,
+                file=sys.stderr,
             )
             return False
         succeeded = True
         return True
     finally:
         for staging in staging_dirs:
-            shutil.rmtree(staging, ignore_errors = True)
+            shutil.rmtree(staging, ignore_errors=True)
         # Anything short of a completed repair puts the quarantined records back,
         # so a failure leaves the environment as it was found.
         if succeeded:
@@ -8639,7 +8651,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
             # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.1) needs the
             # rest.
             return _canonical_package_name(
-                re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
+                re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit=1)[0]
             )
 
         named = {_project(arg) for arg in cmd if arg and not arg.startswith("-")}
@@ -8880,9 +8892,9 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
     try:
         result = subprocess.run(
             cmd,
-            input = name.encode(),
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
+            input=name.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             **_windows_hidden_subprocess_kwargs(),
         )
     except OSError:
@@ -8991,11 +9003,11 @@ def _pip_config_without_sources(directory: str) -> str:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             # Dictate the child's encoding; see _decode_pip_output for why sniffing it
             # afterwards does not work. A non-ASCII cert path must survive this read.
-            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             **_windows_hidden_subprocess_kwargs(),
         )
     except OSError:
@@ -9016,7 +9028,7 @@ def _pip_config_without_sources(directory: str) -> str:
             # pip renders a multi-value setting as one newline separated string; an
             # indented continuation is how it is spelled back into a config file.
             sections.setdefault(section, []).append((option, str(value).replace("\n", "\n    ")))
-    with open(path, "w", encoding = "utf-8") as handle:
+    with open(path, "w", encoding="utf-8") as handle:
         for section, options in sections.items():
             handle.write(f"[{section}]\n")
             for option, value in options:
@@ -9113,13 +9125,13 @@ def _uv_upload_cutoff_args() -> "list[str] | None":
     return ["--uploaded-prior-to", cutoff]
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def _pip_supports_upload_cutoff() -> bool:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "wheel", "--help"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             **_windows_hidden_subprocess_kwargs(),
         )
     except OSError:
@@ -9238,12 +9250,12 @@ def _pinned_pip_config_overrides(
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             # Dictate the child's encoding; see _decode_pip_output. Guessing loses a
             # non-ASCII cert path, and pip then fails rather than dropping the setting.
-            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
-            timeout = _PINNED_PIP_CONFIG_TIMEOUT,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            timeout=_PINNED_PIP_CONFIG_TIMEOUT,
             **_windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -9363,13 +9375,13 @@ def pip_install_try(
     try:
         result = subprocess.run(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            env = env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
         )
     finally:
         for temp_req in temp_reqs:
-            temp_req.unlink(missing_ok = True)
+            temp_req.unlink(missing_ok=True)
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
         if VERBOSE and result.stdout:
@@ -9420,9 +9432,9 @@ def pip_install(
                 _safe_print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                env = uv_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=uv_env,
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -9472,7 +9484,7 @@ def pip_install(
             _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         )
         pip_label = f"{label} (pip)" if USE_UV else label
-        result = run(pip_label, pip_cmd, check = False, env = pip_env)
+        result = run(pip_label, pip_cmd, check=False, env=pip_env)
         if result.returncode != 0:
             # Retry once, and only after clearing something pip named as
             # unremovable: a blind retry of a failing install just doubles the wait.
@@ -9480,10 +9492,10 @@ def pip_install(
             if not cleared:
                 _report_failed_command(pip_label, result)
             _step(_LABEL, f"cleared half-written {', '.join(cleared)}, retrying...", _dim)
-            run(pip_label, pip_cmd, env = pip_env)
+            run(pip_label, pip_cmd, env=pip_env)
     finally:
         for temp_req in temp_reqs:
-            temp_req.unlink(missing_ok = True)
+            temp_req.unlink(missing_ok=True)
 
 
 def download_file(url: str, dest: Path) -> None:
@@ -9495,10 +9507,10 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     """Download a file from url and overwrite a file inside an installed package."""
     result = subprocess.run(
         [sys.executable, "-m", "pip", "show", package_name],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -9537,9 +9549,9 @@ def _has_working_git() -> bool:
         return (
             subprocess.run(
                 [exe, "--version"],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                timeout = 30,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
             ).returncode
             == 0
         )
@@ -9606,7 +9618,7 @@ def _mlx_stack_is_current() -> bool:
         # would put mlx-vlm back where the zoo can drive it.
         if not Requirement(_mlx_vlm_spec_for_installed_zoo()).specifier.contains(
             installed,
-            prereleases = True,
+            prereleases=True,
         ):
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
@@ -9621,14 +9633,14 @@ def _overridden_project_names() -> "set[str]":
     """Canonical names the bundled macOS arm64 override file replaces every requirement on."""
     names: set[str] = set()
     try:
-        text = _MLX_OVERRIDES.read_text(encoding = "utf-8-sig")
+        text = _MLX_OVERRIDES.read_text(encoding="utf-8-sig")
     except (OSError, ValueError, UnicodeDecodeError):
         return names
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line or line.startswith("-"):
             continue
-        head = re.split(r"[<>=!~;\[ ]", line, maxsplit = 1)[0].strip()
+        head = re.split(r"[<>=!~;\[ ]", line, maxsplit=1)[0].strip()
         if head:
             names.add(install_manifest._canonical(head))
     return names
@@ -9642,12 +9654,12 @@ def _mlx_closure_unmet() -> bool:
 
         # mkstemp hands back an OPEN descriptor. Left open it leaks one per update, and on
         # Windows it also holds the file, so the unlink below cannot clear it.
-        _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
+        _fd, _name = _tempfile.mkstemp(prefix="unsloth-mlx-", suffix=".txt", text=True)
         os.close(_fd)
         handle = Path(_name)
         handle.write_text(
             "\n".join([*_MLX_PINS, _mlx_vlm_spec_for_installed_zoo()]) + "\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
         # An override REPLACES every requirement on the package it names, so the installed
@@ -9667,7 +9679,7 @@ def _mlx_closure_unmet() -> bool:
     finally:
         if handle is not None:
             try:
-                handle.unlink(missing_ok = True)
+                handle.unlink(missing_ok=True)
             except OSError:
                 pass
     if unmet and VERBOSE:
@@ -9802,17 +9814,17 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     ):
         _step("mlx", "training stack ready")
         # Written back so the record does not age out of the manifest.
-        install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": True})
+        install_manifest.update_manifest(mlx_health={**fingerprint, "ok": True})
         return
     backend = str(SCRIPT_DIR / "backend")
     try:
         probe = subprocess.run(
             [sys.executable, "-c", _MLX_HEALTH_PROBE, backend],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 180,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
             **_windows_hidden_subprocess_kwargs(),
         )
         blockers = json.loads(probe.stdout.strip() or "null")
@@ -9824,7 +9836,7 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         return
     # After the manifest is written, so a kill during the probe's 180 s timeout cannot lose a
     # finished install; update_manifest never raises and never creates one.
-    install_manifest.update_manifest(mlx_health = {**fingerprint, "ok": not blockers})
+    install_manifest.update_manifest(mlx_health={**fingerprint, "ok": not blockers})
     if not blockers:
         _step("mlx", "training stack ready")
         return
@@ -9901,7 +9913,7 @@ def _closure_record() -> "dict[str, list[str]]":
                 # An unlink that raises here would end the pass between the last install and
                 # the manifest write. A temp file left behind is the cheaper outcome.
                 try:
-                    temp.unlink(missing_ok = True)
+                    temp.unlink(missing_ok=True)
                 except OSError:
                     pass
         audited = not any(entry.startswith("<") for entry in unmet)
@@ -10071,7 +10083,7 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
             )
     # Last, being the only check that walks the filesystem.
     try:
-        verified = install_manifest.verify_install(deep = True, manifest = manifest)
+        verified = install_manifest.verify_install(deep=True, manifest=manifest)
     except Exception as exc:  # noqa: BLE001
         return _refuse_evidence(f"deep verify raised {exc!r}")
     if not verified.get("ok"):
@@ -10203,7 +10215,7 @@ def _local_plugin_payload_is_damaged(dist_name: str) -> bool:
     the conservative answer is cheap here and is not on the fast path for anything else.
     """
     try:
-        return bool(install_manifest.damaged_payload_files(dist_name, limit = 1))
+        return bool(install_manifest.damaged_payload_files(dist_name, limit=1))
     except Exception:  # noqa: BLE001
         return True
 
@@ -10225,7 +10237,7 @@ def _includes_another_requirements_file(req: Path) -> bool:
     stand behind either, and the step running is the safe answer.
     """
     try:
-        text = req.read_text(encoding = "utf-8-sig")
+        text = req.read_text(encoding="utf-8-sig")
     except (OSError, ValueError, UnicodeDecodeError):
         return True
     for raw in text.splitlines():
@@ -10309,7 +10321,7 @@ def _requirements_satisfied(
     finally:
         for temp in temps:
             try:
-                temp.unlink(missing_ok = True)
+                temp.unlink(missing_ok=True)
             except OSError:
                 pass
     if constrain and _violated_constraints():
@@ -10323,7 +10335,7 @@ def _skip_step(
     *,
     no_deps: bool,
     constrain: bool = True,
-    extra_check = None,
+    extra_check=None,
     superseded: bool = False,
 ) -> bool:
     """Announce one requirements step and say whether it is already satisfied.
@@ -10349,7 +10361,7 @@ def _skip_step(
         _progress(f"{progress_label} (superseded, skipped)")
         _record_step(key, "skipped")
         return True
-    satisfied = _requirements_satisfied(req, no_deps = no_deps, constrain = constrain)
+    satisfied = _requirements_satisfied(req, no_deps=no_deps, constrain=constrain)
     if satisfied and extra_check is not None:
         satisfied = bool(extra_check())
     _progress(f"{progress_label} (satisfied, skipped)" if satisfied else progress_label)
@@ -10365,7 +10377,7 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
     """
     # ValueError too: a requirements file that is not UTF-8 raises UnicodeDecodeError here.
     try:
-        lines = req.read_text(encoding = "utf-8-sig").splitlines()
+        lines = req.read_text(encoding="utf-8-sig").splitlines()
     except (OSError, ValueError):
         return None
     for line in lines:
@@ -10535,7 +10547,7 @@ def _triton_kernels_step() -> None:
         asked["current"] = _direct_reference_is_installed(req, "triton_kernels")
         return asked["current"]
 
-    if _skip_step(req, "triton kernels", no_deps = True, constrain = False, extra_check = _ref_current):
+    if _skip_step(req, "triton kernels", no_deps=True, constrain=False, extra_check=_ref_current):
         return
     if "current" not in asked:
         _ref_current()
@@ -10553,8 +10565,8 @@ def _triton_kernels_step() -> None:
         "Installing triton kernels",
         "--no-deps",
         "--no-cache-dir",
-        req = req,
-        constrain = False,
+        req=req,
+        constrain=False,
     )
 
 
@@ -10766,14 +10778,14 @@ def _diffusers_main_step() -> None:
             "Installing the pinned Diffusers main build (zip archive, no git)",
             "--no-cache-dir",
             f"diffusers @ {archive}",
-            constrain = False,
+            constrain=False,
         )
     else:
         installed = pip_install_try(
             "Installing the pinned Diffusers main build",
             "--no-cache-dir",
-            req = req,
-            constrain = False,
+            req=req,
+            constrain=False,
         )
     if not installed:
         # "failed", not "skipped": the fast path reads it to stop forcing a pass that cannot succeed.
@@ -10791,6 +10803,7 @@ def _recorded_direct_url(dist_name: str) -> "dict | None":
     that parses. This is the only place a git install's ref and commit survive."""
     try:
         from importlib.metadata import distribution
+
         recorded = distribution(dist_name).read_text("direct_url.json")
     except Exception:  # noqa: BLE001 - absent metadata is a reason to install
         return None
@@ -10823,12 +10836,12 @@ def _git_remote_commit(
     try:
         probe = subprocess.run(
             [exe, "ls-remote", "--", url, revision],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = timeout,
-            env = env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
@@ -10858,11 +10871,11 @@ def _uv_version() -> "str | None":
     try:
         probe = subprocess.run(
             ["uv", "--version"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 30,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
             **_windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001 - advisory
@@ -10901,7 +10914,7 @@ def _patch_metadata_is_pending() -> bool:
             path = patch_metadata.metadata_path(name)
             if path is None:
                 continue
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             if any(pattern.search(text) for pattern, _replacement in patch_metadata.PATCHES):
                 return True
     except Exception:  # noqa: BLE001 - unknown means run it, which is what it did before
@@ -11034,7 +11047,7 @@ def _rerun_replaced_installer() -> int:
     env[_INSTALLER_RERUN_ENV] = "1"
     return subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
-        env = env,
+        env=env,
     ).returncode
 
 
@@ -11130,7 +11143,7 @@ def install_python_stack() -> int:
             f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
             f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
             "next run would read as a completed pass",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 1
     if install_manifest.remove_manifest():
@@ -11140,7 +11153,7 @@ def install_python_stack() -> int:
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
                 "next run would read as a completed pass",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             return 1
     else:
@@ -11148,7 +11161,7 @@ def install_python_stack() -> int:
             f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
             f"{install_manifest.venv_root()}; refusing to install behind a marker "
             "that would still report this venv as complete",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 1
 
@@ -11186,8 +11199,8 @@ def install_python_stack() -> int:
         _has_pip = (
             subprocess.run(
                 [sys.executable, "-m", "pip", "--version"],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 **_windows_hidden_subprocess_kwargs(),
             ).returncode
             == 0
@@ -11209,14 +11222,14 @@ def install_python_stack() -> int:
     # including installer handoffs that set skip_base after their own upgrade.
     if not _repair_duplicate_core_metadata(
         (package_name, "unsloth-zoo"),
-        local_repo = local_repo,
-        ci_source_overlay = ci_source_overlay,
+        local_repo=local_repo,
+        ci_source_overlay=ci_source_overlay,
     ):
         return 1
 
     # Intact metadata over a missing payload: the core phase would audit it as
     # satisfied. Unbudgeted, since this run is already doing a full install.
-    if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
+    if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo=local_repo):
         return 1
 
     # macOS arm64: not keyed off skip_base, because a fresh install skips core packages
@@ -11298,12 +11311,12 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             "pydantic",
         )
-        if not _skip_step(REQ_ROOT / "no-torch-runtime.txt", "no-torch runtime deps", no_deps = True):
+        if not _skip_step(REQ_ROOT / "no-torch-runtime.txt", "no-torch runtime deps", no_deps=True):
             pip_install(
                 "Installing no-torch runtime deps",
                 "--no-cache-dir",
                 "--no-deps",
-                req = REQ_ROOT / "no-torch-runtime.txt",
+                req=REQ_ROOT / "no-torch-runtime.txt",
             )
         if local_repo:
             _overlay_local_core_packages(local_repo)
@@ -11380,7 +11393,7 @@ def install_python_stack() -> int:
     # Independent of the core phase: the shell installers skip that after
     # installing the two distributions inline, but still apply this file.
     if base_requirements is not None:
-        satisfied = _requirements_satisfied(base_requirements, no_deps = False)
+        satisfied = _requirements_satisfied(base_requirements, no_deps=False)
         _record_step("base.txt", "skipped" if satisfied else "ran")
         if skip_base:
             _progress(
@@ -11394,7 +11407,7 @@ def install_python_stack() -> int:
             pip_install(
                 "Applying shared base requirements",
                 "--no-cache-dir",
-                req = base_requirements,
+                req=base_requirements,
             )
 
     # 2b. Torch repair (wrong-family / CPU-only); must follow base packages so torch is present.
@@ -11429,13 +11442,13 @@ def install_python_stack() -> int:
             try:
                 _wr = subprocess.run(
                     [_wexe, *_wcmd[1:]],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    timeout = 10,
-                    env = _amd_smi_env() if _wcmd[0] == "amd-smi" else None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                    env=_amd_smi_env() if _wcmd[0] == "amd-smi" else None,
                 )
             except Exception:
                 continue
@@ -11450,23 +11463,23 @@ def install_python_stack() -> int:
             )
 
     # 3. Extra dependencies
-    if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras", no_deps = False):
+    if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras", no_deps=False):
         pip_install(
             "Installing additional unsloth dependencies",
             "--no-cache-dir",
             # extras.txt is where the wheel-less requirements live, so a user-level
             # no-build/only-binary policy fails this step first (#8530).
             *_sdist_only_build_args(*_extras_sdist_only_packages()),
-            req = REQ_ROOT / "extras.txt",
+            req=REQ_ROOT / "extras.txt",
         )
 
     # 3b. Extra dependencies (no-deps) -- audio model support etc.
-    if not _skip_step(REQ_ROOT / "extras-no-deps.txt", "extra codecs", no_deps = True):
+    if not _skip_step(REQ_ROOT / "extras-no-deps.txt", "extra codecs", no_deps=True):
         pip_install(
             "Installing extras (no-deps)",
             "--no-deps",
             "--no-cache-dir",
-            req = REQ_ROOT / "extras-no-deps.txt",
+            req=REQ_ROOT / "extras-no-deps.txt",
         )
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
@@ -11514,11 +11527,11 @@ def install_python_stack() -> int:
     # )
 
     # 8. Unsloth dependencies
-    if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
+    if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps=False):
         pip_install(
             "Installing Unsloth Studio dependencies",
             "--no-cache-dir",
-            req = REQ_ROOT / "studio.txt",
+            req=REQ_ROOT / "studio.txt",
         )
 
     # 8b. anyio repair (#6483)
@@ -11532,23 +11545,23 @@ def install_python_stack() -> int:
 
     # 9. Data-designer dependencies
     _dd_deps_ran = not _skip_step(
-        SINGLE_ENV / "data-designer-deps.txt", "data designer deps", no_deps = False
+        SINGLE_ENV / "data-designer-deps.txt", "data designer deps", no_deps=False
     )
     if _dd_deps_ran:
         pip_install(
             "Installing data-designer base dependencies",
             "--no-cache-dir",
-            req = SINGLE_ENV / "data-designer-deps.txt",
+            req=SINGLE_ENV / "data-designer-deps.txt",
         )
 
     # 10. Data-designer packages (no-deps to avoid conflicts)
-    _dd_ran = not _skip_step(SINGLE_ENV / "data-designer.txt", "data designer", no_deps = True)
+    _dd_ran = not _skip_step(SINGLE_ENV / "data-designer.txt", "data designer", no_deps=True)
     if _dd_ran:
         pip_install(
             "Installing data-designer",
             "--no-cache-dir",
             "--no-deps",
-            req = SINGLE_ENV / "data-designer.txt",
+            req=SINGLE_ENV / "data-designer.txt",
         )
 
     # 11. Local Data Designer seed plugins
@@ -11589,7 +11602,7 @@ def install_python_stack() -> int:
             "--no-cache-dir",
             "--no-deps",
             str(plugin_dir),
-            constrain = False,
+            constrain=False,
         )
 
     # 11b. The pinned Diffusers release. NOT in base.txt, which is applied early: this must
@@ -11607,13 +11620,13 @@ def install_python_stack() -> int:
     if not _skip_step(
         REQ_ROOT / "diffusers-pin.txt",
         "diffusers pin",
-        no_deps = False,
-        superseded = _diffusers_main_supersedes_release(),
+        no_deps=False,
+        superseded=_diffusers_main_supersedes_release(),
     ):
         pip_install(
             "Installing the pinned Diffusers release",
             "--no-cache-dir",
-            req = REQ_ROOT / "diffusers-pin.txt",
+            req=REQ_ROOT / "diffusers-pin.txt",
         )
 
     # 11c. A pinned commit of Diffusers main, for models whose support has merged upstream but has
@@ -11699,7 +11712,7 @@ def install_python_stack() -> int:
             "--no-deps",
             "--no-cache-dir",
             f"torchcodec=={_codec_hosted}",
-            constrain = False,
+            constrain=False,
         ):
             _note(f"windows on arm: installed torchcodec=={_codec_hosted} from the wheelhouse")
         else:
@@ -11840,7 +11853,7 @@ def install_python_stack() -> int:
             _npp_spec = _npp_requirement(_npp_major) if _npp_major else ""
             # The distribution the spec names (nvidia-npp-cuNN through CUDA 12, nvidia-npp above);
             # _spec_is_satisfied answers the range.
-            _npp_name = re.split(r"[<>=!~]", _npp_spec, maxsplit = 1)[0].strip() if _npp_spec else ""
+            _npp_name = re.split(r"[<>=!~]", _npp_spec, maxsplit=1)[0].strip() if _npp_spec else ""
             _npp_have = _installed_distribution_version(_npp_name) if _npp_name else None
             if _npp_have and _spec_is_satisfied(_npp_spec, _npp_have):
                 # Already resident; asking pip resolved against PyPI on every update.
@@ -11862,8 +11875,8 @@ def install_python_stack() -> int:
         _pip_check_ok = (
             subprocess.run(
                 [sys.executable, "-m", "pip", "check"],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 **_windows_hidden_subprocess_kwargs(),
             ).returncode
             == 0
@@ -11877,8 +11890,8 @@ def install_python_stack() -> int:
     # environment. A no-op when nothing is ambiguous.
     if not _repair_duplicate_core_metadata(
         (package_name, "unsloth-zoo"),
-        local_repo = local_repo,
-        ci_source_overlay = ci_source_overlay,
+        local_repo=local_repo,
+        ci_source_overlay=ci_source_overlay,
     ):
         return 1
 
@@ -11887,8 +11900,8 @@ def install_python_stack() -> int:
     # handoff never reaches the core phase, so nothing else would see it.
     if not _repair_damaged_core_payload(
         _core_package_names(package_name),
-        local_repo = local_repo,
-        require_present = True,
+        local_repo=local_repo,
+        require_present=True,
     ):
         return 1
 
@@ -11896,20 +11909,20 @@ def install_python_stack() -> int:
     # without it reports a finished install every later check calls unfinished.
     if (
         install_manifest.write_manifest(
-            req_root = REQ_ROOT,
-            steps_total = _TOTAL,
-            package_name = package_name,
-            no_torch = NO_TORCH,
+            req_root=REQ_ROOT,
+            steps_total=_TOTAL,
+            package_name=package_name,
+            no_torch=NO_TORCH,
             # A platform that never resolves a flavor carries the old record forward. An unknown-family
             # pin is the exception: the previous record describes a venv that no longer exists, and
             # writing it back would give a later unpinned run a flavor to "repair" the mirror's to.
-            expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
-            expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
+            expected_torch_tag=_recordable_torch_flavor_tag(torch_flavor_tag),
+            expected_torch_tag_pinned=bool(_recordable_torch_flavor_tag(torch_flavor_tag))
             and _expected_torch_flavor_was_pinned(_recordable_torch_flavor_tag(torch_flavor_tag)),
-            woa_torch_index = os.environ.get("UNSLOTH_WOA_SELECTED_TORCH_INDEX"),
+            woa_torch_index=os.environ.get("UNSLOTH_WOA_SELECTED_TORCH_INDEX"),
             # What the NEXT run may skip. Digested from the CURRENT REQ_ROOT, which the core step
             # may have replaced: a file that moved during this pass must not read as unchanged.
-            extra = {
+            extra={
                 "pass_inputs": {
                     **install_manifest.pass_input_digests(REQ_ROOT),
                     **_plugin_digests,
@@ -11932,7 +11945,7 @@ def install_python_stack() -> int:
         _safe_print(
             f"error: could not write {install_manifest.MANIFEST_NAME} to "
             f"{install_manifest.venv_root()}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 1
 
@@ -11949,7 +11962,7 @@ def install_python_stack() -> int:
     # step done and no record of it, and verify-install, the desktop preflight and the
     # setup fast path all then call a complete install incomplete.
     if IS_MAC_ARM and not NO_TORCH:
-        _report_mlx_stack_health(skipped = _STEP_RESULTS.get("mlx") == "skipped")
+        _report_mlx_stack_health(skipped=_STEP_RESULTS.get("mlx") == "skipped")
 
     _step(_LABEL, "installed")
     return 0

@@ -53,15 +53,15 @@ def _request(
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{base}{path}",
-        data = body,
-        method = method,
-        headers = {"Content-Type": "application/json"},
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout = timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors = "replace")
+        detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"WebDriver {method} {path} returned {error.code}: {detail}") from error
 
 
@@ -133,7 +133,7 @@ def _wait_for_quantization(
     last_error = ""
     for attempt in range(1, _VARIANT_RETRY_ATTEMPTS + 1):
         try:
-            return _wait_for(base, session_id, script, description, timeout = timeout)
+            return _wait_for(base, session_id, script, description, timeout=timeout)
         except AssertionError:
             error_text = _execute(base, session_id, _VARIANT_ERROR_TEXT) or ""
             if not error_text:
@@ -142,7 +142,7 @@ def _wait_for_quantization(
             print(
                 f"[appimage-e2e] quant listing failed (attempt {attempt}/"
                 f"{_VARIANT_RETRY_ATTEMPTS}): {error_text!r}",
-                flush = True,
+                flush=True,
             )
             if attempt == _VARIANT_RETRY_ATTEMPTS:
                 break
@@ -157,7 +157,7 @@ def _wait_for_quantization(
 
 def _write_backend_fixture(home: Path, request_log: Path) -> None:
     fixture_dir = ART_DIR / "fixture"
-    fixture_dir.mkdir(parents = True, exist_ok = True)
+    fixture_dir.mkdir(parents=True, exist_ok=True)
     server = fixture_dir / "backend.py"
     server.write_text(
         textwrap.dedent(
@@ -386,11 +386,11 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
             server.serve_forever()
             """
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     managed_bin = home / ".unsloth/studio/unsloth_studio/bin/unsloth"
-    managed_bin.parent.mkdir(parents = True, exist_ok = True)
+    managed_bin.parent.mkdir(parents=True, exist_ok=True)
     managed_bin.write_text(
         textwrap.dedent(
             f"""\
@@ -426,7 +426,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
             exit 1
             """
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     managed_bin.chmod(0o755)
 
@@ -436,7 +436,7 @@ def _request_log_contains(request_log: Path, path: str) -> bool:
         return False
     return any(
         json.loads(line).get("method") == "POST" and json.loads(line).get("path") == path
-        for line in request_log.read_text(encoding = "utf-8").splitlines()
+        for line in request_log.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
 
@@ -459,11 +459,11 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
             raise RuntimeError(f"COLRv1 regression font has no {table.decode()} table")
 
     font_dir = data_dir / "fonts"
-    font_dir.mkdir(parents = True, exist_ok = True)
+    font_dir.mkdir(parents=True, exist_ok=True)
     installed = font_dir / "Noto-COLRv1.ttf"
     shutil.copy2(source, installed)
     fontconfig_dir = config_dir / "fontconfig/conf.d"
-    fontconfig_dir.mkdir(parents = True, exist_ok = True)
+    fontconfig_dir.mkdir(parents=True, exist_ok=True)
     (fontconfig_dir / "10-unsloth-colrv1-regression.conf").write_text(
         """<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
@@ -479,7 +479,7 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
   </match>
 </fontconfig>
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     font_env = {
         **os.environ,
@@ -489,16 +489,16 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
     }
     subprocess.run(
         ["fc-cache", "-f", str(font_dir)],
-        check = True,
-        env = font_env,
-        stdout = subprocess.DEVNULL,
+        check=True,
+        env=font_env,
+        stdout=subprocess.DEVNULL,
     )
     selected_by_charset = {}
     for charset in ("1f680", "1faea"):
         selected = subprocess.check_output(
             ["fc-match", "-f", "%{file}\t%{family}\t%{color}\n", f"sans-serif:charset={charset}"],
-            env = font_env,
-            text = True,
+            env=font_env,
+            text=True,
         ).strip()
         if str(installed) not in selected:
             raise RuntimeError(
@@ -511,7 +511,7 @@ def _install_colrv1_probe_font(config_dir: Path, data_dir: Path) -> dict[str, st
         "sha256": actual_sha,
         "host_fc_match": selected_by_charset,
     }
-    (ART_DIR / "colrv1-host-font.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
+    (ART_DIR / "colrv1-host-font.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
@@ -530,18 +530,18 @@ def main() -> None:
 
     if ART_DIR.exists():
         shutil.rmtree(ART_DIR)
-    ART_DIR.mkdir(parents = True)
+    ART_DIR.mkdir(parents=True)
     home = ART_DIR.resolve() / "home"
     runtime_dir = ART_DIR.resolve() / "runtime"
     config_dir = home / ".config"
     data_dir = home / ".local/share"
     cache_dir = home / ".cache"
     state_dir = home / ".local/state"
-    runtime_dir.mkdir(parents = True)
-    config_dir.mkdir(parents = True)
-    data_dir.mkdir(parents = True)
-    cache_dir.mkdir(parents = True)
-    state_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
 
     colrv1_font = _install_colrv1_probe_font(config_dir, data_dir)
     request_log = ART_DIR.resolve() / "backend-requests.jsonl"
@@ -575,10 +575,10 @@ def main() -> None:
             "--native-driver",
             native_driver,
         ],
-        stdout = driver_log,
-        stderr = subprocess.STDOUT,
-        env = env,
-        start_new_session = True,
+        stdout=driver_log,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
     )
     session_id: str | None = None
     try:
@@ -587,7 +587,7 @@ def main() -> None:
             if process.poll() is not None:
                 raise RuntimeError(f"tauri-driver exited early with {process.returncode}")
             try:
-                _request(base, "GET", "/status", timeout = 1)
+                _request(base, "GET", "/status", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
@@ -602,7 +602,7 @@ def main() -> None:
                 }
             }
         }
-        created = _request(base, "POST", "/session", capabilities, timeout = 60)
+        created = _request(base, "POST", "/session", capabilities, timeout=60)
         session_id = str(created["value"]["sessionId"])
 
         _wait_for(
@@ -624,7 +624,7 @@ def main() -> None:
                 session_id,
                 "const b=document.querySelector('[data-testid=\"nav-row-hub\"]')||[...document.querySelectorAll('button')].find((e)=>(e.innerText||'').trim()==='Model hub');if(b){b.click();return true;}return false;",
                 "the Model hub sidebar destination",
-                timeout = 30,
+                timeout=30,
             )
             assert clicked, "Could not click the Model hub sidebar destination"
             _wait_for(
@@ -632,7 +632,7 @@ def main() -> None:
                 session_id,
                 "return location.pathname==='/hub'&&document.body?.innerText.includes('Model hub')",
                 "the Model hub route",
-                timeout = 60,
+                timeout=60,
             )
             inserted = _execute(
                 base,
@@ -653,7 +653,7 @@ def main() -> None:
                 evidence["survived_seconds"] = elapsed
             evidence["result"] = "PASS"
             (ART_DIR / "colrv1-model-hub.json").write_text(
-                json.dumps(evidence, indent = 2, ensure_ascii = False), encoding = "utf-8"
+                json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
             )
             _execute(
                 base,
@@ -718,7 +718,7 @@ def main() -> None:
             session_id,
             "return [...document.querySelectorAll('button')].some((b)=>(b.innerText||'').includes('Q4_K_M'))",
             "the Q4_K_M quantization",
-            timeout = 15,
+            timeout=15,
         )
         clicked = _execute(
             base,
@@ -732,7 +732,7 @@ def main() -> None:
             session_id,
             f"return {str(request_log)!r} && true",
             "the model download request",
-            timeout = 1,
+            timeout=1,
         )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not _request_log_contains(
@@ -748,7 +748,7 @@ def main() -> None:
             session_id,
             "return [...document.querySelectorAll('button')].some((b)=>(b.innerText||b.getAttribute('aria-label')||'').includes('Cancel download'))",
             "visible model download progress and its cancel button",
-            timeout = 30,
+            timeout=30,
         )
         clicked = _execute(
             base,
@@ -770,7 +770,7 @@ def main() -> None:
             session_id,
             "return document.body?.innerText.includes('Cancelled. Partial files kept.')",
             "the packaged UI to confirm cancellation",
-            timeout = 15,
+            timeout=15,
         )
 
         # Verify the packaged WebKit view exposes the required media formats.
@@ -785,7 +785,7 @@ def main() -> None:
                 "capture:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)});",
             )
         )
-        (ART_DIR / "media-support.json").write_text(json.dumps(media, indent = 2), encoding = "utf-8")
+        (ART_DIR / "media-support.json").write_text(json.dumps(media, indent=2), encoding="utf-8")
         for media_type in ("mp4", "webm", "wav"):
             assert media[media_type], f"The packaged webview cannot play {media_type}: {media}"
         assert media["capture"], f"The packaged webview exposes no capture device API: {media}"
@@ -795,7 +795,7 @@ def main() -> None:
             base64.b64decode(screenshot["value"])
         )
         body = _execute(base, session_id, "return document.body.innerText")
-        (ART_DIR / "webview-body.txt").write_text(str(body), encoding = "utf-8")
+        (ART_DIR / "webview-body.txt").write_text(str(body), encoding="utf-8")
         assert_no_loader_errors(
             ART_DIR / "tauri-driver.log",
             home / ".unsloth/studio/tauri.log",
@@ -808,7 +808,7 @@ def main() -> None:
     except Exception:
         if session_id:
             try:
-                screenshot = _request(base, "GET", f"/session/{session_id}/screenshot", timeout = 10)
+                screenshot = _request(base, "GET", f"/session/{session_id}/screenshot", timeout=10)
                 (ART_DIR / "failure.png").write_bytes(base64.b64decode(screenshot["value"]))
                 snapshot = _execute(
                     base,
@@ -816,27 +816,27 @@ def main() -> None:
                     "return {url:location.href,title:document.title,body:document.body?.innerText||'',html:document.body?.innerHTML||''};",
                 )
                 (ART_DIR / "failure-webview.json").write_text(
-                    json.dumps(snapshot, indent = 2), encoding = "utf-8"
+                    json.dumps(snapshot, indent=2), encoding="utf-8"
                 )
             except Exception as evidence_error:
                 (ART_DIR / "failure-evidence-error.txt").write_text(
-                    str(evidence_error), encoding = "utf-8"
+                    str(evidence_error), encoding="utf-8"
                 )
         raise
 
     finally:
         if session_id:
             try:
-                _request(base, "DELETE", f"/session/{session_id}", timeout = 10)
+                _request(base, "DELETE", f"/session/{session_id}", timeout=10)
             except Exception:
                 pass
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
             try:
-                process.wait(timeout = 10)
+                process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout = 10)
+                process.wait(timeout=10)
         driver_log.close()
         tauri_log = home / ".unsloth/studio/tauri.log"
         if tauri_log.is_file():
@@ -848,5 +848,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         # Preserve the rendered text whenever a late assertion fails.
-        print(f"AppImage E2E evidence: {ART_DIR.resolve()}", file = sys.stderr)
+        print(f"AppImage E2E evidence: {ART_DIR.resolve()}", file=sys.stderr)
         raise

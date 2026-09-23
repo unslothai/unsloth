@@ -39,7 +39,7 @@ def _mlx_entry_for(mc):
         SimpleNamespace(),
         None,
         mc.is_vision,
-        config_audio_type = mc.audio_type,
+        config_audio_type=mc.audio_type,
     )
     return {
         "is_audio": resolved is not None and resolved != "audio_vlm",
@@ -51,10 +51,10 @@ def _mlx_entry_for(mc):
 def _drive_handle_load(monkeypatch, mc):
     """Run _handle_load against a stub MLX backend, return the emitted model_info."""
     backend = SimpleNamespace(
-        device = "mlx",
-        active_model_name = mc.identifier,
-        models = {mc.identifier: _mlx_entry_for(mc)},
-        load_model = lambda **kw: True,
+        device="mlx",
+        active_model_name=mc.identifier,
+        models={mc.identifier: _mlx_entry_for(mc)},
+        load_model=lambda **kw: True,
     )
 
     monkeypatch.setattr(worker, "_build_model_config", lambda cfg: mc)
@@ -63,7 +63,7 @@ def _drive_handle_load(monkeypatch, mc):
     monkeypatch.setattr(worker, "_needs_nemotron_trust", lambda *a, **k: False)
 
     fake_xet = type(sys)("utils.hf_xet_fallback")
-    fake_xet.start_watchdog = lambda **k: SimpleNamespace(set = lambda: None)
+    fake_xet.start_watchdog = lambda **k: SimpleNamespace(set=lambda: None)
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake_xet)
 
     q = _Q()
@@ -77,14 +77,14 @@ def _drive_handle_load(monkeypatch, mc):
 
 def _mc(audio_type, is_audio, has_audio_input):
     return SimpleNamespace(
-        identifier = "unsloth/orpheus-3b-0.1-ft",
-        display_name = "orpheus",
-        is_vision = False,
-        is_lora = False,
-        base_model = None,
-        is_audio = is_audio,
-        audio_type = audio_type,
-        has_audio_input = has_audio_input,
+        identifier="unsloth/orpheus-3b-0.1-ft",
+        display_name="orpheus",
+        is_vision=False,
+        is_lora=False,
+        base_model=None,
+        is_audio=is_audio,
+        audio_type=audio_type,
+        has_audio_input=has_audio_input,
     )
 
 
@@ -93,7 +93,7 @@ def test_tts_classification_survives_the_mlx_post_load_mirror(monkeypatch, codec
     """A TTS checkpoint is never a vision model, so the audio_vlm probe never
     ran. Mirroring its silence over the config would drop the TTS redirect and
     serve raw codec tokens as chat text."""
-    info = _drive_handle_load(monkeypatch, _mc(codec, is_audio = True, has_audio_input = False))
+    info = _drive_handle_load(monkeypatch, _mc(codec, is_audio=True, has_audio_input=False))
 
     assert info["audio_type"] == codec, (
         f"MLX load reclassified a {codec} TTS checkpoint as {info['audio_type']!r}; "
@@ -105,7 +105,7 @@ def test_tts_classification_survives_the_mlx_post_load_mirror(monkeypatch, codec
 def test_whisper_classification_survives_the_mlx_post_load_mirror(monkeypatch):
     """Same for ASR: losing audio_type='whisper' drops both the audio-input
     route and the "Whisper models require audio input" guard."""
-    info = _drive_handle_load(monkeypatch, _mc("whisper", is_audio = False, has_audio_input = True))
+    info = _drive_handle_load(monkeypatch, _mc("whisper", is_audio=False, has_audio_input=True))
 
     assert info["audio_type"] == "whisper"
     assert info["has_audio_input"] is True

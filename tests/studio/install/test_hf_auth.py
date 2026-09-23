@@ -27,7 +27,7 @@ GH_URL = "https://api.github.com/repos/unslothai/llama.cpp/releases"
 
 def _headers(url, env):
     """Call auth_headers under a fully controlled token environment."""
-    with patch.dict(mod.os.environ, env, clear = False):
+    with patch.dict(mod.os.environ, env, clear=False):
         for var in _TOKEN_VARS:
             if var not in env:
                 mod.os.environ.pop(var, None)
@@ -68,7 +68,7 @@ class TestAuthHeaderRouting:
 
 class TestCrossHostRedirectStripsAuth:
     def _redirect(self, newurl):
-        req = urllib.request.Request(HF_URL, headers = {"Authorization": "Bearer hf_x"})
+        req = urllib.request.Request(HF_URL, headers={"Authorization": "Bearer hf_x"})
         handler = mod._CrossHostAuthStrippingRedirectHandler()
         return handler.redirect_request(req, None, 302, "Found", {}, newurl)
 
@@ -92,8 +92,8 @@ class TestDownloadBytesWiring:
         response.headers.get.return_value = None
         response.read.side_effect = [b"data", b""]
         with (
-            patch.object(mod._URL_OPENER, "open", return_value = response) as opened,
-            patch.dict(mod.os.environ, {"HF_TOKEN": "hf_x"}, clear = False),
+            patch.object(mod._URL_OPENER, "open", return_value=response) as opened,
+            patch.dict(mod.os.environ, {"HF_TOKEN": "hf_x"}, clear=False),
         ):
             for var in ("GH_TOKEN", "GITHUB_TOKEN"):
                 mod.os.environ.pop(var, None)

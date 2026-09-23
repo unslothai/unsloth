@@ -83,7 +83,7 @@ class LoRA_MLP(torch.autograd.Function):
         downS,
         _forward_function,
         _backward_function,
-        inplace = True,
+        inplace=True,
     ):
         dtype = X.dtype
 
@@ -162,27 +162,27 @@ class LoRA_MLP(torch.autograd.Function):
         d_upB = torch.empty_like(upB)
 
         # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
-        d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
-        d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
+        d_downA.addmm_(h.t(), dY @ downB.t(), alpha=downS, beta=0)
+        d_downB.addmm_(downA.t() @ h.t(), dY, alpha=downS, beta=0)
 
         # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
-        d_upA.addmm_(X.t(), df @ upB.t(), alpha = upS, beta = 0)
-        d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
+        d_upA.addmm_(X.t(), df @ upB.t(), alpha=upS, beta=0)
+        d_upB.addmm_(upA.t() @ X.t(), df, alpha=upS, beta=0)
 
         # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
-        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha = gateS, beta = 0)
-        d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
+        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha=gateS, beta=0)
+        d_gateB.addmm_(gateA.t() @ X.t(), de, alpha=gateS, beta=0)
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(df, upW.t(), out=X if ctx.inplace else None)
         del upW
-        dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
+        dX.addmm_(df @ upB.t(), upA.t(), alpha=upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
         dX.addmm_(de, gateW.t())
         del gateW
-        dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
+        dX.addmm_(de @ gateB.t(), gateA.t(), alpha=gateS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -213,7 +213,7 @@ from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 def apply_lora_mlp_swiglu(
     self,
     X,
-    inplace = True,
+    inplace=True,
 ):
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
@@ -249,7 +249,7 @@ from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 def apply_lora_mlp_geglu_exact(
     self,
     X,
-    inplace = True,
+    inplace=True,
 ):
     X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
@@ -361,7 +361,7 @@ class LoRA_QKV(torch.autograd.Function):
         VA,
         VB,
         VS,
-        inplace = True,
+        inplace=True,
     ):
         dtype = X.dtype
 
@@ -446,30 +446,30 @@ class LoRA_QKV(torch.autograd.Function):
 
         # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
         # identical with their own scales.
-        d_QA.addmm_(X.t(), dQ @ QB.t(), alpha = QS, beta = 0)
-        d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
+        d_QA.addmm_(X.t(), dQ @ QB.t(), alpha=QS, beta=0)
+        d_QB.addmm_(QA.t() @ X.t(), dQ, alpha=QS, beta=0)
 
-        d_KA.addmm_(X.t(), dK @ KB.t(), alpha = KS, beta = 0)
-        d_KB.addmm_(KA.t() @ X.t(), dK, alpha = KS, beta = 0)
+        d_KA.addmm_(X.t(), dK @ KB.t(), alpha=KS, beta=0)
+        d_KB.addmm_(KA.t() @ X.t(), dK, alpha=KS, beta=0)
 
-        d_VA.addmm_(X.t(), dV @ VB.t(), alpha = VS, beta = 0)
-        d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
+        d_VA.addmm_(X.t(), dV @ VB.t(), alpha=VS, beta=0)
+        d_VB.addmm_(VA.t() @ X.t(), dV, alpha=VS, beta=0)
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(dQ, QW.t(), out=X if ctx.inplace else None)
         del QW
-        dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
+        dX.addmm_(dQ @ QB.t(), QA.t(), alpha=QS)
 
         KW = fast_dequantize(KW.t(), KW_quant)
         dX.addmm_(dK, KW.t())
         del KW
-        dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
+        dX.addmm_(dK @ KB.t(), KA.t(), alpha=KS)
 
         VW = fast_dequantize(VW.t(), VW_quant)
         dX.addmm_(dV, VW.t())
         del VW
-        dX.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
+        dX.addmm_(dV @ VB.t(), VA.t(), alpha=VS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -495,7 +495,7 @@ class LoRA_QKV(torch.autograd.Function):
 def apply_lora_qkv(
     self,
     X,
-    inplace = True,
+    inplace=True,
 ):
     X = _maybe_fake_quantize_activations(X, self.q_proj)
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
@@ -583,14 +583,14 @@ class LoRA_W(torch.autograd.Function):
         d_B = torch.empty_like(B)
 
         # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
-        d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
-        d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
+        d_A.addmm_(X.t(), dY @ B.t(), alpha=S, beta=0)
+        d_B.addmm_(A.t() @ X.t(), dY, alpha=S, beta=0)
 
         # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        dX.addmm_(dY @ B.t(), A.t(), alpha = S)
+        dX.addmm_(dY @ B.t(), A.t(), alpha=S)
 
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 
@@ -616,7 +616,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
             self.unmerge()
         result = self.base_layer(x, *args, **kwargs)
     elif adapter_names is not None:
-        result = self._mixed_batch_forward(x, *args, adapter_names = adapter_names, **kwargs)
+        result = self._mixed_batch_forward(x, *args, adapter_names=adapter_names, **kwargs)
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
@@ -664,11 +664,11 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
 
                 result = result + self.lora_magnitude_vector[active_adapter](
                     x,
-                    lora_A = lora_A,
-                    lora_B = lora_B,
-                    scaling = scaling,
-                    base_layer = self.get_base_layer(),
-                    base_result = base_result,
+                    lora_A=lora_A,
+                    lora_B=lora_B,
+                    scaling=scaling,
+                    base_layer=self.get_base_layer(),
+                    base_result=base_result,
                 )
             if requires_conversion:
                 result = result.to(expected_dtype)

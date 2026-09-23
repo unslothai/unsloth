@@ -10,7 +10,7 @@ from huggingface_hub import ModelCard
 
 
 class Model:
-    config = SimpleNamespace(_name_or_path = "base/model", model_type = "llama")
+    config = SimpleNamespace(_name_or_path="base/model", model_type="llama")
 
 
 SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth/save.py"
@@ -22,7 +22,7 @@ LIFTED = ("upload_to_huggingface", "create_huggingface_repo")
 def uploading(monkeypatch):
     """Lifted out of save.py, which cannot be imported: accelerator at module scope."""
     source = SAVE_PY
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
 
     pushed = {}
 
@@ -30,7 +30,7 @@ def uploading(monkeypatch):
         def push_to_hub(
             self,
             repo_id,
-            token = None,
+            token=None,
             **kwargs,
         ):
             pushed["repo_id"] = repo_id
@@ -42,10 +42,10 @@ def uploading(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "create_repo", lambda **kwargs: None)
 
     env = {
-        "HfApi": lambda token = None: SimpleNamespace(),
+        "HfApi": lambda token=None: SimpleNamespace(),
         "get_token": lambda: "env-token",
         "_determine_username": lambda directory, old, token: (directory, directory.split("/")[0]),
-        "logger": SimpleNamespace(warning_once = lambda *args: None),
+        "logger": SimpleNamespace(warning_once=lambda *args: None),
     }
     nodes = [
         node
@@ -57,7 +57,7 @@ def uploading(monkeypatch):
         )
     ]
     assert len(nodes) == len(LIFTED) + 1, f"expected MODEL_CARD and {LIFTED} in save.py"
-    module = ast.Module(body = nodes, type_ignores = [])
+    module = ast.Module(body=nodes, type_ignores=[])
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), env)
     return env, pushed
 
@@ -76,7 +76,7 @@ def test_upload_model_card_still_carries_username_extra_and_datasets(uploading):
     env, pushed = uploading
 
     env["upload_to_huggingface"](
-        Model(), "owner/model", "token", "finetuned", "trl", datasets = ["owner/data"]
+        Model(), "owner/model", "token", "finetuned", "trl", datasets=["owner/data"]
     )
 
     card = ModelCard(pushed["content"])
@@ -97,7 +97,7 @@ def test_create_huggingface_repo_also_names_the_method(uploading):
 
 def test_no_card_in_save_py_is_formatted_without_a_method():
     """The heading is "# Uploaded {method} model": an empty method ships "Uploaded  model"."""
-    tree = ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
+    tree = ast.parse(SAVE_PY.read_text(encoding="utf-8"))
 
     formats = [
         node

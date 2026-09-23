@@ -23,7 +23,7 @@ def _unsloth_models_dir() -> Optional[Path]:
     return Path(locations[0]) / "models" if locations else None
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _mapper_tables() -> Optional[tuple[dict, dict, dict]]:
     # Load the data file directly to avoid initializing Unsloth's GPU stack.
     try:
@@ -62,7 +62,7 @@ def _string_literal(node) -> Optional[str]:
     return None
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _bad_mappings() -> Optional[dict]:
     """``loader_utils.BAD_MAPPINGS``, the corrections the loader applies AFTER a table lookup
     (a 4-bit dynamic quant that is too big, or a MoE that HF loads too slowly). Parsed out of
@@ -75,7 +75,7 @@ def _bad_mappings() -> Optional[dict]:
         models_dir = _unsloth_models_dir()
         if models_dir is None:
             return None
-        tree = ast.parse((models_dir / "loader_utils.py").read_text(encoding = "utf-8"))
+        tree = ast.parse((models_dir / "loader_utils.py").read_text(encoding="utf-8"))
         for node in tree.body:
             if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
                 continue

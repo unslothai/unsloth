@@ -39,7 +39,7 @@ def analyse_stream(frames: list[dict]) -> dict:
     placeholder_frames = 0
     detail: list[dict] = []
     worst_drop_px = 0.0
-    block_count = max((len(f["heights"]) for f in frames), default = 0)
+    block_count = max((len(f["heights"]) for f in frames), default=0)
 
     for index in range(block_count):
         series = [

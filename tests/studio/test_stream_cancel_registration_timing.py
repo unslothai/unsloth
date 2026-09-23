@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
-SRC = SOURCE_PATH.read_text(encoding = "utf-8")
+SRC = SOURCE_PATH.read_text(encoding="utf-8")
 _TREE = ast.parse(SRC)
 
 

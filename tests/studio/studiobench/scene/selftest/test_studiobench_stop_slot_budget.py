@@ -189,7 +189,7 @@ class _Page:
     def evaluate(
         self,
         script,
-        arg = None,
+        arg=None,
     ):
         self.charge()
         if arg is not None:  # STOP_CLEANUP_JS, which is the only call that takes one
@@ -244,14 +244,14 @@ def _drive(page, monkeypatch, clock, budget_ms: int):
     monkeypatch.setattr(actions_module, "time", clock)
     return stop_generation(
         ActionContext(
-            page = page,
-            cdp = None,
-            cell = None,
-            window = None,
-            args = {},
-            budget_ms = budget_ms,
-            dom = None,
-            log = lambda _m: None,
+            page=page,
+            cdp=None,
+            cell=None,
+            window=None,
+            args={},
+            budget_ms=budget_ms,
+            dom=None,
+            log=lambda _m: None,
         )
     )
 
@@ -265,7 +265,7 @@ def _run(
     **page_kwargs,
 ):
     clock = _Clock()
-    page = _Page(clock, drain_after_ms, latency = latency, **page_kwargs)
+    page = _Page(clock, drain_after_ms, latency=latency, **page_kwargs)
     return _drive(page, monkeypatch, clock, budget_ms), page
 
 
@@ -276,7 +276,7 @@ def _stop_slot(scene):
     return stop, nxt, nxt.t_start_ms - (stop.t_start_ms + stop.budget_ms)
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_a_reply_that_drains_at_the_end_of_the_slot_does_not_spend_the_next_one(monkeypatch, scene):
     """THE REGRESSION, in the film's own numbers.
 
@@ -287,7 +287,7 @@ def test_a_reply_that_drains_at_the_end_of_the_slot_does_not_spend_the_next_one(
 
     stop, nxt, slack_ms = _stop_slot(scene)
     late = stop.budget_ms - 100
-    result, page = _run(monkeypatch, budget_ms = stop.budget_ms, drain_after_ms = late)
+    result, page = _run(monkeypatch, budget_ms=stop.budget_ms, drain_after_ms=late)
 
     assert page.elapsed_ms <= stop.budget_ms + slack_ms, (
         f"{scene.name}: stop_generation spent {page.elapsed_ms:.0f}ms of a {stop.budget_ms}ms "
@@ -300,7 +300,7 @@ def test_a_reply_that_drains_at_the_end_of_the_slot_does_not_spend_the_next_one(
     assert "one more" not in page.filled
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_no_moment_the_reply_can_drain_lets_the_action_spend_the_next_slot(monkeypatch, scene):
     """THE REGRESSION THE FIXED SLEEPS ALONE DID NOT COVER, and the reason this file was rewritten.
 
@@ -326,7 +326,7 @@ def test_no_moment_the_reply_can_drain_lets_the_action_spend_the_next_slot(monke
 
     stop, nxt, slack_ms = _stop_slot(scene)
     for drained_at in range(0, stop.budget_ms, 50):
-        result, page = _run(monkeypatch, budget_ms = stop.budget_ms, drain_after_ms = drained_at)
+        result, page = _run(monkeypatch, budget_ms=stop.budget_ms, drain_after_ms=drained_at)
         assert page.elapsed_ms <= stop.budget_ms + slack_ms, (
             f"{scene.name}: a reply draining {drained_at}ms into the slot left "
             f"stop_generation spending {page.elapsed_ms:.0f}ms of a {stop.budget_ms}ms slot with "
@@ -335,7 +335,7 @@ def test_no_moment_the_reply_can_drain_lets_the_action_spend_the_next_slot(monke
         )
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_a_send_the_app_refused_is_bounded_by_the_slot_and_not_by_eight_seconds(monkeypatch, scene):
     """The other unbounded wait after the drain, on the one path where cutting it really is free.
 
@@ -351,9 +351,9 @@ def test_a_send_the_app_refused_is_bounded_by_the_slot_and_not_by_eight_seconds(
     stop, nxt, slack_ms = _stop_slot(scene)
     result, page = _run(
         monkeypatch,
-        budget_ms = stop.budget_ms,
-        drain_after_ms = 0.0,
-        accepts_send = False,
+        budget_ms=stop.budget_ms,
+        drain_after_ms=0.0,
+        accepts_send=False,
     )
 
     assert result.ran is False
@@ -374,12 +374,12 @@ def _thread_a_measured_turn_leaves(monkeypatch, budget_ms: int) -> int:
     decides how much of the throwaway turn comes back out, and a give-up path is required to leave
     the thread where the measured path leaves it -- not somewhere a number in this file asserts.
     """
-    result, page = _run(monkeypatch, budget_ms = budget_ms, drain_after_ms = 0.0, start_ms = 0.0)
+    result, page = _run(monkeypatch, budget_ms=budget_ms, drain_after_ms=0.0, start_ms=0.0)
     assert result.ran is True, result.reason
     return page.messages
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 @pytest.mark.parametrize("late_by_ms", [0, 400, 800])
 def test_a_turn_that_starts_after_the_slot_bound_is_not_left_generating(
     monkeypatch, scene, late_by_ms
@@ -406,9 +406,9 @@ def test_a_turn_that_starts_after_the_slot_bound_is_not_left_generating(
 
     result, page = _run(
         monkeypatch,
-        budget_ms = stop.budget_ms,
-        drain_after_ms = 0.0,
-        start_ms = start_ms,
+        budget_ms=stop.budget_ms,
+        drain_after_ms=0.0,
+        start_ms=start_ms,
     )
 
     assert result.ran is False
@@ -424,7 +424,7 @@ def test_a_turn_that_starts_after_the_slot_bound_is_not_left_generating(
     assert page._is_running() is False
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_a_turn_that_never_starts_at_all_is_still_taken_out_of_the_thread(monkeypatch, scene):
     """The far end of the same path: the send was accepted and the relay never answered.
 
@@ -438,9 +438,9 @@ def test_a_turn_that_never_starts_at_all_is_still_taken_out_of_the_thread(monkey
 
     result, page = _run(
         monkeypatch,
-        budget_ms = stop.budget_ms,
-        drain_after_ms = 0.0,
-        start_ms = 10 * TURN_START_TIMEOUT_MS,
+        budget_ms=stop.budget_ms,
+        drain_after_ms=0.0,
+        start_ms=10 * TURN_START_TIMEOUT_MS,
     )
 
     assert result.ran is False
@@ -453,11 +453,11 @@ def test_a_turn_that_never_starts_at_all_is_still_taken_out_of_the_thread(monkey
     )
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 @pytest.mark.parametrize(
     ("stop_ms", "cleanup_ms"),
     [(0.0, 0.0), (90.0, 60.0), (200.0, 150.0)],
-    ids = ["instant", "local", "slow"],
+    ids=["instant", "local", "slow"],
 )
 def test_no_moment_the_turn_can_start_lets_the_action_spend_the_next_slot(
     monkeypatch, scene, stop_ms, cleanup_ms
@@ -495,11 +495,11 @@ def test_no_moment_the_turn_can_start_lets_the_action_spend_the_next_slot(
     for start_ms in range(0, stop.budget_ms, 50):
         result, page = _run(
             monkeypatch,
-            budget_ms = stop.budget_ms,
-            drain_after_ms = 0.0,
-            start_ms = start_ms,
-            stop_ms = stop_ms,
-            cleanup_ms = cleanup_ms,
+            budget_ms=stop.budget_ms,
+            drain_after_ms=0.0,
+            start_ms=start_ms,
+            stop_ms=stop_ms,
+            cleanup_ms=cleanup_ms,
         )
         if result.ran:
             measured += 1
@@ -517,14 +517,14 @@ def test_no_moment_the_turn_can_start_lets_the_action_spend_the_next_slot(
     assert measured, f"{scene.name}: the bound refused every turn, so it measures nothing"
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_a_reply_that_drains_early_still_gets_its_throwaway_turn(monkeypatch, scene):
     """THE CONTROL. The reserve must not turn the wait into a refusal: a marginally slow drain is
     what it was written for, and the fast film opens this slot only 400 ms after the worst-case
     drain on the ladder. A reply that finishes 500 ms in must still be stopped and measured."""
 
     stop, _nxt, _slack = _stop_slot(scene)
-    result, page = _run(monkeypatch, budget_ms = stop.budget_ms, drain_after_ms = 500)
+    result, page = _run(monkeypatch, budget_ms=stop.budget_ms, drain_after_ms=500)
 
     assert result.ran is True, result.reason
     assert page.filled == ["one more"]
@@ -533,7 +533,7 @@ def test_a_reply_that_drains_early_still_gets_its_throwaway_turn(monkeypatch, sc
     assert page.elapsed_ms <= stop.budget_ms
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_nothing_running_at_the_slot_still_gets_its_throwaway_turn(monkeypatch, scene):
     """THE SECOND CONTROL, and the path every unmodified run takes: with the pinned tail the reply
     is long finished when this slot opens, the drain wait is never entered, and the turn has the
@@ -542,18 +542,18 @@ def test_nothing_running_at_the_slot_still_gets_its_throwaway_turn(monkeypatch, 
     stop, _nxt, _slack = _stop_slot(scene)
     clock = _Clock()
     monkeypatch.setattr(actions_module, "time", clock)
-    page = _Page(clock, drain_after_ms = 0.0)
+    page = _Page(clock, drain_after_ms=0.0)
     page.running = False
     result = stop_generation(
         ActionContext(
-            page = page,
-            cdp = None,
-            cell = None,
-            window = None,
-            args = {},
-            budget_ms = stop.budget_ms,
-            dom = None,
-            log = lambda _m: None,
+            page=page,
+            cdp=None,
+            cell=None,
+            window=None,
+            args={},
+            budget_ms=stop.budget_ms,
+            dom=None,
+            log=lambda _m: None,
         )
     )
 
@@ -562,7 +562,7 @@ def test_nothing_running_at_the_slot_still_gets_its_throwaway_turn(monkeypatch, 
     assert page.elapsed_ms <= stop.budget_ms
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_every_film_still_leaves_a_real_drain_wait_after_the_reserve(scene):
     """The reserve comes out of a budget, so a slot too small to hold it would silently turn the
     wait into an immediate refusal and the axis this guard protects would be unreachable again."""
@@ -611,7 +611,7 @@ class _WindowedPage(_Page):
     def evaluate(
         self,
         script,
-        arg = None,
+        arg=None,
     ):
         if arg is None and "messageCount" in script:
             self.charge()
@@ -619,7 +619,7 @@ class _WindowedPage(_Page):
         return super().evaluate(script, arg)
 
 
-@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids=lambda s: s.name)
 def test_a_turn_given_up_on_is_taken_back_on_an_arm_that_mounts_a_window(monkeypatch, scene):
     """THE DEFECT. `STOP_CLEANUP_JS` already asks `threadTotal()`, but the guard deciding whether
     to RUN it compared `messageCount()` before the send with `messageCount()` after. A windowed
@@ -630,7 +630,7 @@ def test_a_turn_given_up_on_is_taken_back_on_an_arm_that_mounts_a_window(monkeyp
     stop, _nxt, _slack = _stop_slot(scene)
     settled = _thread_a_measured_turn_leaves(monkeypatch, stop.budget_ms)
     clock = _Clock()
-    page = _WindowedPage(clock, 0.0, start_ms = stop.budget_ms - 1_000)
+    page = _WindowedPage(clock, 0.0, start_ms=stop.budget_ms - 1_000)
     result = _drive(page, monkeypatch, clock, stop.budget_ms)
 
     assert result.ran is False

@@ -22,7 +22,7 @@ def _stub_env(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings=None: ["--settings", "{}"])
 
 
 def test_protocol_lists_and_calls_local_agent():
@@ -45,7 +45,7 @@ def test_protocol_lists_and_calls_local_agent():
             "method": "tools/call",
             "params": {"name": "unsloth_agent", "arguments": {"task": " inspect this "}},
         },
-        run_agent = lambda task: f"completed: {task}",
+        run_agent=lambda task: f"completed: {task}",
     )
     assert called["result"] == {
         "content": [{"type": "text", "text": "completed: inspect this"}],
@@ -56,8 +56,8 @@ def test_protocol_lists_and_calls_local_agent():
 def test_protocol_exposes_read_only_agent_for_claude_plan_mode():
     listed = bridge._response(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-        run_read_only_agent = lambda task: task,
-        read_only_tool_name = "unsloth_plan_agent",
+        run_read_only_agent=lambda task: task,
+        read_only_tool_name="unsloth_plan_agent",
     )
     tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
     assert tools["unsloth_agent"]["annotations"]["readOnlyHint"] is False
@@ -78,9 +78,9 @@ def test_protocol_exposes_read_only_agent_for_claude_plan_mode():
                 "arguments": {"task": " inspect this "},
             },
         },
-        run_agent = lambda task: f"write: {task}",
-        run_read_only_agent = lambda task: f"plan: {task}",
-        read_only_tool_name = "unsloth_plan_agent",
+        run_agent=lambda task: f"write: {task}",
+        run_read_only_agent=lambda task: f"plan: {task}",
+        read_only_tool_name="unsloth_plan_agent",
     )
     assert called["result"] == {
         "content": [{"type": "text", "text": "plan: inspect this"}],
@@ -96,7 +96,7 @@ def test_protocol_returns_tool_errors_to_parent():
             "method": "tools/call",
             "params": {"name": "unsloth_agent", "arguments": {"task": "test"}},
         },
-        run_agent = lambda task: (_ for _ in ()).throw(RuntimeError("local failure")),
+        run_agent=lambda task: (_ for _ in ()).throw(RuntimeError("local failure")),
     )
     assert response["result"]["isError"] is True
     assert response["result"]["content"][0]["text"] == "local failure"
@@ -139,11 +139,11 @@ def test_stdio_cancellation_reaches_the_running_local_agent():
 
     def run_agent(task, cancel_event):
         assert task == "wait"
-        assert cancel_event.wait(timeout = 1)
+        assert cancel_event.wait(timeout=1)
         cancelled.append(task)
         raise RuntimeError("The local Claude agent was cancelled.")
 
-    bridge.serve(io.StringIO(requests), output, run_agent = run_agent)
+    bridge.serve(io.StringIO(requests), output, run_agent=run_agent)
     assert cancelled == ["wait"]
     assert output.getvalue() == ""
 
@@ -179,21 +179,21 @@ def test_stdio_sigint_stops_the_running_local_agent(monkeypatch):
             if not self.sent:
                 self.sent = True
                 return request + "\n"
-            assert started.wait(timeout = 1)
+            assert started.wait(timeout=1)
             handlers[bridge.signal.SIGINT](bridge.signal.SIGINT, None)
             raise AssertionError("SIGINT handler must unwind the stdin loop")
 
     def run_agent(task, cancel_event):
         assert task == "wait"
         started.set()
-        assert cancel_event.wait(timeout = 1)
+        assert cancel_event.wait(timeout=1)
         # Real Claude Code sends SIGINT twice. The second one must not abort cleanup.
         handlers[bridge.signal.SIGINT](bridge.signal.SIGINT, None)
         cancelled.append(task)
         raise RuntimeError("The local Claude agent was cancelled.")
 
     output = io.StringIO()
-    bridge.serve(InterruptingInput(), output, run_agent = run_agent)
+    bridge.serve(InterruptingInput(), output, run_agent=run_agent)
     assert cancelled == ["wait"]
     assert output.getvalue() == ""
 
@@ -220,7 +220,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setattr(
         bridge,
         "_claude_flags",
-        lambda model, settings = None: ["--settings", settings],
+        lambda model, settings=None: ["--settings", settings],
     )
 
     class Process:
@@ -284,7 +284,7 @@ def test_local_child_sheds_inherited_provider_routing(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: ["--settings", "{}"])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings=None: ["--settings", "{}"])
 
     class Process:
         pid = 1234
@@ -326,7 +326,7 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings=None: [])
 
     class Process:
         pid = 1234
@@ -343,7 +343,7 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
         return Process()
 
     monkeypatch.setattr(bridge.subprocess, "Popen", popen)
-    assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
+    assert bridge.run_local_agent("plan this", read_only=True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
     disallowed = command[command.index("--disallowedTools") + 1]
@@ -360,7 +360,7 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings = None: [])
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model, settings=None: [])
     cancel_event = bridge.threading.Event()
     stopped = []
 
@@ -383,7 +383,7 @@ def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):
         child.returncode = -15
 
     monkeypatch.setattr(bridge, "_stop_child", stop)
-    with pytest.raises(RuntimeError, match = "cancelled"):
+    with pytest.raises(RuntimeError, match="cancelled"):
         bridge.run_local_agent("wait", cancel_event)
     assert stopped == [process]
 
@@ -399,7 +399,7 @@ def test_windows_cancellation_stops_the_child_process_tree(monkeypatch):
         def poll(self):
             return self.returncode
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             captured["wait_timeout"] = timeout
             self.returncode = 1
 
@@ -431,7 +431,7 @@ def test_windows_failed_taskkill_still_terminates_the_child(monkeypatch):
         def poll(self):
             return self.returncode
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             self.returncode = 1
 
         def terminate(self):
@@ -448,7 +448,7 @@ def test_windows_failed_taskkill_still_terminates_the_child(monkeypatch):
     assert captured.get("terminated") is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX process groups")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
 def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "_CANCEL_GRACE_SECONDS", 0.2)
     marker = tmp_path / "grandchild-survived"
@@ -465,7 +465,7 @@ def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
             grandchild,
             str(marker),
         ],
-        start_new_session = True,
+        start_new_session=True,
     )
     process.wait()
 
@@ -490,7 +490,7 @@ def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypat
     class _Hanging:
         returncode = None
 
-        def communicate(self, timeout = None):
+        def communicate(self, timeout=None):
             raise subprocess.TimeoutExpired("claude", timeout)
 
         def poll(self):
@@ -499,7 +499,7 @@ def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypat
     monkeypatch.setattr(bridge, "_stop_child", lambda proc: stopped.append(proc))
     monkeypatch.setattr(bridge.subprocess, "Popen", lambda *a, **k: _Hanging())
 
-    with pytest.raises(RuntimeError, match = "produced nothing"):
+    with pytest.raises(RuntimeError, match="produced nothing"):
         bridge.run_local_agent("hello")
     assert stopped, "a timed-out child must be killed, not left running"
 
@@ -524,7 +524,7 @@ def test_local_child_is_spawned_through_the_shim_resolver(monkeypatch, tmp_path)
     def resolver(
         executable,
         arguments,
-        environment = None,
+        environment=None,
     ):
         captured["resolver"] = (executable, arguments, environment)
         return ["C:\\nodejs\\node.exe", "cli.js", *arguments]

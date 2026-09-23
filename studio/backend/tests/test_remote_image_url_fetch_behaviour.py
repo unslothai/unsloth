@@ -34,13 +34,13 @@ _METADATA = "http://169.254.169.254/latest/meta-data/"
 
 def _webp_b64() -> str:
     buf = BytesIO()
-    Image.new("RGB", (2, 2), (7, 8, 9)).save(buf, format = "WEBP")
+    Image.new("RGB", (2, 2), (7, 8, 9)).save(buf, format="WEBP")
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _data_url() -> str:
     buf = BytesIO()
-    Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format = "PNG")
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
@@ -71,12 +71,12 @@ def _client(monkeypatch, backend):
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _no_switch)
 
     app = FastAPI()
-    app.include_router(inference_route.router, prefix = "/v1")
+    app.include_router(inference_route.router, prefix="/v1")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
-def _chat_body(*urls, model = "test/model.gguf"):
+def _chat_body(*urls, model="test/model.gguf"):
     parts = [{"type": "image_url", "image_url": {"url": u}} for u in urls]
     parts.append({"type": "text", "text": "what is this?"})
     return {
@@ -131,14 +131,14 @@ def canary():
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield SimpleNamespace(port = server.server_address[1], hits = hits)
+        yield SimpleNamespace(port=server.server_address[1], hits=hits)
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout = 5)
+        thread.join(timeout=5)
 
 
 class TestRemoteUrlNeverReachesLlamaServer:
@@ -150,7 +150,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
         )
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/cat.webp")
+            "/v1/chat/completions", json=_chat_body("https://images.example/cat.webp")
         )
 
         assert r.status_code == 200, r.text
@@ -166,7 +166,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
         )
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/messages", json = _messages_body("https://images.example/cat.webp")
+            "/v1/messages", json=_messages_body("https://images.example/cat.webp")
         )
 
         assert r.status_code == 200, r.text
@@ -177,7 +177,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/responses",
-            json = {
+            json={
                 "model": "test/model.gguf",
                 "stream": False,
                 "input": [
@@ -218,7 +218,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
 
         monkeypatch.setattr(inference_route, "_openai_passthrough_non_streaming", _admitted)
         r = _client(monkeypatch, _VisionGguf()).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/cat.webp")
+            "/v1/chat/completions", json=_chat_body("https://images.example/cat.webp")
         )
 
         assert r.status_code == 200, r.text
@@ -231,7 +231,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_webp_b64()))
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json=_chat_body(_webp_b64()))
 
         assert r.status_code == 200, r.text
         assert _image_urls(backend.dispatched[-1]["messages"]) == [_webp_b64()]
@@ -242,7 +242,7 @@ class TestRemoteUrlNeverReachesLlamaServer:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_data_url()))
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json=_chat_body(_data_url()))
 
         assert r.status_code == 200, r.text
         assert _image_urls(backend.dispatched[-1]["messages"])[0].startswith("data:image/png")
@@ -252,15 +252,15 @@ class TestRefusalsAreRealRefusals:
     @pytest.mark.parametrize(
         "url_for",
         [
-            pytest.param(lambda p: f"http://127.0.0.1:{p}/x.png", id = "http-loopback"),
-            pytest.param(lambda p: f"https://127.0.0.1:{p}/x.png", id = "https-loopback"),
-            pytest.param(lambda p: f"https://localhost:{p}/x.png", id = "https-resolves-loopback"),
+            pytest.param(lambda p: f"http://127.0.0.1:{p}/x.png", id="http-loopback"),
+            pytest.param(lambda p: f"https://127.0.0.1:{p}/x.png", id="https-loopback"),
+            pytest.param(lambda p: f"https://localhost:{p}/x.png", id="https-resolves-loopback"),
         ],
     )
     def test_loopback_is_refused_and_never_contacted(self, monkeypatch, canary, url_for):
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body(url_for(canary.port))
+            "/v1/chat/completions", json=_chat_body(url_for(canary.port))
         )
 
         assert r.status_code == 400, r.text
@@ -269,7 +269,7 @@ class TestRefusalsAreRealRefusals:
 
     def test_the_metadata_endpoint_is_refused(self, monkeypatch):
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(_METADATA))
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json=_chat_body(_METADATA))
 
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
@@ -280,7 +280,7 @@ class TestRefusalsAreRealRefusals:
         )
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/gone.png")
+            "/v1/chat/completions", json=_chat_body("https://images.example/gone.png")
         )
 
         assert r.status_code == 400, r.text
@@ -295,7 +295,7 @@ class TestRefusalsAreRealRefusals:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/chat/completions",
-            json = _chat_body(
+            json=_chat_body(
                 "https://images.example/ok.webp", f"http://127.0.0.1:{canary.port}/x.png"
             ),
         )
@@ -311,7 +311,7 @@ class TestRefusalsAreRealRefusals:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(url))
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json=_chat_body(url))
 
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
@@ -319,9 +319,9 @@ class TestRefusalsAreRealRefusals:
     @pytest.mark.parametrize(
         "url",
         [
-            pytest.param("\n" * 13 + _METADATA, id = "blank-padded"),
-            pytest.param("\x00" * 20 + "http://127.0.0.1/x.png", id = "nul-padded"),
-            pytest.param("averyveryverylongscheme://x.example/a.png", id = "over-long-scheme"),
+            pytest.param("\n" * 13 + _METADATA, id="blank-padded"),
+            pytest.param("\x00" * 20 + "http://127.0.0.1/x.png", id="nul-padded"),
+            pytest.param("averyveryverylongscheme://x.example/a.png", id="over-long-scheme"),
         ],
     )
     def test_a_scheme_pushed_out_of_the_window_is_still_a_scheme(self, monkeypatch, url):
@@ -332,7 +332,7 @@ class TestRefusalsAreRealRefusals:
 
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _never)
         backend = _VisionGguf()
-        r = _client(monkeypatch, backend).post("/v1/chat/completions", json = _chat_body(url))
+        r = _client(monkeypatch, backend).post("/v1/chat/completions", json=_chat_body(url))
 
         assert r.status_code == 400, r.text
         assert backend.dispatched == []
@@ -354,7 +354,7 @@ class TestRefusalsAreRealRefusals:
             is_vision = False
 
         r = _client(monkeypatch, _TextGguf()).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/cat.webp")
+            "/v1/chat/completions", json=_chat_body("https://images.example/cat.webp")
         )
         assert r.status_code == 400, r.text
 
@@ -369,7 +369,7 @@ class TestBudget:
         def _fetch(
             url,
             _mime,
-            max_bytes = 0,
+            max_bytes=0,
             **_k,
         ):
             calls.append((url, max_bytes))
@@ -379,7 +379,7 @@ class TestBudget:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/chat/completions",
-            json = _chat_body(*[f"https://images.example/{i}.webp" for i in range(4)]),
+            json=_chat_body(*[f"https://images.example/{i}.webp" for i in range(4)]),
         )
 
         assert r.status_code == 400, r.text
@@ -398,7 +398,7 @@ class TestBudget:
         over = inference_route._REMOTE_IMAGE_MAX_COUNT + 1
         r = _client(monkeypatch, backend).post(
             "/v1/chat/completions",
-            json = _chat_body(*[f"https://images.example/{i}.webp" for i in range(over)]),
+            json=_chat_body(*[f"https://images.example/{i}.webp" for i in range(over)]),
         )
 
         assert r.status_code == 400, r.text
@@ -412,7 +412,7 @@ class TestBudget:
         def _fetch(
             url,
             *_a,
-            deadline = None,
+            deadline=None,
             **_k,
         ):
             deadlines.append(deadline)
@@ -422,7 +422,7 @@ class TestBudget:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/chat/completions",
-            json = _chat_body("https://images.example/a.webp", "https://images.example/b.webp"),
+            json=_chat_body("https://images.example/a.webp", "https://images.example/b.webp"),
         )
 
         assert r.status_code == 200, r.text
@@ -460,7 +460,7 @@ class TestFetcher:
             def close(self):
                 pass
 
-            def read(self, _n = -1):
+            def read(self, _n=-1):
                 time.sleep(0.02)
                 return b"x"
 
@@ -468,7 +468,7 @@ class TestFetcher:
             def open(
                 self,
                 _req,
-                timeout = None,
+                timeout=None,
             ):
                 return _DripResponse()
 
@@ -477,7 +477,7 @@ class TestFetcher:
         result = external_provider.safe_fetch_remote_image_sync(
             "https://images.example/slow.png",
             "image/png",
-            deadline = started + 0.3,
+            deadline=started + 0.3,
         )
 
         assert result is None
@@ -496,14 +496,14 @@ class TestFetcher:
             def __exit__(self, *_a):
                 return False
 
-            def read(self, _n = -1):
+            def read(self, _n=-1):
                 raise TimeoutError("timed out")
 
         class _Opener:
             def open(
                 self,
                 _req,
-                timeout = None,
+                timeout=None,
             ):
                 return _StalledResponse()
 
@@ -523,7 +523,7 @@ class TestFetcher:
             def open(
                 self,
                 req,
-                timeout = None,
+                timeout=None,
             ):
                 sent.append(req.full_url)
                 raise urllib.error.URLError("stop after the request is built")
@@ -553,14 +553,14 @@ class TestFetcher:
             def __exit__(self, *_a):
                 return False
 
-            def read(self, n = -1):
+            def read(self, n=-1):
                 return self._body.read(n)
 
         class _Opener:
             def open(
                 self,
                 _req,
-                timeout = None,
+                timeout=None,
             ):
                 return _Response()
 
@@ -568,7 +568,7 @@ class TestFetcher:
         result = external_provider.safe_fetch_remote_image_sync(
             "https://images.example/object",
             "image/png",
-            require_image_content_type = require,
+            require_image_content_type=require,
         )
 
         assert (result and result[0]) == expected
@@ -587,7 +587,7 @@ class TestFetcher:
         monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _fetch)
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/object")
+            "/v1/chat/completions", json=_chat_body("https://images.example/object")
         )
 
         assert r.status_code == 200, r.text
@@ -605,12 +605,12 @@ class TestFetcher:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/chat/completions",
-            content = (
+            content=(
                 '{"model": "test/model.gguf", "stream": false, "messages": [{"role": "user",'
                 ' "content": [{"type": "image_url", "image_url": {"url":'
                 ' "https://images.example/\\ud800.png"}}, {"type": "text", "text": "x"}]}]}'
             ),
-            headers = {"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
         )
 
         assert r.status_code == 400, r.text
@@ -625,14 +625,14 @@ class TestFetcher:
             def open(
                 self,
                 _req,
-                timeout = None,
+                timeout=None,
             ):
                 raise http.client.InvalidURL("URL can't contain control characters")
 
         monkeypatch.setattr("urllib.request.build_opener", lambda *_a, **_k: _Opener())
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/completions", json = _chat_body("https://images.example/a.png")
+            "/v1/chat/completions", json=_chat_body("https://images.example/a.png")
         )
 
         assert r.status_code == 400, r.text
@@ -654,7 +654,7 @@ class TestFetcher:
             def open(
                 self,
                 req,
-                timeout = None,
+                timeout=None,
             ):
                 sent.append(req.get_header("Host"))
                 raise urllib.error.URLError("stop after the request is built")
@@ -672,7 +672,7 @@ class TestFetcher:
             def open(
                 self,
                 req,
-                timeout = None,
+                timeout=None,
             ):
                 sent.append(req.get_header("User-agent"))
                 raise urllib.error.URLError("stop after the request is built")
@@ -695,7 +695,7 @@ class TestCountingIsNotAFetchSurface:
         backend = _VisionGguf()
         backend.supports_tools = True
         r = _client(monkeypatch, backend).post(
-            "/v1/chat/count_tokens", json = _chat_body("https://images.example/cat.webp")
+            "/v1/chat/count_tokens", json=_chat_body("https://images.example/cat.webp")
         )
 
         assert r.status_code == 503, r.text
@@ -711,7 +711,7 @@ class TestCountingIsNotAFetchSurface:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/messages/count_tokens",
-            json = _messages_body(f"https://127.0.0.1:{canary.port}/counted.png"),
+            json=_messages_body(f"https://127.0.0.1:{canary.port}/counted.png"),
         )
 
         assert r.status_code == 200, r.text
@@ -724,11 +724,11 @@ class TestCountingIsNotAFetchSurface:
         client = _client(monkeypatch, backend)
         remote = client.post(
             "/v1/messages/count_tokens",
-            json = _messages_body("https://images.example/cat.png"),
+            json=_messages_body("https://images.example/cat.png"),
         )
         inline = client.post(
             "/v1/messages/count_tokens",
-            json = {
+            json={
                 "model": "test/model.gguf",
                 "max_tokens": 16,
                 "messages": [
@@ -760,7 +760,7 @@ class TestCountingIsNotAFetchSurface:
         backend = _VisionGguf()
         r = _client(monkeypatch, backend).post(
             "/v1/messages/count_tokens",
-            json = _messages_body(f"http://127.0.0.1:{canary.port}/counted.png"),
+            json=_messages_body(f"http://127.0.0.1:{canary.port}/counted.png"),
         )
 
         assert r.status_code == 400, r.text

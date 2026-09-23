@@ -18,7 +18,7 @@ import pytest
 from core.inference import llama_cpp
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_seen():
     llama_cpp._GGUF_METADATA_LOGGED.clear()
     yield
@@ -27,8 +27,8 @@ def _clear_seen():
 
 def _gguf(
     tmp_path,
-    name = "m.gguf",
-    body = b"x" * 64,
+    name="m.gguf",
+    body=b"x" * 64,
 ):
     p = tmp_path / name
     p.write_bytes(body)
@@ -83,14 +83,14 @@ def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
         monkeypatch.setattr(
             llama_cpp.logger,
             level,
-            lambda msg, *a, _lv = level, **k: seen.append((_lv, str(msg))),
+            lambda msg, *a, _lv=level, **k: seen.append((_lv, str(msg))),
         )
 
-    llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source = "GGUF metadata")
+    llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source="GGUF metadata")
     first = list(seen)
     seen.clear()
     llama_cpp.detect_reasoning_flags(
-        TEMPLATE, "qwen3.8", log_source = "GGUF metadata", log_level = "debug"
+        TEMPLATE, "qwen3.8", log_source="GGUF metadata", log_level="debug"
     )
     repeat = list(seen)
 
@@ -106,9 +106,9 @@ def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
 def test_the_level_does_not_change_what_is_detected():
     """A capability that disappears when the line is demoted would be a regression
     hiding behind a quieter log."""
-    loud = llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source = "GGUF metadata")
+    loud = llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source="GGUF metadata")
     quiet = llama_cpp.detect_reasoning_flags(
-        TEMPLATE, "qwen3.8", log_source = "GGUF metadata", log_level = "debug"
+        TEMPLATE, "qwen3.8", log_source="GGUF metadata", log_level="debug"
     )
     assert loud == quiet
     assert loud["supports_reasoning"] is True

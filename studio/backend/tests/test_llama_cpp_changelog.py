@@ -45,7 +45,7 @@ def test_delta_excludes_old_prs_after_rebase(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+        lambda _repo, tag, *, force_refresh=False: releases.get(tag),
     )
 
     result = changes.changelog_for_update("unslothai/llama.cpp", "b10698-mix-old", "b10715-mix-new")
@@ -70,7 +70,7 @@ def test_delta_fails_closed_when_either_release_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: (
+        lambda _repo, tag, *, force_refresh=False: (
             {"body": LATEST_BODY} if tag == "latest" else None
         ),
     )
@@ -86,7 +86,7 @@ def test_text_identity_filters_old_unlinked_bullets(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases[tag],
+        lambda _repo, tag, *, force_refresh=False: releases[tag],
     )
 
     result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
@@ -110,7 +110,7 @@ def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases[tag],
+        lambda _repo, tag, *, force_refresh=False: releases[tag],
     )
 
     result = changes.changelog_for_update(
@@ -129,7 +129,7 @@ def test_delta_reports_no_changes_when_target_drops_every_carried_pr(monkeypatch
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases[tag],
+        lambda _repo, tag, *, force_refresh=False: releases[tag],
     )
 
     result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
@@ -215,7 +215,7 @@ def test_a_bullet_with_no_summary_does_not_suppress_a_later_real_one(monkeypatch
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases[tag],
+        lambda _repo, tag, *, force_refresh=False: releases[tag],
     )
 
     result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
@@ -229,7 +229,7 @@ def test_a_missing_target_body_fails_closed(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases[tag],
+        lambda _repo, tag, *, force_refresh=False: releases[tag],
     )
 
     assert changes.changelog_for_update("unslothai/llama.cpp", "old", "new") is None
@@ -243,11 +243,11 @@ def test_forced_refresh_is_floored_to_one_fetch_per_interval(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_fetch_release",
-        lambda _repo, tag, timeout = 5.0: calls.append(tag) or {"body": "- x"},
+        lambda _repo, tag, timeout=5.0: calls.append(tag) or {"body": "- x"},
     )
 
     for _ in range(10):
-        changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True)
+        changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh=True)
 
     # Without the floor this was ten uncached GitHub round trips per ten clicks.
     assert len(calls) == 1
@@ -280,7 +280,7 @@ def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+        lambda _repo, tag, *, force_refresh=False: releases.get(tag),
     )
 
     assert (
@@ -304,7 +304,7 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: upstream.get(tag),
+        lambda _repo, tag, *, force_refresh=False: upstream.get(tag),
     )
 
     assert changes.changelog_for_update("ggml-org/llama.cpp", "b10721", "b10734") is None
@@ -322,7 +322,7 @@ def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+        lambda _repo, tag, *, force_refresh=False: releases.get(tag),
     )
 
     result = changes.changelog_for_update("UnslothAI/Llama.cpp", "old", "new")
@@ -341,7 +341,7 @@ def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
     monkeypatch.setattr(
         changes,
         "_release_for_tag",
-        lambda _repo, tag, *, force_refresh = False: releases.get(tag),
+        lambda _repo, tag, *, force_refresh=False: releases.get(tag),
     )
 
     assert (
@@ -358,7 +358,7 @@ def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def read(self, size = -1):
+        def read(self, size=-1):
             raise http.client.IncompleteRead(b"partial")
 
     monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())
@@ -375,7 +375,7 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def read(self, size = -1):
+        def read(self, size=-1):
             return b"x" * (changes.MAX_RELEASE_BYTES + 1)
 
     monkeypatch.setattr(changes, "auth_safe_open", lambda *_a, **_k: _Response())

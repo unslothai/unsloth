@@ -99,21 +99,21 @@ NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
 # llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
 MAX_SAMPLING_SEED = 2**32 - 2
 SamplingSeed = Optional[
-    Annotated[int, Field(ge = 0, le = MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
+    Annotated[int, Field(ge=0, le=MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
 ]
 
 
 class ChatRagThreadSource(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["thread"]
 
 
 class ChatRagKnowledgeBaseSource(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     type: Literal["kb"]
-    kbId: str = Field(min_length = 1, max_length = 256)
+    kbId: str = Field(min_length=1, max_length=256)
 
 
 class ChatThreadSettings(BaseModel):
@@ -121,7 +121,7 @@ class ChatThreadSettings(BaseModel):
 
     # allow_inf_nan as in ChatInferenceSettings: json.loads and pydantic both take a bare NaN, stored as a token no
     # strict reader can parse back.
-    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     reasoningEnabled: Optional[bool] = None
     reasoningEffort: Optional[
@@ -140,23 +140,23 @@ class ChatThreadSettings(BaseModel):
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
-            Field(discriminator = "type"),
+            Field(discriminator="type"),
         ]
     ] = None
     ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
     # Matches the ge/le the retrieval endpoint enforces on its own top_k.
-    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragTopK: Optional[int] = Field(default=None, ge=1, le=50)
     ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
-    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragAutoInjectMinScore: Optional[float] = Field(default=None, ge=0, le=1)
     # The sampling params a chat runs with. Ranges match the sliders that set them.
-    temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
-    topP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    temperature: Optional[float] = Field(default=None, ge=0, le=2)
+    topP: Optional[float] = Field(default=None, ge=0, le=1)
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
-    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
-    minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    topK: Optional[int] = Field(default=None, ge=-1, le=100)
+    minP: Optional[float] = Field(default=None, ge=0, le=1)
     minPMode: Optional[Literal["server-default", "custom"]] = None
-    repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
-    presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    repetitionPenalty: Optional[float] = Field(default=None, ge=1, le=2)
+    presencePenalty: Optional[float] = Field(default=None, ge=0, le=2)
     seed: SamplingSeed = None
     # Not length-capped, like the installation-wide copy: truncating here would
     # silently change what the chat runs with.
@@ -191,7 +191,7 @@ class ChatThread(BaseModel):
         snapshot written before the field existed read as a chat that cleared it."""
         if settings is None:
             return None
-        return settings.model_dump(exclude_unset = True)
+        return settings.model_dump(exclude_unset=True)
 
 
 def thread_from_row(row: dict) -> ChatThread:
@@ -302,7 +302,7 @@ class ChatMessage(BaseModel):
     threadId: str
     parentId: Optional[str] = None
     role: str
-    content: Any = Field(default_factory = list)
+    content: Any = Field(default_factory=list)
     attachments: Optional[Any] = None
     metadata: Optional[dict[str, Any]] = None
     createdAt: int
@@ -348,7 +348,7 @@ class ChatMessageListResponse(BaseModel):
 class ChatMessageSyncRequest(BaseModel):
     messages: list[ChatMessage]
     pruneMissing: bool = False
-    deletedMessageIds: list[str] = Field(default_factory = list)
+    deletedMessageIds: list[str] = Field(default_factory=list)
 
 
 class ChatDeleteRequest(BaseModel):
@@ -362,8 +362,8 @@ class ChatClearRequest(BaseModel):
     # The client fences every legacy Dexie thread it holds, so this bound has to sit above what a
     # migrated install can legitimately collect: a 422 here fails the whole clear, and the identical
     # retry fails with it, leaving backend history behind after Clear all.
-    ids: list[str] = Field(default_factory = list, max_length = 200_000)
-    operationId: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
+    ids: list[str] = Field(default_factory=list, max_length=200_000)
+    operationId: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ChatCountResponse(BaseModel):
@@ -374,7 +374,7 @@ class ChatExportResponse(BaseModel):
     exportedAt: str
     version: int
     threadCount: int
-    projects: list[ChatProject] = Field(default_factory = list)
+    projects: list[ChatProject] = Field(default_factory=list)
     threads: list[ChatThread]
     messages: list[ChatMessage]
 
@@ -382,7 +382,7 @@ class ChatExportResponse(BaseModel):
 class ChatInferenceSettings(BaseModel):
     # allow_inf_nan: json.loads accepts bare NaN and Infinity, and a bare NaN token in value_json reads
     # back fine but renders as null, so refuse it at the door the way models/training.py does.
-    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     temperature: Optional[float] = None
     topP: Optional[float] = None
@@ -401,34 +401,34 @@ class ChatInferenceSettings(BaseModel):
 
 
 class ChatPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    customContextLength: Optional[int] = Field(default = None, gt = 0)
+    customContextLength: Optional[int] = Field(default=None, gt=0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
-    specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
-    nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
-    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
+    specDraftNMax: Optional[int] = Field(default=None, ge=1, le=16)
+    nParallel: Optional[int] = Field(default=None, ge=PARALLEL_MIN, le=PARALLEL_MAX)
+    reasoningBudget: NotABoolean = Field(default=None, ge=-1, le=2_147_483_647)
     reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
-    nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
-    nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nBatch: NotABoolean = Field(default=None, ge=BATCH_MIN, le=BATCH_MAX)
+    nUbatch: NotABoolean = Field(default=None, ge=BATCH_MIN, le=BATCH_MAX)
     # Same forbid trap as nBatch/nUbatch: normalizePresetLoadConfig always emits these
     # keys (null included). Without them, saving a named system-prompt preset that
     # carries any loadConfig 400s the whole customPresets write (#9879).
     loadMode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = None
     specDraftCacheDtype: Optional[str] = None
-    ctxCheckpoints: NotABoolean = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
-    cacheRam: NotABoolean = Field(default = None, ge = -1, le = CACHE_RAM_MAX_MIB)
+    ctxCheckpoints: NotABoolean = Field(default=None, ge=0, le=CTX_CHECKPOINTS_MAX)
+    cacheRam: NotABoolean = Field(default=None, ge=-1, le=CACHE_RAM_MAX_MIB)
     tensorParallel: Optional[bool] = None
     disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
-    nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+    nCpuMoe: Optional[int] = Field(default=None, ge=0)
 
     @field_validator("reasoningBudgetMessage")
     @classmethod
@@ -437,7 +437,7 @@ class ChatPresetLoadConfig(BaseModel):
 
 
 class ChatPreset(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     params: ChatInferenceSettings
@@ -445,19 +445,19 @@ class ChatPreset(BaseModel):
 
 
 class ChatResearchWebsitePolicy(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     # 253 is the maximum length of a DNS name.
-    allowedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
-        default_factory = list, max_length = 1_000
+    allowedDomains: list[Annotated[str, Field(max_length=253)]] = Field(
+        default_factory=list, max_length=1_000
     )
-    blockedDomains: list[Annotated[str, Field(max_length = 253)]] = Field(
-        default_factory = list, max_length = 1_000
+    blockedDomains: list[Annotated[str, Field(max_length=253)]] = Field(
+        default_factory=list, max_length=1_000
     )
 
 
 class ChatSettingsPayload(BaseModel):
-    model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     inferenceParams: Optional[ChatInferenceSettings] = None
     # Last-used params per checkpoint id. Deep-merged per key, so patching one
@@ -478,8 +478,8 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
-    maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
-    toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+    maxToolCallsPerMessage: Optional[int] = Field(default=None, ge=0)
+    toolCallTimeout: Optional[int] = Field(default=None, ge=1)
 
     # Composer and RAG toggles. They describe the installation, not the browser that set them, so a
     # second browser or a remote session reads them back here instead of falling back to defaults.
@@ -492,7 +492,7 @@ class ChatSettingsPayload(BaseModel):
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
     # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
     # like the run route so a value it would reject cannot be persisted and replayed.
-    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
+    researchModelTimeoutSeconds: Optional[int] = Field(default=None, ge=0, le=365 * 24 * 3600)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
@@ -502,14 +502,14 @@ class ChatSettingsPayload(BaseModel):
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
-            Field(discriminator = "type"),
+            Field(discriminator="type"),
         ]
     ] = None
     ragMode: Optional[Literal["hybrid", "lexical", "dense"]] = None
     # Matches the ge/le the retrieval endpoint enforces on its own top_k.
-    ragTopK: Optional[int] = Field(default = None, ge = 1, le = 50)
+    ragTopK: Optional[int] = Field(default=None, ge=1, le=50)
     ragAutoInject: Optional[Literal["auto", "on", "off"]] = None
-    ragAutoInjectMinScore: Optional[float] = Field(default = None, ge = 0, le = 1)
+    ragAutoInjectMinScore: Optional[float] = Field(default=None, ge=0, le=1)
     ragOcrScanned: Optional[bool] = None
     ragCaptionFigures: Optional[bool] = None
     # Standing load preferences the model-load path reads outside the store.
@@ -523,9 +523,9 @@ class ChatSettingsPayload(BaseModel):
     # ROLLING_COMPACTION_HEADROOM_RATIO.
     autoCompactEnabled: Optional[bool] = None
     contextPolicy: Optional[Literal["inherit", "checkpoint", "rolling"]] = None
-    compactionHeadroomRatio: Optional[float] = Field(default = None, ge = 0.0, le = 0.9)
+    compactionHeadroomRatio: Optional[float] = Field(default=None, ge=0.0, le=0.9)
 
-    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode = "before")
+    @field_validator("researchModelTimeoutSeconds", "maxToolCallsPerMessage", mode="before")
     @classmethod
     def _not_a_boolean(cls, value: Any) -> Any:
         # bool subclasses int, so False would persist as the 0 sentinel for every later run.
@@ -548,11 +548,11 @@ class ChatSettingsResponse(BaseModel):
 
 
 class ConditionalChatSettingsPayload(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     expected: ChatSettingsPayload
-    expectedAbsent: list[str] = Field(default_factory = list)
-    expectedAbsentPaths: list[list[str]] = Field(default_factory = list)
+    expectedAbsent: list[str] = Field(default_factory=list)
+    expectedAbsentPaths: list[list[str]] = Field(default_factory=list)
     patch: ChatSettingsPayload
 
     @field_validator("expectedAbsent")
@@ -593,7 +593,7 @@ class ChatImportLedgerResponse(BaseModel):
 
 class ChatImportLedgerRecordRequest(BaseModel):
     # 10k cap bounds the request body; real users have << 1k threads.
-    threadIds: list[str] = Field(default_factory = list, max_length = 10_000)
+    threadIds: list[str] = Field(default_factory=list, max_length=10_000)
 
 
 class ChatImportLedgerRecordResponse(BaseModel):
@@ -614,7 +614,7 @@ def _conflict_headers(exc: Exception) -> dict:
     return {CONFLICT_KIND_HEADER: kind}
 
 
-@router.get("/threads", response_model = ChatThreadListResponse)
+@router.get("/threads", response_model=ChatThreadListResponse)
 def list_threads(
     model_type: Optional[str] = Query(None),
     pair_id: Optional[str] = Query(None),
@@ -623,28 +623,28 @@ def list_threads(
     current_subject: str = Depends(get_current_subject),
 ):
     threads = list_chat_threads(
-        model_type = model_type,
-        pair_id = pair_id,
-        project_id = project_id,
-        include_archived = include_archived,
+        model_type=model_type,
+        pair_id=pair_id,
+        project_id=project_id,
+        include_archived=include_archived,
     )
-    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+    return ChatThreadListResponse(threads=[thread_from_row(t) for t in threads])
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
     """The row references a project that is gone, whether the check or the write noticed it."""
-    return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    return HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
 
 def _missing_thread_error(thread_id: str) -> HTTPException:
-    return HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    return HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
 
 def _deleted_thread_error(thread_id: str) -> HTTPException:
-    return HTTPException(status_code = 410, detail = f"Thread {thread_id} was deleted")
+    return HTTPException(status_code=410, detail=f"Thread {thread_id} was deleted")
 
 
-@router.post("/threads", response_model = ChatThread)
+@router.post("/threads", response_model=ChatThread)
 def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
@@ -660,26 +660,26 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
         raise _missing_project_error(payload.projectId) from exc
 
 
-@router.get("/threads/{thread_id}", response_model = ChatThread)
+@router.get("/threads/{thread_id}", response_model=ChatThread)
 def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
     thread = get_chat_thread(thread_id)
     if thread is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return thread_from_row(thread)
 
 
-@router.patch("/threads/{thread_id}", response_model = ChatThread)
+@router.patch("/threads/{thread_id}", response_model=ChatThread)
 def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
 ):
-    patch = payload.model_dump(exclude_unset = True)
+    patch = payload.model_dump(exclude_unset=True)
     expected_title = patch.pop("expectedTitle", None)
     expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
-            raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
+            raise HTTPException(status_code=400, detail=f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
         raise _missing_project_error(patch["projectId"])
     settings_write = _settings_write_from_patch(patch)
@@ -687,9 +687,9 @@ def patch_thread(
         thread = update_chat_thread(
             thread_id,
             patch,
-            expected_title = expected_title,
-            expected_opening_message_id = expected_opening_message_id,
-            settings_write = settings_write,
+            expected_title=expected_title,
+            expected_opening_message_id=expected_opening_message_id,
+            settings_write=settings_write,
         )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
@@ -698,11 +698,11 @@ def patch_thread(
         raise _missing_project_error(patch["projectId"]) from exc
     except ChatThreadPreconditionFailed:
         raise HTTPException(
-            status_code = 409,
-            detail = f"Thread {thread_id} changed since it was read",
+            status_code=409,
+            detail=f"Thread {thread_id} changed since it was read",
         )
     if thread is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return thread_from_row(thread)
 
 
@@ -713,12 +713,12 @@ def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
         return
     for run_id in run_ids:
         try:
-            cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
+            cancel_account_run(request, run_id, supervisor_name="research_supervisor")
         except Exception:  # noqa: BLE001 - cancellation is best-effort after commit
             logger.warning(
                 "chat_history.cancel_deleted_research_failed run_id=%s",
                 run_id,
-                exc_info = True,
+                exc_info=True,
             )
 
 
@@ -742,12 +742,12 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
                 if status == "cancelling" and (
                     supervisor is not None or policy.installation_has_managed_accounts()
                 ):
-                    cancel_account_run(request, run["id"], supervisor_name = "research_supervisor")
+                    cancel_account_run(request, run["id"], supervisor_name="research_supervisor")
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "chat_history.cancel_active_research_failed run_id=%s",
                     run.get("id"),
-                    exc_info = True,
+                    exc_info=True,
                 )
 
 
@@ -766,9 +766,9 @@ def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
         # and the status update is the best-effort half.
         if supervisor is not None or policy.installation_has_managed_accounts():
             try:
-                cancel_account_run(request, run_id, supervisor_name = "research_supervisor")
+                cancel_account_run(request, run_id, supervisor_name="research_supervisor")
             except Exception:  # noqa: BLE001
-                logger.warning("Could not signal research run %s", run_id, exc_info = True)
+                logger.warning("Could not signal research run %s", run_id, exc_info=True)
         try:
             research_runs_db.request_cancel(run_id)
         except Exception:  # noqa: BLE001
@@ -799,9 +799,9 @@ def _cancel_chat_generation_runs(request: Request, run_ids: list[str]) -> None:
         return
     for run_id in run_ids:
         try:
-            cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
+            cancel_account_run(request, run_id, supervisor_name="chat_generation_supervisor")
         except Exception:  # noqa: BLE001 - deletion must still complete
-            logger.warning("Could not signal chat generation run %s", run_id, exc_info = True)
+            logger.warning("Could not signal chat generation run %s", run_id, exc_info=True)
 
 
 @router.delete("/threads")
@@ -826,13 +826,14 @@ async def delete_threads(
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
     # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
     # is gone, so drop them rather than leaking scopes per deleted chat.
-    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
+    await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff=cutoff)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
 def _archive_cutoff() -> str:
     """The instant a delete was accepted, as an ISO-8601 UTC string. See below."""
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -851,12 +852,12 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
             continue
         created_before = cutoff if recreated else None
         try:
-            conversation_archive.delete_for_thread(str(thread_id), created_before = created_before)
+            conversation_archive.delete_for_thread(str(thread_id), created_before=created_before)
         except Exception:
             logger.warning("Could not remove the conversation archive for %s", thread_id)
         try:
             conversation_archive.delete_thread_documents(
-                str(thread_id), created_before = created_before
+                str(thread_id), created_before=created_before
             )
         except Exception:
             logger.warning("Could not remove the uploaded documents for %s", thread_id)
@@ -896,7 +897,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             # every message, and another tab can recreate the chat while it runs.
             if get_chat_thread(thread_id) is not None:
                 continue
-            if remove_session_sandbox(thread_id, delete_files = delete_files):
+            if remove_session_sandbox(thread_id, delete_files=delete_files):
                 removed += 1
             # A removal that had to wait for a running tool call is reported as kept: that call can still write
             # a file, and this is the only answer the caller gets.
@@ -907,7 +908,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     try:
         result = await run_in_threadpool(_remove)
     except Exception:
-        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+        logger.warning("chat_history.sandbox_cleanup_failed", exc_info=True)
         return 0, []
     # Whatever this delete asked for: the last chat referencing a workspace the user already asked to
     # delete can go through the plain path, and only the records marked pending are ever collected.
@@ -919,12 +920,12 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 
 @router.get("/attachments")
 def list_attachments(
-    limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
-    offset: Annotated[int, Query(ge = 0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """One bounded page of chat uploads for the settings Data tab."""
-    attachments, next_offset = list_chat_attachments_page(limit = limit, offset = offset)
+    attachments, next_offset = list_chat_attachments_page(limit=limit, offset=offset)
     return {"attachments": attachments, "nextOffset": next_offset}
 
 
@@ -938,9 +939,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
     normalized += "=" * (-len(normalized) % 4)
     try:
-        return base64.b64decode(normalized, altchars = altchars, validate = True)
+        return base64.b64decode(normalized, altchars=altchars, validate=True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
-        raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
+        raise HTTPException(status_code=422, detail="Attachment data is corrupt") from exc
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
@@ -976,7 +977,7 @@ def get_attachment_file(
 
     attachment = get_chat_attachment(message_id, attachment_id)
     if attachment is None:
-        raise HTTPException(status_code = 404, detail = "Attachment not found")
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
     attachment_content_type = attachment.get("contentType")
     texts: list[str] = []
@@ -992,9 +993,9 @@ def get_attachment_file(
             if "base64" not in header.lower():
                 # RFC 2397 non-base64 form stores percent-encoded bytes.
                 data = urllib.parse.unquote_to_bytes(payload)
-                return Response(content = data, media_type = media_type)
+                return Response(content=data, media_type=media_type)
             data = _decode_attachment_base64(payload)
-            return Response(content = data, media_type = media_type)
+            return Response(content=data, media_type=media_type)
         # Audio parts: the attachment adapter stores {data, format} with raw
         # base64; compare chats store a bare base64 string.
         audio = part.get("audio")
@@ -1015,13 +1016,13 @@ def get_attachment_file(
                         str(audio_format or "").lower(), "application/octet-stream"
                     )
                 )
-                return Response(content = data, media_type = media_type)
+                return Response(content=data, media_type=media_type)
         text = part.get("text")
         if isinstance(text, str) and text:
             texts.append(text)
     if texts:
-        return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
-    raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
+        return Response(content="\n".join(texts), media_type="text/plain; charset=utf-8")
+    raise HTTPException(status_code=404, detail="Attachment has no stored content")
 
 
 @router.delete("/attachments/{message_id}/{attachment_id}")
@@ -1038,28 +1039,28 @@ def delete_attachment(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "chat_history.delete_attachment_conflict",
-            log = logger,
-            headers = _conflict_headers(exc),
+            event="chat_history.delete_attachment_conflict",
+            log=logger,
+            headers=_conflict_headers(exc),
         ) from exc
     if not deleted:
-        raise HTTPException(status_code = 404, detail = "Attachment not found")
+        raise HTTPException(status_code=404, detail="Attachment not found")
     return {"ok": True}
 
 
-@router.get("/projects", response_model = ChatProjectListResponse)
+@router.get("/projects", response_model=ChatProjectListResponse)
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
-        projects = [
+        projects=[
             ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
-            for project in list_chat_projects(include_archived = include_archived)
+            for project in list_chat_projects(include_archived=include_archived)
         ]
     )
 
 
-@router.post("/projects", response_model = ChatProject)
+@router.post("/projects", response_model=ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
     try:
         return ChatProject(**upsert_chat_project(payload.model_dump()))
@@ -1072,39 +1073,39 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             f"Could not create the project folder {exc.path}. Check that the "
             "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
             "location.",
-            event = "chat_history.create_project_workspace_failed",
-            log = logger,
+            event="chat_history.create_project_workspace_failed",
+            log=logger,
         ) from exc
 
 
-@router.get("/projects/{project_id}", response_model = ChatProject)
+@router.get("/projects/{project_id}", response_model=ChatProject)
 def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
-            status_code = 404,
-            detail = f"Project {project_id} not found",
+            status_code=404,
+            detail=f"Project {project_id} not found",
         )
     return ChatProject(**project)
 
 
-@router.patch("/projects/{project_id}", response_model = ChatProject)
+@router.patch("/projects/{project_id}", response_model=ChatProject)
 def patch_project(
     project_id: str,
     payload: ChatProjectPatch,
     current_subject: str = Depends(get_current_subject),
 ):
-    patch = payload.model_dump(exclude_unset = True)
+    patch = payload.model_dump(exclude_unset=True)
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
-            raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
+            raise HTTPException(status_code=400, detail=f"{field} cannot be null")
     project = update_chat_project(project_id, patch)
     if project is not None:
         project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
-            status_code = 404,
-            detail = f"Project {project_id} not found",
+            status_code=404,
+            detail=f"Project {project_id} not found",
         )
     return ChatProject(**project)
 
@@ -1124,7 +1125,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
         # Tombstone first, rows after one more look: the tombstone already stops new links and
         # uploads and is the only half `unretire_scope` can take back, while a retired row
         # keeps auto_sync off and makes create_folder refuse that path for good.
-        folder_sync.retire_scope(scope, owned, rows = False)
+        folder_sync.retire_scope(scope, owned, rows=False)
         if get_chat_project(project_id) is not None:
             folder_sync.unretire_scope(scope)
             return
@@ -1135,7 +1136,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             folder_sync.delete_retired_scope(scope)
 
 
-@router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
+@router.delete("/projects/{project_id}", response_model=ChatProjectDeleted)
 async def delete_project(
     project_id: str,
     request: Request,
@@ -1150,7 +1151,7 @@ async def delete_project(
     cutoff = _archive_cutoff()
     try:
         project = await run_in_threadpool(
-            lambda: delete_chat_project(project_id, delete_files = False)
+            lambda: delete_chat_project(project_id, delete_files=False)
         )
     except Exception:
         try:
@@ -1158,13 +1159,13 @@ async def delete_project(
                 await run_in_threadpool(_delete_project_rag_sources, project_id)
         except Exception:  # noqa: BLE001 - preserve the original deletion error
             logger.warning(
-                "failed to delete RAG sources for committed project %s", project_id, exc_info = True
+                "failed to delete RAG sources for committed project %s", project_id, exc_info=True
             )
         raise
     if project is None:
         raise HTTPException(
-            status_code = 404,
-            detail = f"Project {project_id} not found",
+            status_code=404,
+            detail=f"Project {project_id} not found",
         )
     # The transaction is authoritative about membership and captured the worker ids before its
     # cascades. Signal them before any potentially slow RAG or workspace cleanup.
@@ -1179,9 +1180,9 @@ async def delete_project(
     try:
         await run_in_threadpool(_delete_project_rag_sources, project_id)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
-        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
+        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info=True)
     # The project's chats go with it, so their archives and documents have to as well.
-    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff=cutoff)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1291,19 +1292,19 @@ async def delete_project(
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
     # Those folders are reachable from nothing now, so the caller is told which
     # ones survived and can offer the delete once.
-    return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
+    return ChatProjectDeleted(**project, sandboxes_kept=sandboxes_kept)
 
 
-@router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
+@router.get("/threads/{thread_id}/messages", response_model=ChatMessageListResponse)
 def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
+        messages=[ChatMessage(**m) for m in list_chat_messages(thread_id)]
     )
 
 
-@router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
+@router.post("/messages:batch", response_model=ChatMessagesBatchResponse)
 def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -1313,38 +1314,38 @@ def batch_thread_messages(
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**m))
-    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+    return ChatMessagesBatchResponse(messagesByThreadId=by_thread)
 
 
-@router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
+@router.get("/threads/{thread_id}/messages/{message_id}", response_model=ChatMessage)
 def get_thread_message(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     message = get_chat_message(thread_id, message_id)
     if message is None:
-        raise HTTPException(status_code = 404, detail = f"Message {message_id} not found")
+        raise HTTPException(status_code=404, detail=f"Message {message_id} not found")
     return ChatMessage(**message)
 
 
-@router.put("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
+@router.put("/threads/{thread_id}/messages/{message_id}", response_model=ChatMessage)
 def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
-    allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
+    allow_generation_edit: Annotated[bool, Query(alias="allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
 ):
     if thread_id != payload.threadId or message_id != payload.id:
-        raise HTTPException(status_code = 400, detail = "Message id mismatch")
+        raise HTTPException(status_code=400, detail="Message id mismatch")
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     try:
         return ChatMessage(
-            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+            **upsert_chat_message(payload.model_dump(), allow_generation_edit=allow_generation_edit)
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1355,13 +1356,13 @@ def save_thread_message(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "chat_history.save_message_conflict",
-            log = logger,
-            headers = _conflict_headers(exc),
+            event="chat_history.save_message_conflict",
+            log=logger,
+            headers=_conflict_headers(exc),
         ) from exc
 
 
-@router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
+@router.put("/threads/{thread_id}/messages", response_model=ChatMessageListResponse)
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
@@ -1372,21 +1373,21 @@ def replace_thread_messages(
         preview = ", ".join(mismatched_ids[:5])
         suffix = "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
         raise HTTPException(
-            status_code = 400,
-            detail = f"Message threadId mismatch: {preview}{suffix}",
+            status_code=400,
+            detail=f"Message threadId mismatch: {preview}{suffix}",
         )
     if get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
         return ChatMessageListResponse(
-            messages = [
+            messages=[
                 ChatMessage(**m)
                 for m in sync_chat_messages(
                     thread_id,
                     messages,
-                    prune_missing = payload.pruneMissing,
-                    deleted_message_ids = payload.deletedMessageIds,
+                    prune_missing=payload.pruneMissing,
+                    deleted_message_ids=payload.deletedMessageIds,
                 )
             ]
         )
@@ -1399,38 +1400,39 @@ def replace_thread_messages(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "chat_history.replace_messages_conflict",
-            log = logger,
-            headers = _conflict_headers(exc),
+            event="chat_history.replace_messages_conflict",
+            log=logger,
+            headers=_conflict_headers(exc),
         ) from exc
 
 
-@router.get("/count", response_model = ChatCountResponse)
+@router.get("/count", response_model=ChatCountResponse)
 def count_threads(current_subject: str = Depends(get_current_subject)):
-    return ChatCountResponse(count = count_chat_threads())
+    return ChatCountResponse(count=count_chat_threads())
 
 
-@router.get("/import-ledger", response_model = ChatImportLedgerResponse)
+@router.get("/import-ledger", response_model=ChatImportLedgerResponse)
 def get_import_ledger(current_subject: str = Depends(get_current_subject)):
     """Legacy-Dexie import ledger: legacy thread ids already copied into chat tables.
 
     The frontend checks this on tab open to decide whether to re-run the Dexie -> studio.db import.
     """
-    return ChatImportLedgerResponse(threadIds = list_chat_legacy_imports())
+    return ChatImportLedgerResponse(threadIds=list_chat_legacy_imports())
 
 
-@router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
+@router.post("/import-ledger", response_model=ChatImportLedgerRecordResponse)
 def record_import_ledger(
     payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
     accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
-    return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
+    return ChatImportLedgerRecordResponse(accepted=accepted, inserted=inserted)
 
 
 def _snapshot_chat_images() -> Optional[set[str]]:
     """Registry and thumbnail cache are account-scoped, so this bounds the reap to the caller."""
     from core.inference.search_images import snapshot_and_fence_registrations
+
     return snapshot_and_fence_registrations()
 
 
@@ -1470,7 +1472,7 @@ async def clear_history(
         """
         if payload is None:
             cleared, cleared_runs, cleared_chat_runs = clear_chat_history(
-                include_chat_generation_runs = True
+                include_chat_generation_runs=True
             )
             return (
                 cleared,
@@ -1483,8 +1485,8 @@ async def clear_history(
         # puts second replays while still believing it cleared. `replayed` is whichever the transaction did.
         cleared, cleared_runs, cleared_chat_runs, replayed = clear_chat_history_with_replay_status(
             payload.ids,
-            operation_id = payload.operationId,
-            include_chat_generation_runs = True,
+            operation_id=payload.operationId,
+            include_chat_generation_runs=True,
         )
         if replayed:
             # A replay takes no snapshot of its own: the chats created since the original clear are not its to
@@ -1522,7 +1524,7 @@ async def clear_history(
     # Same cleanup as DELETE /threads. Without it "Clear all chats" leaves every conversation
     # searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
-        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
+        _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff=cutoff
     )
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
@@ -1531,6 +1533,7 @@ async def clear_history(
     # snapshot off the ledger, so a replay's reap cannot reach a newer chat's images.
     if not replayed or reapable_image_ids:
         from core.inference.search_images import clear_cache
+
         await run_in_threadpool(clear_cache, reapable_image_ids)
         if payload is not None:
             await run_in_threadpool(mark_clear_operation_caches_cleared, payload.operationId)
@@ -1542,12 +1545,12 @@ async def clear_history(
     }
 
 
-@router.get("/settings", response_model = ChatSettingsResponse)
+@router.get("/settings", response_model=ChatSettingsResponse)
 def get_settings(current_subject: str = Depends(get_current_subject)):
-    return ChatSettingsResponse(settings = list_chat_settings())
+    return ChatSettingsResponse(settings=list_chat_settings())
 
 
-@router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
+@router.post("/settings/compare-and-set", response_model=ConditionalChatSettingsResponse)
 def compare_and_set_settings(
     payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
@@ -1557,45 +1560,45 @@ def compare_and_set_settings(
     try:
         parsed = ConditionalChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
+        raise HTTPException(status_code=400, detail=safe_validation_errors(exc.errors())) from exc
     try:
         settings, applied = upsert_chat_settings_merge_if_current(
-            parsed.expected.model_dump(exclude_unset = True),
-            parsed.patch.model_dump(exclude_unset = True),
+            parsed.expected.model_dump(exclude_unset=True),
+            parsed.patch.model_dump(exclude_unset=True),
             parsed.expectedAbsent,
             parsed.expectedAbsentPaths,
         )
-        return ConditionalChatSettingsResponse(settings = settings, applied = applied)
+        return ConditionalChatSettingsResponse(settings=settings, applied=applied)
     except CorruptSettingsError as exc:
         raise log_and_http_error(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "chat_history.compare_and_set_settings_conflict",
-            log = logger,
+            event="chat_history.compare_and_set_settings_conflict",
+            log=logger,
         ) from exc
 
 
-@router.put("/settings", response_model = ChatSettingsResponse)
+@router.put("/settings", response_model=ChatSettingsResponse)
 def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_current_subject)):
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
     except ValidationError as exc:
         # safe_validation_errors, not exc.errors(): raw errors echo the input, and Starlette dumps with allow_nan=False,
         # so a rejected NaN made the 400 handler itself 500.
-        raise HTTPException(status_code = 400, detail = safe_validation_errors(exc.errors())) from exc
+        raise HTTPException(status_code=400, detail=safe_validation_errors(exc.errors())) from exc
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         return ChatSettingsResponse(
-            settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
+            settings=upsert_chat_settings_merge(parsed.model_dump(exclude_unset=True))
         )
     except CorruptSettingsError as exc:
         raise log_and_http_error(
             exc,
             409,
             safe_curated_detail(exc),
-            event = "chat_history.put_settings_conflict",
-            log = logger,
+            event="chat_history.put_settings_conflict",
+            log=logger,
         ) from exc
 
 
@@ -1620,7 +1623,7 @@ class ChatThreadForkCountsResponse(BaseModel):
     counts: dict[str, int]
 
 
-@router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
+@router.post("/threads/{thread_id}/fork", response_model=ChatForkResponse)
 def fork_thread(
     thread_id: str,
     payload: ChatForkRequest,
@@ -1640,82 +1643,83 @@ def fork_thread(
 
     source = get_chat_thread(thread_id)
     if source is None:
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     # A generation in flight leaves the tip unsettled: the last message is a prompt with no
     # answer yet, or a reply still being written, and a fork taken now would end there. A
     # client check cannot close this on its own, since another tab can start a generation
     # between its snapshot and this request.
     if thread_id in active_generations.active_thread_ids(account_access.account_scope()):
         raise HTTPException(
-            status_code = 409,
-            detail = "This chat is still generating. Fork it once it finishes.",
+            status_code=409,
+            detail="This chat is still generating. Fork it once it finishes.",
         )
     if payload.messageId is not None and get_chat_message(thread_id, payload.messageId) is None:
         raise HTTPException(
-            status_code = 404,
-            detail = f"Message {payload.messageId} not found in thread {thread_id}",
+            status_code=404,
+            detail=f"Message {payload.messageId} not found in thread {thread_id}",
         )
     base_title = source.get("title") or "New Chat"
     new_title = f"fork · {base_title}"
     try:
         forked = fork_chat_thread(
-            source_thread_id = thread_id,
-            branch_message_id = payload.messageId,
-            new_thread_id = payload.newThreadId,
-            new_title = new_title,
-            created_at = payload.createdAt,
-            id_factory = lambda: str(uuid.uuid4()),
+            source_thread_id=thread_id,
+            branch_message_id=payload.messageId,
+            new_thread_id=payload.newThreadId,
+            new_title=new_title,
+            created_at=payload.createdAt,
+            id_factory=lambda: str(uuid.uuid4()),
         )
     except ChatForkActiveGenerationError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.newThreadId) from exc
     if forked is None:
         # The source can be deleted between the reads above and the fork transaction, which the
         # threadpool lets run concurrently. Report it gone rather than as a server fault.
-        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} or fork message not found")
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} or fork message not found")
     messages = list_chat_messages(payload.newThreadId)
     # Stub: v1 always starts a fresh container and surfaces the same warning for every provider.
     warning: Optional[str] = None
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
-        thread = thread_from_row(forked),
-        messages = [ChatMessage(**m) for m in messages],
-        containerSnapshotWarning = warning,
+        thread=thread_from_row(forked),
+        messages=[ChatMessage(**m) for m in messages],
+        containerSnapshotWarning=warning,
     )
 
 
 @router.get(
     "/threads/{thread_id}/messages/{message_id}/forks",
-    response_model = ChatForkCountResponse,
+    response_model=ChatForkCountResponse,
 )
 def get_fork_count(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
+    return ChatForkCountResponse(count=count_forks_for_message(thread_id, message_id))
 
 
 @router.get(
     "/threads/{thread_id}/forks",
-    response_model = ChatThreadForkCountsResponse,
+    response_model=ChatThreadForkCountsResponse,
 )
 def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
     """Every fork count of a thread in one read, so a rendered thread costs one request."""
-    return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
+    return ChatThreadForkCountsResponse(counts=fork_counts_for_thread(thread_id))
 
 
-@router.get("/export", response_model = ChatExportResponse)
+@router.get("/export", response_model=ChatExportResponse)
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
+
     projects, threads, messages = build_chat_history_export()
     return ChatExportResponse(
-        exportedAt = datetime.now(timezone.utc).isoformat(),
-        version = 1,
-        threadCount = len(threads),
-        projects = [ChatProject(**project) for project in projects],
-        threads = [thread_from_row(thread) for thread in threads],
-        messages = [ChatMessage(**message) for message in messages],
+        exportedAt=datetime.now(timezone.utc).isoformat(),
+        version=1,
+        threadCount=len(threads),
+        projects=[ChatProject(**project) for project in projects],
+        threads=[thread_from_row(thread) for thread in threads],
+        messages=[ChatMessage(**message) for message in messages],
     )

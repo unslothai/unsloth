@@ -54,7 +54,7 @@ def _load_version_module_standalone():
 
 
 def test_the_version_file_is_a_literal_in_a_module_with_no_imports():
-    tree = ast.parse(_VERSION_FILE.read_text(encoding = "utf-8"))
+    tree = ast.parse(_VERSION_FILE.read_text(encoding="utf-8"))
 
     imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
     assert imports == [], (
@@ -84,11 +84,12 @@ def test_importing_the_version_alone_pulls_in_no_heavy_dependency():
 def test_models_utils_still_re_exports_the_same_version():
     # Every banner, every saved config's unsloth_version, and unsloth.__version__ on the GPU path come through here.
     from unsloth.models._utils import __version__ as via_utils
+
     assert via_utils == _load_version_module_standalone().__version__
 
 
 def test_pyproject_reads_the_version_from_the_leaf_module():
-    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(r"^version\s*=\s*\{attr\s*=\s*\"([^\"]+)\"\}", pyproject, re.MULTILINE)
     assert match, "pyproject must keep deriving the distribution version from an attr"
     assert match.group(1) == "unsloth._version.__version__"
@@ -98,7 +99,7 @@ def test_setuptools_resolves_the_version_without_importing_torch():
     read_attr = pytest.importorskip("setuptools.config.expand").read_attr
 
     before = {name for name in _HEAVY if name in sys.modules}
-    resolved = read_attr("unsloth._version.__version__", root_dir = str(_REPO_ROOT))
+    resolved = read_attr("unsloth._version.__version__", root_dir=str(_REPO_ROOT))
     after = {name for name in _HEAVY if name in sys.modules}
 
     assert resolved == _load_version_module_standalone().__version__
@@ -129,7 +130,7 @@ def _get_unsloth_version_with_metadata_missing(main_py_path):
 
 
 def _Path_read(p):
-    return Path(p).read_text(encoding = "utf-8")
+    return Path(p).read_text(encoding="utf-8")
 
 
 def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout():
@@ -150,14 +151,14 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
     # yield a real version rather than "dev".
     import re as _re
 
-    main_py = (_REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    main_py = (_REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding="utf-8")
     start = main_py.index("def get_unsloth_version()")
     body = main_py[start : main_py.index("\n\n\n", start)]
 
     def _version_for(layout):
         root = tmp_path / layout
-        (root / "unsloth" / "models").mkdir(parents = True)
-        (root / "studio" / "backend").mkdir(parents = True)
+        (root / "unsloth" / "models").mkdir(parents=True)
+        (root / "studio" / "backend").mkdir(parents=True)
         if layout in ("current", "only_version"):
             (root / "unsloth" / "_version.py").write_text('__version__ = "9.9.9"\n')
         if layout == "only_utils":
@@ -186,6 +187,6 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
 def test_the_mlx_branch_no_longer_borrows_the_zoo_version():
     # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different package pinned with >=, so it
     # was neither the installed core nor the latest zoo.
-    init_py = (_REPO_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
+    init_py = (_REPO_ROOT / "unsloth" / "__init__.py").read_text(encoding="utf-8")
     assert "__version__ = unsloth_zoo.__version__" not in init_py
     assert "from ._version import __version__" in init_py

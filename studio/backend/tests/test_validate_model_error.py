@@ -31,7 +31,7 @@ async def _inline_to_thread(function, /, *args, **kwargs):
     return function(*args, **kwargs)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _run_route_helpers_inline(monkeypatch):
     monkeypatch.setattr(inf.asyncio, "to_thread", _inline_to_thread)
 
@@ -55,9 +55,9 @@ def _provoke(
 
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(_raise))
 
-    req = ValidateModelRequest(model_path = "org/repo")
+    req = ValidateModelRequest(model_path="org/repo")
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inf.validate_model(req, current_subject = "tester"))
+        asyncio.run(inf.validate_model(req, current_subject="tester"))
     return excinfo.value
 
 
@@ -107,12 +107,12 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
         lambda request, operation, **_kwargs: ("org/mixed-repo", "org/mixed-repo", False),
     )
     config = SimpleNamespace(
-        identifier = "org/mixed-repo",
-        display_name = "org/mixed-repo",
-        is_gguf = is_gguf,
-        is_lora = False,
-        is_vision = False,
-        gguf_file = None,
+        identifier="org/mixed-repo",
+        display_name="org/mixed-repo",
+        is_gguf=is_gguf,
+        is_lora=False,
+        is_vision=False,
+        gguf_file=None,
     )
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
     # No LoRA base to resolve; keep it offline.
@@ -121,13 +121,13 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: True)
 
-    req = ValidateModelRequest(model_path = "org/mixed-repo")
-    return asyncio.run(inf.validate_model(req, current_subject = "tester"))
+    req = ValidateModelRequest(model_path="org/mixed-repo")
+    return asyncio.run(inf.validate_model(req, current_subject="tester"))
 
 
 def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
     # GGUF loads via llama.cpp: auto_map and root pickles are inert, so neither gate fires.
-    resp = _drive_validate(monkeypatch, is_gguf = True)
+    resp = _drive_validate(monkeypatch, is_gguf=True)
     assert resp.is_gguf is True
     assert resp.requires_trust_remote_code is False
     assert resp.requires_security_review is False
@@ -135,7 +135,7 @@ def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
 
 def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
     # Control: a Transformers (non-GGUF) load must still honor both gates.
-    resp = _drive_validate(monkeypatch, is_gguf = False)
+    resp = _drive_validate(monkeypatch, is_gguf=False)
     assert resp.is_gguf is False
     assert resp.requires_trust_remote_code is True
     assert resp.requires_security_review is True
@@ -158,7 +158,7 @@ def test_resolve_loaded_trc_prefers_stored_value():
 def test_resolve_loaded_trc_uses_runtime_and_yaml():
     # No stored value: the trust_remote_code the load used, then the YAML default.
     assert (
-        inf._resolve_loaded_trust_remote_code("org/m", {}, {}, trust_remote_code_used = True) is True
+        inf._resolve_loaded_trust_remote_code("org/m", {}, {}, trust_remote_code_used=True) is True
     )
     assert inf._resolve_loaded_trust_remote_code("org/m", {}, {"trust_remote_code": True}) is True
 
@@ -198,7 +198,7 @@ def test_requires_trc_checks_bicodec_load_subdirectory(
         target,
         token,
         *,
-        load_subdirs = (),
+        load_subdirs=(),
     ):
         calls.append((target, token, load_subdirs))
         return True
@@ -223,12 +223,12 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
         lambda request, operation, **_kwargs: (adapter, adapter, False),
     )
     config = SimpleNamespace(
-        identifier = adapter,
-        display_name = adapter,
-        is_gguf = False,
-        is_lora = True,
-        is_vision = False,
-        gguf_file = None,
+        identifier=adapter,
+        display_name=adapter,
+        is_gguf=False,
+        is_lora=True,
+        is_vision=False,
+        gguf_file=None,
     )
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: base)
@@ -239,22 +239,22 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
         lambda target, *_a, **_k: trc.get(target, False),
     )
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: False)
-    req = ValidateModelRequest(model_path = adapter)
-    return asyncio.run(inf.validate_model(req, current_subject = "tester"))
+    req = ValidateModelRequest(model_path=adapter)
+    return asyncio.run(inf.validate_model(req, current_subject="tester"))
 
 
 def test_validate_lora_flags_trc_from_adapter_only(monkeypatch):
     # Adapter ships auto_map, base does not: the requirement follows either repo.
-    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = True, base_needs_trc = False)
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc=True, base_needs_trc=False)
     assert resp.requires_trust_remote_code is True
 
 
 def test_validate_lora_flags_trc_from_base_only(monkeypatch):
     # The classic case: the base ships custom code, the adapter does not.
-    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = True)
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc=False, base_needs_trc=True)
     assert resp.requires_trust_remote_code is True
 
 
 def test_validate_lora_clean_when_neither_needs_trc(monkeypatch):
-    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = False)
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc=False, base_needs_trc=False)
     assert resp.requires_trust_remote_code is False

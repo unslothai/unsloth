@@ -48,7 +48,7 @@ ENGINES = ("chromium", "firefox", "webkit")
 
 
 def _indicator_step() -> dict:
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     for job in doc["jobs"].values():
         for step in job.get("steps") or []:
             if "loaded-models indicator" in (step.get("name") or "").lower():
@@ -116,7 +116,7 @@ def test_each_engine_gets_its_own_studio_home():
 
 def test_the_script_still_derives_the_home_it_wipes_from_the_environment():
     """The isolation above is only real while the script honours the override."""
-    src = SCRIPT.read_text(encoding = "utf-8")
+    src = SCRIPT.read_text(encoding="utf-8")
     assert 'studio_home="${UNSLOTH_STUDIO_HOME:-' in src, (
         "run-studio-indicator-browser.sh no longer takes its studio home from "
         "UNSLOTH_STUDIO_HOME, so the per-engine homes in the workflow are ignored and the "
@@ -175,7 +175,7 @@ def test_each_isolated_home_still_reaches_the_installed_studio_venv():
 
 def test_the_cli_still_resolves_the_venv_from_the_studio_home():
     """The symlink is only correct while the CLI looks there. Pin the path it uses."""
-    src = (REPO / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    src = (REPO / "unsloth_cli" / "commands" / "studio.py").read_text(encoding="utf-8")
     assert 'STUDIO_HOME / "unsloth_studio"' in src, (
         "unsloth_cli no longer resolves the studio venv at STUDIO_HOME/unsloth_studio, so "
         "the symlink the indicator step creates may point at the wrong place; re-check "
@@ -189,7 +189,7 @@ def test_a_fresh_home_is_only_safe_for_an_api_only_suite():
     If this suite ever needed a real model, three fresh homes would mean three downloads
     and the parallel version would be slower than the sequential one it replaced.
     """
-    src = SCRIPT.read_text(encoding = "utf-8")
+    src = SCRIPT.read_text(encoding="utf-8")
     assert "UNSLOTH_API_ONLY=1" in src, (
         "run-studio-indicator-browser.sh no longer boots API-only. A fresh per-engine "
         "UNSLOTH_STUDIO_HOME is only cheap while the home holds no model and no llama.cpp "
@@ -199,7 +199,7 @@ def test_a_fresh_home_is_only_safe_for_an_api_only_suite():
 
 def test_the_frontend_is_served_from_the_package_not_the_studio_home():
     """The load-bearing fact: a fresh home does not mean a fresh frontend build."""
-    run_py = (REPO / "studio" / "backend" / "run.py").read_text(encoding = "utf-8")
+    run_py = (REPO / "studio" / "backend" / "run.py").read_text(encoding="utf-8")
     line = next((l for l in run_py.splitlines() if l.startswith("_DEFAULT_FRONTEND_PATH")), None)
     assert line, "run.py no longer defines _DEFAULT_FRONTEND_PATH"
     assert "__file__" in line, (
@@ -212,7 +212,7 @@ def test_the_frontend_is_served_from_the_package_not_the_studio_home():
 @pytest.mark.parametrize("engine", ENGINES)
 def test_each_engine_keeps_a_distinct_artifact_path(engine):
     """Shared log paths would interleave three engines into one unreadable file."""
-    src = SCRIPT.read_text(encoding = "utf-8")
+    src = SCRIPT.read_text(encoding="utf-8")
     for pattern in ("logs/playwright-indicator-$slug", "logs/studio-indicator-$slug.log"):
         assert (
             pattern in src

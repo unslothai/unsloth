@@ -40,7 +40,7 @@ REQUIRED_FIELD_IDS = ("av-product", "detection-name", "error-text", "probe")
 
 
 def _form() -> dict:
-    return yaml.safe_load(FORM.read_text(encoding = "utf-8"))
+    return yaml.safe_load(FORM.read_text(encoding="utf-8"))
 
 
 def _fields() -> dict:
@@ -122,13 +122,13 @@ def test_the_collection_script_parses() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "snippet.ps1"
-        path.write_text(snippet, encoding = "utf-8")
+        path.write_text(snippet, encoding="utf-8")
         result = run_pwsh(
             [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
-            capture_output = True,
-            text = True,
-            timeout = 120,
-            env = {**__import__("os").environ, "UNSLOTH_SNIPPET_PATH": str(path)},
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**__import__("os").environ, "UNSLOTH_SNIPPET_PATH": str(path)},
         )
 
     assert (
@@ -264,13 +264,13 @@ def test_the_defender_event_fields_survive_a_real_message(tmp_path: Path) -> Non
                 'Write-Output "SELECTED:$sel"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     selected = done.stdout
     for field in ("Name:", "Path:", "Process Name:", "Detection Source:", "Action:"):
@@ -316,13 +316,13 @@ def test_a_localised_defender_message_still_reports_its_details(tmp_path: Path) 
                 'Write-Output "OUT:$fields"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert (
         "Schweregrad" in done.stdout and "Pfad" in done.stdout
@@ -445,16 +445,16 @@ def test_redaction_only_fires_on_a_real_account_component(
         + "$env:USERPROFILE = 'C:\\Users\\__no_such_profile__'\n"
         + f"$env:USERNAME = '{username}'\n"
         + "Write-Output (Hide-Personal $env:UNSLOTH_LINE)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     import os as _os
 
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = {**_os.environ, "UNSLOTH_LINE": line},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**_os.environ, "UNSLOTH_LINE": line},
     )
     assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
     assert (

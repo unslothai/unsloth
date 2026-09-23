@@ -196,7 +196,7 @@ def _reachable(platform_label: str, accelerator_label: str) -> bool:
 
 
 MATRIX = [
-    pytest.param(p, a, id = f"{p[0]}-{a[0]}")
+    pytest.param(p, a, id=f"{p[0]}-{a[0]}")
     for p in PLATFORMS
     for a in ACCELERATORS
     if _reachable(p[0], a[0])
@@ -246,26 +246,26 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     assert ri.sys is sys and llama_mod.sys is sys
 
     apple = accelerator_label == _UNIFIED
-    monkeypatch.setattr(_platform, "system", lambda: _SYSTEM[platform_label], raising = False)
+    monkeypatch.setattr(_platform, "system", lambda: _SYSTEM[platform_label], raising=False)
     monkeypatch.setattr(
         _platform,
         "machine",
         lambda: "arm64" if apple else ("AMD64" if platform_label == "windows" else "x86_64"),
-        raising = False,
+        raising=False,
     )
 
     # The probed inference inventory, through main.py's own snapshot shape.
-    monkeypatch.setitem(sys.modules, "main", SimpleNamespace(_system_gpu_cache = _snapshot(memory)))
+    monkeypatch.setitem(sys.modules, "main", SimpleNamespace(_system_gpu_cache=_snapshot(memory)))
 
     # The llama.cpp build flavour and the CUDA-visible count.
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: vulkan)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary=None: vulkan)
     )
     monkeypatch.setattr(
         LlamaCppBackend,
         "_effective_gpu_count",
         staticmethod(
-            lambda gpu_indices = None: len(gpu_indices) if gpu_indices is not None else len(memory)
+            lambda gpu_indices=None: len(gpu_indices) if gpu_indices is not None else len(memory)
         ),
     )
 
@@ -273,10 +273,10 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     # estimator sees a HIP host and a CUDA host identically, and only `vulkan` and the
     # device count move it -- so the amd-rocm cell's real job is to hold that true.
     monkeypatch.setattr(
-        "utils.hardware.hardware.IS_ROCM", accelerator_label == "amd-rocm", raising = False
+        "utils.hardware.hardware.IS_ROCM", accelerator_label == "amd-rocm", raising=False
     )
     for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(mask, raising = False)
+        monkeypatch.delenv(mask, raising=False)
     # A GGML/LLAMA_ARG_* value inherited from the runner's shell would be read as the
     # user's own setting and price a load nobody configured.
     for inherited in (
@@ -288,7 +288,7 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
         "LLAMA_ARG_SPLIT_MODE",
         "LLAMA_ARG_DEVICE",
     ):
-        monkeypatch.delenv(inherited, raising = False)
+        monkeypatch.delenv(inherited, raising=False)
 
     # The llama-server binary, pinned for two reasons; the second is the interesting one:
     #
@@ -322,7 +322,7 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
         LlamaCppBackend,
         "probe_server_capabilities",
         classmethod(
-            lambda cls, binary = None: {
+            lambda cls, binary=None: {
                 "found": True,
                 "supports_mtp": True,
                 "spec_draft_cache_k_flag": True,
@@ -333,7 +333,7 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_estimate_caches():
     """Both module caches are TTL'd, not per-request, so they leak across cells.
 
@@ -348,7 +348,7 @@ def _clear_estimate_caches():
     ri._estimate_config_cache.clear()
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _metal_budget_tripwire(monkeypatch):
     """NOTHING on this path may call ``_apple_metal_memory_budget_bytes``.
 
@@ -467,21 +467,21 @@ def _write_gguf(directory: Path, name: str, arch: str, fields: dict, *, pad: int
 
 def _config(gguf_path: str, **overrides) -> SimpleNamespace:
     fields = dict(
-        identifier = "local/model",
-        gguf_file = gguf_path,
-        is_gguf = True,
-        gguf_variant = None,
-        gguf_mmproj_file = None,
-        gguf_mtp_file = None,
-        gguf_dspark_file = None,
-        gguf_dflash_file = None,
-        is_vision = False,
+        identifier="local/model",
+        gguf_file=gguf_path,
+        is_gguf=True,
+        gguf_variant=None,
+        gguf_mmproj_file=None,
+        gguf_mtp_file=None,
+        gguf_dspark_file=None,
+        gguf_dflash_file=None,
+        is_vision=False,
     )
     fields.update(overrides)
     return SimpleNamespace(**fields)
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def shapes(tmp_path_factory):
     """Every model shape the estimator has a distinct arm for, built once.
 
@@ -491,7 +491,7 @@ def shapes(tmp_path_factory):
     root = tmp_path_factory.mktemp("platform-matrix-shapes")
     built: dict[str, tuple[str, SimpleNamespace]] = {}
 
-    gqa = _write_gguf(root, "gqa.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
+    gqa = _write_gguf(root, "gqa.gguf", "qwen3", _GQA_FIELDS, pad=_WEIGHTS_BYTES)
     built["gqa"] = (gqa, _config(gqa))
 
     # MLA: a compressed latent cache, priced off kv_lora_rank rather than the head dims.
@@ -505,7 +505,7 @@ def shapes(tmp_path_factory):
             "attention.key_length_mla": 576,
             "attention.value_length_mla": 512,
         },
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
     built["mla"] = (mla, _config(mla))
 
@@ -516,7 +516,7 @@ def shapes(tmp_path_factory):
         "swa.gguf",
         "gemma3",
         {**_GQA_FIELDS, "attention.sliding_window": 1024},
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
     built["swa"] = (swa, _config(swa))
 
@@ -534,7 +534,7 @@ def shapes(tmp_path_factory):
             "ssm.conv_kernel": 4,
             "full_attention_interval": 4,
         },
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
     built["hybrid_mamba"] = (hybrid, _config(hybrid))
 
@@ -556,7 +556,7 @@ def shapes(tmp_path_factory):
             "ssm.state_size": 16,
             "ssm.time_step_rank": 128,
         },
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
     built["pure_ssm"] = (ssm, _config(ssm))
 
@@ -566,7 +566,7 @@ def shapes(tmp_path_factory):
         "nextn.gguf",
         "qwen3",
         {**_GQA_FIELDS, "nextn_predict_layers": 2},
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
     built["nextn_mtp"] = (nextn, _config(nextn))
 
@@ -577,31 +577,31 @@ def shapes(tmp_path_factory):
         "embedding.gguf",
         "bert",
         {**_GQA_FIELDS, "context_length": 8192, "pooling_type": 2},
-        pad = _WEIGHTS_BYTES,
+        pad=_WEIGHTS_BYTES,
     )
-    built["embedding"] = (embedding, _config(embedding, identifier = "local/embed-model"))
+    built["embedding"] = (embedding, _config(embedding, identifier="local/embed-model"))
 
     # Vision: a target plus a projector file, which is charged AND carries encoder
     # buffers of its own on top of the file.
-    vision = _write_gguf(root, "vision.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
+    vision = _write_gguf(root, "vision.gguf", "qwen3", _GQA_FIELDS, pad=_WEIGHTS_BYTES)
     projector = _write_gguf(
-        root, "mmproj-vision.gguf", "clip", {"has_vision_encoder": 1}, pad = _PROJECTOR_BYTES
+        root, "mmproj-vision.gguf", "clip", {"has_vision_encoder": 1}, pad=_PROJECTOR_BYTES
     )
     built["vision_projector"] = (
         vision,
-        _config(vision, gguf_mmproj_file = projector, is_vision = True),
+        _config(vision, gguf_mmproj_file=projector, is_vision=True),
     )
 
     # A separate drafter sidecar: its own file in the weights AND its own KV on top.
-    target = _write_gguf(root, "spec-target.gguf", "qwen3", _GQA_FIELDS, pad = _WEIGHTS_BYTES)
+    target = _write_gguf(root, "spec-target.gguf", "qwen3", _GQA_FIELDS, pad=_WEIGHTS_BYTES)
     drafter = _write_gguf(
         root,
         "mtp-draft.gguf",
         "qwen3",
         {**_GQA_FIELDS, "block_count": 2},
-        pad = _DRAFTER_BYTES,
+        pad=_DRAFTER_BYTES,
     )
-    built["mtp_drafter"] = (target, _config(target, gguf_mtp_file = drafter))
+    built["mtp_drafter"] = (target, _config(target, gguf_mtp_file=drafter))
 
     # Truncated: a real file with an unreadable header. The parser raises, and the
     # caller must still produce a well-formed answer rather than a partial number.
@@ -650,7 +650,7 @@ def _price(shapes, shape_name: str, **kwargs):
     spec = _SPEC_SHAPES.get(shape_name)
     if spec is not None:
         kwargs.setdefault("speculative_type", spec)
-    request = EstimateMemoryRequest(model_path = gguf_path, **kwargs)
+    request = EstimateMemoryRequest(model_path=gguf_path, **kwargs)
 
     # Only the config resolution is replaced: it is the one step that can reach the
     # network, and it is not what any of this is about.
@@ -658,7 +658,7 @@ def _price(shapes, shape_name: str, **kwargs):
     ri._cached_estimate_config = lambda *a, **kw: config
     try:
         return asyncio.run(
-            ri.estimate_memory(request, fastapi_request = None, current_subject = "test")
+            ri.estimate_memory(request, fastapi_request=None, current_subject="test")
         )
     finally:
         ri._cached_estimate_config = original
@@ -750,8 +750,8 @@ def test_platform_matrix_every_shape_is_internally_consistent(
     for shape in SHAPE_NAMES:
         for n_ctx in CONTEXTS:
             ri._estimate_files_cache.clear()
-            response = _price(shapes, shape, n_ctx = n_ctx)
-            _assert_core_invariants(response, cell = cell, shape = shape, note = f"n_ctx={n_ctx}")
+            response = _price(shapes, shape, n_ctx=n_ctx)
+            _assert_core_invariants(response, cell=cell, shape=shape, note=f"n_ctx={n_ctx}")
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -774,7 +774,7 @@ def test_platform_matrix_weights_do_not_move_with_the_context_slider(
         kv: list[int] = []
         for n_ctx in CONTEXTS:
             ri._estimate_files_cache.clear()
-            response = _price(shapes, shape, n_ctx = n_ctx)
+            response = _price(shapes, shape, n_ctx=n_ctx)
             weights.append(response.weights_bytes)
             kv.append(response.kv_bytes)
 
@@ -806,17 +806,17 @@ def test_platform_matrix_settings_do_not_break_the_itemization(
     cell = f"{platform[0]}-{accelerator[0]}"
 
     settings = [
-        ("f16 cache", dict(cache_type_kv = "f16")),
-        ("q4_0 cache", dict(cache_type_kv = "q4_0")),
-        ("4 slots", dict(n_parallel = 4)),
-        ("no-kv-offload", dict(llama_extra_args = ["-nkvo"])),
-        ("manual 0 layers", dict(gpu_memory_mode = "manual", gpu_layers = 0)),
-        ("manual all layers", dict(gpu_memory_mode = "manual", gpu_layers = 999)),
-        ("tensor split", dict(tensor_parallel = True, selected_gpu_ids = [0, 1])),
-        ("checkpoints", dict(ctx_checkpoints = 8)),
-        ("draft depth", dict(spec_draft_n_max = 8, spec_draft_cache_type = "q8_0")),
-        ("vision off", dict(disable_vision = True)),
-        ("native context", dict(n_ctx = 0)),
+        ("f16 cache", dict(cache_type_kv="f16")),
+        ("q4_0 cache", dict(cache_type_kv="q4_0")),
+        ("4 slots", dict(n_parallel=4)),
+        ("no-kv-offload", dict(llama_extra_args=["-nkvo"])),
+        ("manual 0 layers", dict(gpu_memory_mode="manual", gpu_layers=0)),
+        ("manual all layers", dict(gpu_memory_mode="manual", gpu_layers=999)),
+        ("tensor split", dict(tensor_parallel=True, selected_gpu_ids=[0, 1])),
+        ("checkpoints", dict(ctx_checkpoints=8)),
+        ("draft depth", dict(spec_draft_n_max=8, spec_draft_cache_type="q8_0")),
+        ("vision off", dict(disable_vision=True)),
+        ("native context", dict(n_ctx=0)),
     ]
 
     for shape in ("gqa", "swa", "pure_ssm", "vision_projector", "mtp_drafter"):
@@ -824,7 +824,7 @@ def test_platform_matrix_settings_do_not_break_the_itemization(
             ri._estimate_files_cache.clear()
             kwargs = {"n_ctx": 32768, **kwargs}
             response = _price(shapes, shape, **kwargs)
-            _assert_core_invariants(response, cell = cell, shape = shape, note = note)
+            _assert_core_invariants(response, cell=cell, shape=shape, note=note)
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -848,17 +848,17 @@ def test_platform_matrix_an_offloaded_byte_is_never_a_freed_byte(
 
     for shape in ("gqa", "vision_projector", "mtp_drafter", "nextn_mtp"):
         ri._estimate_files_cache.clear()
-        resident = _price(shapes, shape, n_ctx = 32768)
+        resident = _price(shapes, shape, n_ctx=32768)
 
         for note, kwargs in (
-            ("manual 0 layers", dict(gpu_memory_mode = "manual", gpu_layers = 0)),
-            ("no-kv-offload", dict(llama_extra_args = ["-nkvo"])),
-            ("no-mmproj-offload", dict(llama_extra_args = ["--no-mmproj-offload"])),
-            ("cpu device", dict(llama_extra_args = ["--device", "none"])),
+            ("manual 0 layers", dict(gpu_memory_mode="manual", gpu_layers=0)),
+            ("no-kv-offload", dict(llama_extra_args=["-nkvo"])),
+            ("no-mmproj-offload", dict(llama_extra_args=["--no-mmproj-offload"])),
+            ("cpu device", dict(llama_extra_args=["--device", "none"])),
         ):
             ri._estimate_files_cache.clear()
-            offloaded = _price(shapes, shape, n_ctx = 32768, **kwargs)
-            _assert_core_invariants(offloaded, cell = cell, shape = shape, note = note)
+            offloaded = _price(shapes, shape, n_ctx=32768, **kwargs)
+            _assert_core_invariants(offloaded, cell=cell, shape=shape, note=note)
 
             assert offloaded.total_bytes == resident.total_bytes, (
                 f"[{cell}] {shape} under {note}: total_bytes fell from "
@@ -889,8 +889,8 @@ def test_platform_matrix_a_probed_empty_inventory_shows_no_gpu_footprint(
 
     for shape in ("gqa", "pure_ssm", "vision_projector"):
         ri._estimate_files_cache.clear()
-        response = _price(shapes, shape, n_ctx = 32768)
-        _assert_core_invariants(response, cell = cell, shape = shape)
+        response = _price(shapes, shape, n_ctx=32768)
+        _assert_core_invariants(response, cell=cell, shape=shape)
 
         if cpu_only:
             assert response.gpu_bytes == 0, (
@@ -923,7 +923,7 @@ def test_platform_matrix_an_unsizable_kv_still_carries_its_layer_count(
     cell = f"{platform[0]}-{accelerator[0]}"
 
     ri._estimate_files_cache.clear()
-    response = _price(shapes, "pure_ssm", n_ctx = 131072)
+    response = _price(shapes, "pure_ssm", n_ctx=131072)
     assert response.kv_estimable is False, f"[{cell}]"
     assert response.layer_count == 48, (
         f"[{cell}] pure_ssm: kv_estimable is False and layer_count is "
@@ -933,8 +933,8 @@ def test_platform_matrix_an_unsizable_kv_still_carries_its_layer_count(
     # And the count is load-bearing, not decorative: it is what makes -ngl 0 read as a
     # CPU load rather than a GPU-resident one.
     ri._estimate_files_cache.clear()
-    pinned = _price(shapes, "pure_ssm", n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0)
-    _assert_core_invariants(pinned, cell = cell, shape = "pure_ssm", note = "-ngl 0")
+    pinned = _price(shapes, "pure_ssm", n_ctx=131072, gpu_memory_mode="manual", gpu_layers=0)
+    _assert_core_invariants(pinned, cell=cell, shape="pure_ssm", note="-ngl 0")
     assert (
         pinned.gpu_bytes == 0
     ), f"[{cell}] pure_ssm at --gpu-layers 0 reported {pinned.gpu_bytes} GPU bytes"
@@ -949,8 +949,8 @@ def test_platform_matrix_an_unreadable_header_answers_without_inventing_a_cache(
     cell = f"{platform[0]}-{accelerator[0]}"
 
     ri._estimate_files_cache.clear()
-    response = _price(shapes, "truncated_header", n_ctx = 131072)
-    _assert_core_invariants(response, cell = cell, shape = "truncated_header")
+    response = _price(shapes, "truncated_header", n_ctx=131072)
+    _assert_core_invariants(response, cell=cell, shape="truncated_header")
     assert response.kv_estimable is False, f"[{cell}]"
     assert response.n_ctx == 0, f"[{cell}]: priced a context off a header it could not read"
     # No block_count to recover: unlike the pure-SSM case above, this header carries
@@ -973,13 +973,13 @@ def test_platform_matrix_the_itemization_is_five_terms_not_four(monkeypatch, sha
     _apply_cell(monkeypatch, PLATFORMS[0], ACCELERATORS[0])
 
     ri._estimate_files_cache.clear()
-    plain = _price(shapes, "gqa", n_ctx = 32768)
+    plain = _price(shapes, "gqa", n_ctx=32768)
     four = plain.weights_bytes + plain.kv_bytes + plain.compute_bytes + plain.drafter_runtime_bytes
     assert plain.projector_runtime_bytes == 0
     assert four == plain.total_bytes
 
     ri._estimate_files_cache.clear()
-    vision = _price(shapes, "vision_projector", n_ctx = 32768)
+    vision = _price(shapes, "vision_projector", n_ctx=32768)
     four = (
         vision.weights_bytes + vision.kv_bytes + vision.compute_bytes + vision.drafter_runtime_bytes
     )
@@ -1013,22 +1013,23 @@ def test_platform_matrix_the_metal_budget_is_never_reached(
         # ONLY gate in front of the mlx import. If any arm of the estimate consults the
         # budget, this cell is where it fires.
         from utils.hardware import is_apple_silicon
+
         assert is_apple_silicon() is True
 
     for paravirtual in (False, True):
         if apple:
             monkeypatch.setattr(
-                llama_mod, "_metal_device_is_paravirtual", lambda: paravirtual, raising = False
+                llama_mod, "_metal_device_is_paravirtual", lambda: paravirtual, raising=False
             )
             monkeypatch.setattr(
-                ri, "_metal_device_is_paravirtual", lambda: paravirtual, raising = False
+                ri, "_metal_device_is_paravirtual", lambda: paravirtual, raising=False
             )
         for shape in SHAPE_NAMES:
             for kwargs in (
-                dict(n_ctx = 0),
-                dict(n_ctx = 131072),
-                dict(n_ctx = 0, llama_extra_args = ["-c", "0"]),
-                dict(n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0),
+                dict(n_ctx=0),
+                dict(n_ctx=131072),
+                dict(n_ctx=0, llama_extra_args=["-c", "0"]),
+                dict(n_ctx=131072, gpu_memory_mode="manual", gpu_layers=0),
             ):
                 ri._estimate_files_cache.clear()
                 _price(shapes, shape, **kwargs)
@@ -1063,7 +1064,7 @@ def test_platform_matrix_the_platform_label_alone_changes_nothing(monkeypatch, s
             with pytest.MonkeyPatch.context() as patcher:
                 _apply_cell(patcher, platform_row, accelerator_row)
                 ri._estimate_files_cache.clear()
-                response = _price(shapes, "gqa", n_ctx = 32768)
+                response = _price(shapes, "gqa", n_ctx=32768)
                 answers[(platform_row[0], accelerator_row[0])] = (
                     response.total_bytes,
                     response.gpu_bytes,
@@ -1113,24 +1114,24 @@ def test_platform_matrix_the_probed_inventory_owns_the_split_on_a_vulkan_build(
     monkeypatch.setitem(
         sys.modules,
         "main",
-        SimpleNamespace(_system_gpu_cache = _snapshot([(0, 12_000, 16_000), (1, 12_000, 16_000)])),
+        SimpleNamespace(_system_gpu_cache=_snapshot([(0, 12_000, 16_000), (1, 12_000, 16_000)])),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
         "_effective_gpu_count",
-        staticmethod(lambda gpu_indices = None: len(gpu_indices) if gpu_indices is not None else 0),
+        staticmethod(lambda gpu_indices=None: len(gpu_indices) if gpu_indices is not None else 0),
     )
 
     ri._estimate_files_cache.clear()
-    unpinned = _price(shapes, "gqa", n_ctx = 32768, tensor_parallel = True)
-    _assert_core_invariants(unpinned, cell = cell, shape = "gqa", note = "unpinned tensor")
+    unpinned = _price(shapes, "gqa", n_ctx=32768, tensor_parallel=True)
+    _assert_core_invariants(unpinned, cell=cell, shape="gqa", note="unpinned tensor")
 
     # The same request with the cards named explicitly. A pin answers for itself on
     # every build, so it is the reference the probe-driven answer has to match on
     # Vulkan and to differ from where the CUDA count legitimately says "one card".
     ri._estimate_files_cache.clear()
-    pinned = _price(shapes, "gqa", n_ctx = 32768, tensor_parallel = True, selected_gpu_ids = [0, 1])
-    _assert_core_invariants(pinned, cell = cell, shape = "gqa", note = "pinned tensor")
+    pinned = _price(shapes, "gqa", n_ctx=32768, tensor_parallel=True, selected_gpu_ids=[0, 1])
+    _assert_core_invariants(pinned, cell=cell, shape="gqa", note="pinned tensor")
 
     if vulkan:
         assert unpinned.compute_bytes == pinned.compute_bytes, (
@@ -1172,7 +1173,7 @@ def test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell(
     def _spy(
         cls,
         binary,
-        cache_types = ("f16", "f16"),
+        cache_types=("f16", "f16"),
     ):
         asked.append((binary, cache_types))
         return real.__func__(cls, binary, cache_types)
@@ -1183,12 +1184,12 @@ def test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell(
     response = _price(
         shapes,
         "gqa",
-        n_ctx = 32768,
-        cache_type_kv = "q8_0",
-        tensor_parallel = True,
-        selected_gpu_ids = [0, 1],
+        n_ctx=32768,
+        cache_type_kv="q8_0",
+        tensor_parallel=True,
+        selected_gpu_ids=[0, 1],
     )
-    _assert_core_invariants(response, cell = cell, shape = "gqa", note = "tensor + q8_0")
+    _assert_core_invariants(response, cell=cell, shape="gqa", note="tensor + q8_0")
 
     assert asked, (
         f"[{cell}] the tensor-split latch lookup never reached the latches. Something "
@@ -1215,8 +1216,8 @@ def test_platform_matrix_a_manual_zero_offload_is_honoured_on_an_unreadable_head
 ):
     _apply_cell(monkeypatch, PLATFORMS[0], ACCELERATORS[0])
     ri._estimate_files_cache.clear()
-    manual = dict(gpu_memory_mode = "manual", gpu_layers = 0)
-    pinned = _price(shapes, "truncated_header", n_ctx = 32768, **manual)
+    manual = dict(gpu_memory_mode="manual", gpu_layers=0)
+    pinned = _price(shapes, "truncated_header", n_ctx=32768, **manual)
     assert pinned.layer_count is None
     assert pinned.gpu_bytes == 0, (
         f"--gpu-layers 0 on an unreadable header still reports {pinned.gpu_bytes} GPU "

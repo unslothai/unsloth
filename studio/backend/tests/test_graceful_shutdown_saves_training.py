@@ -30,11 +30,11 @@ def test_the_run_is_saved_before_the_server_stops_and_before_the_kill(monkeypatc
 
     order = []
     fake = SimpleNamespace(
-        stop_for_shutdown = lambda: order.append("stop_for_shutdown") or True,
-        force_terminate = lambda: order.append("force_terminate"),
+        stop_for_shutdown=lambda: order.append("stop_for_shutdown") or True,
+        force_terminate=lambda: order.append("force_terminate"),
     )
     fake_diffusion = SimpleNamespace(
-        stop_for_shutdown = lambda timeout: order.append(("diffusion", timeout)) or True,
+        stop_for_shutdown=lambda timeout: order.append(("diffusion", timeout)) or True,
     )
     monkeypatch.setattr(training, "_training_backend", fake)
     monkeypatch.setattr(diffusion, "_service", fake_diffusion)

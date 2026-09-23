@@ -38,21 +38,21 @@ def _exact_forward_kernel(
     mask = offsets < n_elements
 
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e)), h = f * up.
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)
 
     f_row = 0.5 * e_row * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
-    tl.store(h + offsets, h_row, mask = mask)
+    tl.store(h + offsets, h_row, mask=mask)
 
 
 def geglu_exact_forward_kernel(gate, up):
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
-    out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
+    out = torch.empty((batch, seq_len, hd), dtype=gate.dtype, device=device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(device):
         _exact_forward_kernel[grid](
@@ -60,8 +60,8 @@ def geglu_exact_forward_kernel(gate, up):
             up,
             out,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -88,9 +88,9 @@ def _exact_backward_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)
+    DW_row = tl.load(DW + offsets, mask=mask, other=0)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)
 
     # Break e_row away for reuse f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
@@ -111,9 +111,9 @@ def _exact_backward_kernel(
     de_row = dg_row.to(tl.float32) * df_de
     de_row = de_row.to(DW_row.dtype)
 
-    tl.store(DW + offsets, h_row, mask = mask)
-    tl.store(e + offsets, df_row, mask = mask)
-    tl.store(g + offsets, de_row, mask = mask)
+    tl.store(DW + offsets, h_row, mask=mask)
+    tl.store(e + offsets, df_row, mask=mask)
+    tl.store(g + offsets, de_row, mask=mask)
 
 
 def geglu_exact_backward_kernel(DW, e, g):
@@ -126,8 +126,8 @@ def geglu_exact_backward_kernel(DW, e, g):
             e,
             g,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g
 
@@ -147,21 +147,21 @@ def _approx_forward_kernel(
     # f = 1/2 * e * (1 + tanh(sqrt(2/pi) * x * (1 + 0.044715 * x^2))), h = f * up.
     s = 0.7978845608028654
 
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)
 
     f_row = 0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
-    tl.store(h + offsets, h_row, mask = mask)
+    tl.store(h + offsets, h_row, mask=mask)
 
 
 def geglu_approx_forward_kernel(gate, up):
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
-    out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
+    out = torch.empty((batch, seq_len, hd), dtype=gate.dtype, device=device)
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     with torch_gpu_device(device):
         _approx_forward_kernel[grid](
@@ -169,8 +169,8 @@ def geglu_approx_forward_kernel(gate, up):
             up,
             out,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return out
 
@@ -201,9 +201,9 @@ def _approx_backward_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)
-    e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)
+    DW_row = tl.load(DW + offsets, mask=mask, other=0)
+    e_row = tl.load(e + offsets, mask=mask, other=0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask=mask, other=0)
 
     # See desmos.com/calculator/nqprfoni6x
     s = 0.7978845608028654
@@ -228,9 +228,9 @@ def _approx_backward_kernel(
     de_row = dg_row.to(tl.float32) * df_de
     de_row = de_row.to(DW_row.dtype)
 
-    tl.store(DW + offsets, h_row, mask = mask)
-    tl.store(e + offsets, df_row, mask = mask)
-    tl.store(g + offsets, de_row, mask = mask)
+    tl.store(DW + offsets, h_row, mask=mask)
+    tl.store(e + offsets, df_row, mask=mask)
+    tl.store(g + offsets, de_row, mask=mask)
 
 
 def geglu_approx_backward_kernel(DW, e, g):
@@ -243,7 +243,7 @@ def geglu_approx_backward_kernel(DW, e, g):
             e,
             g,
             n_elements,
-            BLOCK_SIZE = BLOCK_SIZE,
-            LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            LONG_INDEXING=0 if n_elements <= INT32_SAFETY_BUFFER else 1,
         )
     return DW, e, g

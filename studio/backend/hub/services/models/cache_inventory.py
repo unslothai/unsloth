@@ -86,6 +86,7 @@ _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
 def _account_access():
     """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
     from hub.services.models import account_access
+
     return account_access
 
 
@@ -108,10 +109,10 @@ def get_repo_snapshot_metadata_cached(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi(token = hf_token).model_info(
+        info = HfApi(token=hf_token).model_info(
             repo_id,
-            files_metadata = True,
-            timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            files_metadata=True,
+            timeout=_MODEL_METADATA_TIMEOUT_SECONDS,
         )
         total = snapshot_download_size(info.siblings)
         blob_hashes = snapshot_download_blob_hashes(info.siblings)
@@ -119,20 +120,20 @@ def get_repo_snapshot_metadata_cached(
         logger.warning(
             "Failed to get repo size for %s: %s",
             repo_id,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
         with _repo_size_cache_lock:
             _repo_size_neg_cache[cache_key] = time.monotonic()
             _repo_size_neg_cache.move_to_end(cache_key)
             while len(_repo_size_neg_cache) > _REPO_SIZE_CACHE_MAX:
-                _repo_size_neg_cache.popitem(last = False)
+                _repo_size_neg_cache.popitem(last=False)
         return 0, frozenset()
     with _repo_size_cache_lock:
         _repo_size_cache[cache_key] = (total, blob_hashes, time.monotonic())
         _repo_size_cache.move_to_end(cache_key)
         _repo_size_neg_cache.pop(cache_key, None)
         while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
-            _repo_size_cache.popitem(last = False)
+            _repo_size_cache.popitem(last=False)
     return total, blob_hashes
 
 
@@ -151,7 +152,7 @@ def _cached_mlx_siblings(repo_id):
         tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
         if tree:
             return [
-                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                RepoSibling(rfilename=path, size=item.size, blob_id=item.lfs_sha256 or item.blob_id)
                 for path, item in tree.items()
             ]
     return []
@@ -169,11 +170,11 @@ def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
             return cached[0]
     try:
         siblings = (
-            HfApi(token = hf_token)
+            HfApi(token=hf_token)
             .model_info(
                 repo_id,
-                files_metadata = True,
-                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+                files_metadata=True,
+                timeout=_MODEL_METADATA_TIMEOUT_SECONDS,
             )
             .siblings
         )
@@ -185,9 +186,9 @@ def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
     siblings = mlx_load_siblings(siblings)
     files = tuple(
         download_manifest.ExpectedFile(
-            path = item.rfilename,
-            size = int(item.size or 0),
-            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+            path=item.rfilename,
+            size=int(item.size or 0),
+            sha256=getattr(getattr(item, "lfs", None), "sha256", None),
         )
         for item in siblings
     )
@@ -198,7 +199,7 @@ def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
         _mlx_plan_cache[key] = (plan, time.monotonic())
         _mlx_plan_cache.move_to_end(key)
         while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
-            _mlx_plan_cache.popitem(last = False)
+            _mlx_plan_cache.popitem(last=False)
     return plan
 
 
@@ -292,12 +293,12 @@ def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
     if blob is None or repo_dir is None:
         return False
     try:
-        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+        return blob.parent.resolve(strict=False) == (repo_dir / "blobs").resolve(strict=False)
     except OSError:
         return False
 
 
-def _cached_blob_hash(blob_path, repo_path = None) -> Optional[str]:
+def _cached_blob_hash(blob_path, repo_path=None) -> Optional[str]:
     """The cache blob hash (etag) for a cached file, or None when there is no blob. Only a real blob under the repo's ``blobs/`` dir has name == hash; a moved no-symlink ``snapshots/`` file is "no blob", so the caller uses a size identity."""
     path = Path(blob_path)
     repo_dir = Path(repo_path) if repo_path is not None else None
@@ -371,12 +372,13 @@ def _resolve_load_identity(
         try:
             if active_hub_cache is None:
                 from utils.hf_cache_settings import get_hf_cache_paths
+
                 active_hub_cache = get_hf_cache_paths().hub_cache
-            active_root = active_hub_cache.resolve(strict = False)
-            cached_root = repo_path.parent.resolve(strict = False)
+            active_root = active_hub_cache.resolve(strict=False)
+            cached_root = repo_path.parent.resolve(strict=False)
             if cached_root != active_root:
                 active_cache = False
-                load_id = str(snapshot_path or repo_path.resolve(strict = False))
+                load_id = str(snapshot_path or repo_path.resolve(strict=False))
         except (OSError, RuntimeError, ValueError):
             active_cache = False
             load_id = str(snapshot_path or repo_path)
@@ -396,9 +398,9 @@ def _resolve_load_identity(
             or (
                 default_snapshot != snapshot_path
                 and not hf_cache_scan.snapshot_holds_a_complete_payload(
-                    default_snapshot, quants = False
+                    default_snapshot, quants=False
                 )
-                and hf_cache_scan.snapshot_holds_a_complete_payload(snapshot_path, quants = False)
+                and hf_cache_scan.snapshot_holds_a_complete_payload(snapshot_path, quants=False)
             )
         ):
             load_id = str(snapshot_path)
@@ -418,7 +420,7 @@ def _cache_inventory_fields(
     payload_snapshots: Optional[frozenset[str]] = None,
     identity: Optional[_LoadIdentity] = None,
     gguf_snapshot: Optional[Path] = None,
-    repo_info = None,
+    repo_info=None,
     hidden_infra: bool = False,
     companion: bool = False,
     stt_only: bool = False,
@@ -428,10 +430,10 @@ def _cache_inventory_fields(
     if identity is None:
         identity = _resolve_load_identity(
             repo_id,
-            repo_path = repo_path,
-            snapshot_path = snapshot_path,
-            active_hub_cache = active_hub_cache,
-            payload_snapshots = payload_snapshots,
+            repo_path=repo_path,
+            snapshot_path=snapshot_path,
+            active_hub_cache=active_hub_cache,
+            payload_snapshots=payload_snapshots,
         )
     # The directory this row loads from: the non-GGUF scan passes only identity, so snapshot_path alone classified nothing.
     classify_snapshot = identity.load_snapshot or snapshot_path
@@ -444,10 +446,10 @@ def _cache_inventory_fields(
     capabilities = _capabilities_for_format(
         model_format,
         "hf_cache",
-        partial = partial,
-        requires_variant = requires_variant,
+        partial=partial,
+        requires_variant=requires_variant,
         # cached encoders classify their config; adapters classify the selected snapshot's exact base.
-        can_chat_override = can_chat_override,
+        can_chat_override=can_chat_override,
     ).model_dump()
     if model_format == "gguf" and (
         hf_cache_scan.snapshot_has_gguf_projector(gguf_snapshot)
@@ -536,6 +538,7 @@ def _cached_row_task(
     try:
         # Module-qualified: rebinding these names re-points a load that resolved to routes.models before the move, which verify_import_hoist.py blocks.
         from hub.services.models import catalog_classification
+
         return (
             catalog_classification._repo_gguf_task(repo_info, selected)
             if gguf
@@ -548,6 +551,7 @@ def _cached_row_task(
 def _cached_row_is_diffusers(repo_info, selected: Optional[Path]) -> bool:
     try:
         from hub.services.models.catalog_classification import _repo_is_diffusers
+
         return _repo_is_diffusers(repo_info, selected)
     except Exception:
         return False
@@ -571,11 +575,12 @@ def _scan_cached_gguf(
         cache_scans = all_hf_cache_scans()
     if active_hub_cache is None:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         active_hub_cache = get_hf_cache_paths().hub_cache
     try:
         variant_states = download_manifest.build_variant_state_index(
             _variant_state_repositories(cache_scans),
-            active_hub_cache = active_hub_cache,
+            active_hub_cache=active_hub_cache,
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
@@ -594,7 +599,7 @@ def _scan_cached_gguf(
                     variant_states.for_repo(
                         "model",
                         repo_id,
-                        hub_cache = repo_path.parent,
+                        hub_cache=repo_path.parent,
                     )
                     if variant_states is not None
                     else None
@@ -603,8 +608,8 @@ def _scan_cached_gguf(
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(
                     repo_id,
-                    hub_cache = repo_path.parent,
-                    variant_state = variant_state,
+                    hub_cache=repo_path.parent,
+                    variant_state=variant_state,
                 )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
@@ -622,16 +627,16 @@ def _scan_cached_gguf(
                 # Resolved before the row is classified: a load_id left as the repo id resolves through refs/main, which can name an older revision than the newest payload snapshot.
                 gguf_identity = _resolve_load_identity(
                     repo_id,
-                    repo_path = repo_path,
-                    snapshot_path = gguf_snapshot or snapshot_path,
-                    active_hub_cache = active_hub_cache,
-                    payload_snapshots = gguf_payload_snapshots,
+                    repo_path=repo_path,
+                    snapshot_path=gguf_snapshot or snapshot_path,
+                    active_hub_cache=active_hub_cache,
+                    payload_snapshots=gguf_payload_snapshots,
                 )
                 partial = hf_cache_scan.is_gguf_repo_partial(
                     repo_id,
                     repo_path,
-                    snapshot_dir = gguf_snapshot,
-                    variant_state = variant_state,
+                    snapshot_dir=gguf_snapshot,
+                    variant_state=variant_state,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -640,13 +645,14 @@ def _scan_cached_gguf(
                 last_modified = _repo_gguf_last_modified(repo_info)
                 row_task = _cached_row_task(
                     repo_info,
-                    gguf = True,
-                    selected = gguf_identity.load_snapshot or gguf_snapshot,
+                    gguf=True,
+                    selected=gguf_identity.load_snapshot or gguf_snapshot,
                 )
                 row_audio_type = None
                 if row_task == "text-to-speech":
                     try:
                         from hub.services.models import catalog_classification
+
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
@@ -671,17 +677,17 @@ def _scan_cached_gguf(
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
-                        repo_path = repo_path,
-                        snapshot_path = gguf_snapshot or snapshot_path,
-                        active_hub_cache = active_hub_cache,
-                        partial = bool(row["partial"]),
-                        requires_variant = True,
-                        payload_snapshots = gguf_payload_snapshots,
-                        identity = gguf_identity,
-                        gguf_snapshot = gguf_snapshot,
-                        repo_info = repo_info,
-                        hidden_infra = is_hidden_infra,
-                        tts_only = row_task == "text-to-speech",
+                        repo_path=repo_path,
+                        snapshot_path=gguf_snapshot or snapshot_path,
+                        active_hub_cache=active_hub_cache,
+                        partial=bool(row["partial"]),
+                        requires_variant=True,
+                        payload_snapshots=gguf_payload_snapshots,
+                        identity=gguf_identity,
+                        gguf_snapshot=gguf_snapshot,
+                        repo_info=repo_info,
+                        hidden_infra=is_hidden_infra,
+                        tts_only=row_task == "text-to-speech",
                     )
                 )
                 # Only the winning cache root loads, so the loser's vision flag must not carry over.
@@ -693,7 +699,7 @@ def _scan_cached_gguf(
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    return sorted(seen_lower.values(), key=lambda c: c["repo_id"])
 
 
 class _CacheSourceChanged(RuntimeError):
@@ -707,7 +713,7 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
     cache_scans = all_hf_cache_scans()
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
-    rows = scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
+    rows = scanner(cache_scans=cache_scans, active_hub_cache=active_hub_cache)
     # The walk itself takes seconds, so a delete or finished download landing during it supersedes these rows as surely as one landing before it: without this a repo deleted mid-scan is still listed in the response.
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
@@ -721,7 +727,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryS
             rows = await hf_cache_scan.shared_scan(
                 _cached_inventory_flights,
                 (name, epoch),
-                lambda expected_epoch = epoch: asyncio.to_thread(
+                lambda expected_epoch=epoch: asyncio.to_thread(
                     _scan_cached_inventory_snapshot, scanner, expected_epoch
                 ),
             )
@@ -749,13 +755,14 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
         return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
+
         logger.error(
             "Error listing cached GGUF repos: %s",
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to read the local model cache.",
+            status_code=500,
+            detail="Failed to read the local model cache.",
         ) from e
 
 
@@ -784,7 +791,7 @@ def _newest_snapshot_dir(candidates) -> Optional[Path]:
     paths = [Path(candidate) for candidate in candidates]
     if not paths:
         return None
-    best = max(paths, key = snapshot_selection_key)
+    best = max(paths, key=snapshot_selection_key)
     try:
         return best.resolve()
     except OSError:
@@ -894,7 +901,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 repo_flags[key] = True
 
     model_format = (
-        _classify_non_gguf_model_format(**repo_flags, trusted_hf_cache_repo = True) or "unknown"
+        _classify_non_gguf_model_format(**repo_flags, trusted_hf_cache_repo=True) or "unknown"
     )
 
     def _revisions_of(fmt: str) -> tuple[list, list]:
@@ -902,10 +909,10 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         snapshots = [
             snapshot
             for snapshot, flags in revision_flags
-            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == fmt
+            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo=False) == fmt
         ]
         return snapshots, [
-            s for s in snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
+            s for s in snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants=False)
         ]
 
     payload_snapshots, complete = _revisions_of(model_format)
@@ -929,12 +936,12 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     else:
         selected_blobs = all_weight_blobs
     return _CachedNonGgufPayload(
-        size_bytes = sum(size for size, _mtime in selected_blobs.values()),
-        has_runnable_weights = model_format != "unknown",
-        model_format = model_format,
-        last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
-        payload_snapshot = _newest_snapshot_dir(complete or payload_snapshots),
-        payload_snapshots = _resolved_snapshot_ids(payload_snapshots),
+        size_bytes=sum(size for size, _mtime in selected_blobs.values()),
+        has_runnable_weights=model_format != "unknown",
+        model_format=model_format,
+        last_modified=max((mtime for _size, mtime in selected_blobs.values()), default=0.0),
+        payload_snapshot=_newest_snapshot_dir(complete or payload_snapshots),
+        payload_snapshots=_resolved_snapshot_ids(payload_snapshots),
     )
 
 
@@ -948,7 +955,7 @@ def _cached_model_snapshot_path(repo_path: Path) -> Optional[Path]:
 
 def _read_json_object(path: Path) -> dict:
     try:
-        with open(path, "r", encoding = "utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -970,7 +977,7 @@ def _is_whisper_model_config(config: object) -> bool:
 
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
     except Exception:
         return {}
     lines = text.splitlines()
@@ -985,6 +992,7 @@ def _read_model_card_frontmatter(path: Path) -> dict:
         return {}
     try:
         import yaml
+
         data = yaml.safe_load("\n".join(body)) or {}
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -1035,11 +1043,12 @@ def _scan_cached_models(
         cache_scans = all_hf_cache_scans()
     if active_hub_cache is None:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         active_hub_cache = get_hf_cache_paths().hub_cache
     try:
         variant_states = download_manifest.build_variant_state_index(
             _variant_state_repositories(cache_scans),
-            active_hub_cache = active_hub_cache,
+            active_hub_cache=active_hub_cache,
         )
     except Exception as e:
         logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
@@ -1082,10 +1091,10 @@ def _scan_cached_models(
                 existing = seen_lower.get(key)
                 identity = _resolve_load_identity(
                     repo_id,
-                    repo_path = repo_path,
-                    snapshot_path = payload.payload_snapshot or snapshot_path,
-                    active_hub_cache = active_hub_cache,
-                    payload_snapshots = payload.payload_snapshots,
+                    repo_path=repo_path,
+                    snapshot_path=payload.payload_snapshot or snapshot_path,
+                    active_hub_cache=active_hub_cache,
+                    payload_snapshots=payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
                 local_metadata = (
@@ -1100,12 +1109,12 @@ def _scan_cached_models(
                     "model",
                     repo_id,
                     repo_path,
-                    snapshot_dir = load_snapshot,
-                    variant_state = (
+                    snapshot_dir=load_snapshot,
+                    variant_state=(
                         variant_states.for_repo(
                             "model",
                             repo_id,
-                            hub_cache = repo_path.parent,
+                            hub_cache=repo_path.parent,
                         )
                         if variant_states is not None
                         else None
@@ -1119,6 +1128,7 @@ def _scan_cached_models(
                     snapshot_partial = True
                 try:
                     from core.inference.native_audio import native_audio_type_from_local_path
+
                     native_audio_type = native_audio_type_from_local_path(str(load_snapshot or ""))
                 except Exception:
                     native_audio_type = None
@@ -1131,7 +1141,7 @@ def _scan_cached_models(
                         "text-to-speech"
                         # The probe answers for a repo whose card says nothing, so the Audio page, which selects by task, still lists it.
                         if is_output_audio or local_metadata.get("pipeline_tag") == "text-to-speech"
-                        else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
+                        else _cached_row_task(repo_info, gguf=False, selected=load_snapshot)
                     )
                 )
                 if is_whisper_stt:
@@ -1152,7 +1162,7 @@ def _scan_cached_models(
                         hf_cache_scan.partial_transport_for(
                             "model",
                             repo_id,
-                            repo_cache_dir = repo_path,
+                            repo_cache_dir=repo_path,
                         )
                         # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
                         if download_partial
@@ -1162,7 +1172,7 @@ def _scan_cached_models(
                         hf_cache_scan.partial_resume_available(
                             "model",
                             repo_id,
-                            repo_cache_dir = repo_path,
+                            repo_cache_dir=repo_path,
                         )
                         if download_partial
                         else False
@@ -1187,12 +1197,12 @@ def _scan_cached_models(
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
-                        identity = identity,
-                        partial = bool(row["partial"]),
-                        hidden_infra = is_hidden_infra,
-                        companion = bool(row["companion"]),
-                        stt_only = bool(is_whisper_stt),
-                        tts_only = is_output_audio,
+                        identity=identity,
+                        partial=bool(row["partial"]),
+                        hidden_infra=is_hidden_infra,
+                        companion=bool(row["companion"]),
+                        stt_only=bool(is_whisper_stt),
+                        tts_only=is_output_audio,
                     )
                 )
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
@@ -1206,7 +1216,7 @@ def _scan_cached_models(
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
-    cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    cached = sorted(seen_lower.values(), key=lambda c: c["repo_id"])
     logger.info(
         "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
         inspected,
@@ -1229,11 +1239,12 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
         return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
+
         logger.error(
             "Error listing cached models: %s",
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to read the local model cache.",
+            status_code=500,
+            detail="Failed to read the local model cache.",
         ) from e

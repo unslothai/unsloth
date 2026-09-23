@@ -41,7 +41,7 @@ def _message_without_unpriced_media(message: dict) -> dict:
 
 def estimate_message_tokens(message: dict) -> int:
     try:
-        return max(1, len(json.dumps(message, ensure_ascii = False)) // 4)
+        return max(1, len(json.dumps(message, ensure_ascii=False)) // 4)
     except Exception:
         return 1
 
@@ -64,7 +64,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     total = 0
     for message in messages:
         try:
-            text = json.dumps(message, ensure_ascii = False)
+            text = json.dumps(message, ensure_ascii=False)
         except Exception:
             total += 1
             continue
@@ -89,7 +89,7 @@ def estimate_messages_tokens_conservative(
     total = 0
     for message in messages:
         try:
-            text = json.dumps(message, ensure_ascii = False)
+            text = json.dumps(message, ensure_ascii=False)
         except Exception:
             total += 1
             continue
@@ -318,9 +318,9 @@ def _largest_leaf(value: Any) -> int:
     if isinstance(value, str):
         return len(value)
     if isinstance(value, dict):
-        return max((_largest_leaf(item) for item in value.values()), default = 0)
+        return max((_largest_leaf(item) for item in value.values()), default=0)
     if isinstance(value, list):
-        return max((_largest_leaf(item) for item in value), default = 0)
+        return max((_largest_leaf(item) for item in value), default=0)
     return 0
 
 
@@ -360,7 +360,7 @@ def _compacted_arguments(
         # after-the-call-ran replayed a REFUSED call as having run.
         _unparseable = json.dumps(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
-            ensure_ascii = False,
+            ensure_ascii=False,
         )
         # Checked here as well as at the end: without the general floor a short refused call can get a receipt longer
         # than what it replaces.
@@ -411,7 +411,7 @@ def _compacted_arguments(
     if not elided:
         return None
     try:
-        compacted = json.dumps(kept, ensure_ascii = False)
+        compacted = json.dumps(kept, ensure_ascii=False)
     except Exception:
         return None
     # Never grow the prompt to describe it: bulk spread over many small fields leaves nothing worth eliding.
@@ -529,7 +529,7 @@ def _compact_one_call(
                 str(function.get("name") or ""),
                 function.get("arguments"),
                 phrase,
-                reply = _reply_for_call(messages, call_id),
+                reply=_reply_for_call(messages, call_id),
             )
             if replacement is None:
                 new_calls.append(call)
@@ -613,7 +613,7 @@ def compact_completed_tool_arguments(
             replacement = _compacted_arguments(
                 str(function.get("name") or ""),
                 function.get("arguments"),
-                reply = answered[(index, str(call.get("id") or ""))],
+                reply=answered[(index, str(call.get("id") or ""))],
             )
             if replacement is None:
                 new_calls.append(call)
@@ -822,9 +822,9 @@ def fit_rolling_context(
         candidate, dropped = truncate_oldest_messages(
             fitted,
             1.0,
-            protected_message_ids = protected_message_ids,
-            min_dropped = sticky_dropped,
-            estimate_message = estimate_message,
+            protected_message_ids=protected_message_ids,
+            min_dropped=sticky_dropped,
+            estimate_message=estimate_message,
         )
         if dropped:
             fitted = candidate
@@ -852,8 +852,8 @@ def fit_rolling_context(
         candidate, dropped = truncate_oldest_messages(
             fitted,
             keep_ratio,
-            protected_message_ids = protected_message_ids,
-            estimate_message = estimate_message,
+            protected_message_ids=protected_message_ids,
+            estimate_message=estimate_message,
         )
         if dropped == 0:
             break
@@ -883,7 +883,7 @@ def fit_rolling_context(
             "irreducible_tokens": current_tokens,
             # `fitted` is what `current_tokens` prices, so the turn can be counted by difference rather than estimated
             **turn_diagnosis(
-                messages, count_tokens, irreducible_tokens = current_tokens, fitted = fitted
+                messages, count_tokens, irreducible_tokens=current_tokens, fitted=fitted
             ),
             "context_length": context_length,
             "prompt_target": prompt_target,

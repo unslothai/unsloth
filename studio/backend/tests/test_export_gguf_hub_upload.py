@@ -33,14 +33,14 @@ class _RepoUrl(str):
 
 def _hub_doubles(calls, seen):
     class _HfApi:
-        def __init__(self, token = None):
+        def __init__(self, token=None):
             seen["token"] = token
 
         def create_repo(
             self,
             repo_id,
-            private = False,
-            exist_ok = False,
+            private=False,
+            exist_ok=False,
         ):
             calls.append("create_repo")
             seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
@@ -49,8 +49,8 @@ def _hub_doubles(calls, seen):
         def update_repo_settings(
             self,
             repo_id,
-            private = None,
-            repo_type = None,
+            private=None,
+            repo_type=None,
         ):
             calls.append("update_repo_settings")
             seen["visibility"] = {"repo_id": repo_id, "private": private}
@@ -58,7 +58,7 @@ def _hub_doubles(calls, seen):
         def repo_info(
             self,
             repo_id,
-            repo_type = None,
+            repo_type=None,
         ):
             calls.append("repo_info")
             return seen.get("repo_info_result")
@@ -66,7 +66,7 @@ def _hub_doubles(calls, seen):
         def repo_exists(
             self,
             repo_id,
-            repo_type = None,
+            repo_type=None,
         ):
             calls.append("repo_exists")
             # Default True: the interesting case is an existing repo, and a test that wants
@@ -77,7 +77,7 @@ def _hub_doubles(calls, seen):
             self,
             repo_id,
             filename,
-            repo_type = None,
+            repo_type=None,
         ):
             return seen.get("existing_files", {}).get(filename, False)
 
@@ -86,8 +86,8 @@ def _hub_doubles(calls, seen):
             path_or_fileobj,
             path_in_repo,
             repo_id,
-            repo_type = None,
-            commit_message = None,
+            repo_type=None,
+            commit_message=None,
         ):
             calls.append(f"upload_file:{path_in_repo}")
             seen[path_in_repo] = path_or_fileobj
@@ -97,8 +97,8 @@ def _hub_doubles(calls, seen):
             folder_path,
             repo_id,
             repo_type,
-            allow_patterns = None,
-            ignore_patterns = None,
+            allow_patterns=None,
+            ignore_patterns=None,
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
@@ -119,8 +119,8 @@ def _hub_doubles(calls, seen):
         def push_to_hub(
             self,
             repo_id,
-            token = None,
-            commit_message = None,
+            token=None,
+            commit_message=None,
         ):
             calls.append("model_card")
             seen["card_repo"] = repo_id
@@ -150,7 +150,7 @@ def _patch_hub(monkeypatch, export_module, calls, seen):
 def _push_gguf(
     backend,
     save_dir,
-    quant = "Q4_K_M",
+    quant="Q4_K_M",
     **overrides,
 ):
     """Export a GGUF and push it, with the upload fields these tests do not vary."""
@@ -182,7 +182,7 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             calls.append("convert")
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             (output / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
 
@@ -193,7 +193,7 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
 
     backend = _export_backend(export_module, Model)
 
-    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"), private = True)
+    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"), private=True)
 
     assert success is True, message
     assert calls == [
@@ -228,7 +228,7 @@ def test_gguf_hub_export_uploads_only_the_export_artifacts(tmp_path, monkeypatch
     (save_dir / "notes.txt").write_text("unrelated")
     (save_dir / "dataset.jsonl").write_text('{"a": 1}')
     leftover = save_dir / "_tmp_model_earlier" / "model"
-    leftover.mkdir(parents = True)
+    leftover.mkdir(parents=True)
     (leftover / "model-00001-of-00002.safetensors").write_bytes(b"weights")
 
     calls: list[str] = []
@@ -238,7 +238,7 @@ def test_gguf_hub_export_uploads_only_the_export_artifacts(tmp_path, monkeypatch
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             calls.append("convert")
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             (output / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
 
@@ -278,7 +278,7 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             calls.append("convert")
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             if _STAR_IN_NAME_IS_LEGAL:
                 (output / "a*.gguf").write_bytes(b"GGUF")
             (output / "llama-3[8b].Q4_K_M.gguf").write_bytes(b"GGUF")
@@ -318,10 +318,10 @@ def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, mo
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             merged = Path(model_save_path)
-            merged.mkdir(parents = True)
+            merged.mkdir(parents=True)
             (merged / "config.json").write_text('{"model_type": "llama"}')
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             (output / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
 
@@ -362,7 +362,7 @@ def test_gguf_hub_export_leaves_a_stale_modelfile_behind(tmp_path, monkeypatch):
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
 
         def push_to_hub_gguf(self, *args, **kwargs):
@@ -395,7 +395,7 @@ def test_gguf_hub_export_does_not_publish_appledouble_companions(tmp_path, monke
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             (output / "._model.Q4_K_M.gguf").write_bytes(b"\x00\x05\x16\x07")
 
@@ -430,7 +430,7 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             gguf = output / "model.Q4_K_M.gguf"
             gguf.write_bytes(b"GGUF")
             return {"gguf_files": [str(gguf)], "is_vlm": is_vlm}
@@ -462,7 +462,7 @@ def _visibility_backend(
     tmp_path,
     monkeypatch,
     name,
-    gguf_names = ("model.Q4_K_M.gguf",),
+    gguf_names=("model.Q4_K_M.gguf",),
 ):
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(name, "core/export/export.py", monkeypatch)
@@ -474,7 +474,7 @@ def _visibility_backend(
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             calls.append("convert")
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             produced = []
             for gguf_name in gguf_names:
                 gguf = output / gguf_name
@@ -497,7 +497,7 @@ def test_gguf_hub_export_makes_an_existing_repo_private_before_uploading(tmp_pat
         tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_backend"
     )
 
-    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), private = True)
+    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), private=True)
 
     assert success is True, message
     assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
@@ -513,15 +513,15 @@ def test_gguf_hub_export_refuses_to_upload_when_privacy_cannot_be_confirmed(tmp_
     def _denied(
         self,
         repo_id,
-        private = None,
-        repo_type = None,
+        private=None,
+        repo_type=None,
     ):
         raise RuntimeError("403 Forbidden: write:repo_settings missing")
 
     monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
-    seen["repo_info_result"] = types.SimpleNamespace(private = False)
+    seen["repo_info_result"] = types.SimpleNamespace(private=False)
 
-    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"), private = True)
+    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"), private=True)
 
     assert success is False
     assert "could not be confirmed private" in message
@@ -539,15 +539,15 @@ def test_gguf_hub_export_uploads_when_the_repo_is_already_private(tmp_path, monk
     def _denied(
         self,
         repo_id,
-        private = None,
-        repo_type = None,
+        private=None,
+        repo_type=None,
     ):
         raise RuntimeError("403 Forbidden: write:repo_settings missing")
 
     monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
-    seen["repo_info_result"] = types.SimpleNamespace(private = True)
+    seen["repo_info_result"] = types.SimpleNamespace(private=True)
 
-    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), private = True)
+    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), private=True)
 
     assert success is True, message
     assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
@@ -575,8 +575,8 @@ def test_gguf_hub_export_survives_a_model_card_failure(tmp_path, monkeypatch):
     def _boom(
         self,
         repo_id,
-        token = None,
-        commit_message = None,
+        token=None,
+        commit_message=None,
     ):
         raise RuntimeError("connection refused: api/validate-yaml")
 
@@ -600,8 +600,8 @@ def test_gguf_hub_export_reports_the_local_path_when_the_upload_fails(tmp_path, 
         folder_path,
         repo_id,
         repo_type,
-        allow_patterns = None,
-        ignore_patterns = None,
+        allow_patterns=None,
+        ignore_patterns=None,
     ):
         raise RuntimeError("504 Gateway Timeout")
 
@@ -621,14 +621,14 @@ def test_gguf_hub_export_fails_when_only_appledouble_companions_were_produced(
 ):
     """A run that produced only Finder metadata has produced nothing publishable."""
     save_dir = tmp_path / "export"
-    save_dir.mkdir(parents = True)
+    save_dir.mkdir(parents=True)
     (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
 
     _module, backend, calls, seen = _visibility_backend(
         tmp_path,
         monkeypatch,
         "test_export_gguf_hub_upload_only_appledouble_backend",
-        gguf_names = ("._model.Q4_K_M.gguf",),
+        gguf_names=("._model.Q4_K_M.gguf",),
     )
 
     success, message, _path = _push_gguf(backend, str(save_dir))
@@ -655,7 +655,7 @@ def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, mo
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
 
         def push_to_hub_gguf(self, *args, **kwargs):
@@ -666,8 +666,8 @@ def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, mo
     def _create_repo(
         self,
         repo_id,
-        private = False,
-        exist_ok = False,
+        private=False,
+        exist_ok=False,
     ):
         calls.append("create_repo")
         seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
@@ -680,7 +680,7 @@ def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, mo
 
     backend = _export_backend(export_module, Model)
 
-    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), repo_id = "model-gguf")
+    success, message, _path = _push_gguf(backend, str(tmp_path / "export"), repo_id="model-gguf")
 
     assert success is True, message
     assert seen["repo"]["repo_id"] == "model-gguf"
@@ -709,7 +709,7 @@ def test_gguf_hub_export_reads_config_from_the_directory_the_exporter_reports(
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             gguf = output / "model.Q4_K_M.gguf"
             gguf.write_bytes(b"GGUF")
             return {"gguf_files": [str(gguf)], "save_directory": str(elsewhere)}
@@ -743,7 +743,7 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             # write_bytes, not write_text: text mode turns "\n" into "\r\n" on Windows.
             (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
@@ -788,8 +788,8 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             model_save_path,
             tokenizer,
             quantization_method,
-            imatrix_file = None,
-            token = None,
+            imatrix_file=None,
+            token=None,
         ):
             calls.append("save_pretrained_gguf")
 
@@ -797,10 +797,10 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             self,
             repo_id,
             tokenizer,
-            quantization_method = None,
-            token = None,
-            private = None,
-            imatrix_file = None,
+            quantization_method=None,
+            token=None,
+            private=None,
+            imatrix_file=None,
         ):
             calls.append("push_to_hub_gguf")
             seen["push"] = {
@@ -820,11 +820,11 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
     success, message, output_path = backend.export_gguf(
         "",
         "iq2_xxs",
-        push_to_hub = True,
-        repo_id = "owner/model",
-        hf_token = "token",
-        private = True,
-        imatrix_file = True,
+        push_to_hub=True,
+        repo_id="owner/model",
+        hf_token="token",
+        private=True,
+        imatrix_file=True,
     )
 
     assert success is True, message
@@ -857,7 +857,7 @@ def test_gguf_hub_export_falls_back_to_studios_own_vlm_detection(tmp_path, monke
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             return None
 
@@ -890,7 +890,7 @@ def test_gguf_hub_export_trusts_the_exporter_over_studios_guess(tmp_path, monkey
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             gguf = output / "model.Q4_K_M.gguf"
             gguf.write_bytes(b"GGUF")
             return {"gguf_files": [str(gguf)], "is_vlm": False}
@@ -912,7 +912,7 @@ def test_gguf_hub_export_trusts_the_exporter_over_studios_guess(tmp_path, monkey
 def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, monkeypatch):
     """shutil.move would put the file inside it and the allow-list would match nothing."""
     save_dir = tmp_path / "export"
-    save_dir.mkdir(parents = True)
+    save_dir.mkdir(parents=True)
     (save_dir / "model.Q4_K_M.gguf").mkdir()
     (save_dir / "an-earlier-export.Q8_0.gguf").write_bytes(b"GGUF")
 
@@ -932,7 +932,7 @@ def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, 
 def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, monkeypatch):
     """A directory named Modelfile would nest it where the allow-list cannot match."""
     save_dir = tmp_path / "export"
-    save_dir.mkdir(parents = True)
+    save_dir.mkdir(parents=True)
     (save_dir / "Modelfile").mkdir()
 
     _install_export_backend_stubs(monkeypatch)
@@ -946,7 +946,7 @@ def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, 
     class Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             output = Path(f"{model_save_path}_gguf")
-            output.mkdir(parents = True)
+            output.mkdir(parents=True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
             (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
 

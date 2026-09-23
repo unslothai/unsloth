@@ -131,7 +131,7 @@ def _strip_sh_comment(line: str) -> str:
 
 def _gfx_family_map_sh() -> dict[str, str]:
     body = _sh_function_body(
-        _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_arch_index_family_for_gfx"
+        _INSTALL_SH.read_text(encoding="utf-8"), "_amd_arch_index_family_for_gfx"
     )
     out: dict[str, str] = {}
     for line in body.splitlines():
@@ -144,7 +144,7 @@ def _gfx_family_map_sh() -> dict[str, str]:
 
 
 def _gfx_family_map_ps(path: Path) -> dict[str, str]:
-    block = _ps_block(path.read_text(encoding = "utf-8"), "$archFamilyMap = @{", "{", "}")
+    block = _ps_block(path.read_text(encoding="utf-8"), "$archFamilyMap = @{", "{", "}")
     out: dict[str, str] = {}
     for line in block.splitlines():
         for m in re.finditer(r'"(gfx[0-9a-z]+)"\s*=\s*"([A-Za-z0-9-]+)"', _strip_sh_comment(line)):
@@ -213,7 +213,7 @@ class TestSupportedWheelArchList:
 
     def test_wheel_arch_list_covers_every_mapped_arch(self):
         block = _ps_block(
-            _SETUP_PS1.read_text(encoding = "utf-8"), "$_rocmWheelArches = @(", "(", ")"
+            _SETUP_PS1.read_text(encoding="utf-8"), "$_rocmWheelArches = @(", "(", ")"
         )
         listed = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
         assert listed, "could not parse $_rocmWheelArches"
@@ -255,7 +255,7 @@ def _name_table_sh_case(source: str, subject: str, var: str) -> list[tuple[list[
 
 
 def _name_table_ps(path: Path) -> list[tuple[str, str]]:
-    block = _ps_block(path.read_text(encoding = "utf-8"), "$nameArchTable = @(", "(", ")")
+    block = _ps_block(path.read_text(encoding="utf-8"), "$nameArchTable = @(", "(", ")")
     return re.findall(r'@\{\s*P\s*=\s*"([^"]+)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"\s*\}', block)
 
 
@@ -353,7 +353,7 @@ _AMD_DOCUMENTED_ARCH = {
 
 
 def _name_tables() -> dict[str, object]:
-    install_sh = _INSTALL_SH.read_text(encoding = "utf-8")
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
     return {
         "install.sh:_infer_amd_gfx_arch_from_gpu_name": _name_table_sh_function(
             install_sh, "_infer_amd_gfx_arch_from_gpu_name"
@@ -365,7 +365,7 @@ def _name_tables() -> dict[str, object]:
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
         "studio/setup.sh": _name_table_sh_case(
-            _SETUP_SH.read_text(encoding = "utf-8"), '"$_sup_gfx_in"', "_sup_gfx_out"
+            _SETUP_SH.read_text(encoding="utf-8"), '"$_sup_gfx_in"', "_sup_gfx_out"
         ),
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
@@ -385,7 +385,7 @@ def _name_table_py_literal(path: Path, name: str) -> list:
     """A module-level list-of-pairs literal, read without importing the module."""
     import ast
 
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
         targets = (
             [node.target]
@@ -406,7 +406,7 @@ def _spoof_profiles() -> dict[str, str]:
     Parsed with ast rather than imported: that module spoofs torch.cuda and the
     AMD identity as an import side effect, which would poison every test sharing
     the process."""
-    tree = ast.parse(_SPOOF_PY.read_text(encoding = "utf-8"))
+    tree = ast.parse(_SPOOF_PY.read_text(encoding="utf-8"))
     for node in tree.body:
         target = node.target if isinstance(node, ast.AnnAssign) else None
         if target is not None and getattr(target, "id", "") == "_PROFILES":
@@ -622,7 +622,7 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
         if path.name.startswith("test_"):
             continue
         try:
-            text = path.read_text(encoding = "utf-8", errors = "ignore")
+            text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         hits = sum(
@@ -658,10 +658,10 @@ class TestNoUnregisteredArchTable:
         """The skip is narrow on purpose: `target/` next to a Cargo.toml is build output,
         `target/` anywhere else is source and a copy hiding there still has to fail."""
         table = "\n".join(f"# RX 7{n}00 gfx1100" for n in range(1, 6)) + "\n"
-        (tmp_path / "src-tauri" / "target" / "debug").mkdir(parents = True)
+        (tmp_path / "src-tauri" / "target" / "debug").mkdir(parents=True)
         (tmp_path / "src-tauri" / "Cargo.toml").write_text("[package]\n")
         (tmp_path / "src-tauri" / "target" / "debug" / "install.sh").write_text(table)
-        (tmp_path / "scripts" / "target").mkdir(parents = True)
+        (tmp_path / "scripts" / "target").mkdir(parents=True)
         (tmp_path / "scripts" / "target" / "install.sh").write_text(table)
 
         found = _files_carrying_a_name_arch_table(tmp_path)
@@ -685,7 +685,7 @@ class TestTorch211PinAllowlistParity:
     _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
 
     def test_install_sh_pins_the_same_leaves(self):
-        source = _INSTALL_SH.read_text(encoding = "utf-8")
+        source = _INSTALL_SH.read_text(encoding="utf-8")
         idx = source.find('case "$_torch_index_leaf" in')
         assert idx != -1
         arm = re.search(r"\n\s*(rocm7\.2\|[^)]*)\)", source[idx:])
@@ -697,14 +697,14 @@ class TestTorch211PinAllowlistParity:
         assert "rocm7.2" in leaves
 
     def test_install_ps1_pins_the_same_leaves(self):
-        source = _INSTALL_PS1.read_text(encoding = "utf-8")
+        source = _INSTALL_PS1.read_text(encoding="utf-8")
         m = re.search(r"\$_pinGfx211\s*=\s*@\(([^)]*)\)", source)
         assert m, "$_pinGfx211 not found in install.ps1"
         leaves = set(re.findall(r"'([^']+)'", m.group(1)))
         assert leaves == self._EXPECTED, f"install.ps1 pins {sorted(leaves)}"
 
     def test_setup_ps1_pins_the_same_leaves(self):
-        source = _SETUP_PS1.read_text(encoding = "utf-8")
+        source = _SETUP_PS1.read_text(encoding="utf-8")
         m = re.search(r"return\s+@\(([^)]*)\)\s*-contains\s*\$Leaf", source)
         assert m, "the 2.11 pin allowlist helper was not found in studio/setup.ps1"
         leaves = set(re.findall(r"'([^']+)'", m.group(1)))
@@ -722,13 +722,13 @@ class TestShadowingIntegratedGfxParity:
     _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
 
     def _setup_ps1_list(self):
-        source = _SETUP_PS1.read_text(encoding = "utf-8")
+        source = _SETUP_PS1.read_text(encoding="utf-8")
         m = re.search(r"\$script:ShadowingIntegratedGfx\s*=\s*@\(([^)]*)\)", source)
         assert m, "$script:ShadowingIntegratedGfx not found in studio/setup.ps1"
         return set(re.findall(r'"([^"]+)"', m.group(1)))
 
     def _prebuilt_list(self):
-        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(
                 getattr(t, "id", None) == "SHADOWING_INTEGRATED_GFX" for t in node.targets
@@ -738,7 +738,7 @@ class TestShadowingIntegratedGfxParity:
 
     def _install_sh_list(self):
         body = _sh_function_body(
-            _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+            _INSTALL_SH.read_text(encoding="utf-8"), "_amd_gfx_is_shadowing_integrated"
         )
         m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
         assert m, "the shadowing-APU arm was not found in _amd_gfx_is_shadowing_integrated"
@@ -796,7 +796,7 @@ class TestShadowingPreferenceIsApplied:
 
     def _shadowing_arm(self, path: Path) -> set[str]:
         body = _sh_function_body(
-            path.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+            path.read_text(encoding="utf-8"), "_amd_gfx_is_shadowing_integrated"
         )
         m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
         assert m, f"the shadowing-APU arm was not found in {path.name}"
@@ -808,7 +808,7 @@ class TestShadowingPreferenceIsApplied:
 
     @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
     def test_every_shell_gfx_resolver_calls_the_preference(self, rel):
-        source = (PACKAGE_ROOT / rel).read_text(encoding = "utf-8")
+        source = (PACKAGE_ROOT / rel).read_text(encoding="utf-8")
         assert "_amd_prefer_discrete_gfx() {" in source, (
             f"{rel} resolves an AMD gfx arch but does not define _amd_prefer_discrete_gfx; "
             "a table without the preference leaves a hybrid host on its iGPU (#7776, #11143)"
@@ -824,7 +824,7 @@ class TestShadowingPreferenceIsApplied:
 
     def test_setup_sh_applies_the_preference_before_forwarding_rocm_gfx(self):
         """Both consumers read $_setup_gfx, so the repick must precede both."""
-        source = _SETUP_SH.read_text(encoding = "utf-8")
+        source = _SETUP_SH.read_text(encoding="utf-8")
         calls = _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx")
         assert calls, "studio/setup.sh never calls _amd_prefer_discrete_gfx"
         forwards = {}
@@ -841,7 +841,7 @@ class TestShadowingPreferenceIsApplied:
     def test_pick_rocm_gfx_target_consults_the_shadowing_table(self):
         """install_llama_prebuilt.py holds the table; this is the function that has
         to read it. It ended `return _tokens[0]` with no preference at all."""
-        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
                 names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
@@ -857,13 +857,13 @@ class TestShadowingPreferenceIsApplied:
         """`HIP_VISIBLE_DEVICES=1` is the documented #7624 / #7669 workaround; a repick
         that second-guesses a mask would break it."""
         body = _sh_function_body(
-            (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+            (PACKAGE_ROOT / rel).read_text(encoding="utf-8"), "_amd_prefer_discrete_gfx"
         )
         missing = [env for env in self._VISIBILITY_ENV if env not in body]
         assert not missing, f"{rel}'s _amd_prefer_discrete_gfx ignores {missing}"
 
     def test_pick_rocm_gfx_target_honours_an_explicit_visibility_mask(self):
-        source = _PREBUILT_PY.read_text(encoding = "utf-8")
+        source = _PREBUILT_PY.read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
@@ -877,7 +877,7 @@ class TestShadowingPreferenceIsApplied:
         """Naming gfx906 on a mixed host strands BOTH cards."""
         for rel in self._SHELL_RESOLVERS:
             body = _sh_function_body(
-                (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+                (PACKAGE_ROOT / rel).read_text(encoding="utf-8"), "_amd_prefer_discrete_gfx"
             )
             assert "gfx906" in body, f"{rel}'s repick does not exclude gfx906"
 

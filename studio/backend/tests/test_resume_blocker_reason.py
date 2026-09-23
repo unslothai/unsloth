@@ -40,6 +40,7 @@ def resources_available(monkeypatch):
     synthetic config, which is correct behaviour but masks what these cases are about.
     """
     from core.training import provenance as provenance_mod
+
     monkeypatch.setattr(provenance_mod, "exact_resume_resource_requirements", lambda config: None)
 
 
@@ -66,7 +67,7 @@ def test_resumable_statuses_report_no_blocker(status, resources_available):
         {"status": "pending"},
         {"version": 2, "status": "pending"},
     ],
-    ids = ["missing-version", "wrong-version"],
+    ids=["missing-version", "wrong-version"],
 )
 def test_malformed_pending_marker_reports_validation_blocker(marker):
     config = _config(**{RESOURCE_PROVENANCE_KEY: marker})

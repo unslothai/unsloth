@@ -50,7 +50,7 @@ class TestNoTorchBackendAutoInInstallSh:
     """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
     def test_no_torch_backend_auto_outside_fallback(self):
-        lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+        lines = INSTALL_SH.read_text(encoding="utf-8").splitlines()
         fallback_range = _fallback_range(lines)
 
         matches = [
@@ -73,7 +73,7 @@ class TestNoTorchBackendAutoInInstallSh:
         scan then ended the block four lines short of the install call it exists
         to permit -- reporting the fallback's own line as a primary path.
         """
-        lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+        lines = INSTALL_SH.read_text(encoding="utf-8").splitlines()
         block = _fallback_range(lines)
         body = "\n".join(lines[block.start : block.stop])
         # Both arms of the branch, so neither an early stop nor a runaway passes.
@@ -87,7 +87,7 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             "GPU detection failed" in text
         ), "install.sh should have a fallback branch for when GPU detection fails"
@@ -97,13 +97,13 @@ class TestInstallShHasGpuDetection:
     """install.sh must contain the get_torch_index_url function."""
 
     def test_function_exists(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             "get_torch_index_url()" in text
         ), "install.sh is missing the get_torch_index_url() function"
 
     def test_torch_index_url_assigned(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             "TORCH_INDEX_URL=$(get_torch_index_url)" in text
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
@@ -141,11 +141,11 @@ class TestPreTuringCapParity:
         # exist), so assert the shared span here rather than let it drift silently.
         span = "_CU126_SM_RANGE = (50, 90)"
         for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
-            assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
+            assert span in path.read_text(encoding="utf-8"), f"{path.name} lost {span}"
 
     @pytest.mark.parametrize("path,call,start,end", _SITES)
     def test_selection_function_applies_the_cap(self, path, call, start, end):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         assert start in text, f"{path.name} no longer defines {start!r}"
         body = text.split(start, 1)[1].split(end, 1)[0]
         assert call in body, f"{path.name}'s selection function never applies {call!r}"
@@ -201,8 +201,8 @@ class TestCudaMappingParity:
 
     def test_same_cuda_suffixes(self):
         """Both scripts should produce the same ordered list of CUDA index suffixes."""
-        sh_text = INSTALL_SH.read_text(encoding = "utf-8")
-        ps1_text = INSTALL_PS1.read_text(encoding = "utf-8")
+        sh_text = INSTALL_SH.read_text(encoding="utf-8")
+        ps1_text = INSTALL_PS1.read_text(encoding="utf-8")
 
         sh_thresholds = self._extract_cuda_thresholds_sh(sh_text)
         ps1_thresholds = self._extract_cuda_thresholds_ps1(ps1_text)
@@ -220,13 +220,13 @@ class TestPyTorchMirrorEnvVar:
     """Both install scripts must support the UNSLOTH_PYTORCH_MIRROR env var."""
 
     def test_install_sh_has_mirror_var(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             "UNSLOTH_PYTORCH_MIRROR" in text
         ), "install.sh should reference UNSLOTH_PYTORCH_MIRROR"
 
     def test_install_ps1_has_mirror_var(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert (
             "UNSLOTH_PYTORCH_MIRROR" in text
         ), "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"
@@ -240,13 +240,13 @@ class TestUvBytecodeCompileTimeout:
         return tuple(int(part) for part in version.split("."))
 
     def test_install_sh_uses_uv_version_with_timeout_env(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         match = re.search(r'^UV_MIN_VERSION="([^"]+)"$', text, re.MULTILINE)
         assert match, "install.sh should declare UV_MIN_VERSION"
         assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
 
     def test_install_ps1_uses_uv_version_with_timeout_env(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         match = re.search(r'^\s*\$UvMinVersion = "([^"]+)"$', text, re.MULTILINE)
         assert match, "install.ps1 should declare $UvMinVersion"
         assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
@@ -254,7 +254,7 @@ class TestUvBytecodeCompileTimeout:
         assert "if (-not (Test-UvVersionOk))" in text
 
     def test_install_sh_preserves_timeout_override(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             ': "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"' in text
         ), "install.sh should default UV_COMPILE_BYTECODE_TIMEOUT without overwriting callers"
@@ -263,7 +263,7 @@ class TestUvBytecodeCompileTimeout:
         ), "install.sh should export UV_COMPILE_BYTECODE_TIMEOUT for uv subprocesses"
 
     def test_install_ps1_preserves_timeout_override(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert (
             "if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT)" in text
         ), "install.ps1 should preserve caller UV_COMPILE_BYTECODE_TIMEOUT overrides"
@@ -279,22 +279,22 @@ class TestTorchIndexOverrideParity:
     @pytest.mark.parametrize(
         "path",
         [INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY],
-        ids = ["install.sh", "install.ps1", "setup.ps1", "install_python_stack.py"],
+        ids=["install.sh", "install.ps1", "setup.ps1", "install_python_stack.py"],
     )
     def test_installer_reads_override_env(self, path):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
             assert var in text, f"{path.name} does not honor {var}"
 
     @pytest.mark.parametrize(
         "path",
         [INSTALL_PS1, SETUP_PS1],
-        ids = ["install.ps1", "setup.ps1"],
+        ids=["install.ps1", "setup.ps1"],
     )
     def test_amd_reroute_guarded_when_pinned(self, path):
         # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
         # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         assert (
             "TorchIndexPinned" in text
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
@@ -302,7 +302,7 @@ class TestTorchIndexOverrideParity:
     def test_cuda_pin_overrides_cvd_hide_gate(self):
         # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
         # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         m = re.search(r"def _ensure_cuda_torch\(.*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
         body = m.group(0)
@@ -317,7 +317,7 @@ class TestTorchIndexOverrideParity:
     def test_cpu_repair_pins_supported_torch_range(self):
         # The explicit-CPU repair must use the bounded CPU/CUDA spec, not a bare trio (the
         # /cpu index serves torch 2.11+, so a bare install could resolve out of range).
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
         body = m.group(0)
@@ -329,7 +329,7 @@ class TestTorchIndexOverrideParity:
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
         # The stale check must expect ROCm torch only for arches the install path maps to a
         # repo.amd.com index; expecting "rocm" for an unmapped arch marks a good CPU venv stale.
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
             "supported gfx wheel arches"
@@ -356,7 +356,7 @@ class TestGfx211AllowlistParity:
         return set(re.findall(r"gfx[0-9a-z-]+", blob.lower()))
 
     def test_install_sh_allowlist(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8").lower()
+        text = INSTALL_SH.read_text(encoding="utf-8").lower()
         # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
         m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
@@ -366,7 +366,7 @@ class TestGfx211AllowlistParity:
         )
 
     def test_install_ps1_allowlist(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8").lower()
+        text = INSTALL_PS1.read_text(encoding="utf-8").lower()
         m = re.search(r"\$_pingfx211\s*=\s*@\(([^)]*)\)", text)
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
         assert self._leaves(m.group(1)) == self.EXPECTED, (
@@ -377,7 +377,7 @@ class TestGfx211AllowlistParity:
     def test_setup_ps1_defines_single_allowlist_helper(self):
         # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
         # the stale check and install spec can't disagree.
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
@@ -393,7 +393,7 @@ class TestGfx211AllowlistParity:
         )
 
     def test_stack_py_allowlist(self):
-        text = STACK_PY.read_text(encoding = "utf-8").lower()
+        text = STACK_PY.read_text(encoding="utf-8").lower()
         m = re.search(r"_rocm_gfx_torch211_leaves[^=]*=\s*frozenset\(\s*\{([^}]*)\}", text)
         assert m, "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
         assert self._leaves(m.group(1)) == self.EXPECTED, (
@@ -409,7 +409,7 @@ class TestCudaLeafDigitParity:
     installer must require a digit after "cu" in its family/CUDA classification."""
 
     def test_stack_py_requires_cu_digit(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         # EXACT cu+digits: a custom leaf like cu128-private must route to the
         # verbatim/unknown path, not be compared against the installed +cu128 tag.
         assert re.search(
@@ -417,7 +417,7 @@ class TestCudaLeafDigitParity:
         ), "install_python_stack.py _is_cuda_family_leaf must fullmatch cu[0-9]+"
 
     def test_setup_ps1_requires_cu_digit(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         # EXACT cu+digits: cu128-private must not classify as CUDA (it would become
         # the expected tag and rebuild the venv on every update).
         assert re.search(
@@ -429,20 +429,20 @@ class TestCudaLeafDigitParity:
         ), "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
 
     def test_install_ps1_requires_cu_digit_in_gpu_branch(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert re.search(
             r"'\^cu\[0-9\]'", text
         ), "install.ps1 Get-TauriGpuBranch must require a digit after cu"
 
     def test_install_sh_requires_cu_digit_in_gpu_branch(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
         assert re.search(
             r"cu\[0-9\]\*\)\s*echo \"cuda\"", text
         ), "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
 
     def test_install_sh_backend_export_requires_cu_digit(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         # Brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda would mis-brand
         # /current, /custom pins and skip ROCm repair on AMD hosts.
         assert re.search(
@@ -454,7 +454,7 @@ class TestCudaLeafDigitParity:
         ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
 
     def test_install_sh_lowercases_backend_leaf(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         # The leaf feeding both the backend case and the 2.11 floor case must be
         # lowercased so the canonical gfx120X-all (capital X) matches.
         assert re.search(
@@ -469,7 +469,7 @@ class TestKnown211SetParity:
     rocm7.3 / torch 2.12 do not exist, so no side may floor them speculatively."""
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
         # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
         # asserted here so the rocm-version half cannot drift on its own.
@@ -484,7 +484,7 @@ class TestKnown211SetParity:
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
     def test_python_known_211_versions_is_only_rocm72(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert "_ROCM_KNOWN_TORCH211_VERSIONS" in text
         # The frozenset literal is exactly {(7, 2)}.
         m = re.search(r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text)
@@ -493,7 +493,7 @@ class TestKnown211SetParity:
         assert "7, 3" not in m.group(1) and "7, 1" not in m.group(1)
 
     def test_setup_ps1_known_211_helper_is_only_rocm72(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         assert "Test-RocmKnown211Version" in text
         # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
         assert re.search(
@@ -501,7 +501,7 @@ class TestKnown211SetParity:
         ), "setup.ps1 Test-RocmKnown211Version must accept only rocm7.2"
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2,
         # not the speculative >= 2 that would floor a non-existent rocm7.3.
         assert re.search(
@@ -515,7 +515,7 @@ class TestKnown211SetParity:
         prefix, takes the 2.11-floor branch, and is force-routed through the ROCm path
         before the exact-match elseif can send it to the verbatim install (Codex P2)."""
         for path, label in ((INSTALL_PS1, "install.ps1"), (SETUP_PS1, "setup.ps1")):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             assert "-match '^rocm(\\d+)\\.(\\d+)$'" in text, (
                 f"{label} floor gate must anchor the rocm match (^rocm(\\d+)\\.(\\d+)$) so a "
                 "suffixed custom leaf is not floored/routed as rocm7.2"
@@ -530,7 +530,7 @@ class TestKnown211SetParity:
         ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
         dropped its exact torch pin from the wheel metadata, so a bare companion
         beside a capped torch can resolve a mismatched build."""
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert (
             '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
         ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
@@ -571,7 +571,7 @@ class TestKnown211SetParity:
             (SETUP_PS1, "setup.ps1"),
             (STACK_PY, "install_python_stack.py"),
         ):
-            low = path.read_text(encoding = "utf-8").lower()
+            low = path.read_text(encoding="utf-8").lower()
             for g in gfx:
                 assert g in low, f"{label} missing gfx 2.11 allowlist member {g}"
 
@@ -588,7 +588,7 @@ class TestPinnedRocmLeafDigitParity:
     install.ps1 via an anchored ^rocm[0-9]+(\\.[0-9]+)?$ reroute."""
 
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         # The pinned gfx*/rocm reroute must match rocm EXACTLY (anchored), so a suffixed
         # rocm7.2-private / rocm-current falls through to the verbatim --default-index path.
         assert "-match '^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
@@ -604,7 +604,7 @@ class TestPinnedRocmLeafDigitParity:
         ), "install.ps1 must not route a pinned index on an unanchored -match '^rocm\\d'"
 
     def test_setup_ps1_pinned_reroute_requires_rocm_digit(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which
         # anchors the rocm match so a suffixed custom leaf stays on the verbatim path.
         assert (
@@ -620,7 +620,7 @@ class TestPinnedRocmLeafDigitParity:
         ), "setup.ps1 pinned reroute must not route on a bare -like 'rocm*' glob"
 
     def test_install_sh_repairable_requires_rocm_digit(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         # _torch_index_repairable routes rocm/gfx through the exact-match helper.
         assert (
             "_is_pip_rocm_family_leaf" in text
@@ -634,7 +634,7 @@ class TestPinnedRocmLeafDigitParity:
         ), "install.sh _is_pip_rocm_family_leaf must not family-match a bare gfx* glob"
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert re.search(
             r'fullmatch\(r"rocm\\d\+\(\?:\\\.\\d\+\)\?", leaf\)', text
         ), "install_python_stack.py _is_pip_rocm_family_leaf must fullmatch rocm\\d+(?:\\.\\d+)?"
@@ -648,7 +648,7 @@ class TestPinnedRocmLeafDigitParity:
         an EXACT ROCm family (rocm7.2/gfx*), not a bare */rocm* whole-URL glob nor a
         ^rocm[0-9] prefix that catches a custom CPU/CUDA index like /rocm-current or a
         suffixed /rocm7.2-private and force-repairs it from the wrong --default-index."""
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             'if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then\n    _torch_index_is_rocm_family=true'
             in text
@@ -671,23 +671,23 @@ class TestPinnedIndexClearsUvEnvParity:
     UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
 
     def test_install_sh_clears_uv_index_vars(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in text
         ), "install.sh run_install_cmd must clear the uv index vars for --default-index installs"
 
     def test_install_ps1_clears_uv_index_vars(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         for var in self.UV_VARS:
             assert var in text, f"install.ps1 must clear {var} for pinned installs"
 
     def test_setup_ps1_clears_uv_index_vars(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         for var in self.UV_VARS:
             assert var in text, f"setup.ps1 must clear {var} for pinned installs"
 
     def test_stack_py_clears_uv_index_vars(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert "_install_env_for_cmd" in text, (
             "install_python_stack.py must scrub inherited uv index vars for pinned "
             "installs via _install_env_for_cmd (parity with install.sh #6898)"
@@ -699,14 +699,14 @@ class TestPinnedIndexClearsUvEnvParity:
         """uv's torch backend redirects torch resolution to its own per-backend
         index even against an explicit pin, so every installer's pinned-install
         scrub must clear UV_TORCH_BACKEND too."""
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
         assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             assert (
                 "'UV_TORCH_BACKEND'" in text
             ), f"{path.name} pinned scrub must clear UV_TORCH_BACKEND"
-        stack = STACK_PY.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding="utf-8")
         assert (
             '"UV_TORCH_BACKEND",' in stack
         ), "install_python_stack.py strip tuple must include UV_TORCH_BACKEND"
@@ -714,7 +714,7 @@ class TestPinnedIndexClearsUvEnvParity:
     def test_stack_py_strips_pip_extra_index_for_pip_fallback(self):
         """The pip fallback honours PIP_EXTRA_INDEX_URL (pip adds it IN ADDITION
         to --index-url), so the pinned-command scrub must strip it."""
-        stack = STACK_PY.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding="utf-8")
         assert (
             '"PIP_EXTRA_INDEX_URL",' in stack
         ), "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
@@ -722,18 +722,18 @@ class TestPinnedIndexClearsUvEnvParity:
     def test_all_installers_scrub_find_links(self):
         """uv's --find-links (env UV_FIND_LINKS) adds candidate locations that can
         satisfy torch off a pinned index; every pinned-install scrub must clear it."""
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
         assert "-u UV_FIND_LINKS" in sh
         for path in (INSTALL_PS1, SETUP_PS1):
-            assert "'UV_FIND_LINKS'" in path.read_text(encoding = "utf-8"), path.name
-        stack = STACK_PY.read_text(encoding = "utf-8")
+            assert "'UV_FIND_LINKS'" in path.read_text(encoding="utf-8"), path.name
+        stack = STACK_PY.read_text(encoding="utf-8")
         assert '"UV_FIND_LINKS",' in stack and '"PIP_FIND_LINKS",' in stack
 
     def test_setup_ps1_scrub_covers_pip_fallback(self):
         """setup.ps1's Fast-Install must keep the scrub active through the pip
         fallback (pip honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to
         --index-url); restoring the vars before the fallback reopens the hole."""
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         fi = text[text.find("function Fast-Install") :][:2500]
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
         # the pip fallback must sit INSIDE the try whose finally restores the vars
@@ -750,7 +750,7 @@ class TestPinnedIndexClearsUvEnvParity:
             (INSTALL_PS1, "Get-UvExecutableVerdict"),
             (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
         ):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             assert f"function {probe}" in text, f"{path.name} must define {probe}"
             # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
             # binary is exactly how an unattended install hangs.
@@ -797,18 +797,18 @@ class TestPinnedIndexClearsUvEnvParity:
         [[index]] both resolve torch+cpu against an explicit --index-url /
         --default-index cu126 pin; UV_NO_CONFIG=1 restores the pin). Every
         installer's pinned scrub must set UV_NO_CONFIG=1 and drop UV_CONFIG_FILE."""
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
         assert "-u UV_CONFIG_FILE UV_NO_CONFIG=1" in sh, (
             "install.sh run_install_cmd must set UV_NO_CONFIG=1 and drop "
             "UV_CONFIG_FILE for --default-index installs"
         )
         for path in (INSTALL_PS1, SETUP_PS1):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             assert "'UV_CONFIG_FILE'" in text, f"{path.name} must drop UV_CONFIG_FILE"
             assert (
                 "$env:UV_NO_CONFIG = '1'" in text
             ), f"{path.name} must set UV_NO_CONFIG=1 for pinned installs"
-        stack = STACK_PY.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding="utf-8")
         assert (
             '"UV_CONFIG_FILE",' in stack
         ), "install_python_stack.py strip tuple must include UV_CONFIG_FILE"
@@ -825,7 +825,7 @@ class TestPinnedIndexClearsUvEnvParity:
         setup.ps1's Fast-Install) must set it in their pinned scrub. install.sh
         and install.ps1 are uv-only (no python -m pip fallback) and need no
         equivalent."""
-        stack = STACK_PY.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding="utf-8")
         assert 'env["PIP_CONFIG_FILE"] = os.devnull' in stack, (
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
@@ -836,7 +836,7 @@ class TestPinnedIndexClearsUvEnvParity:
             "the pinned scrub must re-assert the operator's transport and binary policy "
             "that PIP_CONFIG_FILE=devnull removes"
         )
-        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        setup = SETUP_PS1.read_text(encoding="utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
             "(Windows devnull) so the pip fallback ignores user/site pip config"
@@ -851,7 +851,7 @@ class TestPinnedIndexClearsUvEnvParity:
         verbatim path bound the WHOLE trio, so the Windows update path must too -- a
         private mirror serving newer torch OR newer companions must not lift the venv
         above the supported range under the pin."""
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         # The custom-leaf branch bounds torch AND both companions (parity with the
         # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
@@ -876,7 +876,7 @@ class TestPinnedIndexClearsUvEnvParity:
         _CPU_TORCH_PKG_SPEC): the /cpu index serves newer torch, and _ensure_cpu_torch
         keeps any CPU build, so a bare pinned trio could land an unsupported version.
         An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         for spec in (
             '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
             '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
@@ -893,7 +893,7 @@ class TestPinnedIndexClearsUvEnvParity:
             "Fast-Install @_torchTrio @cpuForce" in text
         ), "setup.ps1's CPU branch must install the trio it built"
         # The ceilings mirror the Python repair spec exactly.
-        stack = STACK_PY.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding="utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
         assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
             "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
@@ -904,7 +904,7 @@ class TestPinnedIndexClearsUvEnvParity:
         """The stale-venv check must use the same EXACT rocm/gfx gate as the install
         selection (Test-PipRocmFamilyLeaf), or a custom rocm-* / suffixed rocm7.2-private
         leaf is stale-compared as a family and force-reinstalls on every studio update."""
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         anchor = text.find("$_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx")
         assert anchor >= 0, "setup.ps1 stale check must classify the pinned leaf"
         stale = text[anchor:][:2500]
@@ -926,19 +926,19 @@ class TestIndexPathSlashTrimParity:
     empty. The helper must be DEFINED and WIRED into the override return in all four."""
 
     def test_helper_defined_in_all_installers(self):
-        assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding = "utf-8")
-        assert "_trim_index_path_slashes()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "function Trim-IndexPathSlashes" in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding="utf-8")
+        assert "_trim_index_path_slashes()" in INSTALL_SH.read_text(encoding="utf-8")
+        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(encoding="utf-8")
+        assert "function Trim-IndexPathSlashes" in SETUP_PS1.read_text(encoding="utf-8")
 
     def test_helper_wired_into_override_in_all_installers(self):
-        assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding = "utf-8")
-        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding="utf-8")
+        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding="utf-8")
         assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in INSTALL_PS1.read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
         assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in SETUP_PS1.read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
 
 
@@ -948,26 +948,26 @@ class TestInstallOutputRedactionParity:
     DEFINE a redaction helper and WIRE it into the captured-output print path."""
 
     def test_helper_defined_in_all_installers(self):
-        assert "def _redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
-        assert "_redact_install_output()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "def _redact_install_output(" in STACK_PY.read_text(encoding="utf-8")
+        assert "_redact_install_output()" in INSTALL_SH.read_text(encoding="utf-8")
+        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(encoding="utf-8")
+        assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding="utf-8")
 
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
-        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
+        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding="utf-8")
         # Both ps1 installers redact the captured $output before printing it on a
         # non-zero exit. Write-StudioLine is the UTF-8 stdout sink both now use.
         assert (
             "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
-            in INSTALL_PS1.read_text(encoding = "utf-8")
+            in INSTALL_PS1.read_text(encoding="utf-8")
         )
         assert (
             "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
-            in SETUP_PS1.read_text(encoding = "utf-8")
+            in SETUP_PS1.read_text(encoding="utf-8")
         )
         # Python redacts the captured stdout before printing.
-        assert "_redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
+        assert "_redact_install_output(" in STACK_PY.read_text(encoding="utf-8")
 
 
 class TestPipNoIndexScrubParity:
@@ -977,12 +977,12 @@ class TestPipNoIndexScrubParity:
     install.sh / install.ps1 are uv-only (--default-index), which ignores pip config/env."""
 
     def test_python_scrubs_pip_no_index_and_pip_index_url(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert '"PIP_NO_INDEX"' in text
         assert '"PIP_INDEX_URL"' in text
 
     def test_setup_ps1_scrubs_pip_no_index_and_pip_index_url(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
 
@@ -998,7 +998,7 @@ class TestNoTorchPersistenceParity:
     the venv it is itself running out of, which fails on a locked python.exe."""
 
     def test_the_stack_records_the_mode_it_installed(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert "no_torch = NO_TORCH" in text
         assert "install_manifest.recorded_no_torch()" in text
         # Written after the manifest is dropped and before the dependency pass, so
@@ -1013,12 +1013,12 @@ class TestNoTorchPersistenceParity:
         assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
-        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding="utf-8")
         assert 'NO_TORCH_MARKER = ".unsloth-no-torch"' in manifest
-        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding = "utf-8")
+        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding="utf-8")
 
     def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
-        text = SETUP_PS1.read_text(encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding="utf-8")
         assert "function Get-PersistedNoTorch" in text
         assert "function Set-PersistedNoTorch" in text
         # setup.ps1 drops the manifest before running install_python_stack.py, so
@@ -1030,10 +1030,10 @@ class TestNoTorchPersistenceParity:
     def test_both_sides_accept_the_same_spellings(self):
         # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
         # be narrower, or a value one layer honours another silently ignores.
-        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
-        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding="utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding="utf-8")
         assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
-        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")
+        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding="utf-8")
 
 
 class TestAmdBnbFloorParity:
@@ -1047,7 +1047,7 @@ class TestAmdBnbFloorParity:
     PYPROJECT = REPO_ROOT / "pyproject.toml"
 
     def test_amd_extra_floor(self):
-        text = self.PYPROJECT.read_text(encoding = "utf-8")
+        text = self.PYPROJECT.read_text(encoding="utf-8")
         amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
         assert amd, "pyproject.toml must define an `amd` extra"
         specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
@@ -1058,20 +1058,20 @@ class TestAmdBnbFloorParity:
             ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
 
     def test_install_sh_pypi_fallback_floor(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
         ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
 
     def test_stack_py_pypi_fallback_floor(self):
-        text = STACK_PY.read_text(encoding = "utf-8")
+        text = STACK_PY.read_text(encoding="utf-8")
         assert (
             f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text
         ), f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
 
     def test_no_installer_still_allows_the_broken_range(self):
         for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             for line in text.splitlines():
                 if "bitsandbytes>=0.49" in line and not line.lstrip().startswith(("#", "//")):
                     raise AssertionError(
@@ -1082,7 +1082,7 @@ class TestAmdBnbFloorParity:
         """The fallback now installs the first fixed release, so neither installer
         may still call 4-bit decode broken on ROCm."""
         for path in (INSTALL_SH, STACK_PY):
-            text = path.read_text(encoding = "utf-8")
+            text = path.read_text(encoding="utf-8")
             assert (
                 "4-bit decode broken on ROCm" not in text
             ), f"{path.name} still reports the repaired PyPI fallback as broken"
@@ -1094,13 +1094,13 @@ class TestAmdBnbFloorParity:
         """bitsandbytes ships no ROCm kernels in its aarch64 wheel at any version, so
         neither installer may hand aarch64 the x86_64 "carries the ROCm 4-bit fix"
         message, and both must warn that 4-bit needs a source build there."""
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
         assert "_bnb_rocm_arch_has_binary()" in sh
         assert "_warn_bnb_no_rocm_binary()" in sh
         assert (
             sh.count("_warn_bnb_no_rocm_binary\n") >= 2
         ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
-        py = STACK_PY.read_text(encoding = "utf-8")
+        py = STACK_PY.read_text(encoding="utf-8")
         assert "def _bnb_rocm_arch_has_binary(" in py
         assert "_bnb_rocm_arch_has_binary()" in py
         for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
@@ -1113,8 +1113,8 @@ class TestInstallUvCacheRootParity:
     """Both top-level installers must expose the same automatic cache policy."""
 
     def test_option_and_environment_names_match(self):
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
-        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding="utf-8")
         for source in (sh, ps1):
             assert "--isolated-uv-cache" in source
             assert "UNSLOTH_ISOLATE_UV_CACHE" in source
@@ -1128,8 +1128,8 @@ class TestInstallUvCacheRootParity:
         assert "$env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')" in ps1
 
     def test_selectors_share_precedence_markers_modes_and_messages(self):
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
-        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding="utf-8")
         for source in (sh, ps1):
             for marker in ("CACHEDIR.TAG", ".gitignore"):
                 assert marker in source
@@ -1154,9 +1154,9 @@ class TestInstallUvCacheRootParity:
         """`unsloth studio update` reads this to reuse the install's cache. Content
         cannot decide it: install.sh:705 points the backend at the Studio cache even in
         shared mode, so a runtime install leaves bytes in the losing one."""
-        sh = INSTALL_SH.read_text(encoding = "utf-8")
-        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
-        cli = (REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+        sh = INSTALL_SH.read_text(encoding="utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding="utf-8")
+        cli = (REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding="utf-8")
 
         for source in (sh, ps1, cli):
             assert "uv-cache-dir" in source
@@ -1465,7 +1465,7 @@ class TestInstallUvCacheRootParity:
         assert "find -L " in sh
 
     def test_shell_order_wsl_handoff_and_autostart_boundary(self):
-        source = INSTALL_SH.read_text(encoding = "utf-8")
+        source = INSTALL_SH.read_text(encoding="utf-8")
         resolved = source.index("\n_resolve_studio_destinations\n")
         uv_setup = source.index("\n# ── Install uv ──\n")
         configured = source.index("\n_configure_uv_cache\n", uv_setup)
@@ -1486,7 +1486,7 @@ class TestInstallUvCacheRootParity:
         assert "*[![:space:]]*)" in reroute
 
     def test_powershell_order_handoff_and_restoration(self):
-        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        source = INSTALL_PS1.read_text(encoding="utf-8")
         resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
         captured = source.index("$hadPreviousUvCacheDir =")
         uv_setup = source.index("if (-not (Test-UvVersionOk))", captured)
@@ -1527,7 +1527,7 @@ class TestWindowsMountPointVolumes:
     has a directory mount point to exercise (#11313)."""
 
     def test_free_space_asks_the_mounted_volume_first(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert "Win32_Volume" in text, "install.ps1 does not consult the mount-point view"
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
@@ -1539,7 +1539,7 @@ class TestWindowsMountPointVolumes:
 
     def test_the_probe_is_gated_on_windows(self):
         # CimCmdlets ships only on Windows, and this helper is reached on every platform.
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Get-StudioMountedVolume", 1)[1].split("\n    }", 1)[0]
         assert (
             "$IsWindows" in helper and "Windows_NT" in helper
@@ -1553,7 +1553,7 @@ class TestDiskFullDiagnosisReachesTauri:
     scenario #11313 was reported from."""
 
     def test_shell_folds_the_diagnosis_into_the_marker(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert (
             'tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)$_DISK_FULL_SUFFIX"'
             in text
@@ -1562,7 +1562,7 @@ class TestDiskFullDiagnosisReachesTauri:
     def test_windows_folds_the_diagnosis_into_the_failure_message(self):
         """Appended inside Exit-InstallFailure, so every caller carries it rather than the one
         site that remembered to build a suffix."""
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         append = body.index('$Message = "$Message$_diskSuffix"')
         marker = body.index('Write-TauriLog "ERROR_DEFAULT" $Message')
@@ -1570,7 +1570,7 @@ class TestDiskFullDiagnosisReachesTauri:
 
     def test_windows_measures_in_both_modes(self):
         # The probe must sit OUTSIDE the non-Tauri console branch, or --tauri never measures.
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         probe = body.index("Get-StudioFreeSpaceBytes")
         guard = body.index("if (-not $TauriMode) {")
@@ -1586,7 +1586,7 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
     Both installers attach it to the one funnel every failure passes through instead."""
 
     def test_windows_attaches_it_to_the_shared_exit(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         assert "Get-StudioFreeSpaceBytes" in body, "only the studio-setup branch is diagnosed"
         # Probed rather than called outright: the early exits happen before it is defined.
@@ -1595,7 +1595,7 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
         ), "an exit before the helper is defined would report command-not-found instead"
 
     def test_the_shell_attaches_it_to_the_exit_trap(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
         assert "_set_disk_full_suffix" in body, "earlier failures exit without a diagnosis"
         assert (
@@ -1604,7 +1604,7 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
 
     def test_the_shell_does_not_report_it_twice(self):
         """The studio-setup branch reports with its own wording, and the trap runs afterwards."""
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert "_DISK_FULL_REPORTED=true" in text
         assert '"${_DISK_FULL_REPORTED:-false}" != true' in text
 
@@ -1618,7 +1618,7 @@ class TestDiagnosticsNeverCostTheRollback:
     def test_the_shell_restores_before_it_reports(self):
         """Measure first, restore, then report. Reporting before the restore lets a failed write
         abort the trap; measuring after it reads a disk the restore has just emptied."""
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
         measure = body.index("_set_disk_full_suffix || true")
         restore = body.index("_restore_studio_venv_replacement")
@@ -1627,14 +1627,14 @@ class TestDiagnosticsNeverCostTheRollback:
         assert restore < report, "a failed diagnostic write can abort the trap before the restore"
 
     def test_the_windows_probe_precedes_its_restore_too(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         assert body.index("Get-StudioFreeSpaceBytes") < body.index(
             "Restore-StudioVenvRollback"
         ), "the rollback restore frees space before the disk is measured"
 
     def test_the_shell_diagnostics_are_best_effort(self):
-        text = INSTALL_SH.read_text(encoding = "utf-8")
+        text = INSTALL_SH.read_text(encoding="utf-8")
         body = text.split("_on_install_exit() {", 1)[1].split("\n}", 1)[0]
         writes = [
             line.strip()
@@ -1648,7 +1648,7 @@ class TestDiagnosticsNeverCostTheRollback:
     def test_the_windows_diagnosis_cannot_escape(self):
         """PowerShell has no `set -e`, but the installer body runs under $ErrorActionPreference
         Stop, so a write to a closed handle throws. Containing it is the same requirement."""
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         probe = body.index("Get-StudioFreeSpaceBytes")
         opened = body.rindex("try {", 0, probe)
@@ -1668,10 +1668,10 @@ class TestDiskFullRemedyDescribesWhatHappened:
             (INSTALL_SH, "_VENV_DISCARD_LEFTOVER"),
             (INSTALL_PS1, "$script:StudioVenvDiscardLeftover"),
         ],
-        ids = ["install.sh", "install.ps1"],
+        ids=["install.sh", "install.ps1"],
     )
     def test_a_failed_discard_names_the_tree_it_left(self, path, leftover):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         block = text.split("is very likely the cause", 1)[0][-2200:]
         assert leftover in block, f"{path.name} does not consult what the discard actually left"
         assert (
@@ -1684,11 +1684,11 @@ class TestDiskFullRemedyDescribesWhatHappened:
             (INSTALL_SH, "_VENV_DISCARDED"),
             (INSTALL_PS1, "$script:StudioVenvDiscardSucceeded"),
         ],
-        ids = ["install.sh", "install.ps1"],
+        ids=["install.sh", "install.ps1"],
     )
     def test_the_already_discarded_case_reads_the_outcome_not_the_flag(self, path, succeeded):
         """Inferring it from the flag also claims a fresh install discarded something."""
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         block = text.split("is very likely the cause", 1)[0][-2200:]
         assert succeeded in block, f"{path.name} infers the discard from the request"
         assert "already discarded by --no-rollback" in text
@@ -1696,12 +1696,12 @@ class TestDiskFullRemedyDescribesWhatHappened:
     @pytest.mark.parametrize(
         "path",
         [INSTALL_SH, INSTALL_PS1],
-        ids = ["install.sh", "install.ps1"],
+        ids=["install.sh", "install.ps1"],
     )
     def test_the_flag_is_not_advised_to_a_run_that_used_it(self, path):
         """The remedy's payload is the opt-out's name, so offering it to someone who already
         passed it describes a re-run that fails the same way."""
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         block = text.split("is very likely the cause", 1)[0][-2200:]
         assert (
             "UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment" in block
@@ -1717,7 +1717,7 @@ class TestVolumeLookupsResolveLinks:
     will hold the environment, suppressing or falsely emitting both disk warnings (#11313)."""
 
     def test_both_volume_lookups_go_through_the_resolver(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert "function Resolve-StudioVolumeQueryPath" in text
         for name, end in (
             ("function Get-StudioMountedVolume", "function Get-StudioFreeSpaceBytes"),
@@ -1730,7 +1730,7 @@ class TestVolumeLookupsResolveLinks:
 
     def test_the_driveinfo_fallback_uses_the_resolved_path(self):
         # The fallback is the path that runs off Windows and wherever CIM cannot answer.
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
         )[0]
@@ -1746,7 +1746,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
     verdict first routes an Arc machine to CPU wheels (#11313)."""
 
     def test_the_verdict_is_taken_before_the_tree_is_deleted(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         discard = text.split("if ($script:StudioNoRollback) {", 1)[1].split(
             'substep "previous environment discarded', 1
         )[0]
@@ -1755,7 +1755,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
         assert probe < removal, "the tree is deleted before its XPU verdict is taken"
 
     def test_the_scan_reads_the_preserved_verdict(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert "$script:StudioPreservedXpuVerdict" in text
         scan = text.split("$_xpuProbePy = $VenvPython", 1)[0][-900:]
         assert (
@@ -1765,7 +1765,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
     def test_the_probe_is_defined_before_the_rollback_that_calls_it(self):
         # PowerShell binds a function when the statement defining it runs, so a helper defined
         # after its caller is CommandNotFoundException at the call.
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert text.index("function Invoke-BoundedPythonProbe") < text.index(
             "function Start-StudioVenvRollback"
         ), "Invoke-BoundedPythonProbe is defined after the function that calls it"
@@ -1778,7 +1778,7 @@ class TestTheVolumeQueryIsBounded:
     the wording of a disk warning, so it takes the same treatment (#11313)."""
 
     def test_it_runs_out_of_process_with_a_deadline(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Get-StudioVolumeList", 1)[1].split(
             "function Get-StudioMountedVolume", 1
         )[0]
@@ -1788,7 +1788,7 @@ class TestTheVolumeQueryIsBounded:
         assert "Stop-Job" in helper, "a query past its deadline is never killed"
 
     def test_nothing_queries_win32_volume_unbounded(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Get-StudioVolumeList", 1)[1].split(
             "function Get-StudioMountedVolume", 1
         )[0]
@@ -1798,7 +1798,7 @@ class TestTheVolumeQueryIsBounded:
         ), "Win32_Volume is queried somewhere other than the bounded helper"
 
     def test_the_answer_is_taken_once(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert (
             "$script:StudioVolumeList = $null" in text
         ), "the cached volume list is never reset, so `irm | iex` reuses a previous run's answer"
@@ -1811,7 +1811,7 @@ class TestFreeSpaceIsNeverServedFromTheCache:
     disk-full diagnosis this change exists to add (#11313)."""
 
     def test_the_free_space_caller_asks_for_a_fresh_answer(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
         )[0]
@@ -1825,14 +1825,14 @@ class TestVolumeLookupRefusesToGuess:
     install, which is worse than answering nothing (#11313)."""
 
     def test_the_matcher_rejects_an_unrooted_path(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Select-StudioVolumeForPath", 1)[1].split(
             "function Get-StudioVolumeList", 1
         )[0]
         assert "IsPathRooted" in helper, "the matcher anchors an unrooted path to the CWD"
 
     def test_the_resolver_keeps_the_caller_path_when_resolution_is_unrooted(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Resolve-StudioVolumeQueryPath", 1)[1].split("\n    }", 1)[0]
         assert (
             "IsPathRooted" in helper
@@ -1846,7 +1846,7 @@ class TestRemovalIsConfirmedWithLinkAwareSemantics:
     environment is gone (#11313)."""
 
     def test_the_retry_helper_uses_the_link_aware_check(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         helper = text.split("function Remove-StudioVenvTreeWithRetry", 1)[1].split(
             "\n    function ", 1
         )[0]
@@ -1863,14 +1863,14 @@ class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
     discards, so the promise has to be gated on the flag and not only on an earlier discard."""
 
     def test_the_promise_is_gated_on_the_flag_too(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         gate = text.split("the ARM64 environment is kept under", 1)[0][-400:]
         assert (
             "$script:StudioNoRollback" in gate
         ), "the retention promise is printed on a run whose next call deletes the tree"
 
     def test_a_discard_inside_the_migration_is_reported(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         arm = text.split("Start-StudioVenvRollback -ExistingDir $VenvDir\n                if (", 1)
         assert len(arm) == 2, "the migration does not check what its own rollback call did"
         assert "discarded by --no-rollback rather than kept" in arm[1][:900]
@@ -1887,15 +1887,15 @@ class TestNoRollbackNeverPromisesAKeptCopy:
             (INSTALL_SH, '[ "${_NO_ROLLBACK:-false}" = true ]'),
             (INSTALL_PS1, "if ($script:StudioNoRollback)"),
         ],
-        ids = ["install.sh", "install.ps1"],
+        ids=["install.sh", "install.ps1"],
     )
     def test_the_reinstall_message_varies(self, path, flag):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         before = text.split("preserving existing environment for rollback", 1)[0][-500:]
         assert flag in before, f"{path.name} promises a rollback copy it may be about to discard"
 
     def test_the_woa_migration_message_varies(self):
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         before = text.split("the previous one is kept for rollback", 1)[0][-600:]
         assert (
             "$script:StudioNoRollback" in before
@@ -1903,5 +1903,5 @@ class TestNoRollbackNeverPromisesAKeptCopy:
 
     def test_every_rollback_call_site_was_audited(self):
         # If a fourth call site appears, this fails and the promise above it has to be checked.
-        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding="utf-8")
         assert text.count("Start-StudioVenvRollback -ExistingDir") == 3

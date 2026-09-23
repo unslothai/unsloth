@@ -34,17 +34,18 @@ class _Dist:
         return json.dumps(self._direct_url)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     monkeypatch.setattr(dr, "_thread", None)
     monkeypatch.setattr(dr, "_installed", False)
-    monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising = False)
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising=False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
 
 
 def _installed_diffusers(monkeypatch, direct_url):
     import importlib.metadata
+
     monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Dist(direct_url))
 
 
@@ -72,11 +73,11 @@ class _Proc:
     def __init__(
         self,
         returncode,
-        wait = None,
+        wait=None,
     ):
         self.pid, self.returncode, self._wait = 0, returncode, wait
 
-    def communicate(self, timeout = None):
+    def communicate(self, timeout=None):
         if self._wait is not None:
             self._wait.wait(5)
         return "", None
@@ -92,7 +93,7 @@ def test_a_release_install_starts_one_repair_and_records_success(monkeypatch):
 
     def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs["env"]))
-        return _Proc(dr._INSTALLED, wait = release)
+        return _Proc(dr._INSTALLED, wait=release)
 
     monkeypatch.setattr(dr.subprocess, "Popen", fake_popen)
     assert dr.start_diffusers_autorepair_if_needed() is True
@@ -111,13 +112,13 @@ def test_nothing_to_do_and_failure_do_not_report_an_install(monkeypatch):
     _installed_diffusers(monkeypatch, None)
     for code in (dr._NOTHING_TO_DO, 2):
         monkeypatch.setattr(dr, "_thread", None)
-        monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, code = code, **kw: _Proc(code))
+        monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, code=code, **kw: _Proc(code))
         assert dr.start_diffusers_autorepair_if_needed() is True
         dr._thread.join(5)
         assert dr.diffusers_repair_installed() is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process tree")
 def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_path):
     """uv, not the installer, rewrites diffusers, so killing only the installer on timeout would
     reopen the load gate while the files are still being replaced."""
@@ -130,7 +131,7 @@ def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_p
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))\n"
         "time.sleep(60)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setattr(dr, "_INSTALLER", installer)
     monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", 3)
@@ -155,7 +156,7 @@ def _peer_pass(monkeypatch, *uncontended):
 
     monkeypatch.setattr(dr, "_peer_holds_pass", _REAL_PEER_HOLDS_PASS)
     held = iter(uncontended)
-    fake = types.SimpleNamespace(pass_lock = lambda: contextlib.nullcontext(next(held)))
+    fake = types.SimpleNamespace(pass_lock=lambda: contextlib.nullcontext(next(held)))
     monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
 
 
@@ -219,8 +220,8 @@ def test_the_load_gate_waits_for_a_running_repair(monkeypatch):
     from core.inference import diffusion_families as fam
 
     monkeypatch.setattr(dr, "diffusers_repair_in_flight", lambda: True)
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
-    with pytest.raises(ValueError, match = "installing the pinned diffusers build"):
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
+    with pytest.raises(ValueError, match="installing the pinned diffusers build"):
         fam.assert_pipeline_class_available("QwenImage21Pipeline", "qwen-image-2.1")
 
 
@@ -234,13 +235,13 @@ def test_minimax_music3_is_refused_before_eviction_while_the_repair_runs(monkeyp
     import routes.inference as ri
 
     monkeypatch.setattr(dr, "diffusers_repair_in_flight", lambda: True)
-    config = types.SimpleNamespace(audio_type = "minimax_music3", is_lora = False, identifier = "x/y")
+    config = types.SimpleNamespace(audio_type="minimax_music3", is_lora=False, identifier="x/y")
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
             ri._preflight_native_audio_placement(
                 config,
-                types.SimpleNamespace(audio_device = None),
-                types.SimpleNamespace(requested_gpu_ids = None),
+                types.SimpleNamespace(audio_device=None),
+                types.SimpleNamespace(requested_gpu_ids=None),
             )
         )
     assert excinfo.value.status_code == 400
@@ -253,7 +254,7 @@ def test_the_repair_is_decided_before_the_socket_binds():
     the source because running the real lifespan brings up the whole backend."""
     import ast
 
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding="utf-8"))
     functions = {
         node.name: node
         for node in ast.walk(tree)
@@ -286,5 +287,5 @@ def test_a_finished_repair_behind_a_loaded_release_asks_for_a_restart(monkeypatc
 
 
 def test_the_installer_exposes_the_repair_flag():
-    source = dr._INSTALLER.read_text(encoding = "utf-8")
+    source = dr._INSTALLER.read_text(encoding="utf-8")
     assert '["--repair-diffusers-main"]' in source

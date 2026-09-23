@@ -44,7 +44,7 @@ class _FakeProc:
     def poll(self):
         return None
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         raise subprocess.TimeoutExpired("vite", timeout or 0)
 
 
@@ -58,7 +58,7 @@ def no_signals(monkeypatch):
 def posix_branch(monkeypatch, no_signals):
     """Drive the POSIX teardown from any host: os.killpg and signal.SIGKILL are Unix-only."""
     monkeypatch.setattr(robust.os, "name", "posix")
-    monkeypatch.setattr(robust.signal, "SIGKILL", SIGKILL, raising = False)
+    monkeypatch.setattr(robust.signal, "SIGKILL", SIGKILL, raising=False)
 
 
 @pytest.fixture
@@ -79,8 +79,8 @@ def installed_frontend(monkeypatch, tmp_path):
     direction. It also keeps this file's promise that nothing here touches a real install.
     """
     binaries = tmp_path / "node_modules" / ".bin"
-    binaries.mkdir(parents = True)
-    (binaries / "vite").write_text("#!/bin/sh\n", encoding = "utf-8")
+    binaries.mkdir(parents=True)
+    (binaries / "vite").write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(robust, "FRONTEND", tmp_path)
     return tmp_path
 
@@ -96,10 +96,10 @@ def test_start_vite_picks_the_platform_process_group(
         robust.threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: None})()
     )
     monkeypatch.setattr(
-        robust.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd = cmd, kw = kw) or _FakeProc()
+        robust.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd=cmd, kw=kw) or _FakeProc()
     )
     if osname == "nt":
-        monkeypatch.setattr(robust.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising = False)
+        monkeypatch.setattr(robust.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
 
     robust.start_vite(5199)
 
@@ -142,7 +142,7 @@ def _require_playwright_page():
 def test_posix_teardown_signals_the_group_and_escalates(monkeypatch, posix_branch) -> None:
     sent = []
     monkeypatch.setattr(
-        robust.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising = False
+        robust.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising=False
     )
     robust.stop_process(_FakeProc())
     assert sent == [(4242, signal.SIGTERM), (4242, SIGKILL)]
@@ -162,7 +162,7 @@ def test_windows_teardown_kills_the_tree_and_escalates(monkeypatch, no_signals) 
 def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, posix_branch) -> None:
     """stop_process runs from a `finally`. A child that outlives SIGKILL must not replace the
     harness's real error with a TimeoutExpired."""
-    monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None, raising = False)
+    monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None, raising=False)
     robust.stop_process(_FakeProc())
 
 
@@ -170,7 +170,7 @@ def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, posix_b
     def gone(pid, sig):
         raise ProcessLookupError
 
-    monkeypatch.setattr(robust.os, "killpg", gone, raising = False)
+    monkeypatch.setattr(robust.os, "killpg", gone, raising=False)
     robust.stop_process(_FakeProc())
 
 
@@ -185,7 +185,7 @@ def test_an_occupied_port_is_refused_rather_than_measured(
     happen to be written in.
     """
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: True)
-    with pytest.raises(RuntimeError, match = "already serving"):
+    with pytest.raises(RuntimeError, match="already serving"):
         robust.start_vite(5199)
 
 
@@ -205,7 +205,7 @@ def test_start_vite_refuses_a_tree_with_no_frontend_toolchain(
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: False)
     spawned: list = []
     monkeypatch.setattr(robust.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
-    with pytest.raises(RuntimeError, match = "dev dependencies are not installed"):
+    with pytest.raises(RuntimeError, match="dev dependencies are not installed"):
         robust.start_vite(5199)
     assert spawned == [], "the refusal must land before npm is spawned, or the cause is lost"
 
@@ -215,8 +215,8 @@ def test_the_toolchain_check_accepts_every_platform_binary(monkeypatch, tmp_path
     """bun writes .bunx shims and npm writes .cmd/.exe on Windows, so a POSIX-only name test
     would reject a perfectly good Windows or bun tree and send someone chasing a phantom."""
     binaries = tmp_path / "node_modules" / ".bin"
-    binaries.mkdir(parents = True)
-    (binaries / binary).write_text("", encoding = "utf-8")
+    binaries.mkdir(parents=True)
+    (binaries / binary).write_text("", encoding="utf-8")
     monkeypatch.setattr(robust, "FRONTEND", tmp_path)
     robust._require_frontend_toolchain()
 
@@ -225,7 +225,7 @@ def test_the_toolchain_check_names_a_missing_frontend_separately(monkeypatch, tm
     """Run from outside the repo is a different mistake from run without an install, and the
     two must not share one message."""
     monkeypatch.setattr(robust, "FRONTEND", tmp_path / "not-a-checkout")
-    with pytest.raises(RuntimeError, match = "no frontend at"):
+    with pytest.raises(RuntimeError, match="no frontend at"):
         robust._require_frontend_toolchain()
 
 
@@ -239,9 +239,9 @@ def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) 
         def poll(self):
             return 1
 
-    with pytest.raises(RuntimeError, match = "vite exited with code 1") as caught:
+    with pytest.raises(RuntimeError, match="vite exited with code 1") as caught:
         robust.wait_for_smoke_page(
-            "http://127.0.0.1:5199/x.html", "x.tsx", proc = Dead(), timeout_s = 30.0
+            "http://127.0.0.1:5199/x.html", "x.tsx", proc=Dead(), timeout_s=30.0
         )
     assert "already in use" in str(caught.value), "vite's own reason should be surfaced"
 
@@ -249,7 +249,8 @@ def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_ports_do_not_collide_and_are_overridable(harness) -> None:
     import re
-    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
+
+    src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding="utf-8")
     assert re.search(r'SMOKE_PORT",\s*"\d+"', src), f"{harness} has no SMOKE_PORT default"
 
 
@@ -258,7 +259,7 @@ def test_every_harness_picks_a_different_default_port() -> None:
 
     ports = {}
     for harness in HARNESSES:
-        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding = "utf-8")
+        src = (Path(__file__).resolve().parent / f"{harness}.py").read_text(encoding="utf-8")
         ports[harness] = re.search(r'SMOKE_PORT",\s*"(\d+)"', src).group(1)
     assert len(set(ports.values())) == len(HARNESSES), f"default ports collide: {ports}"
 
@@ -275,7 +276,7 @@ def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
     try:
         assert module.BASE.startswith("http://"), f"empty SMOKE_BASE_URL gave BASE={module.BASE!r}"
     finally:
-        monkeypatch.delenv("SMOKE_BASE_URL", raising = False)
+        monkeypatch.delenv("SMOKE_BASE_URL", raising=False)
         importlib.reload(module)
 
 
@@ -292,5 +293,5 @@ def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> N
         assert module.BASE == "http://127.0.0.1:9999"
         assert module.OWNS_SERVER is False
     finally:
-        monkeypatch.delenv("SMOKE_BASE_URL", raising = False)
+        monkeypatch.delenv("SMOKE_BASE_URL", raising=False)
         importlib.reload(module)

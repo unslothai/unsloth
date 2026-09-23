@@ -38,8 +38,8 @@ def _tool_call_delta(
     name,
     arguments,
     *,
-    id = "c1",
-    index = 0,
+    id="c1",
+    index=0,
 ):
     """A streaming delta payload carrying one function tool call."""
     return {
@@ -50,8 +50,8 @@ def _tool_call_delta(
 
 
 def _sse(
-    delta = None,
-    finish = None,
+    delta=None,
+    finish=None,
     **extra,
 ) -> str:
     choice: dict = {"index": 0, "delta": delta if delta is not None else {}}
@@ -59,11 +59,11 @@ def _sse(
         choice["finish_reason"] = finish
     payload: dict = {"choices": [choice]}
     payload.update(extra)
-    return "data: " + json.dumps(payload, ensure_ascii = False)
+    return "data: " + json.dumps(payload, ensure_ascii=False)
 
 
 def _raw(payload) -> str:
-    return "data: " + json.dumps(payload, ensure_ascii = False)
+    return "data: " + json.dumps(payload, ensure_ascii=False)
 
 
 def _tool(name: str) -> dict:
@@ -96,9 +96,9 @@ class FakeTransport:
         self,
         turns,
         *,
-        heals = True,
-        repeat_last = False,
-        max_turns = 40,
+        heals=True,
+        repeat_last=False,
+        max_turns=40,
     ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
@@ -173,7 +173,7 @@ def executed(monkeypatch):
     # raising = False: this helper moved during the external-provider work, and
     # these tests must not depend on where it currently lives.
     monkeypatch.setattr(
-        loop_mod, "strip_result_for_model", lambda result, name = None: result, raising = False
+        loop_mod, "strip_result_for_model", lambda result, name=None: result, raising=False
     )
     return calls
 
@@ -195,11 +195,11 @@ def _policy(**overrides) -> ToolLoopPolicy:
 def _run(
     transport,
     *,
-    tools = None,
-    tool_choice = None,
-    messages = None,
-    cancel_event = None,
-    deadline = 30.0,
+    tools=None,
+    tool_choice=None,
+    messages=None,
+    cancel_event=None,
+    deadline=30.0,
     **policy_kwargs,
 ):
     """Drive the loop to exhaustion and return every line it yielded."""
@@ -211,21 +211,21 @@ def _run(
         out: list[str] = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = messages or [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
-                tool_choice = tool_choice,
+            run=ToolLoopRun(
+                messages=messages or [{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
+                tool_choice=tool_choice,
             ),
-            policy = _policy(**policy_kwargs),
-            cancel_event = cancel_event,
+            policy=_policy(**policy_kwargs),
+            cancel_event=cancel_event,
         )
         async for line in agen:
             out.append(line)
         return out
 
     async def _guarded():
-        return await asyncio.wait_for(_collect(), timeout = deadline)
+        return await asyncio.wait_for(_collect(), timeout=deadline)
 
     return asyncio.run(_guarded())
 
@@ -264,19 +264,19 @@ def _visible_text(lines) -> str:
 
 
 def _call_turn(
-    call_id = "c1",
-    name = "web_search",
-    arguments = '{"query":"q"}',
+    call_id="c1",
+    name="web_search",
+    arguments='{"query":"q"}',
 ):
     return [
-        _sse(_tool_call_delta(name, arguments, id = call_id)),
-        _sse(finish = "tool_calls"),
+        _sse(_tool_call_delta(name, arguments, id=call_id)),
+        _sse(finish="tool_calls"),
         _DONE,
     ]
 
 
-def _answer_turn(text = "final answer"):
-    return [_sse({"content": text}), _sse(finish = "stop"), _DONE]
+def _answer_turn(text="final answer"):
+    return [_sse({"content": text}), _sse(finish="stop"), _DONE]
 
 
 # ── Stream framing ────────────────────────────────────────────────
@@ -295,10 +295,10 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
         [
             [
                 _sse(_tool_call_delta("web_search", "{}")),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "the real answer"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "the real answer"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -311,7 +311,7 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
 def test_non_json_data_line_is_relayed_untouched(executed):
     """Garbage on the wire is passed through, not parsed and not fatal."""
     transport = FakeTransport(
-        [["data: {not json at all", _sse({"content": "hi"}), _sse(finish = "stop"), _DONE]]
+        [["data: {not json at all", _sse({"content": "hi"}), _sse(finish="stop"), _DONE]]
     )
     lines = _run(transport)
 
@@ -346,7 +346,7 @@ def test_non_json_data_line_is_relayed_untouched(executed):
 def test_hostile_chunk_shapes_do_not_crash_the_loop(executed, payload):
     """No provider chunk shape may take the loop down mid-answer."""
     transport = FakeTransport(
-        [[_raw(payload), _sse({"content": "still here"}), _sse(finish = "stop"), _DONE]]
+        [[_raw(payload), _sse({"content": "still here"}), _sse(finish="stop"), _DONE]]
     )
     lines = _run(transport)
 
@@ -362,7 +362,7 @@ def test_transport_exception_is_reported_as_a_stream_error(executed):
     state on the way out.
     """
     transport = RaisingTransport([_sse({"content": "partial"})], RuntimeError("socket died"))
-    with pytest.raises(RuntimeError, match = "socket died"):
+    with pytest.raises(RuntimeError, match="socket died"):
         _run(transport)
 
 
@@ -405,7 +405,7 @@ def test_structured_call_with_finish_reason_stop_is_executed(executed):
         [
             [
                 _sse(_tool_call_delta("web_search", '{"query":"x"}')),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
             _answer_turn(),
@@ -431,7 +431,7 @@ def test_call_without_an_id_is_still_executed(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -446,8 +446,8 @@ def test_empty_string_id_is_still_executed(executed):
     transport = FakeTransport(
         [
             [
-                _sse(_tool_call_delta("web_search", '{"query":"x"}', id = "")),
-                _sse(finish = "tool_calls"),
+                _sse(_tool_call_delta("web_search", '{"query":"x"}', id="")),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -470,7 +470,7 @@ def test_argument_fragments_without_an_index_continue_the_open_call(executed):
                 _sse(_tool_call_delta("web_search", "")),
                 _sse({"tool_calls": [{"function": {"arguments": '{"query":'}}]}),
                 _sse({"tool_calls": [{"function": {"arguments": '"paris"}'}}]}),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -491,9 +491,9 @@ def test_two_distinct_calls_at_the_same_index_are_not_merged(executed):
     transport = FakeTransport(
         [
             [
-                _sse(_tool_call_delta("web_search", '{"query":"one"}', id = "a")),
-                _sse(_tool_call_delta("web_search", '{"query":"two"}', id = "b")),
-                _sse(finish = "tool_calls"),
+                _sse(_tool_call_delta("web_search", '{"query":"one"}', id="a")),
+                _sse(_tool_call_delta("web_search", '{"query":"two"}', id="b")),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -509,9 +509,9 @@ def test_same_index_merge_never_forwards_raw_garbage(executed):
     transport = FakeTransport(
         [
             [
-                _sse(_tool_call_delta("web_search", '{"query":"one"}', id = "a")),
-                _sse(_tool_call_delta("web_search", '{"query":"two"}', id = "b")),
-                _sse(finish = "tool_calls"),
+                _sse(_tool_call_delta("web_search", '{"query":"one"}', id="a")),
+                _sse(_tool_call_delta("web_search", '{"query":"two"}', id="b")),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -527,9 +527,9 @@ def test_negative_index_does_not_reorder_calls(executed):
     transport = FakeTransport(
         [
             [
-                _sse(_tool_call_delta("web_search", '{"query":"first"}', id = "a")),
-                _sse(_tool_call_delta("web_search", '{"query":"second"}', id = "b", index = -1)),
-                _sse(finish = "tool_calls"),
+                _sse(_tool_call_delta("web_search", '{"query":"first"}', id="a")),
+                _sse(_tool_call_delta("web_search", '{"query":"second"}', id="b", index=-1)),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -548,8 +548,8 @@ def test_ids_repeated_across_turns_stay_unique_in_the_replay(executed):
     """
     transport = FakeTransport(
         [
-            _call_turn(call_id = "same", arguments = '{"query":"a"}'),
-            _call_turn(call_id = "same", arguments = '{"query":"b"}'),
+            _call_turn(call_id="same", arguments='{"query":"a"}'),
+            _call_turn(call_id="same", arguments='{"query":"b"}'),
             _answer_turn(),
         ]
     )
@@ -565,8 +565,8 @@ def test_healed_ids_are_unique_across_turns(executed):
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "%s"}}</tool_call>'
     transport = FakeTransport(
         [
-            [_sse({"content": heal % "a"}), _sse(finish = "stop"), _DONE],
-            [_sse({"content": heal % "b"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": heal % "a"}), _sse(finish="stop"), _DONE],
+            [_sse({"content": heal % "b"}), _sse(finish="stop"), _DONE],
             _answer_turn(),
         ]
     )
@@ -621,11 +621,11 @@ def test_healed_ids_do_not_collide_with_replayed_history(executed):
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "b"}}</tool_call>'
     transport = FakeTransport(
         [
-            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": heal}), _sse(finish="stop"), _DONE],
             _answer_turn(),
         ]
     )
-    _run(transport, messages = _healed_history("call_0"))
+    _run(transport, messages=_healed_history("call_0"))
 
     calls, results = _replayed_ids(transport)
     assert calls == results, (calls, results)
@@ -643,11 +643,11 @@ def test_history_rename_does_not_collide_again_on_the_next_request(executed):
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "c"}}</tool_call>'
     transport = FakeTransport(
         [
-            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": heal}), _sse(finish="stop"), _DONE],
             _answer_turn(),
         ]
     )
-    _run(transport, messages = _healed_history("call_0", "call_0_1_0"))
+    _run(transport, messages=_healed_history("call_0", "call_0_1_0"))
 
     calls, results = _replayed_ids(transport)
     assert calls == results, (calls, results)
@@ -663,11 +663,11 @@ def test_history_without_a_colliding_id_leaves_the_minted_id_alone(executed):
     heal = '<tool_call>{"name": "web_search", "arguments": {"query": "d"}}</tool_call>'
     transport = FakeTransport(
         [
-            [_sse({"content": heal}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": heal}), _sse(finish="stop"), _DONE],
             _answer_turn(),
         ]
     )
-    _run(transport, messages = _healed_history("call_9"))
+    _run(transport, messages=_healed_history("call_9"))
 
     calls, results = _replayed_ids(transport)
     assert calls == results == ["call_9", "call_0"], (calls, results)
@@ -679,7 +679,7 @@ def test_finish_reason_length_mid_tool_call_does_not_execute(executed):
         [
             [
                 _sse(_tool_call_delta("web_search", '{"que')),
-                _sse(finish = "length"),
+                _sse(finish="length"),
                 _DONE,
             ]
         ]
@@ -700,9 +700,9 @@ def test_a_provider_that_always_calls_a_tool_terminates(executed):
     result and asks again. A provider that keeps emitting the same call spins
     forever, growing the conversation on every pass.
     """
-    transport = FakeTransport([_call_turn()], repeat_last = True, max_turns = 40)
+    transport = FakeTransport([_call_turn()], repeat_last=True, max_turns=40)
     try:
-        _run(transport, max_calls = 2)
+        _run(transport, max_calls=2)
     except TooManyTurns as exc:
         pytest.fail(f"loop never terminated: {exc}")
 
@@ -713,9 +713,9 @@ def test_a_provider_that_always_calls_a_tool_terminates(executed):
 
 def test_a_disabled_tool_called_forever_terminates(executed):
     """Same shape without the budget: every call is outside the catalog."""
-    transport = FakeTransport([_call_turn(name = "terminal")], repeat_last = True, max_turns = 40)
+    transport = FakeTransport([_call_turn(name="terminal")], repeat_last=True, max_turns=40)
     try:
-        _run(transport, tools = [WEB])
+        _run(transport, tools=[WEB])
     except TooManyTurns as exc:
         pytest.fail(f"loop never terminated on a disabled tool: {exc}")
 
@@ -723,10 +723,10 @@ def test_a_disabled_tool_called_forever_terminates(executed):
 def test_budget_exhaustion_stops_asking_the_provider_again(executed):
     """After the last permitted execution the loop should wind down, not re-ask."""
     transport = FakeTransport(
-        [_call_turn(call_id = "c1"), _call_turn(call_id = "c2"), _answer_turn()],
-        max_turns = 40,
+        [_call_turn(call_id="c1"), _call_turn(call_id="c2"), _answer_turn()],
+        max_turns=40,
     )
-    _run(transport, max_calls = 1)
+    _run(transport, max_calls=1)
 
     assert len(executed) == 1
     assert len(transport.requests) <= 3
@@ -749,7 +749,7 @@ def test_text_and_structured_form_of_one_call_run_once(executed):
                     }
                 ),
                 _sse(_tool_call_delta("web_search", '{"query":"dup"}')),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -775,7 +775,7 @@ def test_empty_structured_tool_calls_list_does_not_disable_healing(executed):
                         "content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
             _answer_turn(),
@@ -805,10 +805,10 @@ def test_marked_call_inside_a_code_fence_matches_the_local_loops(executed):
                         "content": '```\n<tool_call>{"name": "web_search", "arguments": {"query": "demo"}}</tool_call>\n```'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -825,7 +825,7 @@ def test_nested_markers_do_not_lose_text_or_double_execute(executed):
                         "content": '<tool_call><tool_call>{"name": "web_search", "arguments": {"query": "n"}}</tool_call></tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
             _answer_turn(),
@@ -846,7 +846,7 @@ def test_undeclared_marked_call_is_relayed_verbatim(executed):
                         "content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
@@ -864,7 +864,7 @@ def test_emoji_split_across_chunks_survives(executed):
     """A grapheme cluster straddling a chunk boundary must not be mangled."""
     pieces = ["family: \U0001f468‍", "\U0001f469‍\U0001f467", " done éè"]
     transport = FakeTransport(
-        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]]
+        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish="stop"), _DONE]]
     )
     lines = _run(transport)
 
@@ -875,7 +875,7 @@ def test_marker_prefix_split_around_unicode_is_not_dropped(executed):
     """`<` held as a partial signal, with multi-byte text either side."""
     pieces = ["café <", "é not a marker \U0001f600"]
     transport = FakeTransport(
-        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE]]
+        [[_sse({"content": piece}) for piece in pieces] + [_sse(finish="stop"), _DONE]]
     )
     lines = _run(transport)
 
@@ -890,7 +890,7 @@ def test_tool_marker_split_between_unicode_chunks_still_heals(executed):
     ]
     transport = FakeTransport(
         [
-            [_sse({"content": piece}) for piece in pieces] + [_sse(finish = "stop"), _DONE],
+            [_sse({"content": piece}) for piece in pieces] + [_sse(finish="stop"), _DONE],
             _answer_turn(),
         ]
     )
@@ -906,7 +906,7 @@ def test_tool_marker_split_between_unicode_chunks_still_heals(executed):
 def test_unicode_arguments_round_trip_through_the_replay(executed):
     args = {"query": "中文 \U0001f680"}
     transport = FakeTransport(
-        [_call_turn(arguments = json.dumps(args, ensure_ascii = False)), _answer_turn()]
+        [_call_turn(arguments=json.dumps(args, ensure_ascii=False)), _answer_turn()]
     )
     _run(transport)
 
@@ -926,10 +926,10 @@ def test_one_megabyte_argument_streams_in_fragments(executed):
     turn += [
         _sse({"tool_calls": [{"index": 0, "function": {"arguments": chunk}}]}) for chunk in chunks
     ]
-    turn += [_sse(finish = "tool_calls"), _DONE]
+    turn += [_sse(finish="tool_calls"), _DONE]
 
     start = time.monotonic()
-    _run(FakeTransport([turn, _answer_turn()]), deadline = 60.0)
+    _run(FakeTransport([turn, _answer_turn()]), deadline=60.0)
     elapsed = time.monotonic() - start
 
     assert executed[0]["arguments"]["query"] == blob
@@ -946,13 +946,13 @@ def test_unterminated_block_larger_than_the_hold_cap_is_released(executed):
             [
                 _sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "'}),
                 *[_sse({"content": body[i : i + 4096]}) for i in range(0, len(body), 4096)],
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
     )
     start = time.monotonic()
-    lines = _run(transport, deadline = 60.0)
+    lines = _run(transport, deadline=60.0)
     elapsed = time.monotonic() - start
 
     visible = _visible_text(lines)
@@ -977,12 +977,12 @@ def test_hold_cap_releases_before_the_stream_ends(executed):
                 _sse({"content": "<tool_call>"}),
                 *[_sse({"content": body[i : i + 4096]}) for i in range(0, len(body), 4096)],
                 _sse({"content": marker}),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
     )
-    lines = _run(transport, deadline = 60.0)
+    lines = _run(transport, deadline=60.0)
 
     text_lines = [i for i, line in enumerate(lines) if "z" * 100 in line]
     marker_line = [i for i, line in enumerate(lines) if marker in line]
@@ -999,10 +999,10 @@ def test_text_around_tool_calls_keeps_document_order(executed):
             [
                 _sse({"content": "BEFORE "}),
                 _sse(_tool_call_delta("web_search", "{}")),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "AFTER"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "AFTER"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -1035,10 +1035,10 @@ def test_replayed_conversation_is_valid_for_a_strict_server(executed):
 
 def test_disallowed_call_still_gets_a_tool_result_message(executed):
     transport = FakeTransport(
-        [_call_turn(name = "terminal"), _answer_turn()],
-        max_turns = 6,
+        [_call_turn(name="terminal"), _answer_turn()],
+        max_turns=6,
     )
-    lines = _run(transport, tools = [WEB])
+    lines = _run(transport, tools=[WEB])
 
     # Every announced call is closed out, on the wire and in the replay. A loop
     # that declines to announce a disabled call at all is fine; announcing one
@@ -1072,7 +1072,7 @@ def test_non_string_content_reaches_the_conversation_replay(executed):
                     }
                 ),
                 _sse(_tool_call_delta("web_search", "{}")),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             _answer_turn(),
@@ -1091,7 +1091,7 @@ def test_cancel_before_the_first_turn_does_nothing(executed):
     cancel_event = threading.Event()
     cancel_event.set()
     transport = FakeTransport([_call_turn()])
-    lines = _run(transport, cancel_event = cancel_event)
+    lines = _run(transport, cancel_event=cancel_event)
 
     assert lines == []
     assert transport.requests == []
@@ -1113,7 +1113,7 @@ def test_cancel_during_tool_execution_still_closes_the_tool_card(executed, monke
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
 
     transport = FakeTransport([_call_turn(), _answer_turn()])
-    lines = _run(transport, cancel_event = cancel_event)
+    lines = _run(transport, cancel_event=cancel_event)
 
     assert len(_events(lines, "tool_start")) == 1
     assert len(_events(lines, "tool_end")) == 1, "tool_start with no tool_end"
@@ -1129,7 +1129,7 @@ def test_cancel_between_turns_stops_before_asking_again(executed, monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
 
     transport = FakeTransport([_call_turn(), _answer_turn()])
-    lines = _run(transport, cancel_event = cancel_event)
+    lines = _run(transport, cancel_event=cancel_event)
 
     assert len(transport.requests) == 1
     assert len(_events(lines, "tool_end")) == 1
@@ -1148,9 +1148,9 @@ def test_closing_the_generator_closes_the_transport_stream(executed):
     async def _partial():
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(messages = [{"role": "user", "content": "hi"}], session_id = "s1"),
-            policy = _policy(),
-            cancel_event = threading.Event(),
+            run=ToolLoopRun(messages=[{"role": "user", "content": "hi"}], session_id="s1"),
+            policy=_policy(),
+            cancel_event=threading.Event(),
         )
         await agen.__anext__()
         await agen.aclose()
@@ -1164,21 +1164,21 @@ def test_closing_the_generator_closes_the_transport_stream(executed):
 
 
 def _approval_turns():
-    return [_call_turn(name = "python", arguments = '{"query":"1"}'), _answer_turn()]
+    return [_call_turn(name="python", arguments='{"query":"1"}'), _answer_turn()]
 
 
 def test_approval_allow_runs_the_tool(executed, monkeypatch):
     monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: {"slot": True})
     monkeypatch.setattr(
-        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event=None: "allow"
     )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
 
     lines = _run(
         FakeTransport(_approval_turns()),
-        tools = [PY],
-        permission_mode = "ask",
-        confirm_calls = True,
+        tools=[PY],
+        permission_mode="ask",
+        confirm_calls=True,
     )
 
     assert [call["name"] for call in executed] == ["python"]
@@ -1188,15 +1188,15 @@ def test_approval_allow_runs_the_tool(executed, monkeypatch):
 def test_approval_deny_does_not_run_the_tool(executed, monkeypatch):
     monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: {"slot": True})
     monkeypatch.setattr(
-        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "deny"
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event=None: "deny"
     )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
 
     lines = _run(
         FakeTransport(_approval_turns()),
-        tools = [PY],
-        permission_mode = "ask",
-        confirm_calls = True,
+        tools=[PY],
+        permission_mode="ask",
+        confirm_calls=True,
     )
 
     assert executed == []
@@ -1216,11 +1216,11 @@ def test_approval_that_never_arrives_ends_on_cancel_without_leaking_a_slot(execu
 
     lines = _run(
         FakeTransport(_approval_turns()),
-        tools = [PY],
-        permission_mode = "ask",
-        confirm_calls = True,
-        cancel_event = cancel_event,
-        deadline = 30.0,
+        tools=[PY],
+        permission_mode="ask",
+        confirm_calls=True,
+        cancel_event=cancel_event,
+        deadline=30.0,
     )
 
     assert executed == []

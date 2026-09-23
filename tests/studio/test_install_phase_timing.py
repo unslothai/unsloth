@@ -59,7 +59,7 @@ PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
+@pytest.mark.parametrize("script", INSTALLERS, ids=lambda p: p.name)
 def test_the_installers_carry_no_timing_machinery(script):
     """The first cut of this feature put the clock inside the installers. It should not.
 
@@ -71,7 +71,7 @@ def test_the_installers_carry_no_timing_machinery(script):
     `$(( ))` under `set -u`. None of that exists now, and this test is what keeps it from
     coming back one convenience at a time.
     """
-    src = script.read_text(encoding = "utf-8")
+    src = script.read_text(encoding="utf-8")
     assert "UNSLOTH_INSTALL_TIMING" not in src, (
         f"{script.name} interprets UNSLOTH_INSTALL_TIMING. The install timing is a CI-side "
         f"display filter over a stream that is already piped; putting it back inside the "
@@ -89,7 +89,7 @@ def _run_bodies():
     """Every `run:` body in the workflows and in the composite action, with its origin."""
     paths = sorted(WORKFLOWS.glob("*.yml")) + [ACTION]
     for path in paths:
-        doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             continue
         if path == ACTION:
@@ -166,7 +166,7 @@ def _code_only(run: str) -> str:
 @pytest.mark.parametrize(
     "marker,writer",
     [(POSIX_FILTER, "tee "), (PWSH_FILTER, "Tee-Object")],
-    ids = ["posix", "pwsh"],
+    ids=["posix", "pwsh"],
 )
 def test_the_prefix_is_applied_after_the_log_is_written(marker, writer):
     """Reordering to `| prefix | tee` is a one-character-class edit and stays green.
@@ -274,7 +274,7 @@ def _bash_runs_posix_scripts() -> bool:
     """
     try:
         probe = subprocess.run(
-            ["bash", "-c", "printf ok"], capture_output = True, text = True, timeout = 30
+            ["bash", "-c", "printf ok"], capture_output=True, text=True, timeout=30
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -307,15 +307,15 @@ def _run_posix_filter(tmp_path, fake_installer: str):
     script = script.replace("mkdir -p logs", ":")
     proc = subprocess.run(
         ["bash", "-c", script],
-        capture_output = True,
-        text = True,
-        cwd = tmp_path,
-        env = {**os.environ, "SECONDS": ""},
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "SECONDS": ""},
     )
     return proc.returncode, proc.stdout, (log.read_bytes() if log.exists() else None)
 
 
-@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+@pytest.mark.skipif(not BASH_OK, reason="no POSIX bash here (Windows resolves it to WSL)")
 def test_the_shipped_posix_filter_leaves_the_log_byte_identical(tmp_path):
     """The load-bearing claim of the whole design, executed rather than argued."""
     payload = 'printf "phase one\\nphase two\\nno trailing newline"'
@@ -331,7 +331,7 @@ def test_the_shipped_posix_filter_leaves_the_log_byte_identical(tmp_path):
     ), f"the final unterminated line never reached the step log: {stdout!r}"
 
 
-@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+@pytest.mark.skipif(not BASH_OK, reason="no POSIX bash here (Windows resolves it to WSL)")
 def test_the_shipped_posix_filter_propagates_a_failed_install(tmp_path):
     """Two extra pipeline stages between the installer and the step's status."""
     rc, stdout, _ = _run_posix_filter(tmp_path, "bash -c 'echo boom; exit 7'")
@@ -341,7 +341,7 @@ def test_the_shipped_posix_filter_propagates_a_failed_install(tmp_path):
     )
 
 
-@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+@pytest.mark.skipif(not BASH_OK, reason="no POSIX bash here (Windows resolves it to WSL)")
 def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp_path):
     """`[   0s]` on every line would look exactly like a working feature in a CI log."""
     rc, stdout, _ = _run_posix_filter(tmp_path, "bash -c 'echo first; sleep 2; echo second'")
@@ -363,7 +363,7 @@ for _candidate in ("pwsh", "powershell"):
         # cache: a torn one makes this probe exit non-zero and silently skips the whole file.
         if (
             subprocess.run(
-                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()
+                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout=60, env=pwsh_env()
             ).returncode
             == 0
         ):
@@ -391,14 +391,14 @@ def _run_pwsh(script: str, attempts: int = 2):
     """
     return run_pwsh(
         [PWSH, "-NoProfile", "-Command", script],
-        attempts = attempts,
-        verdict = "RC=",
-        capture_output = True,
-        text = True,
+        attempts=attempts,
+        verdict="RC=",
+        capture_output=True,
+        text=True,
     )
 
 
-@pytest.mark.skipif(PWSH is None, reason = "no PowerShell on this platform")
+@pytest.mark.skipif(PWSH is None, reason="no PowerShell on this platform")
 def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
     """Same two claims for the Windows dialect, which is where the 291s actually is.
 
@@ -422,7 +422,7 @@ def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
         f"$LASTEXITCODE did not survive the added pipeline stages, so a failing "
         f"install.ps1 would leave its step green:\n{proc.stdout}\n{proc.stderr}"
     )
-    contents = log.read_text(encoding = "utf-8")
+    contents = log.read_text(encoding="utf-8")
     assert (
         "phase one" in contents and "s]" not in contents
     ), f"the elapsed prefix leaked into logs/install.log: {contents!r}"

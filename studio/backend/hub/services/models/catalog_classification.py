@@ -65,6 +65,7 @@ def _local_probe_model(model):
         return model
     try:
         from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
         path = resolve_hf_cache_realpath(Path(model.path))
     except Exception:
         path = None
@@ -79,6 +80,7 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
         return True
     try:
         from hub.utils.gguf import is_h3_bundle_repo
+
         return is_h3_bundle_repo(hint)
     except Exception:
         return False
@@ -91,6 +93,7 @@ def _gguf_architecture(path: str) -> Optional[str]:
     if not file_contents_available_locally(path):
         return None
     from utils.models.gguf_metadata import read_gguf_architecture
+
     return read_gguf_architecture(path)
 
 
@@ -98,12 +101,13 @@ def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     try:
         from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick
+
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
-                return family_buildable_here(family, model_kind = "gguf")
+                return family_buildable_here(family, model_kind="gguf")
     except Exception:
         return True
     return True
@@ -112,6 +116,7 @@ def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
 def _video_family_buildable(family) -> bool:
     try:
         from core.inference.diffusion_families import family_pipeline_available
+
         return family_pipeline_available(family)
     except Exception:
         return True
@@ -194,7 +199,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
 
-        family = detect_video_family("", override = normalized)
+        family = detect_video_family("", override=normalized)
         if family is None:
             for hint in name_hints:
                 if hint:
@@ -218,7 +223,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
             family = detect_family_for_pick(hint)
             if family is not None:
                 loadable = family_gguf_loadable(family) and family_buildable_here(
-                    family, model_kind = "gguf"
+                    family, model_kind="gguf"
                 )
                 return "text-to-image" if loadable else _UNSUPPORTED_DIFFUSION_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
@@ -279,10 +284,10 @@ def _gguf_folder_task(
                 continue
             scored.append((_task_classify_sort_key(root, path), path))
             if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
-                scored.sort(key = lambda item: item[0])
+                scored.sort(key=lambda item: item[0])
                 del scored[_MAX_TASK_CLASSIFY_GGUFS:]
                 overflowed = True
-        scored.sort(key = lambda item: item[0])
+        scored.sort(key=lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
         # The walk gives up at its own deadline and the cap drops the tail, so either can leave a sibling unseen.
         complete = (
@@ -302,7 +307,7 @@ def _gguf_folder_task(
         hints = id_hints + (path.name,)
         try:
             if file_contents_available_locally(path):
-                task = _arch_to_task(_gguf_architecture(str(path)), name_hints = hints)
+                task = _arch_to_task(_gguf_architecture(str(path)), name_hints=hints)
             else:
                 # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
                 # voting text-generation for the whole folder.
@@ -348,7 +353,7 @@ def _gguf_path_audio_type(
         for gguf_path in paths:
             audio_type = _arch_to_audio_type(
                 _gguf_architecture(str(gguf_path)),
-                name_hints = id_hints + (gguf_path.name,),
+                name_hints=id_hints + (gguf_path.name,),
             )
             if audio_type is not None:
                 return audio_type
@@ -374,7 +379,7 @@ def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) 
                 return _unhydrated_gguf_task(hints)
             return _arch_to_task(
                 _gguf_architecture(str(model_path)),
-                name_hints = hints,
+                name_hints=hints,
             )
         return _gguf_folder_task(model_path, id_hints)
     except Exception:
@@ -387,6 +392,7 @@ def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
     parts = str(path).replace("\\", "/").rstrip("/").split("/")
     if len(parts) >= 3 and parts[-2] == "snapshots" and parts[-3].startswith("models--"):
         from core.inference.model_ids import hf_cache_repo_id
+
         return hf_cache_repo_id(path)
     return None
 
@@ -401,6 +407,7 @@ def _local_family_needles(model) -> tuple[str, ...]:
         pass
     try:
         from core.inference.diffusion import resolve_local_single_file
+
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
@@ -422,6 +429,7 @@ def _local_model_task(model) -> Optional[str]:
         return _gguf_path_task(path, id_hints)
     try:
         from core.inference.native_audio import native_audio_type_from_local_path
+
         if native_audio_type_from_local_path(path):
             return "text-to-speech"
     except Exception:
@@ -431,6 +439,7 @@ def _local_model_task(model) -> Optional[str]:
     try:
         from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import detect_video_family
+
         for needle in _local_family_needles(model):
             family = detect_video_family(needle)
             if family is not None and _is_trusted_video_repo(path):
@@ -449,7 +458,7 @@ def _local_model_task(model) -> Optional[str]:
             if family is not None:
                 return (
                     "text-to-image"
-                    if family_buildable_here(family, model_kind = "pipeline")
+                    if family_buildable_here(family, model_kind="pipeline")
                     else None
                 )
         return None
@@ -464,6 +473,7 @@ def _local_model_audio_type(model) -> Optional[str]:
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
     try:
         from core.inference.native_audio import native_audio_type_from_local_path
+
         native_audio_type = native_audio_type_from_local_path(path)
         if native_audio_type is not None:
             return native_audio_type
@@ -471,6 +481,7 @@ def _local_model_audio_type(model) -> Optional[str]:
         pass
     try:
         from utils.audio_tokens import detect_local_tts_audio_type
+
         return detect_local_tts_audio_type(path)
     except Exception:
         return None
@@ -483,6 +494,7 @@ def _local_model_classification_for_task(
     audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
     if task is None and audio_type is not None:
         from utils.audio_tokens import is_output_audio_type
+
         if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
@@ -503,12 +515,14 @@ def _local_is_diffusers(model) -> bool:
         pass
     try:
         from core.inference.diffusion_families import detect_family
+
         if any(detect_family(needle) is not None for needle in _local_family_needles(model)):
             return True
     except Exception:
         pass
     try:
         from core.inference.video_families import detect_video_family
+
         return any(
             detect_video_family(needle) is not None for needle in _local_family_needles(model)
         )
@@ -520,6 +534,7 @@ def _repo_has_pipeline_index(repo_info, selected: Optional[Path] = None) -> bool
     if selected is not None:
         return _is_diffusers_pipeline_dir(selected)
     from hub.utils import inventory_scan
+
     return inventory_scan.repo_has_pipeline_index(repo_info)
 
 
@@ -529,6 +544,7 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
         from core.inference.diffusion_families import detect_family
+
         if detect_family(repo_id) is not None:
             return True
     except Exception:
@@ -538,6 +554,7 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
     # can_chat set: the video weights reach the text loader.
     try:
         from core.inference.video_families import detect_video_family
+
         return detect_video_family(repo_id) is not None
     except Exception:
         return False
@@ -546,6 +563,7 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
 def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
         return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
     except Exception:
         return False

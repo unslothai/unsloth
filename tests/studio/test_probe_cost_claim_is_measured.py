@@ -91,7 +91,7 @@ def _rationale() -> str:
     the comment is the whole subject here.
     """
     lines = []
-    for line in WORKFLOW.read_text(encoding = "utf-8").splitlines():
+    for line in WORKFLOW.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             lines.append(stripped.lstrip("#").strip())
@@ -101,7 +101,7 @@ def _rationale() -> str:
 
 
 def _timeout_minutes() -> int:
-    found = _TIMEOUT.findall(WORKFLOW.read_text(encoding = "utf-8"))
+    found = _TIMEOUT.findall(WORKFLOW.read_text(encoding="utf-8"))
     assert found, f"{WORKFLOW.name} no longer sets timeout-minutes; this guard is stale"
     return int(found[0])
 
@@ -193,7 +193,7 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
     start = rationale.index("timeout-minutes") + len("timeout-minutes")
     stop = min(
         (offset for offset in (rationale.find(mark, start) for mark in (".", ";")) if offset != -1),
-        default = len(rationale),
+        default=len(rationale),
     )
     clause = rationale[start:stop]
     assert re.search(r"(?<![\w-])(?:hangs?|hanging|hung|cutoff)(?![\w-])", clause, re.I), (

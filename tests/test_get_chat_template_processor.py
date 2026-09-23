@@ -30,7 +30,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
 
 _BODY = next(
     node.body
-    for node in ast.parse(open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()).body
+    for node in ast.parse(open(CHAT_TEMPLATES_PATH, encoding="utf-8").read()).body
     if isinstance(node, ast.FunctionDef) and node.name == "get_chat_template"
 )
 
@@ -85,7 +85,7 @@ def _reattach_branch():
 def _run(statements, **namespace):
     namespace.setdefault("ProcessorMixin", _ProcessorMixin)
     exec(
-        compile(ast.Module(body = statements, type_ignores = []), CHAT_TEMPLATES_PATH, "exec"),
+        compile(ast.Module(body=statements, type_ignores=[]), CHAT_TEMPLATES_PATH, "exec"),
         namespace,
     )
     return namespace
@@ -100,8 +100,8 @@ class _FakeTokenizer:
 
     def __init__(
         self,
-        eos_token = "<eos>",
-        eos_token_id = 1,
+        eos_token="<eos>",
+        eos_token_id=1,
     ):
         self.padding_side = "right"
         self.bos_token, self.bos_token_id = "<bos>", 0
@@ -130,16 +130,16 @@ class _FakeTokenizerBackend(_FakeTokenizer):
 def _unwrap(tokenizer):
     return _run(
         [_assign("_processor"), _unwrap_branch(), _assign("old_tokenizer")],
-        tokenizer = tokenizer,
+        tokenizer=tokenizer,
     )
 
 
 def _reattach(processor, tokenizer):
     return _run(
         [_reattach_branch()],
-        _processor = processor,
-        tokenizer = tokenizer,
-        chat_template = "TEMPLATE",
+        _processor=processor,
+        tokenizer=tokenizer,
+        chat_template="TEMPLATE",
     )
 
 
@@ -187,8 +187,8 @@ def test_a_remapped_eos_reaches_the_processors_mirrored_copy():
     # chatml/gemma_chatml rebuild the tokenizer with eos remapped to the stop word. The
     # loader copied the old eos onto the processor, and that copy is what the collators
     # and save paths read, so it has to follow the rebuild.
-    processor = _FakeProcessor(_FakeTokenizer(eos_token = "<eos>", eos_token_id = 1))
-    rebuilt = _FakeTokenizer(eos_token = "<|im_end|>", eos_token_id = 107)
+    processor = _FakeProcessor(_FakeTokenizer(eos_token="<eos>", eos_token_id=1))
+    rebuilt = _FakeTokenizer(eos_token="<|im_end|>", eos_token_id=107)
     _reattach(processor, rebuilt)
     assert processor.eos_token == "<|im_end|>"
     assert processor.eos_token_id == 107

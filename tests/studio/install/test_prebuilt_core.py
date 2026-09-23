@@ -52,18 +52,18 @@ WSPEC.loader.exec_module(iwp)
 
 
 LLAMA_DESCRIPTOR = core.ComponentDescriptor(
-    component = "llama.cpp",
-    log_prefix = "llama-prebuilt",
-    published_repo = "unslothai/llama.cpp",
-    manifest_asset_name = "llama-prebuilt-manifest.json",
-    sha256_asset_name = "llama-prebuilt-sha256.json",
-    metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
-    user_agent = "unsloth-studio-llama-prebuilt",
+    component="llama.cpp",
+    log_prefix="llama-prebuilt",
+    published_repo="unslothai/llama.cpp",
+    manifest_asset_name="llama-prebuilt-manifest.json",
+    sha256_asset_name="llama-prebuilt-sha256.json",
+    metadata_filename="UNSLOTH_LLAMA_PREBUILT_INFO.json",
+    user_agent="unsloth-studio-llama-prebuilt",
     # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
     # degrading to CPU.
-    fallback_backend = None,
-    server_binary_name = lambda host: "llama-server",
-    runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
+    fallback_backend=None,
+    server_binary_name=lambda host: "llama-server",
+    runtime_bin_dir=lambda install_dir, host: install_dir / "build" / "bin",
 )
 
 
@@ -81,7 +81,7 @@ class Component:
         return self.descriptor.fallback_backend == "cpu"
 
 
-@pytest.fixture(params = ["whisper", "llama"])
+@pytest.fixture(params=["whisper", "llama"])
 def component(request):
     if request.param == "whisper":
         return Component(iwp.DESCRIPTOR)
@@ -91,51 +91,51 @@ def component(request):
 def make_host(
     component,
     *,
-    os_token = "linux",
-    arch_token = "x64",
-    is_windows = False,
-    is_macos = False,
-    is_apple_silicon = False,
-    has_usable_nvidia = False,
-    has_rocm = False,
-    rocm_gfx = None,
-    macos_version = None,
+    os_token="linux",
+    arch_token="x64",
+    is_windows=False,
+    is_macos=False,
+    is_apple_silicon=False,
+    has_usable_nvidia=False,
+    has_rocm=False,
+    rocm_gfx=None,
+    macos_version=None,
 ):
     if component.descriptor is iwp.DESCRIPTOR:
         return iwp.HostInfo(
-            system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[os_token],
-            machine = "x86_64" if arch_token == "x64" else "arm64",
-            whisper_os = os_token,
-            whisper_arch = arch_token,
-            archive_ext = ".zip" if is_windows else ".tar.gz",
-            is_windows = is_windows,
-            is_macos = is_macos,
-            is_apple_silicon = is_apple_silicon,
-            has_usable_nvidia = has_usable_nvidia,
-            has_rocm = has_rocm,
-            rocm_gfx = rocm_gfx,
-            macos_version = macos_version,
+            system={"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[os_token],
+            machine="x86_64" if arch_token == "x64" else "arm64",
+            whisper_os=os_token,
+            whisper_arch=arch_token,
+            archive_ext=".zip" if is_windows else ".tar.gz",
+            is_windows=is_windows,
+            is_macos=is_macos,
+            is_apple_silicon=is_apple_silicon,
+            has_usable_nvidia=has_usable_nvidia,
+            has_rocm=has_rocm,
+            rocm_gfx=rocm_gfx,
+            macos_version=macos_version,
         )
     # Descriptor-only component: the core default host_platform_tokens hook reads .os_token/.arch_token off a plain host
     # object.
     return SimpleNamespace(
-        os_token = os_token,
-        arch_token = arch_token,
-        is_windows = is_windows,
-        is_macos = is_macos,
-        is_apple_silicon = is_apple_silicon,
-        has_usable_nvidia = has_usable_nvidia,
-        has_rocm = has_rocm,
-        rocm_gfx = rocm_gfx,
-        macos_version = macos_version,
+        os_token=os_token,
+        arch_token=arch_token,
+        is_windows=is_windows,
+        is_macos=is_macos,
+        is_apple_silicon=is_apple_silicon,
+        has_usable_nvidia=has_usable_nvidia,
+        has_rocm=has_rocm,
+        rocm_gfx=rocm_gfx,
+        macos_version=macos_version,
     )
 
 
 def artifact(
-    os_ = "linux",
-    arch = "x64",
-    backend = "cpu",
-    asset = "bundle.tar.gz",
+    os_="linux",
+    arch="x64",
+    backend="cpu",
+    asset="bundle.tar.gz",
     **extra,
 ):
     payload = {"os": os_, "arch": arch, "backend": backend, "asset": asset}
@@ -158,7 +158,7 @@ def manifest_for(component, artifacts, **extra):
 # ── Manifest parsing ──
 def test_parse_manifest_normalizes(component):
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label = "m"
+        manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label="m"
     )
     assert manifest["component"] == component.descriptor.component
     assert manifest["upstream_tag"] == "v1.0.0"
@@ -169,24 +169,24 @@ def test_parse_manifest_normalizes(component):
 def test_parse_manifest_rejects_wrong_component(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(
-            manifest_for(component, [artifact()], component_name = "other.cpp"), label = "m"
+            manifest_for(component, [artifact()], component_name="other.cpp"), label="m"
         )
 
 
 def test_parse_manifest_rejects_unknown_schema(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(
-            manifest_for(component, [artifact()], schema_version = 99), label = "m"
+            manifest_for(component, [artifact()], schema_version=99), label="m"
         )
 
 
 def test_parse_manifest_rejects_non_object(component):
     with pytest.raises(core.PrebuiltFallback):
-        component.ops.parse_manifest(["nope"], label = "m")
+        component.ops.parse_manifest(["nope"], label="m")
     # An object without an 'artifacts' list is rejected too.
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(
-            {"schema_version": 1, "component": component.descriptor.component}, label = "m"
+            {"schema_version": 1, "component": component.descriptor.component}, label="m"
         )
 
 
@@ -196,11 +196,11 @@ def test_select_cpu_first_match(component):
         manifest_for(
             component,
             [
-                artifact(backend = "cpu", asset = "first-cpu.tar.gz"),
-                artifact(backend = "cpu", asset = "second-cpu.tar.gz"),
+                artifact(backend="cpu", asset="first-cpu.tar.gz"),
+                artifact(backend="cpu", asset="second-cpu.tar.gz"),
             ],
         ),
-        label = "m",
+        label="m",
     )
     host = make_host(component)
     chosen = component.ops.select_artifact(manifest, host, "cpu")
@@ -209,7 +209,7 @@ def test_select_cpu_first_match(component):
 
 def test_select_respects_os_arch(component):
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [artifact(os_ = "windows", backend = "cpu")]), label = "m"
+        manifest_for(component, [artifact(os_="windows", backend="cpu")]), label="m"
     )
     host = make_host(component)
     assert component.ops.select_artifact(manifest, host, "cpu") is None
@@ -220,9 +220,9 @@ def test_fallback_policy_differs_per_descriptor(component):
     # the same release, the llama-flavored descriptor reports no prebuilt
     # (source-build fallback).
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
+        manifest_for(component, [artifact(backend="cpu", asset="cpu.tar.gz")]), label="m"
     )
-    host = make_host(component, has_usable_nvidia = True)
+    host = make_host(component, has_usable_nvidia=True)
     assert component.ops.select_artifact(manifest, host, "cuda") is None
     if component.falls_back_to_cpu:
         chosen, backend, used_fallback = component.ops.select_artifact_with_fallback(
@@ -240,31 +240,31 @@ def test_macos_min_os_gate(component):
             component,
             [
                 artifact(
-                    os_ = "macos",
-                    arch = "arm64",
-                    backend = "metal",
-                    asset = "metal-new.tar.gz",
-                    min_os = "macos-15.0",
+                    os_="macos",
+                    arch="arm64",
+                    backend="metal",
+                    asset="metal-new.tar.gz",
+                    min_os="macos-15.0",
                 )
             ],
         ),
-        label = "m",
+        label="m",
     )
     old_host = make_host(
         component,
-        os_token = "macos",
-        arch_token = "arm64",
-        is_macos = True,
-        is_apple_silicon = True,
-        macos_version = (14, 7),
+        os_token="macos",
+        arch_token="arm64",
+        is_macos=True,
+        is_apple_silicon=True,
+        macos_version=(14, 7),
     )
     new_host = make_host(
         component,
-        os_token = "macos",
-        arch_token = "arm64",
-        is_macos = True,
-        is_apple_silicon = True,
-        macos_version = (15, 1),
+        os_token="macos",
+        arch_token="arm64",
+        is_macos=True,
+        is_apple_silicon=True,
+        macos_version=(15, 1),
     )
     assert component.ops.select_artifact(manifest, old_host, "metal") is None
     chosen = component.ops.select_artifact(manifest, new_host, "metal")
@@ -273,22 +273,22 @@ def test_macos_min_os_gate(component):
 
 def _metal_artifact(asset, min_os):
     return artifact(
-        os_ = "macos",
-        arch = "arm64",
-        backend = "metal",
-        asset = asset,
-        min_os = min_os,
+        os_="macos",
+        arch="arm64",
+        backend="metal",
+        asset=asset,
+        min_os=min_os,
     )
 
 
 def _arm_mac_host(component, macos_version):
     return make_host(
         component,
-        os_token = "macos",
-        arch_token = "arm64",
-        is_macos = True,
-        is_apple_silicon = True,
-        macos_version = macos_version,
+        os_token="macos",
+        arch_token="arm64",
+        is_macos=True,
+        is_apple_silicon=True,
+        macos_version=macos_version,
     )
 
 
@@ -301,7 +301,7 @@ def test_macos_min_os_filters_to_compatible_bundle(component):
                 _metal_artifact("metal.tar.gz", "macos-13.0"),
             ],
         ),
-        label = "m",
+        label="m",
     )
     host = _arm_mac_host(component, (14, 0))
     assert component.ops.select_artifact(manifest, host, "metal")["asset"] == "metal.tar.gz"
@@ -310,7 +310,7 @@ def test_macos_min_os_filters_to_compatible_bundle(component):
 def test_macos_min_os_unknown_host_version_keeps_artifact(component):
     # Unknown host macOS version -> defer to runtime validation, don't reject.
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [_metal_artifact("metal-new.tar.gz", "macos-15.0")]), label = "m"
+        manifest_for(component, [_metal_artifact("metal-new.tar.gz", "macos-15.0")]), label="m"
     )
     host = _arm_mac_host(component, None)
     assert component.ops.select_artifact(manifest, host, "metal")["asset"] == "metal-new.tar.gz"
@@ -319,7 +319,7 @@ def test_macos_min_os_unknown_host_version_keeps_artifact(component):
 def test_macos_min_os_accepts_bare_version_format(component):
     # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label = "m"
+        manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label="m"
     )
     host = _arm_mac_host(component, (13, 0))
     assert component.ops.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
@@ -338,33 +338,33 @@ def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
 
 # ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
-    gpu_host = make_host(component, has_usable_nvidia = True)
-    assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
-    assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
+    gpu_host = make_host(component, has_usable_nvidia=True)
+    assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback=False) == "cuda"
+    assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback=True) == "cpu"
     # cpu-fallback wins over an explicit backend too.
-    assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
+    assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback=True) == "cpu"
     # An explicit supported backend passes through untouched.
-    assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
+    assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback=False) == "vulkan"
     mac_host = make_host(
-        component, os_token = "macos", arch_token = "arm64", is_macos = True, is_apple_silicon = True
+        component, os_token="macos", arch_token="arm64", is_macos=True, is_apple_silicon=True
     )
-    assert component.ops.resolve_backend(mac_host, None, cpu_fallback = False) == "metal"
+    assert component.ops.resolve_backend(mac_host, None, cpu_fallback=False) == "metal"
     # Intel mac has no Metal bundle in the P0 matrix -> cpu.
-    intel_mac = make_host(component, os_token = "macos", arch_token = "x64", is_macos = True)
-    assert component.ops.resolve_backend(intel_mac, "auto", cpu_fallback = False) == "cpu"
-    rocm_host = make_host(component, has_rocm = True, rocm_gfx = "gfx1100")
-    assert component.ops.resolve_backend(rocm_host, "auto", cpu_fallback = False) == "rocm"
+    intel_mac = make_host(component, os_token="macos", arch_token="x64", is_macos=True)
+    assert component.ops.resolve_backend(intel_mac, "auto", cpu_fallback=False) == "cpu"
+    rocm_host = make_host(component, has_rocm=True, rocm_gfx="gfx1100")
+    assert component.ops.resolve_backend(rocm_host, "auto", cpu_fallback=False) == "rocm"
     bare_host = make_host(component)
-    assert component.ops.resolve_backend(bare_host, None, cpu_fallback = False) == "cpu"
+    assert component.ops.resolve_backend(bare_host, None, cpu_fallback=False) == "cpu"
     with pytest.raises(core.PrebuiltFallback):
-        component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
+        component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback=False)
 
 
 # ── Checksum index: fail closed ──
 def _index_for(
     component,
-    tag = "v1",
-    artifacts = None,
+    tag="v1",
+    artifacts=None,
 ):
     return {
         "schema_version": 1,
@@ -415,11 +415,11 @@ def test_expected_sha256_missing_asset_fails_closed(component):
 def test_expected_sha256_manifest_disagreement_fails_closed(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.expected_sha256_for(
-            {"a.tar.gz": "0" * 64}, "a.tar.gz", manifest_sha256 = "1" * 64
+            {"a.tar.gz": "0" * 64}, "a.tar.gz", manifest_sha256="1" * 64
         )
     assert (
         component.ops.expected_sha256_for(
-            {"a.tar.gz": "0" * 64}, "a.tar.gz", manifest_sha256 = "0" * 64
+            {"a.tar.gz": "0" * 64}, "a.tar.gz", manifest_sha256="0" * 64
         )
         == "0" * 64
     )
@@ -455,7 +455,7 @@ def test_extract_archive_rejects_zip_symlink(tmp_path):
         info.create_system = 3
         info.external_attr = 0o120777 << 16
         zf.writestr(info, "target")
-    with pytest.raises(core.PrebuiltFallback, match = "zip archive contained a symlink entry"):
+    with pytest.raises(core.PrebuiltFallback, match="zip archive contained a symlink entry"):
         core.extract_archive(archive, tmp_path / "out")
 
 
@@ -514,7 +514,7 @@ def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path):
         entry.type = tarfile.SYMTYPE
         entry.linkname = "/tmp/libllama.so.0"
         tar.addfile(entry)
-    with pytest.raises(core.PrebuiltFallback, match = "archive link used an absolute target"):
+    with pytest.raises(core.PrebuiltFallback, match="archive link used an absolute target"):
         core.extract_archive(archive, tmp_path / "extract")
 
 
@@ -525,7 +525,7 @@ def test_extract_archive_rejects_escaping_tar_symlink_target(tmp_path):
         entry.type = tarfile.SYMTYPE
         entry.linkname = "../outside/libllama.so.0"
         tar.addfile(entry)
-    with pytest.raises(core.PrebuiltFallback, match = "archive link escaped destination"):
+    with pytest.raises(core.PrebuiltFallback, match="archive link escaped destination"):
         core.extract_archive(archive, tmp_path / "extract")
 
 
@@ -536,7 +536,7 @@ def test_extract_archive_rejects_unresolved_tar_symlink_target(tmp_path):
         entry.type = tarfile.SYMTYPE
         entry.linkname = "libllama.so.0"
         tar.addfile(entry)
-    with pytest.raises(core.PrebuiltFallback, match = "unresolved link entries"):
+    with pytest.raises(core.PrebuiltFallback, match="unresolved link entries"):
         core.extract_archive(archive, tmp_path / "extract")
 
 
@@ -553,7 +553,7 @@ def test_restore_tar_exec_bits(tmp_path):
     payload.chmod(0o755)
     archive = tmp_path / "bundle.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
-        tar.add(payload, arcname = "bundle/server")
+        tar.add(payload, arcname="bundle/server")
     out = tmp_path / "out"
     core.extract_archive(archive, out)
     extracted = out / "bundle" / "server"
@@ -565,12 +565,12 @@ def test_restore_tar_exec_bits(tmp_path):
 # ── Resolver payload ──
 def _fake_release(component, artifacts):
     ns = component.namespace
-    manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
+    manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label="m")
     bundle = core.ReleaseBundle(
-        repo = component.descriptor.published_repo,
-        release_tag = "v1",
-        manifest = manifest,
-        asset_urls = {},
+        repo=component.descriptor.published_repo,
+        release_tag="v1",
+        manifest=manifest,
+        asset_urls={},
     )
     checksums = {str(a["asset"]): "0" * 64 for a in artifacts}
     ns["fetch_release_for_install"] = lambda repo, *, published_release_tag: (bundle, checksums)
@@ -578,14 +578,14 @@ def _fake_release(component, artifacts):
 
 
 def test_resolve_prebuilt_payload_keys(component):
-    _fake_release(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")])
+    _fake_release(component, [artifact(backend="cpu", asset="cpu.tar.gz")])
     host = make_host(component)
     payload = component.ops.resolve_prebuilt(
         host,
-        published_repo = component.descriptor.published_repo,
-        published_release_tag = None,
-        backend = "cpu",
-        cpu_fallback = True,
+        published_repo=component.descriptor.published_repo,
+        published_release_tag=None,
+        backend="cpu",
+        cpu_fallback=True,
     )
     assert payload == {
         "prebuilt_available": True,
@@ -612,36 +612,36 @@ def test_resolve_prebuilt_unavailable_payload(component):
     host = make_host(component)
     payload = component.ops.resolve_prebuilt(
         host,
-        published_repo = component.descriptor.published_repo,
-        published_release_tag = None,
-        backend = "cpu",
-        cpu_fallback = True,
+        published_repo=component.descriptor.published_repo,
+        published_release_tag=None,
+        backend="cpu",
+        cpu_fallback=True,
     )
     assert payload == {"prebuilt_available": False, "repo": component.descriptor.published_repo}
 
 
 def test_emit_resolver_output_formats(capsys):
     payload = {"prebuilt_available": True, "asset": "a.tar.gz"}
-    core.emit_resolver_output(payload, output_format = "json")
+    core.emit_resolver_output(payload, output_format="json")
     assert json.loads(capsys.readouterr().out) == payload
-    core.emit_resolver_output(payload, output_format = "plain")
+    core.emit_resolver_output(payload, output_format="plain")
     assert capsys.readouterr().out.strip() == "a.tar.gz"
-    core.emit_resolver_output({"prebuilt_available": False}, output_format = "plain")
+    core.emit_resolver_output({"prebuilt_available": False}, output_format="plain")
     assert json.loads(capsys.readouterr().out) == {"prebuilt_available": False}
 
 
 # ── Marker / fingerprint ──
 def test_install_fingerprint_is_stable_and_sensitive(component):
     kwargs = dict(
-        published_repo = component.descriptor.published_repo,
-        release_tag = "v1",
-        upstream_tag = "v1.0.0",
-        source_commit = "a" * 40,
-        asset = "cpu.tar.gz",
-        asset_sha256 = "0" * 64,
-        backend = "cpu",
-        runtime_line = None,
-        coverage = {},
+        published_repo=component.descriptor.published_repo,
+        release_tag="v1",
+        upstream_tag="v1.0.0",
+        source_commit="a" * 40,
+        asset="cpu.tar.gz",
+        asset_sha256="0" * 64,
+        backend="cpu",
+        runtime_line=None,
+        coverage={},
     )
     first = core.compute_install_fingerprint(**kwargs)
     assert first == core.compute_install_fingerprint(**kwargs)
@@ -653,19 +653,19 @@ def test_write_and_match_marker(component, tmp_path):
     host = make_host(component)
     install_dir = tmp_path / "install"
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
+        manifest_for(component, [artifact(backend="cpu", asset="cpu.tar.gz")]), label="m"
     )
     selection = component.ops.selection_from_artifact(
-        published_repo = component.descriptor.published_repo,
-        release_tag = "v1",
-        manifest = manifest,
-        artifact = manifest["artifacts"][0],
-        backend = "cpu",
-        asset_sha256 = "0" * 64,
+        published_repo=component.descriptor.published_repo,
+        release_tag="v1",
+        manifest=manifest,
+        artifact=manifest["artifacts"][0],
+        backend="cpu",
+        asset_sha256="0" * 64,
     )
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     bin_dir = component.ops.runtime_bin_dir(install_dir, host)
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
     # Marker alone is not enough:
     assert not component.ops.existing_install_matches(install_dir, host, selection)
@@ -688,24 +688,24 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
     """The slim pairing identity rides InstallSelection additively: it never
     enters the fingerprint, and only a slim selection writes marker fields."""
     manifest = component.ops.parse_manifest(
-        manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
+        manifest_for(component, [artifact(backend="cpu", asset="cpu.tar.gz")]), label="m"
     )
     selection = component.ops.selection_from_artifact(
-        published_repo = component.descriptor.published_repo,
-        release_tag = "v1",
-        manifest = manifest,
-        artifact = manifest["artifacts"][0],
-        backend = "cpu",
-        asset_sha256 = "0" * 64,
+        published_repo=component.descriptor.published_repo,
+        release_tag="v1",
+        manifest=manifest,
+        artifact=manifest["artifacts"][0],
+        backend="cpu",
+        asset_sha256="0" * 64,
     )
     import dataclasses
 
     slim = dataclasses.replace(
         selection,
-        install_kind = "slim",
-        paired_llama_tag = "b10069-mix-fb3d4ca",
-        linked_from = "/llama/build/bin",
-        linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
+        install_kind="slim",
+        paired_llama_tag="b10069-mix-fb3d4ca",
+        linked_from="/llama/build/bin",
+        linked_libraries=("libggml.so.0", "libggml-base.so.0"),
     )
     assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
 
@@ -858,7 +858,7 @@ def test_select_visible_gpu_rows(visible, expected_indices):
     ],
 )
 def test_compatible_linux_runtime_lines(driver, expected):
-    host = SimpleNamespace(driver_cuda_version = driver)
+    host = SimpleNamespace(driver_cuda_version=driver)
     assert core.compatible_linux_runtime_lines(host) == expected
 
 
@@ -877,7 +877,7 @@ def test_runtime_line_from_cuda_version(value, expected):
 
 
 def _caps_host(caps):
-    return SimpleNamespace(compute_caps = list(caps))
+    return SimpleNamespace(compute_caps=list(caps))
 
 
 def test_host_is_blackwell_includes_datacenter_parts():
@@ -951,7 +951,7 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
         def open(
             self,
             request,
-            timeout = None,
+            timeout=None,
         ):
             requests.append(request.full_url)
             raise _github_api_403({})
@@ -975,31 +975,31 @@ def test_a_settle_does_not_hold_a_finished_launch_for_the_install_timeout(tmp_pa
     install_dir = tmp_path / "component"
     install_dir.mkdir()
     server = install_dir / "server"
-    server.write_text("", encoding = "utf-8")
+    server.write_text("", encoding="utf-8")
     events = []
     asked = []
 
     @contextlib.contextmanager
-    def busy_lock(path, *, timeout = None):
+    def busy_lock(path, *, timeout=None):
         asked.append(timeout)
         raise core.BusyInstallConflict("held elsewhere")
         yield  # pragma: no cover - unreachable, keeps this a generator
 
     ops = SimpleNamespace(
-        COMPONENT = "test",
-        existing_install_matches = lambda d, h, s: True,
-        install_lock = busy_lock,
-        install_lock_path = lambda d: d / "lock",
-        kept_install_needs_settling = lambda d: True,
-        settle_kept_install = lambda d: events.append("settled"),
-        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
-        installed_server_path = lambda d, h: server,
-        log = lambda message: events.append(message),
+        COMPONENT="test",
+        existing_install_matches=lambda d, h, s: True,
+        install_lock=busy_lock,
+        install_lock_path=lambda d: d / "lock",
+        kept_install_needs_settling=lambda d: True,
+        settle_kept_install=lambda d: events.append("settled"),
+        _install_from_bundle=lambda d, h, b, s: events.append("installed"),
+        installed_server_path=lambda d, h: server,
+        log=lambda message: events.append(message),
     )
-    bundle = SimpleNamespace(release_tag = "b1")
-    selection = SimpleNamespace(backend = "cpu")
+    bundle = SimpleNamespace(release_tag="b1")
+    selection = SimpleNamespace(backend="cpu")
     rc = core.install_selected_prebuilt(
-        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+        ops, install_dir, host=None, bundle=bundle, selection=selection, force=False
     )
     assert rc == 0
     assert "installed" not in events, "a kept install was reinstalled over a busy lock"
@@ -1016,32 +1016,32 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
     install_dir = tmp_path / "component"
     install_dir.mkdir()
     server = install_dir / "server"
-    server.write_text("", encoding = "utf-8")
+    server.write_text("", encoding="utf-8")
     # pre-lock keep, the settle's re-check, the locked path's re-check
     answers = iter([True, False, False])
     events = []
     ops = SimpleNamespace(
-        COMPONENT = "test",
-        existing_install_matches = lambda d, h, s: next(answers),
-        install_lock = lambda path, **kwargs: contextlib.nullcontext(),
-        install_lock_path = lambda d: d / "lock",
-        kept_install_needs_settling = lambda d: True,
-        settle_kept_install = lambda d: events.append("settled"),
-        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
-        installed_server_path = lambda d, h: server,
-        log = lambda message: events.append(message),
+        COMPONENT="test",
+        existing_install_matches=lambda d, h, s: next(answers),
+        install_lock=lambda path, **kwargs: contextlib.nullcontext(),
+        install_lock_path=lambda d: d / "lock",
+        kept_install_needs_settling=lambda d: True,
+        settle_kept_install=lambda d: events.append("settled"),
+        _install_from_bundle=lambda d, h, b, s: events.append("installed"),
+        installed_server_path=lambda d, h: server,
+        log=lambda message: events.append(message),
     )
-    bundle = SimpleNamespace(release_tag = "b1")
-    selection = SimpleNamespace(backend = "cpu")
+    bundle = SimpleNamespace(release_tag="b1")
+    selection = SimpleNamespace(backend="cpu")
     rc = core.install_selected_prebuilt(
-        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+        ops, install_dir, host=None, bundle=bundle, selection=selection, force=False
     )
     assert rc == 0
     assert "settled" not in events
     assert "installed" in events
 
 
-@pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
+@pytest.mark.skipif(not hasattr(core.os, "chown"), reason="os.chown is POSIX only")
 def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_path, monkeypatch):
     """A non-root member of a group-shared install can hand the temp file to the
     marker's group, but not to its owner; asking for both refuses the call before the
@@ -1049,7 +1049,7 @@ def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_pat
     combined call is tried first, for the root case that can honour it, and the group-only
     call is the fallback."""
     marker = tmp_path / "MARKER.json"
-    marker.write_text('{"a": 1}', encoding = "utf-8")
+    marker.write_text('{"a": 1}', encoding="utf-8")
     original = marker.stat()
     calls = []
 
@@ -1060,7 +1060,7 @@ def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_pat
 
     monkeypatch.setattr(core.os, "chown", refusing)
     core.write_live_marker(marker, {"a": 1, "b": 2})
-    assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
+    assert json.loads(marker.read_text(encoding="utf-8")) == {"a": 1, "b": 2}
     assert calls == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
     assert not list(tmp_path.glob("MARKER.json.tmp-*"))
 
@@ -1069,14 +1069,14 @@ def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
     """prebuilt_core.WalkBack: the marker-only re-check may hold an install on a Mac
     below the newest release's floor current only while the newest release is the one
     skipped AND the host is the macOS version that skipped it."""
-    mac = SimpleNamespace(is_macos = True, macos_version = (14, 7))
+    mac = SimpleNamespace(is_macos=True, macos_version=(14, 7))
     assert core.macos_version_label(mac) == "14.7"
-    assert core.macos_version_label(SimpleNamespace(is_macos = True, macos_version = None)) is None
-    assert core.macos_version_label(SimpleNamespace(is_macos = False, macos_version = (14, 7))) is None
+    assert core.macos_version_label(SimpleNamespace(is_macos=True, macos_version=None)) is None
+    assert core.macos_version_label(SimpleNamespace(is_macos=False, macos_version=(14, 7))) is None
     walk_back = core.walk_back_for(mac, "r2")
-    assert walk_back == core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    assert walk_back == core.WalkBack(release_tag="r2", macos_version="14.7")
     assert core.walk_back_for(mac, None) is None
-    assert core.walk_back_for(SimpleNamespace(is_macos = False, macos_version = None), "r2") is None
+    assert core.walk_back_for(SimpleNamespace(is_macos=False, macos_version=None), "r2") is None
     marker = {"release_tag": "r1", **walk_back.marker_fields()}
     assert core.marker_walk_back(marker) == walk_back
     assert core.marker_walk_back({"release_tag": "r1", "walked_back_from": "r2"}) is None
@@ -1084,11 +1084,11 @@ def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
     assert core.walk_back_stands(marker, mac, "r3") is False
     assert core.walk_back_stands(marker, mac, None) is False
     assert (
-        core.walk_back_stands(marker, SimpleNamespace(is_macos = True, macos_version = (15, 0)), "r2")
+        core.walk_back_stands(marker, SimpleNamespace(is_macos=True, macos_version=(15, 0)), "r2")
         is False
     )
     assert (
-        core.walk_back_stands(marker, SimpleNamespace(is_macos = False, macos_version = None), "r2")
+        core.walk_back_stands(marker, SimpleNamespace(is_macos=False, macos_version=None), "r2")
         is False
     )
     # What a kept marker owes this run's plan.

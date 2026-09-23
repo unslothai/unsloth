@@ -71,12 +71,12 @@ def _create_research_run(account) -> None:
     run_as(
         account,
         db.create_run,
-        run_id = RUN_ID,
-        owner_subject = account.username,
-        thread_id = THREAD_ID,
-        user_message_id = USER_MESSAGE_ID,
-        assistant_message_id = None,
-        config = {"model": "local/model", "question": MARKER},
+        run_id=RUN_ID,
+        owner_subject=account.username,
+        thread_id=THREAD_ID,
+        user_message_id=USER_MESSAGE_ID,
+        assistant_message_id=None,
+        config={"model": "local/model", "question": MARKER},
     )
 
 
@@ -116,11 +116,11 @@ def seed_preview_run(account, actor: str = "right") -> dict[str, str]:
     from utils.preview_token import sign_preview_ref
 
     run = run_as(account, outputs_root) / PREVIEW_RUN
-    (run / PREVIEW_CHECKPOINT).mkdir(parents = True, exist_ok = True)
+    (run / PREVIEW_CHECKPOINT).mkdir(parents=True, exist_ok=True)
     run.joinpath("adapter_config.json").write_text(
-        json.dumps({"base_model_name_or_path": MARKER}), encoding = "utf-8"
+        json.dumps({"base_model_name_or_path": MARKER}), encoding="utf-8"
     )
-    run.joinpath(PREVIEW_CHECKPOINT, "adapter_config.json").write_text("{}", encoding = "utf-8")
+    run.joinpath(PREVIEW_CHECKPOINT, "adapter_config.json").write_text("{}", encoding="utf-8")
     holder = _link_holder(account, actor)
     PREVIEW_RUN_KEY.clear()
     PREVIEW_CHECKPOINT_KEY.clear()
@@ -145,33 +145,33 @@ _CHAT_REASON = (
 def _preview(fragment: str, query: dict, **overrides) -> Factory:
     return Factory(
         "runs-preview",
-        fragment = fragment,
-        query = query,
-        unauthenticated = (404,),
-        deactivated = (404,),
+        fragment=fragment,
+        query=query,
+        unauthenticated=(404,),
+        deactivated=(404,),
         **{"reason": _LINK_REASON, **overrides},
     )
 
 
 FACTORIES = {
-    "routes.research_runs:GET:/{run_id}": Factory("runs-research", fragment = MARKER),
+    "routes.research_runs:GET:/{run_id}": Factory("runs-research", fragment=MARKER),
     "routes.research_runs:PUT:/{run_id}/plan": Factory(
-        "runs-research", UPDATE_PLAN_BODY, fragment = '"status":"awaiting_approval"'
+        "runs-research", UPDATE_PLAN_BODY, fragment='"status":"awaiting_approval"'
     ),
     "routes.research_runs:POST:/{run_id}/approve": Factory(
-        "runs-research-planned", APPROVE_BODY, fragment = '"status":"queued"'
+        "runs-research-planned", APPROVE_BODY, fragment='"status":"queued"'
     ),
     "routes.research_runs:POST:/{run_id}/cancel": Factory(
-        "runs-research", fragment = '"status":"cancelling"'
+        "runs-research", fragment='"status":"cancelling"'
     ),
     "routes.research_runs:POST:/{run_id}/retry": Factory(
-        "runs-research-stopped", fragment = '"status":"awaiting_approval"'
+        "runs-research-stopped", fragment='"status":"awaiting_approval"'
     ),
     "routes.research_runs:GET:/{run_id}/events": Factory(
-        "runs-research-stopped", fragment = "event: run.cancelled"
+        "runs-research-stopped", fragment="event: run.cancelled"
     ),
     "routes.research_runs:POST:/{run_id}/events": Factory(
-        "runs-research-stopped", fragment = "event: run.cancelled"
+        "runs-research-stopped", fragment="event: run.cancelled"
     ),
     "routes.preview:GET:/{run}": _preview(PREVIEW_RUN, PREVIEW_RUN_KEY),
     "routes.preview:GET:/{run}/{checkpoint}": _preview(
@@ -184,16 +184,16 @@ FACTORIES = {
     "routes.preview:POST:/{run}/v1/chat/completions": _preview(
         UNSUPPORTED_PART,
         PREVIEW_RUN_KEY,
-        body = PREVIEW_CHAT_BODY,
-        success = 400,
-        reason = f"{_LINK_REASON}; {_CHAT_REASON}",
+        body=PREVIEW_CHAT_BODY,
+        success=400,
+        reason=f"{_LINK_REASON}; {_CHAT_REASON}",
     ),
     "routes.preview:POST:/{run}/{checkpoint}/v1/chat/completions": _preview(
         UNSUPPORTED_PART,
         PREVIEW_CHECKPOINT_KEY,
-        body = PREVIEW_CHAT_BODY,
-        success = 400,
-        reason = f"{_LINK_REASON}; {_CHAT_REASON}",
+        body=PREVIEW_CHAT_BODY,
+        success=400,
+        reason=f"{_LINK_REASON}; {_CHAT_REASON}",
     ),
 }
 

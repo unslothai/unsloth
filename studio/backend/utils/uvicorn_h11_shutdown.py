@@ -16,7 +16,7 @@ from functools import lru_cache
 from typing import Union
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _shutdown_quiet_h11_protocol() -> Union[type, None]:
     """Build the ``H11Protocol`` subclass that ignores post-close reads."""
     try:

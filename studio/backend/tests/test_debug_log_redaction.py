@@ -118,14 +118,14 @@ KEEP = [
 ]
 
 
-@pytest.mark.parametrize("line,secret", SECRETS, ids = [s[1][:18] for s in SECRETS])
+@pytest.mark.parametrize("line,secret", SECRETS, ids=[s[1][:18] for s in SECRETS])
 def test_a_credential_never_survives(line, secret):
     out = redact_log_text(line)
     assert secret not in out
     assert "<redacted>" in out
 
 
-@pytest.mark.parametrize("line", KEEP, ids = [k[:28] for k in KEEP])
+@pytest.mark.parametrize("line", KEEP, ids=[k[:28] for k in KEEP])
 def test_ordinary_log_content_is_untouched(line):
     assert redact_log_text(line) == line
 
@@ -153,7 +153,7 @@ QUOTED = [
 ]
 
 
-@pytest.mark.parametrize("line,expected", QUOTED, ids = [q[0][:24] for q in QUOTED])
+@pytest.mark.parametrize("line,expected", QUOTED, ids=[q[0][:24] for q in QUOTED])
 def test_a_quoted_credential_is_masked_whole(line, expected):
     """The value patterns used to stop at whitespace, so a quoted credential
     containing spaces was masked only up to its first space and the rest of the
@@ -249,7 +249,7 @@ ANSI_SECRETS = [
 ]
 
 
-@pytest.mark.parametrize("line,secret", ANSI_SECRETS, ids = ["kv", "hf", "auth", "mid", "c1"])
+@pytest.mark.parametrize("line,secret", ANSI_SECRETS, ids=["kv", "hf", "auth", "mid", "c1"])
 def test_a_colorized_credential_is_still_masked(line, secret):
     assert secret not in redact_log_text(line)
 

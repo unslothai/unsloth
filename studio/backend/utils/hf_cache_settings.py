@@ -44,7 +44,7 @@ _settings_lock = threading.RLock()
 _spawn_env_lock = threading.RLock()
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class HuggingFaceCachePaths:
     cache_home: Path
     hub_cache: Path
@@ -79,7 +79,7 @@ def _default_cache_home() -> Path:
 
 
 def _canonical(path: Path | str) -> Path:
-    return Path(path).expanduser().resolve(strict = False)
+    return Path(path).expanduser().resolve(strict=False)
 
 
 def _environment_paths() -> Optional[HuggingFaceCachePaths]:
@@ -153,6 +153,7 @@ def _stored_cache_home() -> Optional[Path]:
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
+
             database = studio_db_path()
             try:
                 os.stat(database)
@@ -164,6 +165,7 @@ def _stored_cache_home() -> Optional[Path]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
+
         value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
         return None
@@ -191,6 +193,7 @@ def configured_cache_key() -> str:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
+
         value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:
         return "default"
@@ -250,6 +253,7 @@ def _xet_loader_barrier() -> Iterator[None]:
     """Block while a Xet shim loader holds its process-wide env override. Never fails a spawn."""
     try:
         from utils.hf_xet_fallback import env_override_barrier
+
         barrier = env_override_barrier()
     except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend
         yield
@@ -301,7 +305,7 @@ def initialize_hf_cache_environment() -> HuggingFaceCachePaths:
         os.environ.pop("HUGGINGFACE_HUB_CACHE", None)
     for directory in (paths.hub_cache, paths.xet_cache):
         try:
-            directory.mkdir(parents = True, exist_ok = True)
+            directory.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
     return paths
@@ -315,7 +319,7 @@ def _validate_cache_home(raw_path: str) -> Path:
     if not candidate.is_absolute():
         raise ValueError("The Hugging Face cache folder must be an absolute path.")
     try:
-        resolved = candidate.resolve(strict = False)
+        resolved = candidate.resolve(strict=False)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("The Hugging Face cache folder is invalid.") from exc
 
@@ -339,12 +343,12 @@ def _validate_cache_home(raw_path: str) -> Path:
     if not parent.exists() or not parent.is_dir():
         raise ValueError("The parent folder does not exist.")
     try:
-        resolved.mkdir(exist_ok = True)
+        resolved.mkdir(exist_ok=True)
         if not resolved.is_dir():
             raise ValueError("The selected cache location is not a folder.")
         for child in (resolved / "hub", resolved / "xet"):
-            child.mkdir(exist_ok = True)
-            with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = child):
+            child.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(prefix=".unsloth-write-test-", dir=child):
                 pass
     except PermissionError as exc:
         raise ValueError("Unsloth does not have permission to write to this folder.") from exc
@@ -357,6 +361,7 @@ def _stored_history() -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
+
         raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []

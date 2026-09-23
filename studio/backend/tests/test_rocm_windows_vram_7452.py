@@ -61,9 +61,9 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
     """0.22 + 0.14 GiB across a 45/7.98 GiB pair: neither usage is capacity-forced, so
     per device stays Unknown, but the total is 0.36 GiB either way round. Before the
     fix the whole tile read Unknown (#7452)."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(IDLE_ADAPTERS))
     )
 
     result = hw.get_visible_gpu_utilization()
@@ -73,19 +73,19 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
     # Per device the ranking cannot tell the two apart, so #7238's invariant holds.
     assert all(d["vram_used_gb"] is None for d in devices)
     # But the aggregate is pairing-independent, so the tile has a real number.
-    assert result["vram_used_gb_aggregate"] == pytest.approx(0.36, abs = 0.01)
+    assert result["vram_used_gb_aggregate"] == pytest.approx(0.36, abs=0.01)
 
 
 def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
     """The floating monitor reads get_gpu_utilization(), so the figure has to reach
     that payload too, not only the System tab's."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(IDLE_ADAPTERS))
     )
 
     result = hw.get_gpu_utilization()
-    assert result["vram_used_gb_aggregate"] == pytest.approx(0.36, abs = 0.01)
+    assert result["vram_used_gb_aggregate"] == pytest.approx(0.36, abs=0.01)
     # The legacy primary mirror must not be overwritten by the aggregate.
     assert result["vram_total_gb"] == 45.0
     assert result["vram_used_gb"] is None
@@ -95,30 +95,30 @@ def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
     """#7072's own case: a model resident on the W7900. 40 GiB exceeds the smaller
     card, so the ranking is forced and both rows get a value; the aggregate must equal
     their sum or the tile disagrees with the rows underneath it."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total=True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),
         ("luid_0x00000000_0x0000e34a_phys_0", 0.5 * GB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(loaded))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(loaded))
     )
 
     result = hw.get_visible_gpu_utilization()
     by_idx = {d["index"]: d for d in result["devices"]}
-    assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)
-    assert by_idx[1]["vram_used_gb"] == pytest.approx(0.5, abs = 0.01)
-    assert result["vram_used_gb_aggregate"] == pytest.approx(40.5, abs = 0.01)
+    assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs=0.01)
+    assert by_idx[1]["vram_used_gb"] == pytest.approx(0.5, abs=0.01)
+    assert result["vram_used_gb_aggregate"] == pytest.approx(40.5, abs=0.01)
     assert result["vram_used_gb_aggregate"] == pytest.approx(
-        sum(d["vram_used_gb"] for d in result["devices"]), abs = 0.01
+        sum(d["vram_used_gb"] for d in result["devices"]), abs=0.01
     )
 
 
 def test_no_aggregate_when_the_counter_is_unavailable(win_rocm, monkeypatch):
     """A localized or missing counter set stays Unknown rather than becoming 0: that
     fabricated zero is the #7072 symptom this pair started from."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total=True))
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output="__NONE__\n"))
 
     result = hw.get_visible_gpu_utilization()
     assert len(result["devices"]) == 2
@@ -184,16 +184,16 @@ def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypat
     """Counters come and go between polls (a placeholder adapter appears, a card is
     masked mid-session). Every poll is judged on its own list, so the tile alternates
     between the real figure and Unknown, never between two figures."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total=True))
     polls = [
-        (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
+        (IDLE_ADAPTERS, pytest.approx(0.36, abs=0.01)),
         (IDLE_ADAPTERS + [("luid_0x00000000_0x0000f001_phys_0", 3 * MiB)], None),
         (IDLE_ADAPTERS + [("luid_0x00000000_0x0000f002_phys_0", 2.0 * GB)], None),
-        (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
+        (IDLE_ADAPTERS, pytest.approx(0.36, abs=0.01)),
     ]
     for adapters, expected in polls:
         monkeypatch.setattr(
-            hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+            hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
         )
         result = hw.get_visible_gpu_utilization()
         assert result["vram_used_gb_aggregate"] == expected
@@ -225,7 +225,7 @@ def _merged_gpu_info(monkeypatch, visibility, utilization):
 
     monkeypatch.setattr(uh, "get_backend_visible_gpu_info", lambda: visibility)
     monkeypatch.setattr(uh, "get_visible_gpu_utilization", lambda: utilization)
-    monkeypatch.setattr(main, "_system_gpu_cache", None, raising = False)
+    monkeypatch.setattr(main, "_system_gpu_cache", None, raising=False)
     gpu_info, _ = main._get_cached_system_gpu_info(main.logger)
     return gpu_info
 

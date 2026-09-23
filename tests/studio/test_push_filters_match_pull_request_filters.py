@@ -66,7 +66,7 @@ def _targets_main(push) -> bool:
 def _scoped_on_pull_request():
     """(name, pr_paths, push) for workflows with a scoped PR trigger and a push to main."""
     for path in sorted(WORKFLOWS.glob("*.yml")):
-        doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             continue
         on = _on(doc)
@@ -105,7 +105,7 @@ def test_every_exemption_still_exists_and_still_needs_one():
             f"{name} is exempted here but no longer has a scoped pull_request trigger plus a "
             f"push to main, so the exemption describes nothing. Remove it."
         )
-        doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+        doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
         push = _on(doc).get("push")
         assert not push.get("paths") and not push.get("paths-ignore"), (
             f"{name} now scopes its push trigger, so it does not need to be exempted. "
@@ -136,7 +136,7 @@ def test_the_push_filter_matches_the_pull_request_filter(name):
     """Narrower on push than on PR drops the post-merge backstop; broader wastes slots."""
     if name in DELIBERATELY_UNFILTERED_ON_PUSH:
         pytest.skip(f"{name} is deliberately unfiltered on push")
-    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
     on = _on(doc)
     pr_paths = (on.get("pull_request") or {}).get("paths")
     push_paths = (on.get("push") or {}).get("paths")

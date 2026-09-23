@@ -28,7 +28,8 @@ try:
         flex_attention as _flex_attention,
         create_block_mask as _create_block_mask,
     )
-    _flex_attention = torch.compile(_flex_attention, dynamic = True, options = torch_compile_options)
+
+    _flex_attention = torch.compile(_flex_attention, dynamic=True, options=torch_compile_options)
     HAS_FLEX_ATTENTION = False
 except:
     HAS_FLEX_ATTENTION = False
@@ -36,7 +37,7 @@ except:
 
 if not HAS_FLEX_ATTENTION:
     # Logit softcapping
-    @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+    @torch.compile(fullgraph=True, dynamic=True, options=torch_compile_options)
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads = self.config.num_attention_heads
         head_dim = self.head_dim
@@ -55,12 +56,12 @@ if not HAS_FLEX_ATTENTION:
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
 
-        Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
+        Q = Q * torch.tensor(s**-0.5, dtype=Q.dtype)
         A = torch.matmul(Q, K.transpose(2, 3))
         A = t * torch.tanh(A / t)
         A += causal_mask[:q_len, :q_len]
         # Much slower under torch compile than the masked_fill_ it replaces.
-        A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
+        A = torch.nn.functional.softmax(A, dim=-1, dtype=torch.float32).to(Q.dtype)
         A = torch.matmul(A, V)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads * head_dim)
@@ -83,7 +84,7 @@ else:
         return q_idx >= kv_idx
 
     @functools.lru_cache
-    def sliding_window_masker(size = 4096):
+    def sliding_window_masker(size=4096):
         def sliding_window(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
             window_mask = q_idx - kv_idx <= size
@@ -92,22 +93,22 @@ else:
         return sliding_window
 
     @functools.lru_cache
-    def create_block_mask(mask, n = 128):
+    def create_block_mask(mask, n=128):
         return _create_block_mask(
             mask,
             1,
             1,
             n,
             n,
-            BLOCK_SIZE = 128,
-            _compile = True,
+            BLOCK_SIZE=128,
+            _compile=True,
         )
 
-    def create_flex_attention_causal_mask(max_seq_length = 8192):
+    def create_flex_attention_causal_mask(max_seq_length=8192):
         causal_mask = create_block_mask(causal_masker, max_seq_length)
         return causal_mask
 
-    def create_flex_attention_sliding_window_mask(max_seq_length = 8192, sliding_window = 4096):
+    def create_flex_attention_sliding_window_mask(max_seq_length=8192, sliding_window=4096):
         sliding_masker = sliding_window_masker(sliding_window)
         causal_mask = create_block_mask(sliding_masker, max_seq_length)
         return causal_mask
@@ -118,9 +119,9 @@ else:
         score_mod = generate_tanh_softcap(t)
         return functools.partial(
             _flex_attention,
-            score_mod = score_mod,
-            scale = scale,
-            enable_gqa = True,
+            score_mod=score_mod,
+            scale=scale,
+            enable_gqa=True,
         )
 
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
@@ -129,7 +130,7 @@ else:
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
         fx = flex_attention(s, t)
-        A = fx(query = Q, key = K, value = V, block_mask = causal_mask)
+        A = fx(query=Q, key=K, value=V, block_mask=causal_mask)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
@@ -156,16 +157,16 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
     s = self.config.query_pre_attn_scalar
     t = self.config.attn_logit_softcapping
 
-    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
+    Q = Q * torch.tensor(s**-0.5, dtype=Q.dtype)
     A = torch_matmul(Q, K.transpose(2, 3))
 
     # Logit softcapping
     A /= t
-    torch_tanh(A, out = A)
+    torch_tanh(A, out=A)
     A *= t
     A += causal_mask[:q_len, :q_len]
     # Much slower under torch compile than the masked_fill_ it replaces.
-    A = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
+    A = torch_nn_functional_softmax(A, dim=-1, dtype=torch.float32).to(Q.dtype)
     A = torch_matmul(A, V)
     A = A.transpose(1, 2).contiguous()
     A = A.reshape(bsz, q_len, n_heads * head_dim)

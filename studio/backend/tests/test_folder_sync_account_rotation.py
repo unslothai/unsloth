@@ -18,7 +18,7 @@ def folder_sync(monkeypatch):
     from core.rag import folder_sync as module
 
     monkeypatch.setattr(module, "job_accounts", lambda: [ALICE, BOB])
-    monkeypatch.setattr(module, "_last_job_account", None, raising = False)
+    monkeypatch.setattr(module, "_last_job_account", None, raising=False)
     return lambda next_job: monkeypatch.setattr(module, "_next_job", next_job) or module
 
 

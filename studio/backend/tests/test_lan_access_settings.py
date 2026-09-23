@@ -33,23 +33,23 @@ from storage import studio_db  # noqa: E402
 
 def _app(**over):
     state = SimpleNamespace(
-        lan_access_port = 8888,
-        lan_access_ready = True,
-        lan_access_is_colab = False,
-        lan_access_launch_managed = False,
-        lan_access_wildcard_bind = False,
-        lan_access_wildcard_ip_versions = (),
-        lan_access_secure_launch = False,
-        lan_access_frontend_served = True,
-        lan_access_loop = None,
-        server_url = "http://192.168.1.24:8888",
+        lan_access_port=8888,
+        lan_access_ready=True,
+        lan_access_is_colab=False,
+        lan_access_launch_managed=False,
+        lan_access_wildcard_bind=False,
+        lan_access_wildcard_ip_versions=(),
+        lan_access_secure_launch=False,
+        lan_access_frontend_served=True,
+        lan_access_loop=None,
+        server_url="http://192.168.1.24:8888",
     )
     for key, value in over.items():
         setattr(state, key, value)
-    return SimpleNamespace(state = state)
+    return SimpleNamespace(state=state)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def stored_settings(monkeypatch):
     """Keep every test off the real listener state, password store and database."""
     stored: dict = {}
@@ -77,7 +77,7 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
     assert lan_settings.set_lan_access_auto_start(True) is True
     assert lan_settings.get_lan_access_auto_start() is True
     with pytest.raises(ValueError):
-        routes.LanAccessAutoStartPayload(enabled = "true")
+        routes.LanAccessAutoStartPayload(enabled="true")
     with pytest.raises(ValueError):
         lan_settings.set_lan_access_auto_start("true")
     monkeypatch.setattr(
@@ -98,11 +98,11 @@ def test_port_persistence_defaults_to_automatic_and_validates(stored_settings):
         with pytest.raises((ValueError, TypeError)):
             lan_settings.set_lan_access_port(invalid)
         with pytest.raises(ValueError):
-            routes.LanAccessPortPayload(port = invalid)
+            routes.LanAccessPortPayload(port=invalid)
 
     stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = "broken"
     assert lan_settings.get_lan_access_port() is None
-    assert routes.LanAccessPortPayload(port = None).port is None
+    assert routes.LanAccessPortPayload(port=None).port is None
 
     with pytest.raises(ValueError):
         routes.LanAccessPortPayload()
@@ -146,11 +146,11 @@ def test_configure_reads_launch_ownership_from_the_bind_host(
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
         state,
-        port = 8888,
-        bind_host = bind_host,
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=8888,
+        bind_host=bind_host,
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
     assert state.lan_access_launch_managed is launch_managed
     assert state.lan_access_wildcard_bind is wildcard
@@ -171,11 +171,11 @@ def test_an_ephemeral_hostname_launch_keeps_its_loopback_policy(monkeypatch):
 
     lan_settings.configure_lan_access(
         state,
-        port = 0,
-        bind_host = "loopback.test",
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=0,
+        bind_host="loopback.test",
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
 
     assert state.lan_access_launch_addresses == ("127.0.0.1",)
@@ -184,10 +184,10 @@ def test_an_ephemeral_hostname_launch_keeps_its_loopback_policy(monkeypatch):
 
 def _transport_request(
     *,
-    server = ("192.168.1.24", 8888),
-    client = ("192.168.1.90", 54321),
-    state = None,
-    headers = None,
+    server=("192.168.1.24", 8888),
+    client=("192.168.1.90", 54321),
+    state=None,
+    headers=None,
 ):
     return Request(
         {
@@ -201,16 +201,16 @@ def _transport_request(
             ],
             "server": server,
             "client": client,
-            "app": SimpleNamespace(state = state or SimpleNamespace()),
+            "app": SimpleNamespace(state=state or SimpleNamespace()),
         }
     )
 
 
 def _listener(
-    address = "192.168.1.24",
+    address="192.168.1.24",
     *,
-    running = True,
-    port = 8888,
+    running=True,
+    port=8888,
 ):
     return {"running": running, "port": port, "addresses": [address]}
 
@@ -223,7 +223,7 @@ def _listener(
         (("::ffff:192.168.1.24", 8888), ("::ffff:192.168.1.90", 54321), _listener(), True),
         (("192.168.1.24", 8889), ("192.168.1.90", 54321), _listener(), False),
         (("192.168.1.25", 8888), ("192.168.1.90", 54321), _listener(), False),
-        (("192.168.1.24", 8888), ("192.168.1.90", 54321), _listener(running = False), False),
+        (("192.168.1.24", 8888), ("192.168.1.90", 54321), _listener(running=False), False),
         (("64.227.100.5", 8888), ("192.168.1.90", 54321), _listener("64.227.100.5"), False),
         (("192.168.1.24", 8888), ("8.8.8.8", 54321), _listener(), False),
         (("192.168.1.24", 8888), ("127.0.0.1", 54321), _listener(), False),
@@ -234,7 +234,7 @@ def _listener(
 def test_private_lan_live_listener_matrix(monkeypatch, server, client, listener, expected):
     monkeypatch.setattr(lan_access, "lan_listener_status", lambda: listener)
     assert (
-        lan_settings.request_on_lan_access(_transport_request(server = server, client = client))
+        lan_settings.request_on_lan_access(_transport_request(server=server, client=client))
         is expected
     )
 
@@ -244,9 +244,9 @@ def test_private_lan_ignores_forwarding_headers(monkeypatch):
     headers = dict.fromkeys(("host", "forwarded", "x-forwarded-for", "origin"), "192.168.1.90")
     assert not lan_settings.request_on_lan_access(
         _transport_request(
-            server = ("127.0.0.1", 8888),
-            client = ("127.0.0.1", 54321),
-            headers = headers,
+            server=("127.0.0.1", 8888),
+            client=("127.0.0.1", 54321),
+            headers=headers,
         )
     )
 
@@ -286,18 +286,18 @@ def test_private_lan_launch_managed_matrix(
     state = SimpleNamespace()
     lan_settings.configure_lan_access(
         state,
-        port = 8888,
-        bind_host = bind_host,
-        secure = secure,
-        is_colab = is_colab,
-        frontend_served = True,
+        port=8888,
+        bind_host=bind_host,
+        secure=secure,
+        is_colab=is_colab,
+        frontend_served=True,
     )
     assert (
         lan_settings.request_on_lan_access(
             _transport_request(
-                server = (server, 8888),
-                client = ("192.168.1.90", 54321),
-                state = state,
+                server=(server, 8888),
+                client=("192.168.1.90", 54321),
+                state=state,
             )
         )
         is expected
@@ -373,19 +373,19 @@ def test_status_carries_the_bind_host_so_a_block_can_name_it(
     monkeypatch.setattr(
         lan_access,
         "detect_lan_addresses",
-        lambda ip_version = 4: ["fd00::144"] if ip_version == 6 else ["10.1.1.144"],
+        lambda ip_version=4: ["fd00::144"] if ip_version == 6 else ["10.1.1.144"],
     )
-    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    state = SimpleNamespace(server_url="http://203.0.113.9:8888")
     lan_settings.configure_lan_access(
         state,
-        port = 8888,
-        bind_host = bind_host,
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=8888,
+        bind_host=bind_host,
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
     state.lan_access_ready = True
-    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    status = lan_settings.lan_access_status(SimpleNamespace(state=state))
     assert status["bind_host"] == bind_host
     assert status["wildcard_bind"] is wildcard
     assert status["urls"] == expected_urls
@@ -403,23 +403,23 @@ def test_a_dual_stack_wildcard_launch_reports_both_address_families(monkeypatch)
     )
     detected_versions = []
 
-    def _detect(ip_version = 4):
+    def _detect(ip_version=4):
         detected_versions.append(ip_version)
         return ["10.1.1.144"] if ip_version == 4 else ["fd00::144"]
 
     monkeypatch.setattr(lan_access, "detect_lan_addresses", _detect)
-    state = SimpleNamespace(server_url = "http://203.0.113.9:8888")
+    state = SimpleNamespace(server_url="http://203.0.113.9:8888")
     lan_settings.configure_lan_access(
         state,
-        port = 8888,
-        bind_host = "dual-wildcard.test",
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=8888,
+        bind_host="dual-wildcard.test",
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
     state.lan_access_ready = True
 
-    status = lan_settings.lan_access_status(SimpleNamespace(state = state))
+    status = lan_settings.lan_access_status(SimpleNamespace(state=state))
     assert state.lan_access_wildcard_ip_versions == (4, 6)
     assert status["urls"] == ["http://10.1.1.144:8888", "http://[fd00::144]:8888"]
     assert detected_versions == [4, 6]
@@ -428,24 +428,24 @@ def test_a_dual_stack_wildcard_launch_reports_both_address_families(monkeypatch)
 def test_the_response_model_carries_the_bind_host_to_the_client():
     """The status dict reaches the client through LanAccessResponse, which drops
     any field it does not declare."""
-    state = SimpleNamespace(server_url = "http://10.1.1.144:8888")
+    state = SimpleNamespace(server_url="http://10.1.1.144:8888")
     lan_settings.configure_lan_access(
         state,
-        port = 8888,
-        bind_host = "10.1.1.144",
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=8888,
+        bind_host="10.1.1.144",
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
     state.lan_access_ready = True
-    request = SimpleNamespace(app = SimpleNamespace(state = state))
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
     served = routes._lan_access_response(request).model_dump()
     assert served["bind_host"] == "10.1.1.144"
     assert served["wildcard_bind"] is False
 
 
 def test_a_specific_host_launch_reports_the_address_it_was_given():
-    status = lan_settings.lan_access_status(_app(lan_access_launch_managed = True))
+    status = lan_settings.lan_access_status(_app(lan_access_launch_managed=True))
     assert status["state"] == "online" and status["managed_by"] == "launch"
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["keyless_lan_eligible"] is True
@@ -457,17 +457,17 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """The status refreshes every LAN address instead of relying on server_url's
     single direct base, and never leaks an obsolete public-address value."""
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version=4: ["192.168.1.24"])
     state = _app(
-        lan_access_launch_managed = True,
-        lan_access_wildcard_bind = True,
-        server_url = "http://203.0.113.9:8888",
+        lan_access_launch_managed=True,
+        lan_access_wildcard_bind=True,
+        server_url="http://203.0.113.9:8888",
     )
     status = lan_settings.lan_access_status(state)
     assert status["urls"] == ["http://192.168.1.24:8888"]
     assert status["public_urls"] == []
 
-    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version=4: ["10.0.0.7"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
 
 
@@ -541,7 +541,7 @@ def test_a_cgnat_bind_is_not_reported_as_keyless_lan(monkeypatch):
 
 def test_api_only_launches_advertise_that_the_web_ui_is_not_served():
     assert lan_settings.lan_access_status(_app())["serves_web_ui"] is True
-    served = lan_settings.lan_access_status(_app(lan_access_frontend_served = False))
+    served = lan_settings.lan_access_status(_app(lan_access_frontend_served=False))
     assert served["serves_web_ui"] is False
 
 
@@ -564,7 +564,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
     monkeypatch.setattr(
         lan_access,
         "_interface_addresses",
-        lambda _ip_version = 4: [
+        lambda _ip_version=4: [
             "127.0.0.1",
             "169.254.10.1",
             "224.0.0.1",
@@ -584,7 +584,7 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
 @pytest.mark.allow_network
 def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch):
     routed = _require_lan_address()
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["203.0.113.9"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version=4: ["203.0.113.9"])
     assert lan_access.detect_lan_addresses() == [routed, "203.0.113.9"]
 
 
@@ -621,14 +621,14 @@ def test_interface_enumeration_skips_adapters_that_are_down(monkeypatch):
     import types
 
     fake = types.SimpleNamespace(
-        net_if_stats = lambda: {
-            "en0": types.SimpleNamespace(isup = True),
-            "en1": types.SimpleNamespace(isup = False),
+        net_if_stats=lambda: {
+            "en0": types.SimpleNamespace(isup=True),
+            "en1": types.SimpleNamespace(isup=False),
         },
-        net_if_addrs = lambda: {
-            "en0": [types.SimpleNamespace(family = socket.AF_INET, address = "10.0.0.7")],
-            "en1": [types.SimpleNamespace(family = socket.AF_INET, address = "10.9.9.9")],
-            "en2": [types.SimpleNamespace(family = socket.AF_INET6, address = "fe80::1")],
+        net_if_addrs=lambda: {
+            "en0": [types.SimpleNamespace(family=socket.AF_INET, address="10.0.0.7")],
+            "en1": [types.SimpleNamespace(family=socket.AF_INET, address="10.9.9.9")],
+            "en2": [types.SimpleNamespace(family=socket.AF_INET6, address="fe80::1")],
         },
     )
     monkeypatch.setitem(sys.modules, "psutil", fake)
@@ -648,7 +648,7 @@ def test_ipv6_detection_keeps_only_reachable_unscoped_addresses(monkeypatch):
     monkeypatch.setattr(
         lan_access,
         "_interface_addresses",
-        lambda _ip_version = 4: [
+        lambda _ip_version=4: [
             "::1",
             "fe80::1%en0",
             "ff02::1",
@@ -666,8 +666,8 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
     import types
 
     fake = types.SimpleNamespace(
-        net_if_stats = lambda: {
-            name: types.SimpleNamespace(isup = True)
+        net_if_stats=lambda: {
+            name: types.SimpleNamespace(isup=True)
             for name in (
                 "Wi-Fi",
                 "vEthernet (Default Switch)",
@@ -675,18 +675,18 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
                 "vEthernet (External LAN)",
             )
         },
-        net_if_addrs = lambda: {
-            "Wi-Fi": [types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.20")],
+        net_if_addrs=lambda: {
+            "Wi-Fi": [types.SimpleNamespace(family=socket.AF_INET, address="192.168.1.20")],
             "vEthernet (Default Switch)": [
-                types.SimpleNamespace(family = socket.AF_INET, address = "172.31.32.1")
+                types.SimpleNamespace(family=socket.AF_INET, address="172.31.32.1")
             ],
             "vEthernet (WSL (Hyper-V firewall))": [
-                types.SimpleNamespace(family = socket.AF_INET, address = "172.25.32.1")
+                types.SimpleNamespace(family=socket.AF_INET, address="172.25.32.1")
             ],
             # An external Hyper-V switch can replace the physical adapter and is
             # reachable from the LAN, so do not reject every vEthernet interface.
             "vEthernet (External LAN)": [
-                types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.21")
+                types.SimpleNamespace(family=socket.AF_INET, address="192.168.1.21")
             ],
         },
     )
@@ -696,19 +696,19 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
 
 def test_wsl_nat_address_is_not_advertised(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "nat")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version=4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_unknown_networking_mode_fails_closed(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["172.25.35.232"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version=4: ["172.25.35.232"])
     assert lan_access.detect_lan_addresses() == []
 
 
 def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "mirrored")
-    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version = 4: ["192.168.1.20"])
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda _ip_version=4: ["192.168.1.20"])
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
 
 
@@ -729,12 +729,12 @@ def test_wsl_mode_is_cached_while_interface_addresses_still_refresh(monkeypatch)
     monkeypatch.setattr(
         lan_access,
         "_interface_addresses",
-        lambda _ip_version = 4: next(interface_addresses),
+        lambda _ip_version=4: next(interface_addresses),
     )
     monkeypatch.setattr(
         lan_access.subprocess,
         "run",
-        lambda *_args, **_kwargs: mode_calls.append(True) or SimpleNamespace(stdout = "mirrored\n"),
+        lambda *_args, **_kwargs: mode_calls.append(True) or SimpleNamespace(stdout="mirrored\n"),
     )
 
     assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
@@ -750,7 +750,7 @@ def test_wsl_mode_cache_retries_a_timeout_after_expiry(monkeypatch):
         mode_calls.append(True)
         if len(mode_calls) == 1:
             raise lan_access.subprocess.TimeoutExpired(["wslinfo"], 1)
-        return SimpleNamespace(stdout = "mirrored\n")
+        return SimpleNamespace(stdout="mirrored\n")
 
     monkeypatch.setattr(lan_access.sys, "platform", "linux")
     monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
@@ -777,14 +777,14 @@ def test_concurrent_wsl_mode_checks_share_one_probe(monkeypatch):
         mode_calls.append(True)
         probe_started.set()
         assert release_probe.wait(2)
-        return SimpleNamespace(stdout = "mirrored\n")
+        return SimpleNamespace(stdout="mirrored\n")
 
     monkeypatch.setattr(lan_access.sys, "platform", "linux")
     monkeypatch.setattr(lan_access.platform, "release", lambda: "microsoft-standard-WSL2")
     monkeypatch.setattr(lan_access, "_wsl_mode_cache", None)
     monkeypatch.setattr(lan_access.subprocess, "run", _run)
     threads = [
-        threading.Thread(target = lambda: results.append(lan_access._wsl_networking_mode()))
+        threading.Thread(target=lambda: results.append(lan_access._wsl_networking_mode()))
         for _ in range(2)
     ]
 
@@ -809,7 +809,7 @@ def _free_port() -> int:
 
 
 def _get(url: str) -> int:
-    with urllib.request.urlopen(url, timeout = 5) as response:
+    with urllib.request.urlopen(url, timeout=5) as response:
         return response.status
 
 
@@ -867,7 +867,7 @@ def live_server():
         return {"seconds": time.monotonic() - started}
 
     port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host = "127.0.0.1", port = port, log_level = "warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     box = {}
 
     def _run():
@@ -876,16 +876,16 @@ def live_server():
         box["loop"] = loop
         loop.run_until_complete(server.serve())
 
-    thread = threading.Thread(target = _run, daemon = True)
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.02)
     assert server.started, "primary server never bound"
-    yield SimpleNamespace(app = app, loop = box["loop"], port = port)
+    yield SimpleNamespace(app=app, loop=box["loop"], port=port)
     lan_access.stop_lan_listener()
     server.should_exit = True
-    thread.join(timeout = 10)
+    thread.join(timeout=10)
 
 
 @pytest.mark.allow_network
@@ -929,7 +929,7 @@ def test_only_traffic_on_a_lan_socket_is_reported_as_lan(live_server):
 
     def _lan_flag(host: str) -> bool:
         with urllib.request.urlopen(
-            f"http://{host}:{live_server.port}/where", timeout = 5
+            f"http://{host}:{live_server.port}/where", timeout=5
         ) as response:
             return json.loads(response.read())["lan"]
 
@@ -939,7 +939,7 @@ def test_only_traffic_on_a_lan_socket_is_reported_as_lan(live_server):
 
 def test_a_start_with_no_usable_address_fails_without_leaving_state(monkeypatch):
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: [])
-    with pytest.raises(RuntimeError, match = "no_lan_address"):
+    with pytest.raises(RuntimeError, match="no_lan_address"):
         lan_access.start_lan_listener(object(), object(), 8888)
     status = lan_access.lan_listener_status()
     assert status["running"] is False and status["error"] == "no_lan_address"
@@ -956,12 +956,12 @@ def test_automatic_tries_each_port_and_exact_does_not_fall_back(monkeypatch):
         raise OSError("address in use")
 
     monkeypatch.setattr(lan_access, "_bind_listener", _refuse)
-    with pytest.raises(RuntimeError, match = "bind_failed"):
+    with pytest.raises(RuntimeError, match="bind_failed"):
         lan_access.start_lan_listener(object(), object(), 8888, (8889, 8890))
     assert attempted == [8888, 8889, 8890]
 
     attempted.clear()
-    with pytest.raises(RuntimeError, match = "bind_failed"):
+    with pytest.raises(RuntimeError, match="bind_failed"):
         lan_access.start_lan_listener(object(), object(), 43210)
     assert attempted == [43210]
     assert lan_access.lan_listener_status()["running"] is False
@@ -987,7 +987,7 @@ def test_stop_from_inside_the_event_loop_does_not_wait_on_itself(live_server):
         return time.monotonic() - started
 
     elapsed = asyncio.run_coroutine_threadsafe(_stop_from_loop(), live_server.loop).result(
-        timeout = 5
+        timeout=5
     )
     assert elapsed < lan_access._STOP_TIMEOUT
     # the gate closes at once, but ownership and the trust flag stay until uvicorn
@@ -1005,12 +1005,12 @@ def test_a_listener_that_fails_to_serve_gives_up_without_waiting_it_out(live_ser
         started = False
         should_exit = False
 
-        async def serve(self, sockets = None):
+        async def serve(self, sockets=None):
             raise RuntimeError("listener exploded")
 
     monkeypatch.setattr(lan_access.uvicorn, "Server", lambda _config: _Broken())
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match = "listener_start_failed"):
+    with pytest.raises(RuntimeError, match="listener_start_failed"):
         lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
     assert time.monotonic() - started < lan_access._START_TIMEOUT
     status = lan_access.lan_listener_status()
@@ -1027,9 +1027,9 @@ def test_a_stop_from_a_lan_client_does_not_wait_out_its_own_response(live_server
     address = _require_lan_address()
     lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
 
-    request = urllib.request.Request(f"http://{address}:{live_server.port}/stop-lan", method = "POST")
+    request = urllib.request.Request(f"http://{address}:{live_server.port}/stop-lan", method="POST")
     started = time.monotonic()
-    with urllib.request.urlopen(request, timeout = 30) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
         handler_seconds = json.loads(response.read())["seconds"]
     assert handler_seconds < lan_access._STOP_TIMEOUT, "the stop waited out its own response"
     assert time.monotonic() - started < lan_access._STOP_TIMEOUT
@@ -1053,7 +1053,7 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         loop.call_soon(running.set)
         loop.run_forever()
 
-    thread = threading.Thread(target = _spin, daemon = True)
+    thread = threading.Thread(target=_spin, daemon=True)
     thread.start()
     assert running.wait(5)
     monkeypatch.setattr(lan_access, "_STOP_TIMEOUT", 0.2)
@@ -1084,7 +1084,7 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         assert _wait_for_trust(False)
     finally:
         loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout = 5)
+        thread.join(timeout=5)
         loop.close()
         lingering.close()
         host_policy.set_lan_connector_active(False)
@@ -1100,7 +1100,7 @@ def test_a_schedule_that_cannot_reach_the_loop_releases_the_bound_sockets(live_s
         raise RuntimeError("Event loop is closed")
 
     monkeypatch.setattr(lan_access.asyncio, "run_coroutine_threadsafe", _closed)
-    with pytest.raises(RuntimeError, match = "listener_start_failed"):
+    with pytest.raises(RuntimeError, match="listener_start_failed"):
         lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
 
     status = lan_access.lan_listener_status()
@@ -1124,7 +1124,7 @@ def test_a_stop_on_the_serving_loop_never_blocks_on_a_start_holding_the_lock(liv
             holding.set()
             release.wait(10)
 
-    holder = threading.Thread(target = _hold, daemon = True)
+    holder = threading.Thread(target=_hold, daemon=True)
     holder.start()
     assert holding.wait(5)
     try:
@@ -1135,18 +1135,18 @@ def test_a_stop_on_the_serving_loop_never_blocks_on_a_start_holding_the_lock(liv
 
         stopped, elapsed = asyncio.run_coroutine_threadsafe(
             _stop_from_loop(), live_server.loop
-        ).result(timeout = 10)
+        ).result(timeout=10)
         assert elapsed < 1, "the loop-side stop waited on the lock"
         assert stopped is False, "an unconfirmed stop must not report success"
     finally:
         release.set()
-        holder.join(timeout = 10)
+        holder.join(timeout=10)
 
 
 def test_the_server_thread_releases_the_listener_once_its_loop_ends():
     """An embedded host calls run_server again in-process, and a stale _server would
     report the old addresses as online and skip binding a new listener."""
-    source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    source = (_BACKEND / "run.py").read_text(encoding="utf-8")
     run_body = source[
         source.index("    def _run():") : source.index("    thread = Thread(target = _run")
     ]
@@ -1184,11 +1184,11 @@ def _configured(live_server):
     """The live app carrying the launch policy run.py would have published on it."""
     lan_settings.configure_lan_access(
         live_server.app.state,
-        port = live_server.port,
-        bind_host = "127.0.0.1",
-        secure = False,
-        is_colab = False,
-        frontend_served = True,
+        port=live_server.port,
+        bind_host="127.0.0.1",
+        secure=False,
+        is_colab=False,
+        frontend_served=True,
     )
     live_server.app.state.lan_access_ready = True
     live_server.app.state.lan_access_loop = live_server.loop
@@ -1230,7 +1230,7 @@ def test_trust_outlives_the_sockets_until_accepted_requests_drain(monkeypatch):
     """Stop closes the listening sockets, but uvicorn then drains the connections it
     already accepted, and a request that arrived on the LAN stays a remote caller."""
     connections = {object()}
-    server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
+    server = SimpleNamespace(server_state=SimpleNamespace(connections=connections))
     monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)
 
     with lan_access._lock:
@@ -1247,7 +1247,7 @@ def test_a_repeated_stop_does_not_clear_trust_a_pending_drain_still_owns(monkeyp
     """The second stop finds no server and would otherwise release the flag out from
     under requests the first stop left draining."""
     connections = {object()}
-    server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
+    server = SimpleNamespace(server_state=SimpleNamespace(connections=connections))
     monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)
 
     with lan_access._lock:
@@ -1264,8 +1264,8 @@ def test_a_repeated_stop_does_not_clear_trust_a_pending_drain_still_owns(monkeyp
 
 
 def test_a_drain_that_finishes_after_a_restart_leaves_the_new_listener_trusted(monkeypatch):
-    server = SimpleNamespace(server_state = SimpleNamespace(connections = set()))
-    monkeypatch.setattr(lan_access, "_server", SimpleNamespace(should_exit = False))
+    server = SimpleNamespace(server_state=SimpleNamespace(connections=set()))
+    monkeypatch.setattr(lan_access, "_server", SimpleNamespace(should_exit=False))
     host_policy.set_lan_connector_active(True)
     lan_access._clear_trust_after_drain(server)
     assert host_policy.remote_connector_active() is True
@@ -1275,10 +1275,10 @@ def test_a_drain_that_finishes_after_a_restart_leaves_the_new_listener_trusted(m
 def test_the_trust_flag_moves_with_the_listener_under_one_lock():
     """A start and a stop can run in separate FastAPI worker threads, so the flag
     cannot be published by the callers: it has to change where the state does."""
-    settings_source = (_BACKEND / "utils" / "lan_access_settings.py").read_text(encoding = "utf-8")
+    settings_source = (_BACKEND / "utils" / "lan_access_settings.py").read_text(encoding="utf-8")
     assert "set_lan_connector_active" not in settings_source
 
-    listener_source = (_BACKEND / "lan_access.py").read_text(encoding = "utf-8")
+    listener_source = (_BACKEND / "lan_access.py").read_text(encoding="utf-8")
     tree = ast.parse(listener_source)
     holders = set()
     for node in ast.walk(tree):
@@ -1292,16 +1292,16 @@ def test_the_trust_flag_moves_with_the_listener_under_one_lock():
 
 
 def test_start_refuses_while_a_block_is_in_force():
-    with pytest.raises(RuntimeError, match = "server_starting"):
-        lan_settings.start_lan_access(_app(lan_access_ready = False))
-    with pytest.raises(RuntimeError, match = "launch_managed"):
-        lan_settings.stop_lan_access(_app(lan_access_launch_managed = True))
+    with pytest.raises(RuntimeError, match="server_starting"):
+        lan_settings.start_lan_access(_app(lan_access_ready=False))
+    with pytest.raises(RuntimeError, match="launch_managed"):
+        lan_settings.stop_lan_access(_app(lan_access_launch_managed=True))
 
 
 def test_start_uses_the_saved_port_policy(monkeypatch):
     calls = []
-    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
-    app = _app(lan_access_loop = loop)
+    loop = SimpleNamespace(is_closed=lambda: False, is_running=lambda: True)
+    app = _app(lan_access_loop=loop)
     monkeypatch.setattr(
         lan_access,
         "start_lan_listener",
@@ -1327,8 +1327,8 @@ def test_start_refuses_when_the_saved_port_policy_is_unusable(
     monkeypatch, stored_settings, stored, reason
 ):
     stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = stored
-    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
-    app = _app(lan_access_loop = loop)
+    loop = SimpleNamespace(is_closed=lambda: False, is_running=lambda: True)
+    app = _app(lan_access_loop=loop)
     calls = []
     monkeypatch.setattr(
         lan_access,
@@ -1342,7 +1342,7 @@ def test_start_refuses_when_the_saved_port_policy_is_unusable(
             lambda *_args: (_ for _ in ()).throw(OSError("database unavailable")),
         )
 
-    with pytest.raises(RuntimeError, match = reason):
+    with pytest.raises(RuntimeError, match=reason):
         lan_settings.start_lan_access(app)
     assert calls == []
 
@@ -1351,8 +1351,8 @@ def test_start_and_port_save_are_serialized(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
     running = False
-    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
-    app = _app(lan_access_loop = loop)
+    loop = SimpleNamespace(is_closed=lambda: False, is_running=lambda: True)
+    app = _app(lan_access_loop=loop)
 
     def status(_app):
         return {
@@ -1364,16 +1364,16 @@ def test_start_and_port_save_are_serialized(monkeypatch):
     def start_listener(*_args):
         nonlocal running
         entered.set()
-        assert release.wait(timeout = 2)
+        assert release.wait(timeout=2)
         running = True
         return ("10.0.0.7",)
 
     monkeypatch.setattr(lan_settings, "lan_access_status", status)
     monkeypatch.setattr(lan_access, "start_lan_listener", start_listener)
 
-    start_thread = threading.Thread(target = lan_settings.start_lan_access, args = (app,))
+    start_thread = threading.Thread(target=lan_settings.start_lan_access, args=(app,))
     start_thread.start()
-    assert entered.wait(timeout = 2)
+    assert entered.wait(timeout=2)
 
     save_errors = []
 
@@ -1383,14 +1383,14 @@ def test_start_and_port_save_are_serialized(monkeypatch):
         except RuntimeError as exc:
             save_errors.append(str(exc))
 
-    save_thread = threading.Thread(target = save)
+    save_thread = threading.Thread(target=save)
     save_thread.start()
     time.sleep(0.05)
     assert save_thread.is_alive(), "port save did not wait for the in-flight start"
 
     release.set()
-    start_thread.join(timeout = 2)
-    save_thread.join(timeout = 2)
+    start_thread.join(timeout=2)
+    save_thread.join(timeout=2)
     assert save_errors == ["lan_access_running"]
 
 
@@ -1398,22 +1398,22 @@ def test_start_refuses_once_the_server_loop_is_gone(monkeypatch):
     monkeypatch.setattr(
         lan_access, "start_lan_listener", lambda *_: pytest.fail("bound without a live loop")
     )
-    with pytest.raises(RuntimeError, match = "server_not_running"):
-        lan_settings.start_lan_access(_app(lan_access_loop = None))
+    with pytest.raises(RuntimeError, match="server_not_running"):
+        lan_settings.start_lan_access(_app(lan_access_loop=None))
     # a loop that exists but is no longer serving would never run the listener either
     idle = asyncio.new_event_loop()
     try:
-        with pytest.raises(RuntimeError, match = "server_not_running"):
-            lan_settings.start_lan_access(_app(lan_access_loop = idle))
+        with pytest.raises(RuntimeError, match="server_not_running"):
+            lan_settings.start_lan_access(_app(lan_access_loop=idle))
     finally:
         idle.close()
-    with pytest.raises(RuntimeError, match = "server_not_running"):
-        lan_settings.start_lan_access(_app(lan_access_loop = idle))
+    with pytest.raises(RuntimeError, match="server_not_running"):
+        lan_settings.start_lan_access(_app(lan_access_loop=idle))
 
 
 def test_auto_start_stays_quiet_when_the_launch_forbids_it(stored_settings):
     stored_settings[lan_settings.LAN_ACCESS_AUTO_START_KEY] = True
-    assert lan_settings.maybe_auto_start_lan_access(_app(lan_access_is_colab = True)) is False
+    assert lan_settings.maybe_auto_start_lan_access(_app(lan_access_is_colab=True)) is False
 
 
 def test_auto_start_is_skipped_entirely_when_the_preference_is_off(monkeypatch):
@@ -1428,8 +1428,8 @@ def test_auto_start_is_skipped_entirely_when_the_preference_is_off(monkeypatch):
 
 def test_colab_auto_start_setting_is_read_only(monkeypatch):
     monkeypatch.setattr(routes, "set_lan_access_auto_start", lambda *_: pytest.fail("persisted"))
-    request = SimpleNamespace(app = _app(lan_access_is_colab = True))
-    payload = routes.LanAccessAutoStartPayload(enabled = True)
+    request = SimpleNamespace(app=_app(lan_access_is_colab=True))
+    payload = routes.LanAccessAutoStartPayload(enabled=True)
     with pytest.raises(HTTPException) as exc:
         routes.update_lan_access_auto_start(request, payload, "admin", None)
     assert exc.value.status_code == 409
@@ -1440,12 +1440,12 @@ def test_port_update_route_rejects_running_and_colab_lan_access(monkeypatch):
         monkeypatch.setattr(
             routes,
             "save_lan_access_port",
-            lambda *_args, reason = reason: (_ for _ in ()).throw(RuntimeError(reason)),
+            lambda *_args, reason=reason: (_ for _ in ()).throw(RuntimeError(reason)),
         )
         with pytest.raises(HTTPException) as exc:
             routes.update_lan_access_port(
-                SimpleNamespace(app = _app()),
-                routes.LanAccessPortPayload(port = 43210),
+                SimpleNamespace(app=_app()),
+                routes.LanAccessPortPayload(port=43210),
                 "admin",
                 None,
             )
@@ -1457,7 +1457,7 @@ def test_a_blocked_start_answers_409_rather_than_500(monkeypatch):
         routes, "start_lan_access", lambda _app: (_ for _ in ()).throw(RuntimeError("colab"))
     )
     with pytest.raises(HTTPException) as exc:
-        routes.start_lan_access_route(SimpleNamespace(app = _app()), "admin", None)
+        routes.start_lan_access_route(SimpleNamespace(app=_app()), "admin", None)
     assert exc.value.status_code == 409 and exc.value.detail == "colab"
 
 
@@ -1466,7 +1466,7 @@ def test_management_rejects_api_keys():
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
     # every /lan-access handler must carry the UI-session gate
-    tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
+    tree = ast.parse(Path(routes.__file__).read_text(encoding="utf-8"))
     gated = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1487,7 +1487,7 @@ def test_the_desktop_frontend_gate_admits_the_lan_listener():
     import main
 
     scope = {"type": "http", "headers": [], "server": ("10.0.0.7", 8888)}
-    state = SimpleNamespace(cloudflare_url = None)
+    state = SimpleNamespace(cloudflare_url=None)
     assert main._is_remote_frontend_request(scope, state) is False
     original = lan_access._bound_addresses
     lan_access._bound_addresses = ("10.0.0.7",)
@@ -1518,7 +1518,7 @@ def test_the_desktop_assets_mount_admits_the_lan_listener():
             if message["type"] == "http.response.start":
                 statuses.append(message["status"])
 
-        await main._TunnelOnlyFrontend(_spa, SimpleNamespace(cloudflare_url = None))(
+        await main._TunnelOnlyFrontend(_spa, SimpleNamespace(cloudflare_url=None))(
             scope, None, _send
         )
         return statuses[0]
@@ -1537,14 +1537,14 @@ def test_the_desktop_assets_mount_admits_the_lan_listener():
     assert served
 
     # the SPA routes share the decision through a closure the mount does not expose
-    source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    source = (_BACKEND / "main.py").read_text(encoding="utf-8")
     assert "return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)" in (
         source
     )
 
 
 def test_run_py_wires_the_listener_into_the_server_lifecycle():
-    source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    source = (_BACKEND / "run.py").read_text(encoding="utf-8")
     # without the loop the settings route has nothing to schedule the listener on
     assert "app.state.lan_access_loop = loop" in source
     assert "close_lan_listener_lifecycle" in source

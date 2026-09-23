@@ -20,14 +20,14 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason = "native Windows path semantics")
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="native Windows path semantics")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
 
 
 def _load_helper():
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef) and node.name == "_model_basename":
             ns: dict = {"os": os}
@@ -84,7 +84,7 @@ def test_output_stays_on_the_export_drive(tmp_path):
     """Cross-drive: base model on D:, export on the runner's temp drive."""
     helper = _load_helper()
     gguf_dir = str(tmp_path / "run_gguf")
-    os.makedirs(gguf_dir, exist_ok = True)
+    os.makedirs(gguf_dir, exist_ok=True)
 
     stem = helper(r"D:\Models\Merged Models\MyModel")
     out = os.path.join(gguf_dir, f"{stem}.Q5_K_M.gguf")
@@ -96,16 +96,16 @@ def test_output_stays_on_the_export_drive(tmp_path):
     assert [p.name for p in Path(gguf_dir).glob("*.gguf")] == ["MyModel.Q5_K_M.gguf"]
 
 
-@pytest.mark.skipif(not os.path.isdir("D:\\"), reason = "runner has no D: drive")
+@pytest.mark.skipif(not os.path.isdir("D:\\"), reason="runner has no D: drive")
 def test_real_second_drive_end_to_end():
     """A real base-model directory on D:, a real export dir on C:."""
     helper = _load_helper()
     base_dir = r"D:\Models\Merged Models\MyModel"
-    os.makedirs(base_dir, exist_ok = True)
+    os.makedirs(base_dir, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as export_root:
         gguf_dir = os.path.join(export_root, "_tmp_model_ab12_gguf")
-        os.makedirs(gguf_dir, exist_ok = True)
+        os.makedirs(gguf_dir, exist_ok=True)
 
         out = os.path.join(gguf_dir, f"{helper(base_dir)}.Q5_K_M.gguf")
         Path(out).write_bytes(b"GGUF")

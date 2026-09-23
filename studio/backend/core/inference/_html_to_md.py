@@ -288,7 +288,7 @@ class _MarkdownRenderer(HTMLParser):
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
     ):
-        super().__init__(convert_charrefs = False)
+        super().__init__(convert_charrefs=False)
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -436,7 +436,7 @@ class _MarkdownRenderer(HTMLParser):
 
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
-        content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
+        content = re.sub(r"[ \t]+$", "", content, flags=re.MULTILINE)
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
         if not content:
             return ""
@@ -674,7 +674,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._hidden_marks.pop()
                     while self._heading_marks and self._heading_marks[-1] >= i:
                         self._heading_marks.pop()
-                    self._close_header_frames(i, own_tag = tag == "header")
+                    self._close_header_frames(i, own_tag=tag == "header")
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
@@ -1042,7 +1042,7 @@ def _strip_boilerplate_lines(text: str) -> str:
 def _new_renderer(
     source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
+    renderer = _MarkdownRenderer(scope_tags=scope_tags, strip_header=strip_header)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
@@ -1071,7 +1071,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     Nor may it dominate: the credit is capped at the retained render, so removed
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
-    renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
+    renderer = _new_renderer(source_html, frozenset({tag}), strip_header=True)
     dropped = renderer.scope_dropped
     heading_prose = renderer.scope_heading_prose
     best_len = 0
@@ -1168,5 +1168,5 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
             length, rendered = _select_main_scope_render(source_html, scope_tag)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
-        return _strip_boilerplate_lines(_render(source_html, None, strip_header = True))
+        return _strip_boilerplate_lines(_render(source_html, None, strip_header=True))
     return _render(source_html, None)

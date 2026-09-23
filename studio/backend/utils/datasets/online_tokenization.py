@@ -35,7 +35,7 @@ _PRETOKENIZED_COLUMNS = ("input_ids", "labels", "prompt", "completion")
 TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class OnlineTokenizationDecision:
     """Whether this run takes the online path, and with what settings. ``enabled`` False means behave exactly as before; ``reason`` names the gate that decided it, for the training log."""
 
@@ -44,7 +44,7 @@ class OnlineTokenizationDecision:
     workers: int = 0
     prefetch_factor: int = 0
     prewarm_batches: int = 0
-    checks: tuple = field(default = ())
+    checks: tuple = field(default=())
 
     def as_log_line(self) -> str:
         if not self.enabled:
@@ -74,7 +74,7 @@ def dataloader_worker_start_method() -> Optional[str]:
     try:
         import multiprocessing
 
-        explicit = multiprocessing.get_start_method(allow_none = True)
+        explicit = multiprocessing.get_start_method(allow_none=True)
         if explicit:
             return explicit
         methods = multiprocessing.get_all_start_methods()
@@ -108,6 +108,7 @@ def trl_supports_skip_prepare_dataset() -> bool:
 
     try:
         import inspect
+
         source = inspect.getsource(SFTTrainer.__init__)
     except Exception:  # noqa: BLE001
         return True
@@ -132,6 +133,7 @@ def is_processor(processing_class: Any) -> bool:
     """True for a multimodal processor rather than a plain tokenizer. ``ProcessorMixin`` first, then the ``hasattr(x, "tokenizer")`` test ``sft_prepare_dataset`` itself uses."""
     try:
         from transformers import ProcessorMixin
+
         if isinstance(processing_class, ProcessorMixin):
             return True
     except Exception:  # noqa: BLE001
@@ -181,6 +183,7 @@ def text_column_defect(dataset: Any, text_field: str) -> Optional[str]:
     """Why ``text_field`` cannot be tokenized lazily, or None when it can. The eager map fails on a null or non-string row inside the constructor, in seconds; the lazy view fails only when the sampler draws that row, possibly hours in with checkpoints behind it, the one way this feature makes a failing run worse rather than slower, so those shapes are refused up front. Both checks are metadata, not rows: dtype off the schema, and Arrow's per-chunk ``null_count``. A ``select``ed split keeps the full backing table, so its null count over-reports, vetoing a split that might have been fine and never the other way round."""
     try:
         from datasets import Value
+
         features = getattr(dataset, "features", None) or {}
         feature = features.get(text_field)
     except Exception:  # noqa: BLE001 - unreadable schema stays eager
@@ -205,7 +208,8 @@ def resolve_worker_count(desired: Optional[int] = None) -> int:
         return 0
     try:
         from utils.hardware import dataset_map_num_proc
-        available = dataset_map_num_proc(desired, serial_as_none = True)
+
+        available = dataset_map_num_proc(desired, serial_as_none=True)
     except Exception:  # noqa: BLE001
         available = None
     if not available or available < MIN_ONLINE_WORKERS:
@@ -258,7 +262,7 @@ def decide_online_tokenization(
 
     def veto(reason: str) -> OnlineTokenizationDecision:
         checks.append((reason, False))
-        return OnlineTokenizationDecision(enabled = False, reason = reason, checks = tuple(checks))
+        return OnlineTokenizationDecision(enabled=False, reason=reason, checks=tuple(checks))
 
     override = env_override()
     if override is False:
@@ -353,12 +357,12 @@ def decide_online_tokenization(
     prewarm = prewarm_batch_count(grad_accum, resolved_workers, prefetch_factor)
     reason = "forced by " + ENV_FLAG if forced else "plain-text single-pass SFT run"
     return OnlineTokenizationDecision(
-        enabled = True,
-        reason = reason,
-        workers = resolved_workers,
-        prefetch_factor = int(prefetch_factor),
-        prewarm_batches = prewarm,
-        checks = tuple(checks),
+        enabled=True,
+        reason=reason,
+        workers=resolved_workers,
+        prefetch_factor=int(prefetch_factor),
+        prewarm_batches=prewarm,
+        checks=tuple(checks),
     )
 
 
@@ -392,9 +396,9 @@ def build_tokenizing_transform(
         texts = batch[text_field]
         encoded = tokenizer(
             texts,
-            truncation = True,
-            max_length = max_length,
-            add_special_tokens = add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=add_special_tokens,
         )
         return dict(encoded)
 
@@ -407,7 +411,7 @@ def attach_online_tokenization(
     """Return an immutable lazily-tokenizing view of ``dataset``. ``with_transform``, not ``set_transform``: the caller's object is also held by the dataset preview and row-count checks, and mutating it in place would silently change what those see. ``columns = [text_field]`` avoids materialising large unused columns on every ``__getitem__``. The view is stamped with :data:`TRUNCATION_ATTESTATION_ATTR` so unsloth's ``max_length`` enforcement trusts the cap instead of reading every row, which on a lazy split is the eager tokenize pass again."""
     transform = build_tokenizing_transform(tokenizer, text_field, max_length, add_special_tokens)
     try:
-        view = dataset.with_transform(transform, columns = [text_field])
+        view = dataset.with_transform(transform, columns=[text_field])
     except TypeError:
         # `datasets` without the `columns` kwarg: only the narrow read is lost.
         view = dataset.with_transform(transform)

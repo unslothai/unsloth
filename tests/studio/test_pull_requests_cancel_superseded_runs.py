@@ -77,7 +77,7 @@ def _documents() -> dict[str, dict]:
     out = {}
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         try:
-            document = yaml.safe_load(path.read_text(encoding = "utf-8"))
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError:
             continue
         if isinstance(document, dict):
@@ -193,7 +193,7 @@ def test_every_pull_request_workflow_cancels_the_superseded_run():
         if not _group(document):
             continue  # Reported by the test above; one cause, one failure.
         try:
-            cancels = _cancels(_cancel_setting(document), ref = A_PULL_REQUEST)
+            cancels = _cancels(_cancel_setting(document), ref=A_PULL_REQUEST)
         except Unparsed as exc:
             continue  # Reported by test_every_cancel_expression_is_understood.
         if not cancels:
@@ -221,7 +221,7 @@ def test_cancelling_is_still_gated_off_main():
         if not (isinstance(push, dict) and "main" in (push.get("branches") or [])):
             continue
         try:
-            if _cancels(_cancel_setting(document), ref = MAIN):
+            if _cancels(_cancel_setting(document), ref=MAIN):
                 offenders[name] = _cancel_setting(document)
         except Unparsed:
             continue
@@ -238,7 +238,7 @@ def test_every_cancel_expression_is_understood():
         if not _group(document):
             continue
         try:
-            _cancels(_cancel_setting(document), ref = A_PULL_REQUEST)
+            _cancels(_cancel_setting(document), ref=A_PULL_REQUEST)
         except Unparsed as exc:
             unreadable[name] = f"{_cancel_setting(document)!r} contains {exc}"
     assert not unreadable, (
@@ -257,19 +257,19 @@ def test_the_evaluator_reads_the_direction_of_the_comparison():
     gated = "${{ github.ref != 'refs/heads/main' }}"
     reversed_ = "${{ github.ref == 'refs/heads/main' }}"
 
-    assert _cancels(gated, ref = A_PULL_REQUEST)
-    assert not _cancels(gated, ref = MAIN)
-    assert not _cancels(reversed_, ref = A_PULL_REQUEST), "a reversed comparison cancels nothing"
-    assert _cancels(reversed_, ref = MAIN)
+    assert _cancels(gated, ref=A_PULL_REQUEST)
+    assert not _cancels(gated, ref=MAIN)
+    assert not _cancels(reversed_, ref=A_PULL_REQUEST), "a reversed comparison cancels nothing"
+    assert _cancels(reversed_, ref=MAIN)
 
-    assert _cancels(True, ref = A_PULL_REQUEST)
-    assert not _cancels(False, ref = A_PULL_REQUEST)
-    assert not _cancels(None, ref = A_PULL_REQUEST), "absent means false, which is the default"
+    assert _cancels(True, ref=A_PULL_REQUEST)
+    assert not _cancels(False, ref=A_PULL_REQUEST)
+    assert not _cancels(None, ref=A_PULL_REQUEST), "absent means false, which is the default"
 
     # The ternary form, which renders to a string rather than to a bool.
     ternary = "${{ github.ref == 'refs/heads/main' && 'false' || 'true' }}"
-    assert _cancels(ternary, ref = A_PULL_REQUEST)
-    assert not _cancels(ternary, ref = MAIN)
+    assert _cancels(ternary, ref=A_PULL_REQUEST)
+    assert not _cancels(ternary, ref=MAIN)
 
 
 def test_the_scan_actually_found_the_workflows():
@@ -293,7 +293,7 @@ def test_the_exemptions_still_name_workflows_that_exist():
     pointless = sorted(
         name
         for name in EXEMPT
-        if name in documents and _cancels(_cancel_setting(documents[name]), ref = A_PULL_REQUEST)
+        if name in documents and _cancels(_cancel_setting(documents[name]), ref=A_PULL_REQUEST)
     )
     assert not pointless, (
         f"{pointless} are exempt from this guard but cancel in progress regardless. Drop "
@@ -310,7 +310,7 @@ def test_this_guard_runs_on_a_workflow_only_pull_request():
     no paths filter, by design, so it is the one job that sees such a pull request.
     """
     lint = WORKFLOWS / "workflow-trigger-lint.yml"
-    text = lint.read_text(encoding = "utf-8")
+    text = lint.read_text(encoding="utf-8")
     assert Path(__file__).name in text, (
         f"{lint.name} no longer runs {Path(__file__).name}, so this guard is absent from "
         f"exactly the pull requests it exists to check: the ones that edit a workflow and "

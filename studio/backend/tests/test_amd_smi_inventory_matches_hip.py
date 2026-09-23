@@ -65,7 +65,7 @@ def _payload(*gpus: tuple[int, int, int]):
     ]
 
 
-def _fake_amd_smi(metric, hip_by_gpu = None):
+def _fake_amd_smi(metric, hip_by_gpu=None):
     """Stub amd-smi: ``metric`` returns the VRAM rows, ``list -e`` the id mapping."""
 
     def _run(*args, **kwargs):
@@ -81,7 +81,7 @@ def _fake_amd_smi(metric, hip_by_gpu = None):
 def _hip_sees(
     monkeypatch,
     count,
-    totals = None,
+    totals=None,
 ):
     """Declare HIP's own inventory: how many devices it opens, and the total memory
     it reports per physical id. Empty totals mean torch could not describe the
@@ -113,7 +113,7 @@ def rocm(monkeypatch):
         "CUDA_VISIBLE_DEVICES",
         "GPU_DEVICE_ORDINAL",
     ):
-        monkeypatch.delenv(_var, raising = False)
+        monkeypatch.delenv(_var, raising=False)
     _hip_sees(monkeypatch, 2)
 
 
@@ -181,9 +181,9 @@ class TestTheInventoryMustBeTheOneHipOpens:
         monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
         torch_mod = types.ModuleType("torch")
         torch_mod.cuda = types.SimpleNamespace(
-            is_available = lambda: True,
-            device_count = lambda: 1,
-            mem_get_info = lambda *a: (0, 0),
+            is_available=lambda: True,
+            device_count=lambda: 1,
+            mem_get_info=lambda *a: (0, 0),
         )
         monkeypatch.setitem(sys.modules, "torch", torch_mod)
         monkeypatch.setattr(
@@ -239,9 +239,9 @@ class TestAnApuTheClassifierMisses:
         monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
         torch_mod = types.ModuleType("torch")
         torch_mod.cuda = types.SimpleNamespace(
-            is_available = lambda: True,
-            device_count = lambda: 1,
-            mem_get_info = lambda *a: (0, 0),
+            is_available=lambda: True,
+            device_count=lambda: 1,
+            mem_get_info=lambda *a: (0, 0),
         )
         monkeypatch.setitem(sys.modules, "torch", torch_mod)
         monkeypatch.setattr(

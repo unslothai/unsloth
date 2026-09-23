@@ -97,7 +97,7 @@ OWNS_SERVER = not _EXTERNAL
 ENTRY = "smoke-code-block-flicker-main.tsx"
 PAGE = "smoke-code-block-flicker.html"
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-code-block-flicker"))
-OUT.mkdir(parents = True, exist_ok = True)
+OUT.mkdir(parents=True, exist_ok=True)
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 
 ENGINES = [
@@ -166,7 +166,7 @@ SWEEP_STEP_PX = int(os.environ.get("SMOKE_FLICKER_SWEEP_PX", "500"))
 
 
 def info(message: str) -> None:
-    print(message, flush = True)
+    print(message, flush=True)
 
 
 def settle_highlighting(page) -> int:
@@ -191,13 +191,13 @@ def settle_highlighting(page) -> int:
 
 
 def run_case(page, variant: str) -> dict:
-    page.goto(f"{BASE}/{PAGE}?css={variant}", wait_until = "domcontentloaded")
-    page.wait_for_function("Boolean(window.__flicker)", timeout = 120_000)
+    page.goto(f"{BASE}/{PAGE}?css={variant}", wait_until="domcontentloaded")
+    page.wait_for_function("Boolean(window.__flicker)", timeout=120_000)
     page.evaluate("(n) => window.__flicker.seed(n)", HISTORY_MESSAGES)
     page.wait_for_function(
         "(n) => window.__flicker.counts().messages >= n",
-        arg = HISTORY_MESSAGES * 2,
-        timeout = 120_000,
+        arg=HISTORY_MESSAGES * 2,
+        timeout=120_000,
     )
     tokens = settle_highlighting(page)
     seeded = page.evaluate("window.__flicker.counts()")
@@ -224,7 +224,7 @@ def run_case(page, variant: str) -> dict:
         },
     )
     # Mid-stream cascade guard, on the block being written: the check the settled one cannot make.
-    page.wait_for_function("window.__flicker.results().streamStartedAt !== null", timeout = 120_000)
+    page.wait_for_function("window.__flicker.results().streamStartedAt !== null", timeout=120_000)
     page.wait_for_timeout(400)
     running_computed = page.evaluate(
         "() => window.__flicker.computedFor(window.__flicker.counts().codeBlocks - 1)"
@@ -239,7 +239,7 @@ def run_case(page, variant: str) -> dict:
                     "be in force while a block is streaming is not the one that is."
                 )
 
-    page.wait_for_function("window.__flicker.results().done === true", timeout = 300_000)
+    page.wait_for_function("window.__flicker.results().done === true", timeout=300_000)
     page.wait_for_timeout(TAIL_MS)
     page.evaluate("window.__flicker.stopSampling()")
     results = page.evaluate("window.__flicker.results()")
@@ -284,19 +284,19 @@ def main() -> int:
     all_rows: list[dict] = []
     try:
         if OWNS_SERVER:
-            wait_for_smoke_page(f"{BASE}/{PAGE}", ENTRY, proc = proc, info = info)
+            wait_for_smoke_page(f"{BASE}/{PAGE}", ENTRY, proc=proc, info=info)
         with sync_playwright() as pw:
             for engine in ENGINES:
                 info(f"engine {engine}")
                 launcher = getattr(pw, engine)
                 browser = (
-                    launcher.launch(args = chromium_launch_args())
+                    launcher.launch(args=chromium_launch_args())
                     if engine == "chromium"
                     else launcher.launch()
                 )
                 for variant in VARIANTS:
                     for repetition in range(REPEATS):
-                        page = browser.new_page(viewport = {"width": 1280, "height": 900})
+                        page = browser.new_page(viewport={"width": 1280, "height": 900})
                         try:
                             row = run_case(page, variant)
                         finally:
@@ -319,7 +319,7 @@ def main() -> int:
             stop_process(proc)
             info("vite stopped")
 
-    (OUT / f"{LABEL}.json").write_text(json.dumps(all_rows, indent = 2), encoding = "utf-8")
+    (OUT / f"{LABEL}.json").write_text(json.dumps(all_rows, indent=2), encoding="utf-8")
 
     info("")
     info(

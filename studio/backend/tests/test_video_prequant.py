@@ -29,15 +29,16 @@ def _shared_setup_1():
     return fam, torch, vid
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _assume_the_restricted_load_is_available(monkeypatch):
     """Policy/planning tests, not a check on whether this host's torchao imports.
 
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(
-        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+        _pq, "restricted_prequant_load_supported", lambda scheme=None, filename=None: True
     )
 
 
@@ -52,10 +53,10 @@ from core.inference.video_families import (
 
 def _fam(**kwargs) -> VideoFamily:
     base = dict(
-        name = "test-video",
-        pipeline_class = "TestPipeline",
-        transformer_class = "TestTransformer3DModel",
-        base_repo = "org/test-video",
+        name="test-video",
+        pipeline_class="TestPipeline",
+        transformer_class="TestTransformer3DModel",
+        base_repo="org/test-video",
     )
     base.update(kwargs)
     return VideoFamily(**base)
@@ -63,7 +64,7 @@ def _fam(**kwargs) -> VideoFamily:
 
 # ── the resolver ─────────────────────────────────────────────────────────────────
 def test_resolves_the_hosted_repo_for_a_scheme():
-    fam = _fam(prequant_repos = (("int8", "org/test-INT8"), ("fp8", "org/test-FP8")))
+    fam = _fam(prequant_repos=(("int8", "org/test-INT8"), ("fp8", "org/test-FP8")))
     assert video_family_prequant_repo(fam, "int8") == "org/test-INT8"
     assert video_family_prequant_repo(fam, "fp8") == "org/test-FP8"
     assert video_family_prequant_repo(fam, "nvfp4") is None
@@ -73,8 +74,8 @@ def test_a_variant_checkpoint_wins_over_the_family_default():
     # A checkpoint is baked from ONE base's weights, so a variant base with its own artifact must
     # take it rather than the family default, which the base_model_id check would then reject.
     fam = _fam(
-        prequant_repos = (("int8", "org/test-INT8"),),
-        prequant_variant_repos = (("org/test-video-v2", "int8", "org/test-v2-INT8"),),
+        prequant_repos=(("int8", "org/test-INT8"),),
+        prequant_variant_repos=(("org/test-video-v2", "int8", "org/test-v2-INT8"),),
     )
     assert video_family_prequant_repo(fam, "int8", "org/test-video-v2") == "org/test-v2-INT8"
     # Case and surrounding whitespace must not change the answer.
@@ -86,19 +87,20 @@ def test_a_variant_checkpoint_wins_over_the_family_default():
 def test_a_malformed_table_row_is_skipped_rather_than_raised():
     # This runs on the refusal path of a load request: a table typo must not turn a legitimate
     # pick into a 500.
-    fam = _fam(prequant_repos = (("int8",), ("int8", ""), ("int8", "org/good")))
+    fam = _fam(prequant_repos=(("int8",), ("int8", ""), ("int8", "org/good")))
     assert video_family_prequant_repo(fam, "int8") == "org/good"
 
 
 def test_a_family_without_the_fields_simply_has_no_checkpoint():
     import types
+
     assert video_family_prequant_repo(types.SimpleNamespace(), "int8") is None
     assert video_family_prequant_schemes(types.SimpleNamespace()) == ()
 
 
 def test_schemes_are_listed_in_table_order():
     # The refusal message names these, so the order is what the user is told to try first.
-    fam = _fam(prequant_repos = (("int8", "org/a"), ("fp8", "org/b")))
+    fam = _fam(prequant_repos=(("int8", "org/a"), ("fp8", "org/b")))
     assert video_family_prequant_schemes(fam) == ("int8", "fp8")
 
 
@@ -165,7 +167,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
     def _fake_try_to_load_from_cache(
         repo_id,
         filename,
-        cache_dir = None,
+        cache_dir=None,
     ):
         seen["filename"] = filename
         return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.pt" else None
@@ -188,7 +190,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
 def test_the_names_are_built_from_the_repo_and_the_scheme():
     # One repo serves both schemes, so the -FP8 suffix on the repo must be stripped and REPLACED by
     # the requested scheme rather than carried through.
-    fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
+    fam = _fam(prequant_repos=(("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
     assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.safetensors"
     assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
     # The pickle spellings stay available for repos that host no safetensors artifact.
@@ -208,18 +210,18 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
 
 def test_a_task_specific_row_beats_the_task_agnostic_one():
     fam = _fam(
-        prequant_repos = (("int8", "unsloth/Test-FP8"),),
-        prequant_filenames = (
+        prequant_repos=(("int8", "unsloth/Test-FP8"),),
+        prequant_filenames=(
             ("int8", "Test-INT8-ConvRot.pt"),
             ("int8", "ref2va", "Test-Ref2VA-INT8-ConvRot.pt"),
         ),
-        prequant_partition_tasks = ("ref2va",),
+        prequant_partition_tasks=("ref2va",),
     )
-    assert resolve_prequant_source(fam, "int8", task = "ref2va").filename == (
+    assert resolve_prequant_source(fam, "int8", task="ref2va").filename == (
         "Test-Ref2VA-INT8-ConvRot.pt"
     )
     # Case and whitespace must not change which partition is picked.
-    assert resolve_prequant_source(fam, "int8", task = " Ref2VA ").filename == (
+    assert resolve_prequant_source(fam, "int8", task=" Ref2VA ").filename == (
         "Test-Ref2VA-INT8-ConvRot.pt"
     )
 
@@ -230,14 +232,14 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
     # ANOTHER PARTITION's denoiser -- it would pass every check and generate the wrong thing. No
     # artifact is the correct outcome: the load keeps the released bfloat16 denoiser.
     fam = _fam(
-        prequant_repos = (("int8", "unsloth/Test-FP8"),),
-        prequant_filenames = (
+        prequant_repos=(("int8", "unsloth/Test-FP8"),),
+        prequant_filenames=(
             ("int8", "Test-INT8-ConvRot.pt"),
             ("int8", "ref2va", "Test-Ref2VA-INT8-ConvRot.pt"),
         ),
-        prequant_partition_tasks = ("ref2va",),
+        prequant_partition_tasks=("ref2va",),
     )
-    assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
+    assert resolve_prequant_source(fam, "int8", task="ref2va").fallback_filename is None
     # The task-agnostic pick keeps its fallback, unchanged.
     assert resolve_prequant_source(fam, "int8").candidate_filenames == (
         "Test-INT8-ConvRot.pt",
@@ -251,13 +253,13 @@ def test_a_scheme_without_a_task_row_resolves_exactly_what_it_did_before():
     # Back-compat, stated as an equality rather than a literal: whatever the task-agnostic lookup
     # gives, a task the table says nothing about must give the same thing.
     fam = _fam(
-        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
-        prequant_filenames = (("int8", "Test-INT8-ConvRot.pt"),),
+        prequant_repos=(("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames=(("int8", "Test-INT8-ConvRot.pt"),),
     )
     for scheme in ("int8", "fp8"):
         plain = resolve_prequant_source(fam, scheme)
         for task in ("fl2va", "t2va", "anything-at-all"):
-            assert resolve_prequant_source(fam, scheme, task = task) == plain
+            assert resolve_prequant_source(fam, scheme, task=task) == plain
 
 
 def test_a_family_predating_the_task_shape_is_unaffected_by_a_task():
@@ -265,9 +267,9 @@ def test_a_family_predating_the_task_shape_is_unaffected_by_a_task():
     # change its answer -- the field is free to ignore for every family with one denoiser.
     import types
 
-    fam = _fam(prequant_repos = (("fp8", "unsloth/Test-FP8"),))
-    assert resolve_prequant_source(fam, "fp8", task = "ref2va") == resolve_prequant_source(fam, "fp8")
-    assert resolve_prequant_source(types.SimpleNamespace(), "fp8", task = "ref2va") is None
+    fam = _fam(prequant_repos=(("fp8", "unsloth/Test-FP8"),))
+    assert resolve_prequant_source(fam, "fp8", task="ref2va") == resolve_prequant_source(fam, "fp8")
+    assert resolve_prequant_source(types.SimpleNamespace(), "fp8", task="ref2va") is None
 
 
 def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
@@ -275,18 +277,18 @@ def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
     # answers yes; the pair (scheme, task) has nothing, and serving the keyframe file instead is
     # the failure mode this replaced.
     fam = _fam(
-        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
-        prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
-        prequant_partition_tasks = ("ref2va",),
+        prequant_repos=(("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames=(("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
+        prequant_partition_tasks=("ref2va",),
     )
     assert video_family_prequant_repo(fam, "int8") == "unsloth/Test-FP8"
-    assert video_family_prequant_available(fam, "int8", task = "ref2va") is False
-    assert video_family_prequant_available(fam, "fp8", task = "ref2va") is True
+    assert video_family_prequant_available(fam, "int8", task="ref2va") is False
+    assert video_family_prequant_available(fam, "fp8", task="ref2va") is True
     # Not a partition task, so the artifact-per-task rule does not apply.
-    assert video_family_prequant_available(fam, "int8", task = "fl2va") is True
+    assert video_family_prequant_available(fam, "int8", task="fl2va") is True
     assert video_family_prequant_available(fam, "int8") is True
     # And the refusal message names only what actually works for that task.
-    assert video_family_prequant_schemes(fam, task = "ref2va") == ("fp8",)
+    assert video_family_prequant_schemes(fam, task="ref2va") == ("fp8",)
     assert video_family_prequant_schemes(fam) == ("int8", "fp8")
 
 
@@ -296,7 +298,7 @@ def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
 )
 def test_h3_reference_video_resolves_its_own_hosted_denoiser(scheme, expected):
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
-    src = resolve_prequant_source(fam, scheme, task = "ref2va")
+    src = resolve_prequant_source(fam, scheme, task="ref2va")
     assert src.filename == expected
     assert src.fallback_filename is None
     assert "/" not in src.filename and "\\" not in src.filename
@@ -307,10 +309,10 @@ def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(tas
     # The published fl2va artifacts must not move: the rotated INT8 by name (with the plain one
     # still its fallback for older installs) and FP8 by the derived repo-root name.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
-    int8 = resolve_prequant_source(fam, "int8", task = task)
+    int8 = resolve_prequant_source(fam, "int8", task=task)
     assert int8.filename == "MiniMax-H3-INT8-ConvRot.pt"
     assert "MiniMax-H3-INT8.pt" in int8.fallback_filenames
-    fp8 = resolve_prequant_source(fam, "fp8", task = task)
+    fp8 = resolve_prequant_source(fam, "fp8", task=task)
     assert fp8.filename == "MiniMax-H3-FP8.safetensors"
 
 
@@ -318,6 +320,7 @@ def test_the_h3_partition_task_matches_the_reference_workflow_name():
     # The registry spells the task as a literal to stay import-free; pin it to the constant the
     # loader and the download planner branch on, so the two cannot drift apart silently.
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert fam.prequant_partition_tasks == (H3_TASK_REFERENCES,)
 
@@ -326,11 +329,11 @@ def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(m
     # The refusal is now conditional, not blanket, so it needs a family where the pair genuinely
     # does not exist. int8 here has the repo but only a keyframe artifact.
     fam = _fam(
-        name = "partitioned",
-        modular_workflow = "fl2va",
-        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
-        prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
-        prequant_partition_tasks = ("ref2va",),
+        name="partitioned",
+        modular_workflow="fl2va",
+        prequant_repos=(("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames=(("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
+        prequant_partition_tasks=("ref2va",),
     )
     monkeypatch.setattr("core.inference.video._detect_load_family", lambda *a, **k: fam)
     monkeypatch.setattr("core.inference.video._is_trusted_video_repo", lambda repo: True)
@@ -338,9 +341,9 @@ def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(m
     with pytest.raises(ValueError) as excinfo:
         backend.validate_load_request(
             "org/test-video",
-            model_kind = "pipeline",
-            transformer_quant = "int8",
-            h3_task = "ref2va",
+            model_kind="pipeline",
+            transformer_quant="int8",
+            h3_task="ref2va",
         )
     message = str(excinfo.value)
     assert "int8" in message and "ref2va" in message
@@ -354,9 +357,9 @@ def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(m
     try:
         backend.validate_load_request(
             "org/test-video",
-            model_kind = "pipeline",
-            transformer_quant = "fp8",
-            h3_task = "ref2va",
+            model_kind="pipeline",
+            transformer_quant="fp8",
+            h3_task="ref2va",
         )
     except Exception as exc:  # noqa: BLE001
         assert "transformer_quant" not in str(
@@ -372,8 +375,8 @@ def test_a_modular_family_refuses_a_single_file_load_before_anything_downloads()
     with pytest.raises(ValueError) as excinfo:
         backend.validate_load_request(
             "MiniMaxAI/MiniMax-H3",
-            gguf_filename = "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
-            model_kind = "single_file",
+            gguf_filename="minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            model_kind="single_file",
         )
     message = str(excinfo.value)
     # The refusal is only useful if it says what to pick instead.
@@ -384,7 +387,7 @@ def test_a_modular_family_refuses_a_single_file_load_before_anything_downloads()
 def test_an_unavailable_transformer_quant_is_refused_with_the_workable_schemes():
     backend = VideoBackend()
     with pytest.raises(ValueError) as excinfo:
-        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant = "nvfp4")
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant="nvfp4")
     message = str(excinfo.value)
     assert "nvfp4" in message
     # Naming the schemes that DO work is the whole point: a bare refusal leaves the user guessing.
@@ -396,7 +399,7 @@ def test_a_scheme_with_a_hosted_checkpoint_is_not_refused(scheme):
     # The mirror image of the test above: the refusal must not swallow the picks it exists to enable.
     backend = VideoBackend()
     try:
-        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant = scheme)
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant=scheme)
     except ValueError as exc:  # pragma: no cover - only on a regression
         pytest.fail(f"{scheme} should be loadable but was refused: {exc}")
     except Exception:
@@ -410,7 +413,7 @@ def test_auto_is_never_refused():
     # components rather than being rejected as unavailable.
     backend = VideoBackend()
     try:
-        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant = "auto")
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3", transformer_quant="auto")
     except ValueError as exc:  # pragma: no cover - only on a regression
         pytest.fail(f"auto should never be refused: {exc}")
     except Exception:
@@ -421,15 +424,16 @@ def _forced_target(device):
     """A resolved diffusion target on ``device``, so a refusal keyed on the device can be tested
     off the hardware that has it."""
     from core.inference.diffusion_device import DiffusionDeviceTarget
+
     return lambda: DiffusionDeviceTarget(
-        device = device,
-        dtype = None,
-        backend = device,
-        vendor = None,
-        supports_model_cpu_offload = False,
-        supports_default_torch_compile = False,
-        supports_pinned_transfer = False,
-        supports_float64 = device != "mps",
+        device=device,
+        dtype=None,
+        backend=device,
+        vendor=None,
+        supports_model_cpu_offload=False,
+        supports_default_torch_compile=False,
+        supports_pinned_transfer=False,
+        supports_float64=device != "mps",
     )
 
 
@@ -441,7 +445,7 @@ def test_the_modular_pipeline_is_refused_on_metal(monkeypatch):
         "core.inference.video.resolve_diffusion_device_target", _forced_target("mps")
     )
     backend = VideoBackend()
-    with pytest.raises(ValueError, match = "cannot run on Apple Silicon"):
+    with pytest.raises(ValueError, match="cannot run on Apple Silicon"):
         backend.validate_load_request("MiniMaxAI/MiniMax-H3")
 
 
@@ -452,7 +456,7 @@ def test_the_metal_refusal_names_the_artifact_that_does_run_there(monkeypatch):
         "core.inference.video.resolve_diffusion_device_target", _forced_target("mps")
     )
     backend = VideoBackend()
-    with pytest.raises(ValueError, match = "unsloth/MiniMax-H3-GGUF"):
+    with pytest.raises(ValueError, match="unsloth/MiniMax-H3-GGUF"):
         backend.validate_load_request("MiniMaxAI/MiniMax-H3")
 
 
@@ -478,11 +482,11 @@ def test_the_refusals_run_before_the_diffusers_availability_probe():
     # the user would get an unrelated error instead of the actionable refusal. Asserting the
     # message identifies the refusal proves it ran first.
     backend = VideoBackend()
-    with pytest.raises(ValueError, match = "cannot load from a single .safetensors checkpoint"):
+    with pytest.raises(ValueError, match="cannot load from a single .safetensors checkpoint"):
         backend.validate_load_request(
             "MiniMaxAI/MiniMax-H3",
-            gguf_filename = "anything.safetensors",
-            model_kind = "single_file",
+            gguf_filename="anything.safetensors",
+            model_kind="single_file",
         )
 
 
@@ -496,8 +500,8 @@ def test_a_non_modular_video_family_is_unaffected():
     try:
         fam = backend.validate_load_request(
             "Lightricks/LTX-2.3",
-            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
-            model_kind = "single_file",
+            gguf_filename="ltx-2.3-22b-distilled.safetensors",
+            model_kind="single_file",
         )
     except ValueError as exc:
         pytest.fail(f"a single-file LTX-2.3 load must not be refused: {exc}")
@@ -633,29 +637,29 @@ def test_the_dense_denoiser_is_pinned_only_when_it_actually_fits():
 
         def buffers(self):
             # One notional tensor standing in for the module's weight bytes.
-            return iter([torch.empty(int(self._gb * 1e9), dtype = torch.uint8, device = "meta")])
+            return iter([torch.empty(int(self._gb * 1e9), dtype=torch.uint8, device="meta")])
 
     # A meta tensor is skipped (it holds no memory yet), so an unbuilt module sizes to nothing
     # rather than to a number that would wrongly authorise a pin.
     assert (
         _h3_dense_denoiser_resident_bytes(
-            fam, denoiser = _Denoiser(66.3), te_scheme = "int8", dtype = torch.bfloat16
+            fam, denoiser=_Denoiser(66.3), te_scheme="int8", dtype=torch.bfloat16
         )
         is None
     )
     assert (
         _h3_dense_denoiser_resident_bytes(
-            fam, denoiser = None, te_scheme = "int8", dtype = torch.bfloat16
+            fam, denoiser=None, te_scheme="int8", dtype=torch.bfloat16
         )
         is None
     )
 
     class _Real(_Denoiser):
         def buffers(self):
-            return iter([torch.empty(1024, dtype = torch.uint8)])
+            return iter([torch.empty(1024, dtype=torch.uint8)])
 
     sizes = _h3_dense_denoiser_resident_bytes(
-        fam, denoiser = _Real(0), te_scheme = "int8", dtype = torch.bfloat16
+        fam, denoiser=_Real(0), te_scheme="int8", dtype=torch.bfloat16
     )
     assert sizes is not None
     denoiser_bytes, others = sizes
@@ -663,7 +667,7 @@ def test_the_dense_denoiser_is_pinned_only_when_it_actually_fits():
     # The conditioner is priced at the precision the load ENGAGED, which is the whole reason the
     # dense denoiser can be resident at all: 27.2 GB hosted against 66.8 GB released.
     dense_sizes = _h3_dense_denoiser_resident_bytes(
-        fam, denoiser = _Real(0), te_scheme = None, dtype = torch.bfloat16
+        fam, denoiser=_Real(0), te_scheme=None, dtype=torch.bfloat16
     )
     assert dense_sizes is not None and dense_sizes[1] - others > 38 * 1000**3
     # And it is never just the weights: the activation headroom is in there too.
@@ -712,7 +716,7 @@ def test_the_released_conditioner_is_reachable_through_the_load_api():
         normalize_te_quant("int3")
 
     def _request(value):
-        return VideoLoadRequest(model_path = "MiniMaxAI/MiniMax-H3", text_encoder_quant = value)
+        return VideoLoadRequest(model_path="MiniMaxAI/MiniMax-H3", text_encoder_quant=value)
 
     for accepted in (None, "auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"):
         assert _request(accepted).text_encoder_quant == accepted
@@ -747,9 +751,9 @@ def test_speed_off_declines_the_dense_pin_but_never_the_prequantized_one():
 
     # "off" is the only profile that reaches the gate as SPEED_OFF, so it is the only one the
     # gate can decline. Asserted on the resolver rather than assumed.
-    assert resolve_speed_mode("off", is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_OFF
+    assert resolve_speed_mode("off", is_gguf=False, dense_default=SPEED_DEFAULT) == SPEED_OFF
     for on in ("default", "max"):
-        assert resolve_speed_mode(on, is_gguf = False, dense_default = SPEED_DEFAULT) != SPEED_OFF
+        assert resolve_speed_mode(on, is_gguf=False, dense_default=SPEED_DEFAULT) != SPEED_OFF
 
     # The gate itself, read off the loader: the dense branch is the ``elif`` beside the
     # pre-quantized ``if``, and only the dense one may mention the speed profile. Read from the
@@ -812,6 +816,7 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
 
 def _h3_family():
     from core.inference.video_families import detect_video_family
+
     return detect_video_family("minimax-h3")
 
 
@@ -857,9 +862,9 @@ def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
             return []
 
     for te_scheme in (None, "int8"):
-        planned = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = torch.bfloat16)
+        planned = _h3_planned_denoiser_bytes(fam, te_scheme=te_scheme, dtype=torch.bfloat16)
         measured = _h3_dense_denoiser_resident_bytes(
-            fam, denoiser = _Dense(), te_scheme = te_scheme, dtype = torch.bfloat16
+            fam, denoiser=_Dense(), te_scheme=te_scheme, dtype=torch.bfloat16
         )
         assert planned is not None and measured is not None
         assert planned[1] == measured[1], f"the others term drifted for te_scheme={te_scheme}"
@@ -867,8 +872,8 @@ def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
         assert abs(planned[0] - measured[0]) < 1_000_000_000
 
     # An fp32 promotion doubles it on both sides, so the comparison is not accidentally bf16-only.
-    fp32 = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.float32)
-    bf16 = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16)
+    fp32 = _h3_planned_denoiser_bytes(fam, te_scheme=None, dtype=torch.float32)
+    bf16 = _h3_planned_denoiser_bytes(fam, te_scheme=None, dtype=torch.bfloat16)
     assert fp32 is not None and bf16 is not None and fp32[0] == bf16[0] * 2
 
 
@@ -885,19 +890,19 @@ def test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare(monkey
     What it costs is the picture (mean SSIM 0.49 against the released weights), which is a choice
     ``transformer_quant='none'`` reverses and which no amount of free VRAM changes."""
     fam, torch, vid = _shared_setup_1()
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     # Comfortably more free memory than the released denoiser plus everything beside it.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 500 * 1000**3)
 
     assert (
         vid._h3_auto_denoiser_scheme(
             fam,
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = "int8",
-            task = "fl2va",
-            base_repo = fam.base_repo,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme="int8",
+            task="fl2va",
+            base_repo=fam.base_repo,
         )
         == "int8"
     )
@@ -908,7 +913,7 @@ def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_reside
     and a module that moves cannot be compiled, so the regional compile goes with it: 194 s against
     23.7 s on the same 8-step job. Auto now takes the hosted checkpoint instead of the cliff."""
     fam, torch, vid = _shared_setup_1()
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     # An 80 GB card: under the 113.5 GB the released denoiser plus its companions need, over the
     # 67.5 GB the hosted one needs, which is the band where the substitution buys anything.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
@@ -916,12 +921,12 @@ def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_reside
     assert (
         vid._h3_auto_denoiser_scheme(
             fam,
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = "int8",
-            task = "fl2va",
-            base_repo = fam.base_repo,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme="int8",
+            task="fl2va",
+            base_repo=fam.base_repo,
         )
         == vid.H3_AUTO_FALLBACK_SCHEME
     )
@@ -937,12 +942,12 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
 
     def ask(**over):
         kw = dict(
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = "int8",
-            task = "fl2va",
-            base_repo = fam.base_repo,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme="int8",
+            task="fl2va",
+            base_repo=fam.base_repo,
         )
         kw.update(over)
         return vid._h3_auto_denoiser_scheme(fam, **kw)
@@ -950,10 +955,10 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
     # A host the hosted components were never measured on stays on the released denoiser.
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: False, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: False, raising=False)
     assert ask() is None
 
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     # An unreadable card decides nothing.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert ask() is None
@@ -964,10 +969,10 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     monkeypatch.undo()
 
     # And a partition with no hosted checkpoint for the fallback scheme keeps the released one.
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     monkeypatch.setattr(
-        vid, "video_family_prequant_available", lambda *a, **k: False, raising = False
+        vid, "video_family_prequant_available", lambda *a, **k: False, raising=False
     )
     assert ask() is None
 
@@ -979,19 +984,19 @@ def test_an_explicit_speed_off_keeps_the_released_denoiser(monkeypatch):
     reason; the modular workflow returns above that rewrite, so the fallback has to decline it
     itself or "off" stops meaning bit-exact on precisely the cards this fallback targets."""
     fam, torch, vid = _shared_setup_1()
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
     def ask(speed_mode):
         return vid._h3_auto_denoiser_scheme(
             fam,
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = "int8",
-            task = "fl2va",
-            base_repo = fam.base_repo,
-            speed_mode = speed_mode,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme="int8",
+            task="fl2va",
+            base_repo=fam.base_repo,
+            speed_mode=speed_mode,
         )
 
     assert ask("off") is None
@@ -1010,18 +1015,18 @@ def test_the_automatic_substitution_needs_the_exact_base_model(monkeypatch):
     someone else's weights -- for a user who never asked for a scheme at all. Same bar as the
     conditioner's index gate: exact identity, mirrors folded, nothing else."""
     fam, torch, vid = _shared_setup_1()
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
     def ask(base_repo):
         return vid._h3_auto_denoiser_scheme(
             fam,
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = "int8",
-            task = "fl2va",
-            base_repo = base_repo,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme="int8",
+            task="fl2va",
+            base_repo=base_repo,
         )
 
     assert ask(fam.base_repo) == vid.H3_AUTO_FALLBACK_SCHEME
@@ -1040,18 +1045,18 @@ def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monk
     Where the replacement does not fit either, the released denoiser in the rotation is the
     configuration that still runs, so auto keeps it."""
     fam, torch, vid = _shared_setup_1()
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
     def ask(te_scheme):
         return vid._h3_auto_denoiser_scheme(
             fam,
-            target = None,
-            dtype = torch.bfloat16,
-            device = "cuda",
-            te_scheme = te_scheme,
-            task = "fl2va",
-            base_repo = fam.base_repo,
+            target=None,
+            dtype=torch.bfloat16,
+            device="cuda",
+            te_scheme=te_scheme,
+            task="fl2va",
+            base_repo=fam.base_repo,
         )
 
     # Dense conditioner: 107.1 GB pinned against 80 GB free, so the substitution buys a refusal.
@@ -1075,12 +1080,12 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     fam, torch, vid = _shared_setup_1()
     backend = vid.VideoBackend.__new__(vid.VideoBackend)
 
-    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target=None: True, raising=False)
     monkeypatch.setattr(
         vid,
         "resolve_diffusion_device_target",
-        lambda *a, **k: types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16),
-        raising = False,
+        lambda *a, **k: types.SimpleNamespace(device="cuda", dtype=torch.bfloat16),
+        raising=False,
     )
     # CAPACITY, not the live free reading: an 80 GB card cannot hold the released denoiser
     # resident whatever else is or is not on it right now.
@@ -1089,20 +1094,20 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
 
     def plan(**over):
         kw = dict(
-            base = fam.base_repo,
-            transformer_quant = None,
-            text_encoder_quant = None,
-            speed_mode = None,
-            h3_task = "fl2va",
+            base=fam.base_repo,
+            transformer_quant=None,
+            text_encoder_quant=None,
+            speed_mode=None,
+            h3_task="fl2va",
         )
         kw.update(over)
         return backend._h3_planned_auto_denoiser_scheme(fam, **kw)
 
     assert plan() == vid.H3_AUTO_FALLBACK_SCHEME
     # An explicit request is not the planner's business, in either direction.
-    assert plan(transformer_quant = "none") is None
-    assert plan(transformer_quant = "int8") is None
-    assert plan(speed_mode = "off") is None
+    assert plan(transformer_quant="none") is None
+    assert plan(transformer_quant="int8") is None
+    assert plan(speed_mode="off") is None
 
     # And the scheme it returns is what makes the pull drop the dense shards: the same probe
     # answers False for the unset request the planner replaces.
@@ -1127,7 +1132,7 @@ def _h3_placement_probe(
     free_gb,
     te_gb,
     denoiser_gb,
-    speed = "default",
+    speed="default",
 ):
     """Drive just the placement decision: does this load install the CPU-offload rotation?"""
     from core.inference import video as vid
@@ -1148,12 +1153,12 @@ def test_a_card_that_holds_everything_does_not_install_the_offload_rotation(monk
     its own pre_forward. On a card that can hold the whole set that buys nothing and costs twice:
     measured 42.2 GB peak host RSS on a 183 GB card with 103 GB of it in use, plus the conditioner
     and VAEs crossing the bus on every generation."""
-    assert _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66) is True
+    assert _h3_placement_probe(monkeypatch, free_gb=183, te_gb=40, denoiser_gb=66) is True
 
 
 def test_a_card_that_cannot_hold_everything_keeps_the_rotation(monkeypatch):
     # The rotation is what makes H3 run at all here, so the saving must never be taken on credit.
-    assert _h3_placement_probe(monkeypatch, free_gb = 80, te_gb = 40, denoiser_gb = 66) is False
+    assert _h3_placement_probe(monkeypatch, free_gb=80, te_gb=40, denoiser_gb=66) is False
 
 
 def test_speed_off_keeps_the_rotation_even_on_a_card_that_could_hold_everything(monkeypatch):
@@ -1161,8 +1166,9 @@ def test_speed_off_keeps_the_rotation_even_on_a_card_that_could_hold_everything(
     the rotation's ability to absorb a much longer clip for throughput. An explicit speed_mode=off
     is the one request that says do not make that trade."""
     from core.inference import video as vid
+
     assert (
-        _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66, speed = vid.SPEED_OFF)
+        _h3_placement_probe(monkeypatch, free_gb=183, te_gb=40, denoiser_gb=66, speed=vid.SPEED_OFF)
         is False
     )
 

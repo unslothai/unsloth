@@ -77,14 +77,14 @@ def test_wrapper_leaves_256_alone():
 
 
 def test_a_caller_that_asked_for_something_keeps_it():
-    got = _call(512, kernel_options = {"BLOCK_M": 16, "num_warps": 8})["kernel_options"]
+    got = _call(512, kernel_options={"BLOCK_M": 16, "num_warps": 8})["kernel_options"]
     assert got["BLOCK_M"] == 16  # caller's
     assert got["num_warps"] == 8  # caller's
     assert got["BLOCK_N"] == 32  # ours, filling the gap
 
 
 def test_other_kwargs_are_passed_through_untouched():
-    seen = _call(512, scaling = 0.125, softcap = 30.0)
+    seen = _call(512, scaling=0.125, softcap=30.0)
     assert seen["scaling"] == 0.125
     assert seen["softcap"] == 30.0
 

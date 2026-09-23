@@ -40,8 +40,8 @@ def _user(monkeypatch):
 
 def _change(new_password):
     payload = ChangePasswordRequest(
-        current_password = "bootstrap-pw",
-        new_password = new_password,
+        current_password="bootstrap-pw",
+        new_password=new_password,
     )
     # is_desktop explicitly: positionally it would default to the Depends object,
     # which is truthy, and silently take the preserve-desktop-secret branch.

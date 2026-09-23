@@ -16,7 +16,7 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
     def fake_run(*args, **kwargs):
         calls.append((args, kwargs))
-        raise subprocess.TimeoutExpired(cmd = args[0], timeout = kwargs["timeout"])
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
     monkeypatch.setattr(validators, "_OXC_RUNNER_PATH", runner)
     monkeypatch.setattr(validators, "resolve_node_executable", lambda: "node")
@@ -27,10 +27,10 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
     monkeypatch.setattr(validators.subprocess, "run", fake_run)
 
     results = validators._run_oxc_batch(
-        node_lang = "js",
-        validation_mode = "syntax",
-        code_shape = "auto",
-        code_values = ["const value = 1;", "const value = 2;"],
+        node_lang="js",
+        validation_mode="syntax",
+        code_shape="auto",
+        code_values=["const value = 1;", "const value = 2;"],
     )
 
     assert len(calls) == 1
@@ -49,7 +49,7 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
     # Python's timeout SIGKILLs only the wrapper, so oxlint has to die inside validate.mjs,
     # against what is left of the caller's budget. On the source: no JS test runner ships.
-    source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
+    source = validators._OXC_RUNNER_PATH.read_text(encoding="utf-8")
 
     assert re.search(
         r"mapBudgetMs\(payload\?\.timeout_ms\)", source

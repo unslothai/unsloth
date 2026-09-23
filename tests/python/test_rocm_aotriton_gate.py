@@ -30,7 +30,7 @@ _GATE = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
 
 @functools.cache
 def _source(path):
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def _gate_statement(path):
@@ -45,8 +45,8 @@ def _open_gate(path, modules, environ):
     """Exec the statement against a synthetic `sys.modules` / environ; running it rather than
     grepping the source keeps a re-added guard visible."""
     scope = {
-        "os": types.SimpleNamespace(environ = environ),
-        "sys": types.SimpleNamespace(modules = modules),
+        "os": types.SimpleNamespace(environ=environ),
+        "sys": types.SimpleNamespace(modules=modules),
     }
     exec(ast.unparse(_gate_statement(path)), scope)
 
@@ -63,11 +63,11 @@ def _first_torch_import(path):
             )
             or (isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "torch")
         ),
-        default = 10**9,
+        default=10**9,
     )
 
 
-_GATE_FILES = pytest.mark.parametrize("path", [_INIT, _STUDIO_MAIN], ids = ["unsloth", "studio"])
+_GATE_FILES = pytest.mark.parametrize("path", [_INIT, _STUDIO_MAIN], ids=["unsloth", "studio"])
 
 
 @_GATE_FILES
@@ -151,10 +151,10 @@ def _run(code, **env):
     clean = {k: v for k, v in os.environ.items() if k != _GATE}
     return subprocess.run(
         [sys.executable, "-c", code],
-        capture_output = True,
-        text = True,
-        env = dict(clean, PYTHONPATH = os.pathsep.join(path), **env),
-        timeout = 900,
+        capture_output=True,
+        text=True,
+        env=dict(clean, PYTHONPATH=os.pathsep.join(path), **env),
+        timeout=900,
     )
 
 
@@ -168,13 +168,13 @@ def _needs_unsloth():
         pytest.skip("unsloth is not importable in this environment")
 
 
-_REPORT = "import os, unsloth\nprint('GATE', os.environ.get({name!r}))".format(name = _GATE)
+_REPORT = "import os, unsloth\nprint('GATE', os.environ.get({name!r}))".format(name=_GATE)
 
 
 @pytest.mark.parametrize(
     "prologue",
     ["", "import torch\n"],
-    ids = ["unsloth_first", "torch_first"],
+    ids=["unsloth_first", "torch_first"],
 )
 def test_importing_unsloth_opens_the_gate(prologue):
     """The end-to-end shape of #8819, both ways round."""

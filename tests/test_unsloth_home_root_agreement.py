@@ -56,14 +56,14 @@ def _probe(env_overrides: dict) -> dict:
         env.pop(key, None)
     env.update(env_overrides)
     env["PYTHONPATH"] = str(REPO_ROOT)
-    source = _PROBE.format(backend = str(REPO_ROOT / "studio" / "backend"))
+    source = _PROBE.format(backend=str(REPO_ROOT / "studio" / "backend"))
     out = subprocess.run(
         [sys.executable, "-c", source],
-        capture_output = True,
-        text = True,
-        cwd = str(REPO_ROOT),
-        env = env,
-        check = True,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        check=True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -114,8 +114,8 @@ def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_pa
     # than read, since setup is a subprocess.
     master = tmp_path / "portable"
     studio = master / "studio"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding = "utf-8")
+    (studio / "share").mkdir(parents=True)
+    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding="utf-8")
     result = _probe({"UNSLOTH_STUDIO_HOME": str(studio)})
 
     assert result["exported_master"] == str(master)
@@ -128,8 +128,8 @@ def test_the_cli_and_the_backend_accept_the_same_nested_studio_root(tmp_path):
     # its studio/ child. A stricter rule in the CLI would decline a note the backend accepts.
     master = tmp_path / "root"
     studio = master / "custom" / "studio"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding = "utf-8")
+    (studio / "share").mkdir(parents=True)
+    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding="utf-8")
     result = _probe({"UNSLOTH_STUDIO_HOME": str(studio)})
 
     assert result["exported_master"] == str(master)
@@ -143,10 +143,10 @@ def test_the_cli_refuses_a_note_carried_in_from_another_master_root(tmp_path):
     # point an update at the original install; the Studio directory has to lie inside the root
     # its note names, which is the rule storage_roots and both uninstallers apply.
     original = tmp_path / "original"
-    (original / "studio").mkdir(parents = True)
+    (original / "studio").mkdir(parents=True)
     copied = tmp_path / "copied" / "studio"
-    (copied / "share").mkdir(parents = True)
-    (copied / "share" / ".unsloth-master-root").write_text(f"{original}\n", encoding = "utf-8")
+    (copied / "share").mkdir(parents=True)
+    (copied / "share" / ".unsloth-master-root").write_text(f"{original}\n", encoding="utf-8")
     result = _probe({"UNSLOTH_STUDIO_HOME": str(copied)})
 
     assert result["exported_master"] is None
@@ -176,8 +176,8 @@ def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
     home = tmp_path / "home"
     # The sentinel _looks_like_installer_managed_studio_home reads.
     conf = home / ".unsloth" / "studio" / "share" / "studio.conf"
-    conf.parent.mkdir(parents = True)
-    conf.write_text("installed\n", encoding = "utf-8")
+    conf.parent.mkdir(parents=True)
+    conf.write_text("installed\n", encoding="utf-8")
 
     result = _probe(
         {
@@ -207,8 +207,8 @@ def test_a_whitespace_studio_home_does_not_defeat_the_export(tmp_path):
     """
     home = tmp_path / "home"
     conf = home / ".unsloth" / "studio" / "share" / "studio.conf"
-    conf.parent.mkdir(parents = True)
-    conf.write_text("installed\n", encoding = "utf-8")
+    conf.parent.mkdir(parents=True)
+    conf.write_text("installed\n", encoding="utf-8")
 
     legacy = str(home / ".unsloth" / "studio")
     for inherited in ("   ", "", "\t\n"):
@@ -231,7 +231,7 @@ def test_a_whitespace_studio_home_does_not_defeat_the_export(tmp_path):
 
 def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     result = _probe({"HOME": str(home), "USERPROFILE": str(home)})
 
     # Not custom, so nothing is exported at all and the backend default stands.
@@ -274,14 +274,14 @@ def _main_probe(env_overrides: dict) -> dict:
         env.pop(key, None)
     env.update(env_overrides)
     env["PYTHONPATH"] = str(REPO_ROOT)
-    source = _MAIN_PROBE.format(backend = str(REPO_ROOT / "studio" / "backend"))
+    source = _MAIN_PROBE.format(backend=str(REPO_ROOT / "studio" / "backend"))
     out = subprocess.run(
         [sys.executable, "-c", source],
-        capture_output = True,
-        text = True,
-        cwd = str(REPO_ROOT),
-        env = env,
-        check = True,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        check=True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -309,7 +309,7 @@ def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
     # legacy equality alone skipped the export and left unsloth_zoo on ~/.unsloth/llama.cpp.
     home = tmp_path / "home"
     legacy = home / ".unsloth" / "studio"
-    legacy.mkdir(parents = True)
+    legacy.mkdir(parents=True)
     result = _main_probe(
         {
             "HOME": str(home),
@@ -326,7 +326,7 @@ def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
 def test_main_still_exports_nothing_without_a_master_root(tmp_path):
     # The other half: no master root, so the guard stays closed rather than pinning the default.
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     result = _main_probe({"HOME": str(home), "USERPROFILE": str(home)})
 
     assert result["exported"] is None

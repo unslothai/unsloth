@@ -79,9 +79,9 @@ def _module_level_installs(tree) -> set[str]:
     return found
 
 
-@pytest.mark.parametrize("path", _DIFFUSION_MODULES, ids = lambda p: p.name)
+@pytest.mark.parametrize("path", _DIFFUSION_MODULES, ids=lambda p: p.name)
 def test_diffusion_modules_install_both_stubs_at_module_scope(path):
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
 
     assert _module_level_installs(tree) == _INSTALLS, (
         f"{path.relative_to(_BACKEND)} must call both stub installers at module scope, before the "
@@ -89,12 +89,12 @@ def test_diffusion_modules_install_both_stubs_at_module_scope(path):
     )
 
 
-@pytest.mark.parametrize("path", _DIFFUSION_MODULES, ids = lambda p: p.name)
+@pytest.mark.parametrize("path", _DIFFUSION_MODULES, ids=lambda p: p.name)
 def test_diffusion_modules_install_before_any_torch_reaching_import(path):
     """Module scope alone is not the invariant: a sibling imported above the installs can pull
     torchao in first, and a stub only seeds names nothing has imported yet."""
     installed: set[str] = set()
-    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
             func = node.value.func
             if isinstance(func, ast.Name) and func.id in _INSTALLS:
@@ -110,7 +110,7 @@ def test_diffusion_modules_install_before_any_torch_reaching_import(path):
 
 def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
     installed: set[str] = set()
-    for node in ast.parse(_ENTRY_POINT.read_text(encoding = "utf-8")).body:
+    for node in ast.parse(_ENTRY_POINT.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
             func = node.value.func
             if isinstance(func, ast.Name) and func.id in _INSTALLS:
@@ -172,7 +172,7 @@ def test_a_real_xformers_is_left_alone(on_windows_rocm, monkeypatch):
 def test_no_stub_off_windows_rocm(monkeypatch):
     # A CUDA or Linux host has a working xformers; shadowing it would cost real attention kernels.
     monkeypatch.setattr(_torchao_stub, "_is_windows_rocm", lambda: False)
-    monkeypatch.delitem(sys.modules, "xformers", raising = False)
+    monkeypatch.delitem(sys.modules, "xformers", raising=False)
 
     install_xformers_windows_rocm_stub()
 
@@ -194,7 +194,7 @@ def test_no_stub_survives_this_module():
         assert not _torchao_stub.is_stubbed(name), name
 
 
-def _target(dtype = None):
+def _target(dtype=None):
     """A device target. Both guards reject a stub BEFORE looking at the dtype, so the decline tests need no torch."""
     return type("T", (), {"device": "cuda", "dtype": dtype})()
 
@@ -248,7 +248,7 @@ def test_dit_training_refuses_dense_precision_under_the_stub(on_windows_rocm, mo
 
     install_torchao_windows_rocm_stub()
     cfg = type("C", (), {"base_precision": mode, "mixed_precision": "bf16"})()
-    with pytest.raises(ValueError, match = "Windows-ROCm stub"):
+    with pytest.raises(ValueError, match="Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
 
 
@@ -262,7 +262,7 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
 
     install_torchao_windows_rocm_stub()
     cfg = type("C", (), {"base_precision": mode, "mixed_precision": "bf16"})()
-    with pytest.raises(ValueError, match = "Windows-ROCm stub"):
+    with pytest.raises(ValueError, match="Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
 
     # Pin the earlier gates: on a CPU-only runner they answer first and correctly,
@@ -307,9 +307,9 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     monkeypatch.setattr(
         _torchao_stub.importlib.util,
         "find_spec",
-        lambda name: types.SimpleNamespace(origin = str(pkg / "__init__.py")),
+        lambda name: types.SimpleNamespace(origin=str(pkg / "__init__.py")),
     )
-    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
     monkeypatch.setattr(
         "importlib.metadata.version",
         lambda name: dist_version if name == "torch" else "0",
@@ -333,11 +333,11 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
 
     from core.inference.diffusion_attention import select_attention_backend
 
-    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch.version, "hip", hip, raising=False)
     monkeypatch.setattr(torch, "__version__", version)
     rocm = _target()
     for speed in (True, False):
-        assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
-        assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
+        assert select_attention_backend(rocm, "xformers", speed_active=speed) is None
+        assert select_attention_backend(rocm, "auto", speed_active=speed) != "_native_cudnn"
     # aiter is the AMD kernel: misreading the wheel as NVIDIA drops the one that works here.
-    assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
+    assert select_attention_backend(rocm, "aiter", speed_active=True) == "aiter"

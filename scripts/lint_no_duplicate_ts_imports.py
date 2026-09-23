@@ -70,9 +70,9 @@ def _bindings(clause: str) -> list[str]:
     # Prettier keeps comments inside a long import list. Left in, `piece.split()`
     # reads `//` as the binding, losing the real name and reporting the next
     # commented import as a duplicate of it -- a CI fail on ordinary TypeScript.
-    clause = re.sub(r"/\*.*?\*/", " ", clause, flags = re.DOTALL)
+    clause = re.sub(r"/\*.*?\*/", " ", clause, flags=re.DOTALL)
     clause = re.sub(r"//[^\n]*", " ", clause)
-    clause = _TYPE_MODIFIER.sub("", clause.strip(), count = 1)
+    clause = _TYPE_MODIFIER.sub("", clause.strip(), count=1)
 
     names: list[str] = []
     braced = re.search(r"\{(?P<inner>.*)\}", clause, re.DOTALL)
@@ -82,7 +82,7 @@ def _bindings(clause: str) -> list[str]:
             if not piece:
                 continue
             # `a as b` binds b; `type T` binds T; `type T as U` binds U.
-            piece = _TYPE_MODIFIER.sub("", piece, count = 1).strip()
+            piece = _TYPE_MODIFIER.sub("", piece, count=1).strip()
             parts = piece.split()
             # `as` as a token, not `" as "`: DOTALL lets a specifier wrap around
             # the keyword, and a literal-space test then records the imported
@@ -176,7 +176,7 @@ def scan_paths(root: Path) -> tuple[list[tuple[str, int, str]], int]:
             shown = str(path.relative_to(REPO_ROOT))
         except ValueError:
             shown = str(path)
-        for line, name in duplicates_in(path.read_text(encoding = "utf-8", errors = "replace")):
+        for line, name in duplicates_in(path.read_text(encoding="utf-8", errors="replace")):
             found.append((shown, line, name))
     return found, scanned
 
@@ -322,7 +322,7 @@ def _self_test() -> int:
     for label, source, expected in cases:
         got = [name for _, name in duplicates_in(source)]
         if got != expected:
-            print(f"SELF-TEST FAIL: {label}: expected {expected}, got {got}", file = sys.stderr)
+            print(f"SELF-TEST FAIL: {label}: expected {expected}, got {got}", file=sys.stderr)
             failures += 1
     if failures:
         return 1
@@ -331,21 +331,21 @@ def _self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--self-test", action = "store_true", help = "check the rule, scan nothing")
-    parser.add_argument("--path", type = Path, default = DEFAULT_SCAN_DIR, help = "directory to scan")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true", help="check the rule, scan nothing")
+    parser.add_argument("--path", type=Path, default=DEFAULT_SCAN_DIR, help="directory to scan")
     args = parser.parse_args()
 
     if args.self_test:
         return _self_test()
 
     if not args.path.is_dir():
-        print(f"ERROR: {args.path} is not a directory", file = sys.stderr)
+        print(f"ERROR: {args.path} is not a directory", file=sys.stderr)
         return 2
 
     found, scanned = scan_paths(args.path)
     if not scanned:
-        print(f"ERROR: no TypeScript files under {args.path}", file = sys.stderr)
+        print(f"ERROR: no TypeScript files under {args.path}", file=sys.stderr)
         return 2
     if found:
         for filename, line, name in found:
@@ -354,7 +354,7 @@ def main() -> int:
                 f"tsc rejects it with TS2300 and the frontend build fails, taking every job "
                 f"that builds it down.",
             )
-        print(f"{len(found)} duplicate import binding(s)", file = sys.stderr)
+        print(f"{len(found)} duplicate import binding(s)", file=sys.stderr)
         return 1
     print(f"no duplicate import bindings (scanned {scanned} files)")
     return 0

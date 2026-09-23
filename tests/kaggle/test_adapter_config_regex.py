@@ -36,14 +36,14 @@ VISION_REGEX = (
 WANTED = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
-def _differences(saved_target_modules, wanted = None):
+def _differences(saved_target_modules, wanted=None):
     """Drive the real comparison with a stub config object."""
     import run_t4_smoke
 
     config = types.SimpleNamespace(
-        peft_type = "LORA",
-        target_modules = saved_target_modules,
-        r = 16,
+        peft_type="LORA",
+        target_modules=saved_target_modules,
+        r=16,
     )
     expected = {"target_modules": wanted if wanted is not None else WANTED}
     # The comparison loop, reached through the module's own function by
@@ -81,7 +81,7 @@ def test_a_plain_list_is_still_compared_as_a_list():
 
 def test_the_payload_carries_the_regex_branch():
     """Asserted from the source, since the loop above is a re-expression."""
-    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding="utf-8")
     assert 'if key == "target_modules" and isinstance(got, str):' in src
     assert "missing = [name for name in (wanted or []) if name not in got]" in src
     assert 'does \\n                    f"not mention' in src or "not mention" in src

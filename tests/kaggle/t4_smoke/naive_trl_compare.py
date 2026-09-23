@@ -40,7 +40,7 @@ _HERE = Path(__file__).resolve().parent
 
 
 def _log(msg: str) -> None:
-    print(f"[naive-trl] {msg}", flush = True)
+    print(f"[naive-trl] {msg}", flush=True)
 
 
 def _seed_everything(seed: int) -> None:
@@ -55,7 +55,7 @@ def _seed_everything(seed: int) -> None:
 
 def _rows(path: Path) -> list[dict]:
     out = []
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
             out.append(json.loads(line))
@@ -91,19 +91,19 @@ def run(args) -> dict:
     # comparable (see the module docstring) but mismatching it would add a
     # difference nobody asked about.
     quant = BitsAndBytesConfig(
-        load_in_4bit = True,
-        bnb_4bit_quant_type = "nf4",
-        bnb_4bit_compute_dtype = torch.float16,
-        bnb_4bit_use_double_quant = True,
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
     )
 
     t0 = time.time()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        quantization_config = quant,
-        dtype = torch.float16,
-        device_map = {"": 0},
+        quantization_config=quant,
+        dtype=torch.float16,
+        device_map={"": 0},
     )
     result["load_seconds"] = round(time.time() - t0, 1)
     result["resolved_checkpoint"] = getattr(getattr(model, "config", None), "_name_or_path", None)
@@ -123,16 +123,16 @@ def run(args) -> dict:
     # gemma-4-E2B-it that is the difference between a comparison and an OOM --
     # the control asked for 8.75GiB on top of 8.96GiB already resident, on a
     # 14.56GiB card (kernel unsloth-probe-latestcompile-r4-e67ef2).
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing = True)
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model = get_peft_model(
         model,
         LoraConfig(
-            r = args.lora_r,
-            lora_alpha = args.lora_alpha,
-            lora_dropout = 0.0,
-            bias = "none",
-            task_type = "CAUSAL_LM",
-            target_modules = [
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0.0,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=[
                 "q_proj",
                 "k_proj",
                 "v_proj",
@@ -152,30 +152,30 @@ def run(args) -> dict:
     dataset = Dataset.from_list([{"text": r["prompt"] + r["completion"] + eos} for r in rows])
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents = True, exist_ok = True)
+    outdir.mkdir(parents=True, exist_ok=True)
 
     config = SFTConfig(
-        output_dir = str(outdir / "trainer"),
-        per_device_train_batch_size = args.batch_size,
-        gradient_accumulation_steps = args.grad_accum,
-        max_steps = args.max_steps,
-        learning_rate = args.learning_rate,
-        logging_steps = 1,
-        optim = args.optim,
-        fp16 = True,
-        bf16 = False,
-        seed = args.seed,
-        report_to = [],
-        save_strategy = "no",
-        max_length = args.max_seq_length,
-        gradient_checkpointing = True,
+        output_dir=str(outdir / "trainer"),
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        max_steps=args.max_steps,
+        learning_rate=args.learning_rate,
+        logging_steps=1,
+        optim=args.optim,
+        fp16=True,
+        bf16=False,
+        seed=args.seed,
+        report_to=[],
+        save_strategy="no",
+        max_length=args.max_seq_length,
+        gradient_checkpointing=True,
         # Required with gradient checkpointing on a PEFT model: without it the
         # inputs carry no grad and the backward finds nothing to do, which
         # surfaces as "element 0 of tensors does not require grad" rather than
         # as a configuration mistake.
-        gradient_checkpointing_kwargs = {"use_reentrant": False},
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
-    trainer = SFTTrainer(model = model, train_dataset = dataset, args = config)
+    trainer = SFTTrainer(model=model, train_dataset=dataset, args=config)
 
     t0 = time.time()
     trainer.train()
@@ -287,22 +287,22 @@ def comparison_failures(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required = True)
-    ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
-    ap.add_argument("--outdir", required = True)
-    ap.add_argument("--max-steps", type = int, default = 10)
-    ap.add_argument("--batch-size", type = int, default = 2)
-    ap.add_argument("--grad-accum", type = int, default = 1)
-    ap.add_argument("--max-seq-length", type = int, default = 512)
-    ap.add_argument("--learning-rate", type = float, default = 1e-3)
-    ap.add_argument("--lora-r", type = int, default = 16)
-    ap.add_argument("--lora-alpha", type = int, default = 32)
-    ap.add_argument("--optim", default = "adamw_8bit")
-    ap.add_argument("--seed", type = int, default = 3407)
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--dataset", default=str(_HERE / "canary_dataset.jsonl"))
+    ap.add_argument("--outdir", required=True)
+    ap.add_argument("--max-steps", type=int, default=10)
+    ap.add_argument("--batch-size", type=int, default=2)
+    ap.add_argument("--grad-accum", type=int, default=1)
+    ap.add_argument("--max-seq-length", type=int, default=512)
+    ap.add_argument("--learning-rate", type=float, default=1e-3)
+    ap.add_argument("--lora-r", type=int, default=16)
+    ap.add_argument("--lora-alpha", type=int, default=32)
+    ap.add_argument("--optim", default="adamw_8bit")
+    ap.add_argument("--seed", type=int, default=3407)
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents = True, exist_ok = True)
+    outdir.mkdir(parents=True, exist_ok=True)
     report_path = outdir / "naive_trl_report.json"
 
     # A crash here must not take the leg down: this arm is a COMPARISON, and a
@@ -319,8 +319,8 @@ def main() -> int:
         }
         _log(f"failed: {result['error']}")
 
-    report_path.write_text(json.dumps(result, indent = 2), encoding = "utf-8")
-    print("NAIVE_TRL_REPORT " + json.dumps(result), flush = True)
+    report_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print("NAIVE_TRL_REPORT " + json.dumps(result), flush=True)
     return 0
 
 

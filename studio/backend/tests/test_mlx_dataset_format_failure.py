@@ -30,17 +30,17 @@ def _format_block():
 
 
 def _run(
-    train_success = True,
-    train_warning = None,
-    eval_success = True,
-    eval_warning = None,
+    train_success=True,
+    train_warning=None,
+    eval_success=True,
+    eval_warning=None,
 ):
     """Execute the real block from _run_mlx_training and report what it did.
 
     _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
     directly, the same technique test_mlx_training_worker_config.py uses.
     """
-    block = compile(ast.Module(body = _format_block().body, type_ignores = []), "<fmt>", "exec")
+    block = compile(ast.Module(body=_format_block().body, type_ignores=[]), "<fmt>", "exec")
     events = []
     calls = {"n": 0}
 
@@ -85,14 +85,14 @@ def _run(
 
 
 def test_a_failed_train_dataset_stops_the_run():
-    result = _run(train_success = False)
+    result = _run(train_success=False)
 
     assert result["error"] is not None
     assert result["dataset"] == "RAW_TRAIN", "the untemplated dataset must not reach training"
 
 
 def test_a_failed_eval_dataset_stops_the_run():
-    result = _run(eval_success = False)
+    result = _run(eval_success=False)
 
     assert result["error"] is not None
     assert result["eval_dataset"] == "RAW_EVAL"
@@ -100,8 +100,8 @@ def test_a_failed_eval_dataset_stops_the_run():
 
 def test_dropped_row_warnings_reach_the_user_for_both_datasets():
     result = _run(
-        train_warning = "Dropped 3 of 8 rows because the chat template failed: boom",
-        eval_warning = "Dropped 1 of 4 rows because the chat template failed: boom",
+        train_warning="Dropped 3 of 8 rows because the chat template failed: boom",
+        eval_warning="Dropped 1 of 4 rows because the chat template failed: boom",
     )
 
     assert result["error"] is None

@@ -120,6 +120,7 @@ class TestDiffusionArchitectures:
     # (sd1/sd3/sdxl/aura/hidream) predates the video split and is left to its own change.
     def test_no_runnable_video_arch_is_tagged_unsupported_by_the_picker(self):
         from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+
         assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
 
 
@@ -488,9 +489,9 @@ class TestMissingSharedLibrary:
         assert "custom install" in msg
 
     def test_managed_binary_still_points_at_the_installer(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
-        binary.parent.mkdir(parents = True)
+        binary.parent.mkdir(parents=True)
         binary.write_text("")
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
         out = (
@@ -642,7 +643,7 @@ class TestBundledHipRocrMismatch:
         # first. The launch sequence itself is asserted behaviourally in
         # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        text = src.read_text(encoding = "utf-8")
+        text = src.read_text(encoding="utf-8")
         spawn_start = text.index("def _spawn_and_wait(")
         spawn_end = text.index("def _raise_terminal_load_failure", spawn_start)
         body = text[spawn_start:spawn_end]
@@ -878,9 +879,9 @@ class TestMacOSLoaderEdgeCases:
         # missing dylib AND an x86_64 one under /usr/local. Scanning the whole
         # list would report "wrong CPU architecture" for a file that is simply
         # absent from our install.
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
-        binary.parent.mkdir(parents = True)
+        binary.parent.mkdir(parents=True)
         binary.write_text("")
         out = (
             "dyld[4210]: Library not loaded: @rpath/libmtmd.dylib\n"
@@ -897,9 +898,9 @@ class TestMacOSLoaderEdgeCases:
     def test_a_policy_blocked_sibling_does_not_accuse_the_user_of_tampering(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
-        binary.parent.mkdir(parents = True)
+        binary.parent.mkdir(parents=True)
         binary.write_text("")
         out = (
             "dyld[4210]: Library not loaded: @rpath/libllama.dylib\n"
@@ -912,9 +913,9 @@ class TestMacOSLoaderEdgeCases:
         assert "was modified" not in msg
 
     def test_our_own_copy_really_is_the_signature_failure(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
-        binary.parent.mkdir(parents = True)
+        binary.parent.mkdir(parents=True)
         binary.write_text("")
         out = (
             "dyld[4210]: Library not loaded: @rpath/libllama.dylib\n"
@@ -1060,7 +1061,7 @@ class TestDyldInstallNames:
         assert "that exact location" not in msg
 
     def test_a_bundled_dylib_behind_rpath_still_points_at_the_installer(self, monkeypatch):
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         out = (
             "dyld[1]: Library not loaded: @rpath/libggml-metal.dylib\n"
             "  Reason: tried: '/x/libggml-metal.dylib' (no such file)"
@@ -1197,7 +1198,7 @@ class TestDiagnosticsAreAFixedPoint:
         assert LlamaCppBackend._with_startup_diagnostics(once, self._OUT, self._LOG) == once
 
     def test_a_classified_message_fed_back_in_is_not_decorated_twice(self):
-        once = _classify(self._OUT, "/models/x.gguf", "local/x", 1, None, log_path = self._LOG)
+        once = _classify(self._OUT, "/models/x.gguf", "local/x", 1, None, log_path=self._LOG)
         twice = LlamaCppBackend._with_startup_diagnostics(once, self._OUT, self._LOG)
         assert twice == once
 
@@ -1384,7 +1385,7 @@ class TestOutputIsNeverTrustedForBeingOurOwnFraming:
     def test_output_wearing_our_heading_is_still_capped_and_scrubbed(self, prefix, monkeypatch):
         monkeypatch.setenv("MY_API_TOKEN", "sk-super-secret-value-1234567890")
         out = prefix + "MY_API_TOKEN=sk-super-secret-value-1234567890\n" + "X" * 50000
-        msg = _classify(out, "/m.gguf", "u/x", 1, None, log_path = self._LOG)
+        msg = _classify(out, "/m.gguf", "u/x", 1, None, log_path=self._LOG)
         assert "sk-super-secret-value-1234567890" not in msg
         assert len(msg) < 3000, len(msg)
         assert msg != out
@@ -1399,7 +1400,7 @@ class TestOutputIsNeverTrustedForBeingOurOwnFraming:
         cur = "some unrecognised startup noise"
         seen = []
         for _ in range(60):
-            cur = _classify(cur, "/m.gguf", "u/x", 1, None, log_path = self._LOG)
+            cur = _classify(cur, "/m.gguf", "u/x", 1, None, log_path=self._LOG)
             seen.append(len(cur))
         assert max(seen) < 3000, max(seen)
         assert seen[-1] == seen[-2], seen[-4:]
@@ -1431,7 +1432,7 @@ class TestAnEncodedSecretIsStillRedacted:
 
     SECRET = 'pa"ss\\word-12345'
 
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _env(self, monkeypatch):
         monkeypatch.setenv("DB_PASSWORD", self.SECRET)
         monkeypatch.setenv("MY_API_TOKEN", "sk-abcdefghijklmnopqrstuvwxyz")
@@ -1448,7 +1449,7 @@ class TestAnEncodedSecretIsStillRedacted:
         ],
     )
     def test_no_recognisable_fragment_survives(self, dump):
-        msg = _classify(dump, "/m.gguf", "u/x", 1, None, log_path = "/tmp/l.log")
+        msg = _classify(dump, "/m.gguf", "u/x", 1, None, log_path="/tmp/l.log")
         for fragment in ("ss\\word", "pa%22", "secret123456", 'pa\\"ss'):
             assert fragment not in msg, msg
         assert "***" in msg
@@ -1484,7 +1485,7 @@ class TestAnEncodedSecretIsStillRedacted:
         # Named, because pytest puts the whole parameter in the node id and then in
         # PYTEST_CURRENT_TEST. Windows caps an environment variable at 32767
         # characters, so a 100 KB id errors the test in setup on that OS alone.
-        ids = ["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
+        ids=["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1542,7 +1543,7 @@ class TestASecretLongerThanTheTailWindow:
     def test_a_long_minted_api_key_does_not_reach_the_message(self, monkeypatch):
         key = "k" * 9000 + "MINTEDMARK"
         out = "x" * 5000 + " --api-key " + key + "\nfatal: boom"
-        msg = _classify(out, "/m.gguf", "u/x", 1, None, secrets = (key,))
+        msg = _classify(out, "/m.gguf", "u/x", 1, None, secrets=(key,))
         assert "MINTEDMARK" not in msg
 
     def test_the_tail_is_still_bounded(self, monkeypatch):
@@ -1553,7 +1554,7 @@ class TestASecretLongerThanTheTailWindow:
     def test_no_secret_means_the_window_is_unchanged(self, monkeypatch):
         for name in list(os.environ):
             if "SECRET" in name or "PRIVATE" in name or "PASSWORD" in name:
-                monkeypatch.delenv(name, raising = False)
+                monkeypatch.delenv(name, raising=False)
         assert LlamaCppBackend._max_secret_len(()) >= 0
 
 
@@ -1601,7 +1602,7 @@ class TestEveryClassifiedBranchIsRedacted:
             f"  Reason: tried: '/a/{token}.dylib' (no such file)\n"
         )
         msg = _classify(
-            out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", log_path = "/l.log", secrets = (token,)
+            out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", log_path="/l.log", secrets=(token,)
         )
         assert token not in msg
         assert "***" in msg
@@ -1609,7 +1610,7 @@ class TestEveryClassifiedBranchIsRedacted:
     def test_a_per_launch_secret_is_redacted_in_a_classified_branch(self):
         minted = "unsloth-launch-key-abcdefghij"
         out = f"dyld[1]: Library not loaded: @rpath/{minted}.dylib\n"
-        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", secrets = (minted,))
+        msg = _classify(out, "/m.gguf", "u/x", 1, "/i/bin/llama-server", secrets=(minted,))
         assert minted not in msg
 
     def test_an_ordinary_diagnosis_is_unchanged_by_the_extra_pass(self):
@@ -1707,7 +1708,7 @@ class TestTheRedactionHolesCodexFound:
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
         # Same reason as above: the parameter is the node id, and the node id
         # becomes an environment variable.
-        ids = ["unterminated-quote", "dotted-names", "many-pairs"],
+        ids=["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         start = time.monotonic()

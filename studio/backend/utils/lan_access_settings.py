@@ -59,7 +59,7 @@ def _resolve_host_addresses(host: str, port: int) -> tuple:
     if not isinstance(host, str) or not isinstance(port, int) or port < 0:
         return ()
     try:
-        infos = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError:
         return ()
     addresses = []
@@ -176,6 +176,7 @@ def get_lan_access_auto_start() -> bool:
     """Read the preference, failing closed on missing, invalid, or unreadable data."""
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(LAN_ACCESS_AUTO_START_KEY, None)
     except Exception:
         return False
@@ -199,6 +200,7 @@ def _valid_port(value: Any) -> bool:
 def _read_lan_access_port(*, strict: bool) -> Optional[int]:
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(LAN_ACCESS_PORT_KEY, None)
     except Exception as exc:
         if strict:
@@ -213,7 +215,7 @@ def _read_lan_access_port(*, strict: bool) -> Optional[int]:
 
 def get_lan_access_port() -> Optional[int]:
     """The valid saved port, or ``None`` for Automatic/status fallback."""
-    return _read_lan_access_port(strict = False)
+    return _read_lan_access_port(strict=False)
 
 
 def set_lan_access_port(port: Optional[int]) -> Optional[int]:
@@ -226,7 +228,7 @@ def set_lan_access_port(port: Optional[int]) -> Optional[int]:
 
 
 def lan_access_port_candidates() -> tuple[int, ...]:
-    custom = _read_lan_access_port(strict = True)
+    custom = _read_lan_access_port(strict=True)
     if custom is not None:
         return (custom,)
     return tuple(range(DEFAULT_LAN_ACCESS_PORT, LAST_LAN_ACCESS_PORT + 1))
@@ -249,6 +251,7 @@ def save_lan_access_port(app, port: Optional[int]) -> dict:
 def _admin_password_ready() -> bool:
     try:
         from auth.storage import DEFAULT_ADMIN_USERNAME, requires_password_change
+
         return not requires_password_change(DEFAULT_ADMIN_USERNAME)
     except Exception:
         return False
@@ -403,6 +406,7 @@ def lan_access_status(app) -> dict:
     controllable = block_reason is None
     try:
         from utils.keyless_api_access import get_keyless_api_access_settings
+
         keyless_scope, keyless_tools = get_keyless_api_access_settings()
     except Exception:
         keyless_scope, keyless_tools = "off", False
@@ -441,6 +445,7 @@ def _server_loop(app_state):
 def start_lan_access(app) -> dict:
     """Bring the LAN listener up for this launch. Repeated requests are idempotent."""
     from lan_access import start_lan_listener
+
     with _management_lock:
         status = lan_access_status(app)
         if status["state"] == "online":

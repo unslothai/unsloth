@@ -53,9 +53,9 @@ def _request():
 
     return SimpleNamespace(
         # These cases drive the tool loop, whose confirm gate asks over these frames.
-        headers = {"X-Unsloth-Events": "1"},
-        state = SimpleNamespace(skip_api_monitor = True),
-        is_disconnected = is_disconnected,
+        headers={"X-Unsloth-Events": "1"},
+        state=SimpleNamespace(skip_api_monitor=True),
+        is_disconnected=is_disconnected,
     )
 
 
@@ -88,11 +88,11 @@ def _payload(**overrides):
     from models.inference import ChatCompletionRequest
 
     base = dict(
-        messages = [{"role": "user", "content": "draw me a chart of this"}],
-        provider_id = "saved-1",
-        external_model = "gpt-5.4",
-        stream = True,
-        enable_tools = True,
+        messages=[{"role": "user", "content": "draw me a chart of this"}],
+        provider_id="saved-1",
+        external_model="gpt-5.4",
+        stream=True,
+        enable_tools=True,
     )
     base.update(overrides)
     return ChatCompletionRequest(**base)
@@ -104,7 +104,7 @@ def _loop_transport(monkeypatch, provider_type: str, selection: list[str], **ove
 
     async def go():
         resp = await inf._proxy_to_external_provider(
-            _payload(enabled_tools = selection, **overrides), _request(), current_subject = "t"
+            _payload(enabled_tools=selection, **overrides), _request(), current_subject="t"
         )
         return [chunk async for chunk in resp.body_iterator]
 
@@ -113,7 +113,7 @@ def _loop_transport(monkeypatch, provider_type: str, selection: list[str], **ove
     return excinfo.value.args[0]
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_policy():
     from state.tool_policy import reset_tool_policy
 
@@ -189,7 +189,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
         # The route drops the RAG tool without a scope, and no scope means no
         # loop at all, so the automatic-RAG turn has to carry one to be the case
         # this is about.
-        rag_scope = {"kb_id": "kb-1"},
+        rag_scope={"kb_id": "kb-1"},
     )
     assert transport._request_kwargs["enabled_tools"] == ["image_generation"]
 

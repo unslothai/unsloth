@@ -22,7 +22,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 requires_sqlite_vec = pytest.mark.skipif(
-    not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
+    not rag_db.RAG_AVAILABLE, reason="sqlite-vec is not installed"
 )
 
 
@@ -54,19 +54,19 @@ def two_accounts(tmp_path, monkeypatch, stub_embeddings):
     homes = {}
     for account in (ALICE, BOB):
         workspace = run_as(account, roots.workspace_root)
-        workspace.mkdir(parents = True, exist_ok = True)
+        workspace.mkdir(parents=True, exist_ok=True)
         homes[account.account_id] = workspace
     return homes
 
 
 def _link(account, workspace, name: str):
     source = workspace / f"linked-{name}"
-    source.mkdir(parents = True, exist_ok = True)
-    (source / "notes.txt").write_text(f"{name} text", encoding = "utf-8")
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "notes.txt").write_text(f"{name} text", encoding="utf-8")
 
     def create():
         folder = folder_sync.create_folder(
-            scope_type = "knowledge_base", scope_id = f"kb-{name}", path = str(source), name = name
+            scope_type="knowledge_base", scope_id=f"kb-{name}", path=str(source), name=name
         )
         return folder, folder_sync.request_sync(folder["id"])
 
@@ -91,7 +91,7 @@ def test_retiring_an_account_mid_sync_keeps_the_shared_folder_worker_alive(
     _link(ALICE, two_accounts[ALICE.account_id], "alice")
 
     stop = threading.Event()
-    worker = threading.Thread(target = folder_sync._worker, args = (stop,), daemon = True)
+    worker = threading.Thread(target=folder_sync._worker, args=(stop,), daemon=True)
     worker.start()
     try:
         assert blocked.wait(30), "the worker never reached the snapshot"
@@ -124,7 +124,7 @@ def _corrupt_rag_db(account) -> None:
     from utils.paths import storage_roots as roots
 
     path = run_as(account, roots.rag_db_path)
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"not a sqlite database" * 64)
 
 
@@ -145,7 +145,7 @@ def test_the_shared_worker_still_syncs_accounts_behind_a_corrupt_database(two_ac
     _corrupt_rag_db(ALICE)
 
     stop = threading.Event()
-    worker = threading.Thread(target = folder_sync._worker, args = (stop,), daemon = True)
+    worker = threading.Thread(target=folder_sync._worker, args=(stop,), daemon=True)
     worker.start()
     try:
         deadline = time.time() + 60

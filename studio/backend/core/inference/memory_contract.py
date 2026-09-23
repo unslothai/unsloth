@@ -126,50 +126,50 @@ def build_memory_estimate(
     # there does not catch a bug -- it silently replaces the caller's real number with an unrelated one. The first draft
     # of this function clamped, and the contract-freeze suite caught it truncating a 4.1 GB quant to 373 bytes.
     return MemoryEstimate(
-        available = True,
-        reason = None,
-        quant_file_bytes = quant,
-        resident_files_bytes = resident,
-        kv_bytes = int(getattr(breakdown, "kv_bytes", 0) or 0),
-        compute_bytes = (
+        available=True,
+        reason=None,
+        quant_file_bytes=quant,
+        resident_files_bytes=resident,
+        kv_bytes=int(getattr(breakdown, "kv_bytes", 0) or 0),
+        compute_bytes=(
             int(getattr(breakdown, "compute_bytes", 0) or 0)
             if isinstance(compute_bytes, _Unset)
             else int(compute_bytes or 0)
         ),
-        drafter_runtime_bytes = int(getattr(breakdown, "drafter_runtime_bytes", 0) or 0),
-        drafter_runtime_gpu_bytes = int(getattr(breakdown, "drafter_runtime_gpu_bytes", 0) or 0),
-        projector_runtime_bytes = int(getattr(breakdown, "projector_runtime_bytes", 0) or 0),
-        drafter_kv_unsized = bool(getattr(breakdown, "drafter_kv_unsized", False)),
-        adapters_unsized = bool(getattr(breakdown, "adapters_unsized", False)),
-        total_bytes = (
+        drafter_runtime_bytes=int(getattr(breakdown, "drafter_runtime_bytes", 0) or 0),
+        drafter_runtime_gpu_bytes=int(getattr(breakdown, "drafter_runtime_gpu_bytes", 0) or 0),
+        projector_runtime_bytes=int(getattr(breakdown, "projector_runtime_bytes", 0) or 0),
+        drafter_kv_unsized=bool(getattr(breakdown, "drafter_kv_unsized", False)),
+        adapters_unsized=bool(getattr(breakdown, "adapters_unsized", False)),
+        total_bytes=(
             int(getattr(breakdown, "total_bytes", 0) or 0)
             if isinstance(total_bytes, _Unset)
             else int(total_bytes or 0)
         ),
         # Not `or 0`: zero is a real answer (an all-CPU launch) and must survive distinct from None. See the field's own
         # description.
-        gpu_bytes = (
+        gpu_bytes=(
             (None if getattr(breakdown, "gpu_bytes", None) is None else int(breakdown.gpu_bytes))
             if isinstance(gpu_bytes, _Unset)
             else (None if gpu_bytes is None else int(gpu_bytes))
         ),
-        gpu_floor_bytes = None if gpu_floor_bytes is None else int(gpu_floor_bytes),
-        kv_estimable = bool(getattr(breakdown, "kv_estimable", True)),
-        kv_on_gpu = bool(getattr(breakdown, "kv_on_gpu", True)),
-        n_ctx = (
+        gpu_floor_bytes=None if gpu_floor_bytes is None else int(gpu_floor_bytes),
+        kv_estimable=bool(getattr(breakdown, "kv_estimable", True)),
+        kv_on_gpu=bool(getattr(breakdown, "kv_on_gpu", True)),
+        n_ctx=(
             int(getattr(breakdown, "n_ctx", 0) or 0)
             if isinstance(n_ctx, _Unset)
             else int(n_ctx or 0)
         ),
-        native_context = native_context,
-        cache_type_kv = getattr(breakdown, "cache_type_kv", None),
-        n_parallel = int(getattr(breakdown, "n_parallel", 1) or 1),
-        layer_count = getattr(breakdown, "layer_count", None),
-        gpu_layers = getattr(breakdown, "gpu_layers", None),
-        moe_offload_unmodelled = bool(moe_offload_unmodelled),
-        context_is_pinned = bool(context_is_pinned),
-        inherited_device_pin = bool(inherited_device_pin),
-        spec_unpriced = bool(spec_unpriced),
+        native_context=native_context,
+        cache_type_kv=getattr(breakdown, "cache_type_kv", None),
+        n_parallel=int(getattr(breakdown, "n_parallel", 1) or 1),
+        layer_count=getattr(breakdown, "layer_count", None),
+        gpu_layers=getattr(breakdown, "gpu_layers", None),
+        moe_offload_unmodelled=bool(moe_offload_unmodelled),
+        context_is_pinned=bool(context_is_pinned),
+        inherited_device_pin=bool(inherited_device_pin),
+        spec_unpriced=bool(spec_unpriced),
     )
 
 

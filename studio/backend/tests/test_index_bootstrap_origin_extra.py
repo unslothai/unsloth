@@ -32,16 +32,17 @@ def test_is_same_origin_request_ipv6_loopback_same_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request("[::1]:8902", origin = "http://[::1]:8902")
+    req = _build_request("[::1]:8902", origin="http://[::1]:8902")
     assert _is_same_origin_request(req) is True
 
 
 def test_is_same_origin_request_ipv6_full_address_same_origin():
     from main import _is_same_origin_request
+
     req = _build_request(
         "[2001:db8::1]:8443",
-        origin = "https://[2001:db8::1]:8443",
-        scheme = "https",
+        origin="https://[2001:db8::1]:8443",
+        scheme="https",
     )
     assert _is_same_origin_request(req) is True
 
@@ -50,7 +51,7 @@ def test_is_same_origin_request_ipv6_default_port_stripped():
     """Browser drops :80 on ``http://[::1]``."""
     from main import _is_same_origin_request
 
-    req = _build_request("[::1]:80", origin = "http://[::1]")
+    req = _build_request("[::1]:80", origin="http://[::1]")
     assert _is_same_origin_request(req) is True
 
 
@@ -60,27 +61,30 @@ def test_is_same_origin_request_ipv6_case_insensitive():
 
     req = _build_request(
         "[2001:DB8::1]:8443",
-        origin = "https://[2001:db8::1]:8443",
-        scheme = "https",
+        origin="https://[2001:db8::1]:8443",
+        scheme="https",
     )
     assert _is_same_origin_request(req) is True
 
 
 def test_is_same_origin_request_ipv6_different_host_cross_origin():
     from main import _is_same_origin_request
-    req = _build_request("[::1]:8902", origin = "http://[2001:db8::1]:8902")
+
+    req = _build_request("[::1]:8902", origin="http://[2001:db8::1]:8902")
     assert _is_same_origin_request(req) is False
 
 
 def test_is_same_origin_request_ipv6_port_mismatch_cross_origin():
     from main import _is_same_origin_request
-    req = _build_request("[::1]:8902", origin = "http://[::1]:9999")
+
+    req = _build_request("[::1]:8902", origin="http://[::1]:9999")
     assert _is_same_origin_request(req) is False
 
 
 def test_is_same_origin_request_ipv6_userinfo_stripped():
     from main import _is_same_origin_request
-    req = _build_request("user:pass@[::1]:8902", origin = "http://[::1]:8902")
+
+    req = _build_request("user:pass@[::1]:8902", origin="http://[::1]:8902")
     assert _is_same_origin_request(req) is True
 
 
@@ -91,7 +95,7 @@ def test_is_same_origin_request_data_url_origin_is_cross_origin():
     """``data:`` URLs are opaque origins (HTML living standard); no host, never same-origin."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "data:text/html,<script>alert(1)</script>")
+    req = _build_request("127.0.0.1:8902", origin="data:text/html,<script>alert(1)</script>")
     assert _is_same_origin_request(req) is False
 
 
@@ -99,7 +103,7 @@ def test_is_same_origin_request_blob_url_origin_is_cross_origin():
     """``blob:`` URLs carry the inner origin only in non-canonical form; the canonical comparison rejects them."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "blob:http://127.0.0.1:8902/uuid")
+    req = _build_request("127.0.0.1:8902", origin="blob:http://127.0.0.1:8902/uuid")
     assert _is_same_origin_request(req) is False
 
 
@@ -109,7 +113,7 @@ def test_is_same_origin_request_file_url_origin_is_cross_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "file://")
+    req = _build_request("127.0.0.1:8902", origin="file://")
     assert _is_same_origin_request(req) is False
 
 
@@ -124,7 +128,7 @@ def test_is_same_origin_request_comma_joined_origins_cross_origin():
 
     req = _build_request(
         "127.0.0.1:8902",
-        origin = "http://127.0.0.1:8902, http://evil.example",
+        origin="http://127.0.0.1:8902, http://evil.example",
     )
     assert _is_same_origin_request(req) is False
 
@@ -138,13 +142,14 @@ def test_is_same_origin_request_localhost_vs_127_is_cross_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "http://localhost:8902")
+    req = _build_request("127.0.0.1:8902", origin="http://localhost:8902")
     assert _is_same_origin_request(req) is False
 
 
 def test_is_same_origin_request_127_vs_localhost_is_cross_origin():
     from main import _is_same_origin_request
-    req = _build_request("localhost:8902", origin = "http://127.0.0.1:8902")
+
+    req = _build_request("localhost:8902", origin="http://127.0.0.1:8902")
     assert _is_same_origin_request(req) is False
 
 
@@ -158,7 +163,7 @@ def test_is_same_origin_request_malformed_ipv6_bracket_is_cross_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "http://[malformed")
+    req = _build_request("127.0.0.1:8902", origin="http://[malformed")
     assert _is_same_origin_request(req) is False
 
 
@@ -167,7 +172,7 @@ def test_is_same_origin_request_invalid_ipv6_address_is_cross_origin():
     ``ValueError`` inside ``urlparse``."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "http://[::g]:8902")
+    req = _build_request("127.0.0.1:8902", origin="http://[::g]:8902")
     assert _is_same_origin_request(req) is False
 
 
@@ -175,7 +180,7 @@ def test_is_same_origin_request_bracket_with_trailing_garbage_is_cross_origin():
     """Text after the closing bracket also raises inside ``urlparse``."""
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "http://[2001:db8::1]extra:8902")
+    req = _build_request("127.0.0.1:8902", origin="http://[2001:db8::1]extra:8902")
     assert _is_same_origin_request(req) is False
 
 
@@ -185,5 +190,5 @@ def test_is_same_origin_request_empty_origin_header_is_cross_origin():
     """
     from main import _is_same_origin_request
 
-    req = _build_request("127.0.0.1:8902", origin = "")
+    req = _build_request("127.0.0.1:8902", origin="")
     assert _is_same_origin_request(req) is False

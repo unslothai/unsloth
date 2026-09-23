@@ -37,7 +37,7 @@ except Exception:  # noqa: BLE001 - the suite has its own import guards
 _OTHER_CREDENTIAL_ENVS = ("KAGGLE_KEY", "KAGGLE_USERNAME", "KAGGLE_ACCESS_TOKEN_GH")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_ambient_kaggle_credentials(monkeypatch):
     for name in (*DEFAULT_ACCOUNT_ENVS, *_OTHER_CREDENTIAL_ENVS):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)

@@ -33,7 +33,7 @@ def test_openai_transcription_reads_only_one_byte_past_limit(monkeypatch):
     class _Upload:
         filename = "clip.wav"
 
-        async def read(self, size = -1):
+        async def read(self, size=-1):
             sizes.append(size)
             return b"x" * size
 
@@ -42,12 +42,12 @@ def test_openai_transcription_reads_only_one_byte_past_limit(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route.openai_audio_transcriptions(
-                request = _request(),
-                file = _Upload(),
-                model = None,
-                language = None,
-                response_format = "json",
-                current_subject = "tester",
+                request=_request(),
+                file=_Upload(),
+                model=None,
+                language=None,
+                response_format="json",
+                current_subject="tester",
             )
         )
 

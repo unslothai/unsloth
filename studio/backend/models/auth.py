@@ -13,51 +13,51 @@ from auth.storage import MIN_PASSWORD_LENGTH, validate_account_username
 class AuthLoginRequest(BaseModel):
     """Login payload: username/password to obtain a JWT."""
 
-    username: str = Field(..., description = "Username")
-    password: str = Field(..., description = "Password")
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
 
 
 class DesktopLoginRequest(BaseModel):
     """Desktop-only local secret exchange payload."""
 
-    secret: str = Field(..., description = "Desktop local auth secret")
+    secret: str = Field(..., description="Desktop local auth secret")
 
 
 class RefreshTokenRequest(BaseModel):
     """Refresh token payload to obtain new access + refresh tokens."""
 
-    refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
+    refresh_token: str = Field(..., description="Refresh token from a previous login or refresh")
 
 
 class AuthStatusResponse(BaseModel):
     """Indicate whether the seeded admin auth flow is ready."""
 
-    initialized: bool = Field(..., description = "True if the auth database contains a login user")
+    initialized: bool = Field(..., description="True if the auth database contains a login user")
     default_username: str = Field(
         "unsloth",
-        description = "Default admin username for first-boot UI prefill.",
+        description="Default admin username for first-boot UI prefill.",
     )
     login_mode: str = Field(
         "single",
-        description = (
+        description=(
             "'single' when one account exists, so the form posts default_username without asking; "
             "'multi' when a username has to be entered. Never lists accounts."
         ),
     )
     full_access: bool = Field(
         True,
-        description = (
+        description=(
             "Whether the unsandboxed tool modes (Full access, bypass permissions) may be "
             "offered. False whenever another account exists, active or not."
         ),
     )
     requires_password_change: bool = Field(
         ...,
-        description = "True if the seeded admin must still change the default password",
+        description="True if the seeded admin must still change the default password",
     )
     bootstrap_deadline_seconds: Optional[int] = Field(
         None,
-        description = (
+        description=(
             "Seconds until this instance shuts down for leaving the default password "
             "unchanged, or null when the launch is not time-boxed."
         ),
@@ -69,8 +69,8 @@ class DesktopInitialPasswordRequest(BaseModel):
 
     new_password: str = Field(
         ...,
-        min_length = MIN_PASSWORD_LENGTH,
-        description = f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
+        min_length=MIN_PASSWORD_LENGTH,
+        description=f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
     )
 
 
@@ -79,22 +79,22 @@ class ChangePasswordRequest(BaseModel):
 
     current_password: str = Field(
         ...,
-        min_length = MIN_PASSWORD_LENGTH,
-        description = "Existing password for the authenticated user",
+        min_length=MIN_PASSWORD_LENGTH,
+        description="Existing password for the authenticated user",
     )
     new_password: str = Field(
         ...,
-        min_length = MIN_PASSWORD_LENGTH,
-        description = f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
+        min_length=MIN_PASSWORD_LENGTH,
+        description=f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
     )
 
 
 class CreateApiKeyRequest(BaseModel):
     """Request body to create a new API key."""
 
-    name: str = Field(..., description = "Human-readable label for this key")
+    name: str = Field(..., description="Human-readable label for this key")
     expires_in_days: Optional[int] = Field(
-        None, description = "Number of days until the key expires (None = never)"
+        None, description="Number of days until the key expires (None = never)"
     )
 
 
@@ -103,7 +103,7 @@ class ApiKeyResponse(BaseModel):
 
     id: int
     name: str
-    key_prefix: str = Field(..., description = "First 8 characters after sk-unsloth- for display")
+    key_prefix: str = Field(..., description="First 8 characters after sk-unsloth- for display")
     created_at: str
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None
@@ -113,7 +113,7 @@ class ApiKeyResponse(BaseModel):
 class CreateApiKeyResponse(BaseModel):
     """Returned once when a key is created -- ``key`` is never shown again."""
 
-    key: str = Field(..., description = "Full API key (shown once)")
+    key: str = Field(..., description="Full API key (shown once)")
     api_key: ApiKeyResponse
 
 

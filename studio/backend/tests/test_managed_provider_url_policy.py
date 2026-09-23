@@ -32,12 +32,12 @@ METADATA_URLS = [
 ]
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_resolver_state(monkeypatch, tmp_path):
     # Isolated per test: the real setter would otherwise write to the machine's own installation.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising = False)
+    monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising=False)
     setting.forget_cached_setting()
     providers._dns_cache.clear()
     providers._dns_in_flight = threading.BoundedSemaphore(providers._DNS_MAX_IN_FLIGHT)
@@ -58,7 +58,7 @@ def as_alice():
 def _allow(monkeypatch, allowed: bool) -> None:
     """Answer the setting without a DB; the round trip through one is tested separately."""
     monkeypatch.setattr(
-        setting, "get_managed_private_provider_urls_allowed", lambda: allowed, raising = True
+        setting, "get_managed_private_provider_urls_allowed", lambda: allowed, raising=True
     )
 
 
@@ -128,7 +128,7 @@ def settings_client():
     app.dependency_overrides[settings_routes.get_current_subject] = lambda: "unsloth"
     # An interactive owner at the console, which is what the write requires.
     app.dependency_overrides[settings_routes.authenticated_via_api_key] = lambda: False
-    with TestClient(app, raise_server_exceptions = False) as client:
+    with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
 
@@ -139,7 +139,7 @@ def test_the_owner_route_reads_and_writes_the_real_store(settings_client):
     assert body["default_allowed"] is False
     assert body["locked_by_environment"] is False
 
-    updated = settings_client.put("/managed-provider-urls", json = {"allowed": True})
+    updated = settings_client.put("/managed-provider-urls", json={"allowed": True})
     assert updated.status_code == 200, updated.text
     assert updated.json()["allowed"] is True
     assert settings_client.get("/managed-provider-urls").json()["allowed"] is True
@@ -148,7 +148,7 @@ def test_the_owner_route_reads_and_writes_the_real_store(settings_client):
 
 def test_the_route_reports_the_environment_lock(monkeypatch, settings_client):
     """Stored on, held off by the environment: the UI needs to say why, not show a switch that lies."""
-    settings_client.put("/managed-provider-urls", json = {"allowed": True})
+    settings_client.put("/managed-provider-urls", json={"allowed": True})
     monkeypatch.setenv(setting.BLOCK_PRIVATE_ENV, "1")
     body = settings_client.get("/managed-provider-urls").json()
     assert body["allowed"] is False
@@ -201,11 +201,11 @@ def test_the_recipe_egress_guard_narrows_rather_than_standing_down(monkeypatch, 
             service.socket if hasattr(service, "socket") else socket,
             "getaddrinfo",
             guarded,
-            raising = False,
+            raising=False,
         )
-        assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+        assert guarded("192.168.1.50", 8000, type=socket.SOCK_STREAM)
         with pytest.raises(socket.gaierror) as refusal:
-            guarded("169.254.169.254", 80, type = socket.SOCK_STREAM)
+            guarded("169.254.169.254", 80, type=socket.SOCK_STREAM)
         assert "metadata" in str(refusal.value).lower()
     finally:
         socket.getaddrinfo = original
@@ -225,12 +225,12 @@ def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
     try:
         service.install_public_egress_guard()
         guarded = socket.getaddrinfo
-        assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+        assert guarded("192.168.1.50", 8000, type=socket.SOCK_STREAM)
 
         # The owner turns it off while this worker is still running.
         setting.set_managed_private_provider_urls_allowed(False)
         with pytest.raises(socket.gaierror) as refusal:
-            guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
+            guarded("192.168.1.50", 8000, type=socket.SOCK_STREAM)
         assert "public-network" in str(refusal.value)
     finally:
         socket.getaddrinfo = original

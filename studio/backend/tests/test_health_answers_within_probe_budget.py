@@ -71,10 +71,10 @@ _PROBE_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "preflight" / "backend.r
 def _run(snippet: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", snippet],
-        cwd = str(_BACKEND_DIR),
-        capture_output = True,
-        text = True,
-        timeout = 900,
+        cwd=str(_BACKEND_DIR),
+        capture_output=True,
+        text=True,
+        timeout=900,
     )
 
 
@@ -87,7 +87,7 @@ def _desktop_probe_timeout_s() -> float:
     failing if the unit stops being seconds.
     """
     assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
-    rust = _PROBE_RS.read_text(encoding = "utf-8")
+    rust = _PROBE_RS.read_text(encoding="utf-8")
     probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
     # Bound to this function; a later one must not be the source of the number.
     end = probe.find("\n}\n")
@@ -103,7 +103,7 @@ def _desktop_probe_timeout_s() -> float:
 
 def _main_constant(name: str) -> float:
     """Read a module-level float from main.py without importing it."""
-    tree = ast.parse(_MAIN_SRC.read_text(encoding = "utf-8"))
+    tree = ast.parse(_MAIN_SRC.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == name for t in node.targets
@@ -462,7 +462,7 @@ def test_health_does_not_await_detection_unbounded():
     """Static guard: health_check must go through the bounded helper. `await
     asyncio.to_thread(ensure_hardware_detected)` reads like the obvious fix and passes every
     test that pins DEVICE first; it only fails on a cold desktop launch."""
-    tree = ast.parse(_MAIN_SRC.read_text(encoding = "utf-8"))
+    tree = ast.parse(_MAIN_SRC.read_text(encoding="utf-8"))
     health = next(
         node
         for node in ast.walk(tree)
@@ -530,7 +530,7 @@ def test_a_mid_detection_assignment_is_not_treated_as_finished():
     ), "detection needs a completion signal distinct from the DEVICE assignment"
     assert isinstance(hw.DETECTION_COMPLETE, threading.Event)
 
-    src = _MAIN_SRC.read_text(encoding = "utf-8")
+    src = _MAIN_SRC.read_text(encoding="utf-8")
     start = src.index("async def _await_hardware_detection")
     body = src[start : start + 1800]
     assert (

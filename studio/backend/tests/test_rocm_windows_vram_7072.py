@@ -37,7 +37,7 @@ from utils.hardware import hardware as hw
 
 def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(REPORTER_ADAPTERS))
     )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
@@ -46,10 +46,10 @@ def _shared_setup_1(monkeypatch):
 
 def _shared_setup_2(monkeypatch):
     monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
+        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total=True)
     )
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(IGPU_DGPU_ADAPTERS))
     )
 
 
@@ -63,8 +63,8 @@ MiB = 1024**2
 def _fake_torch(
     devices,
     *,
-    free_equals_total = False,
-    used_per_device = None,
+    free_equals_total=False,
+    used_per_device=None,
 ):
     """Build a fake `torch` module. devices: list of (name, total_bytes[, gfx])."""
     dev = list(devices)
@@ -91,15 +91,15 @@ def _fake_torch(
 
     t = types.ModuleType("torch")
     t.__version__ = "2.11.0+rocm7.13"
-    t.version = types.SimpleNamespace(hip = "7.13", cuda = None)
+    t.version = types.SimpleNamespace(hip="7.13", cuda=None)
     t.cuda = types.SimpleNamespace(
-        is_available = lambda: len(dev) > 0,
-        device_count = lambda: len(dev),
-        current_device = lambda: 0,
-        get_device_properties = get_device_properties,
-        mem_get_info = mem_get_info,
-        memory_allocated = lambda i: 0,
-        memory_reserved = lambda i: 0,
+        is_available=lambda: len(dev) > 0,
+        device_count=lambda: len(dev),
+        current_device=lambda: 0,
+        get_device_properties=get_device_properties,
+        mem_get_info=mem_get_info,
+        memory_allocated=lambda i: 0,
+        memory_reserved=lambda i: 0,
     )
     return t
 
@@ -123,9 +123,9 @@ _DEFAULT_ENGINES = [("pid_1_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D",
 
 def _subprocess_run(
     *,
-    adapter_output = "__NONE__\n",
-    util_output = None,
-    engine_samples = None,
+    adapter_output="__NONE__\n",
+    util_output=None,
+    engine_samples=None,
 ):
     if util_output is None:
         util_output = _engine_output(_DEFAULT_ENGINES if engine_samples is None else engine_samples)
@@ -138,7 +138,7 @@ def _subprocess_run(
             out = util_output
         else:
             out = "-1\n"
-        return subprocess.CompletedProcess(args = cmd, returncode = 0, stdout = out, stderr = "")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr="")
 
     return fake_run
 
@@ -158,8 +158,8 @@ def win_rocm(monkeypatch):
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
     # Visible set via HIP mask so we don't shell out to amd-smi for the count.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     return monkeypatch
 
 
@@ -175,16 +175,16 @@ DEVICES = [("AMD Radeon PRO W7900", 48 * GB), ("AMD Radeon PRO W7500", 8 * GB)]
 # System tab (get_visible_gpu_utilization) -- the reporter's screenshot
 # ----------------------------------------------------------------------------- #
 def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(REPORTER_ADAPTERS))
     )
 
     devices = hw.get_visible_gpu_utilization()["devices"]
     by_idx = {d["index"]: d for d in devices}
     assert len(devices) == 2
     assert by_idx[0]["vram_total_gb"] == 48.0
-    assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)  # not 0
+    assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs=0.01)  # not 0
     assert by_idx[1]["vram_total_gb"] == 8.0  # own total
     # The 3 MiB Basic Render Driver counter makes this a hidden-adapter case: only
     # the 40 GiB is forced onto the 48 GiB card; the idle card reads Unknown.
@@ -196,9 +196,9 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
 
 
 def test_gpu_utilization_does_not_collapse(win_rocm, monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(REPORTER_ADAPTERS))
     )
 
     result = hw.get_gpu_utilization()
@@ -209,8 +209,8 @@ def test_gpu_utilization_does_not_collapse(win_rocm, monkeypatch):
 
 
 def test_localized_counter_reports_unknown_not_zero(win_rocm, monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total=True))
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output="__NONE__\n"))
 
     devices = hw.get_visible_gpu_utilization()["devices"]
     assert len(devices) == 2  # both still shown with correct totals
@@ -223,7 +223,7 @@ def test_localized_counter_reports_unknown_not_zero(win_rocm, monkeypatch):
 # mem_get_info free==total guard scoping
 # ----------------------------------------------------------------------------- #
 def test_mem_get_info_guard_scopes_to_windows_rocm(monkeypatch):
-    torch_mod = _fake_torch(DEVICES, free_equals_total = True)
+    torch_mod = _fake_torch(DEVICES, free_equals_total=True)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
 
@@ -284,7 +284,7 @@ def test_unified_used_sums_dedicated_and_shared_for_the_compute_adapter(monkeypa
     # On an APU, Dedicated saturates at the carve-out and the overflow lands in
     # Shared, so only the sum tracks the allocation (measured: 48 GiB held reports
     # +29.19 dedicated, +19.02 shared on a gfx1151 host).
-    def fake(counter = "Dedicated Usage"):
+    def fake(counter="Dedicated Usage"):
         if counter == "Dedicated Usage":
             return [("luid_compute", 30.5 * GB), ("luid_placeholder", 0.0)]
         return [("luid_compute", 19.0 * GB), ("luid_placeholder", 1.3 * GB)]
@@ -297,7 +297,7 @@ def test_unified_used_selects_on_dedicated_not_the_sum(monkeypatch):
     # A display adapter reports 0 dedicated while holding gigabytes of shared.
     # Selecting on the sum would see two candidates and either bail or add a
     # foreign adapter's bytes; selecting on dedicated isolates the compute device.
-    def fake(counter = "Dedicated Usage"):
+    def fake(counter="Dedicated Usage"):
         if counter == "Dedicated Usage":
             return [("luid_compute", 1.2 * GB), ("luid_display", 0.0)]
         return [("luid_compute", 0.15 * GB), ("luid_display", 1.3 * GB)]
@@ -309,7 +309,7 @@ def test_unified_used_selects_on_dedicated_not_the_sum(monkeypatch):
 def test_unified_used_declines_when_the_compute_adapter_is_ambiguous(monkeypatch):
     # Two adapters above the floor: no key says which is visible, so report None
     # rather than pick one, matching _rocm_windows_aggregate_used_bytes.
-    def two(counter = "Dedicated Usage"):
+    def two(counter="Dedicated Usage"):
         return [("luid_a", 1.2 * GB), ("luid_b", 2.4 * GB)]
 
     monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", two)
@@ -319,7 +319,7 @@ def test_unified_used_declines_when_the_compute_adapter_is_ambiguous(monkeypatch
     monkeypatch.setattr(
         hw,
         "_rocm_windows_perf_counter_vram_by_adapter",
-        lambda counter = "Dedicated Usage": [("luid_a", 10 * MiB)],
+        lambda counter="Dedicated Usage": [("luid_a", 10 * MiB)],
     )
     assert hw._rocm_windows_unified_used_bytes() is None
 
@@ -327,7 +327,7 @@ def test_unified_used_declines_when_the_compute_adapter_is_ambiguous(monkeypatch
     monkeypatch.setattr(
         hw,
         "_rocm_windows_perf_counter_vram_by_adapter",
-        lambda counter = "Dedicated Usage": None,
+        lambda counter="Dedicated Usage": None,
     )
     assert hw._rocm_windows_unified_used_bytes() is None
 
@@ -337,7 +337,7 @@ def test_unified_used_declines_rather_than_falling_back_to_dedicated_only(monkey
     # here knows which side a reading is on: on the measured host 30.5 GiB is both a
     # legitimate below-carve-out figure and a saturated one. So a failed Shared query
     # declines instead of degrading to dedicated, which would overstate free.
-    def fake(counter = "Dedicated Usage"):
+    def fake(counter="Dedicated Usage"):
         return [("luid_compute", 1.2 * GB)] if counter == "Dedicated Usage" else None
 
     monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
@@ -452,12 +452,12 @@ def test_match_adapter_capacity_forced_matrix():
 def test_perf_counter_parser_and_sentinel(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(REPORTER_ADAPTERS))
     )
     parsed = hw._rocm_windows_perf_counter_vram_by_adapter()
     assert parsed is not None and len(parsed) == 3
     assert parsed[0][0].startswith("luid_")
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output="__NONE__\n"))
     assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
 
 
@@ -485,9 +485,9 @@ SOLO_REGISTRY = {0x15369: {"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200"}}
 def win_rocm_solo(win_rocm, monkeypatch):
     """Windows ROCm host with a single visible GPU and a readable DirectX map."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(SOLO_ADAPTERS))
     )
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
     return monkeypatch
@@ -529,17 +529,17 @@ def test_single_gpu_reports_used_instead_of_unknown(win_rocm_solo):
     """The regression: one visible GPU plus placeholder counters read Unknown."""
     result = hw.get_visible_gpu_utilization()
     (device,) = result["devices"]
-    assert device["vram_used_gb"] == pytest.approx(3.0, abs = 0.01)
+    assert device["vram_used_gb"] == pytest.approx(3.0, abs=0.01)
     assert device["vram_total_gb"] == 16.0
-    assert device["vram_utilization_pct"] == pytest.approx(18.8, abs = 0.1)
+    assert device["vram_utilization_pct"] == pytest.approx(18.8, abs=0.1)
     # The System tab tile reads the aggregate, which needed len(counters) == 1.
-    assert result["vram_used_gb_aggregate"] == pytest.approx(3.0, abs = 0.01)
+    assert result["vram_used_gb_aggregate"] == pytest.approx(3.0, abs=0.01)
 
 
 def test_single_gpu_train_page_reports_used(win_rocm_solo):
     """Same figure on get_gpu_utilization, the Train page's GPU Monitor."""
     (device,) = hw.get_gpu_utilization()["devices"]
-    assert device["vram_used_gb"] == pytest.approx(3.0, abs = 0.01)
+    assert device["vram_used_gb"] == pytest.approx(3.0, abs=0.01)
     assert device["gpu_utilization_pct"] == 12.0  # 3D-engine counter, unchanged
 
 
@@ -547,19 +547,19 @@ def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
     """An idle AMD card beside a busy foreign GPU reports the AMD card's own
     usage. Capacity ranking has no vendor key here and declines outright."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total=True))
     adapters = [
         ("luid_0x00000000_0x00015369_phys_0", 0.4 * GB),  # visible AMD card, idle
         ("luid_0x00000000_0x00099999_phys_0", 9 * GB),  # NVIDIA/iGPU, not ours
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
-    assert devices[0]["used_gb"] == pytest.approx(0.4, abs = 0.01)
-    assert aggregate == pytest.approx(0.4, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(0.4, abs=0.01)
+    assert aggregate == pytest.approx(0.4, abs=0.01)
 
 
 def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch):
@@ -568,14 +568,14 @@ def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB, "gfx1100")] * 2, free_equals_total = True),
+        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB, "gfx1100")] * 2, free_equals_total=True),
     )
     adapters = [
         ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
         ("luid_0x00000000_0x0000bbbb_phys_0", 4 * GB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     record = {"name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
     monkeypatch.setattr(
@@ -584,7 +584,7 @@ def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert [d["used_gb"] for d in devices] == [None, None]
-    assert aggregate == pytest.approx(14.0, abs = 0.01)
+    assert aggregate == pytest.approx(14.0, abs=0.01)
 
 
 # ── The mixed hosts nobody here owns hardware for ────────────────────────────
@@ -611,7 +611,7 @@ def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs=0.01)]
     assert aggregate is None
 
 
@@ -629,7 +629,7 @@ def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatc
     )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs=0.01)]
 
 
 def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
@@ -646,7 +646,7 @@ def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs=0.01)]
     assert aggregate is None
 
 
@@ -662,14 +662,14 @@ def test_a_partial_name_pass_still_lets_the_arch_finish_the_job(win_rocm, monkey
         ("AMD Radeon RX 9070", 16 * GB, "gfx1201"),
         ("AMD Radeon RX 9070", 16 * GB, "gfx1200"),  # same name, different arch
     ]
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(devices_spec, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(devices_spec, free_equals_total=True))
     adapters = [
         ("luid_0x00000000_0x0000a001_phys_0", 30.0 * GB),
         ("luid_0x00000000_0x0000b002_phys_0", 10.0 * GB),
         ("luid_0x00000000_0x0000c003_phys_0", 5.0 * GB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     monkeypatch.setattr(
         hw,
@@ -683,11 +683,11 @@ def test_a_partial_name_pass_still_lets_the_arch_finish_the_job(win_rocm, monkey
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1, 2])
     assert [d["used_gb"] for d in devices] == [
-        pytest.approx(30.0, abs = 0.01),
-        pytest.approx(10.0, abs = 0.01),
-        pytest.approx(5.0, abs = 0.01),
+        pytest.approx(30.0, abs=0.01),
+        pytest.approx(10.0, abs=0.01),
+        pytest.approx(5.0, abs=0.01),
     ]
-    assert aggregate == pytest.approx(45.0, abs = 0.01)
+    assert aggregate == pytest.approx(45.0, abs=0.01)
 
 
 def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
@@ -698,14 +698,14 @@ def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch([("AMD Radeon RX 9070", 16 * GB, "gfx1201")], free_equals_total = True),
+        _fake_torch([("AMD Radeon RX 9070", 16 * GB, "gfx1201")], free_equals_total=True),
     )
     adapters = [
         ("luid_0x00000000_0x0000c001_phys_0", 6 * GB),  # the visible card
         ("luid_0x00000000_0x0000d002_phys_0", 9 * GB),  # its hidden same-arch sibling
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     # Neither Description matches what torch calls the card, so the name pass
     # declines and only the arch could answer -- and one record has no arch.
@@ -937,18 +937,18 @@ def _hip_ids(*identities):
 def test_hip_luid_separates_two_of_one_model(win_rocm, monkeypatch):
     """What the DirectX join cannot do: one Description and one arch for both
     cards leaves it the aggregate only, while the LUIDs are still distinct."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total=True))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(TWIN_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(TWIN_ADAPTERS))
     )
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0), (0xBBBB, 0)))
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert [d["used_gb"] for d in devices] == [
-        pytest.approx(10.0, abs = 0.01),
-        pytest.approx(4.0, abs = 0.01),
+        pytest.approx(10.0, abs=0.01),
+        pytest.approx(4.0, abs=0.01),
     ]
-    assert aggregate == pytest.approx(14.0, abs = 0.01)
+    assert aggregate == pytest.approx(14.0, abs=0.01)
 
 
 def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
@@ -959,11 +959,11 @@ def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
         sys.modules,
         "torch",
         _fake_torch(
-            [RuntimeError("ordinal 0 will not probe"), TWIN_CARDS[1]], free_equals_total = True
+            [RuntimeError("ordinal 0 will not probe"), TWIN_CARDS[1]], free_equals_total=True
         ),
     )
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(TWIN_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(TWIN_ADAPTERS))
     )
     probe = _hip_ids((0xAAAA, 0), (0xBBBB, 0))
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", probe)
@@ -971,21 +971,21 @@ def test_hip_is_asked_about_the_ordinal_that_answered(win_rocm, monkeypatch):
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert probe.asked == [1]
     # Ordinal 1 is the 0xBBBB counter, not the 0xAAAA one its position would name.
-    assert devices[0]["used_gb"] == pytest.approx(4.0, abs = 0.01)
-    assert aggregate == pytest.approx(4.0, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(4.0, abs=0.01)
+    assert aggregate == pytest.approx(4.0, abs=0.01)
 
 
 def test_linked_nodes_keep_the_aggregate_but_not_per_device(win_rocm, monkeypatch):
     """Two ordinals behind one LUID. The counters index the adapter's nodes as
     phys_N and nothing says which ordinal owns which, so the sum survives and
     the pairing does not."""
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(TWIN_CARDS, free_equals_total=True))
     adapters = [
         ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
         ("luid_0x00000000_0x0000aaaa_phys_1", 4 * GB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     monkeypatch.setattr(
         hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01), (0xAAAA, 0b10))
@@ -993,7 +993,7 @@ def test_linked_nodes_keep_the_aggregate_but_not_per_device(win_rocm, monkeypatc
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert [d["used_gb"] for d in devices] == [None, None]
-    assert aggregate == pytest.approx(14.0, abs = 0.01)
+    assert aggregate == pytest.approx(14.0, abs=0.01)
 
 
 def test_a_node_the_visible_ordinals_do_not_own_declines(win_rocm, monkeypatch):
@@ -1001,13 +1001,13 @@ def test_a_node_the_visible_ordinals_do_not_own_declines(win_rocm, monkeypatch):
     usage is on hardware HIP is not showing, so it is not this card's to claim,
     and the node mask is what says so."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total=True))
     adapters = [
         ("luid_0x00000000_0x0000aaaa_phys_0", 3 * GB),
         ("luid_0x00000000_0x0000aaaa_phys_1", 9 * GB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01)))
 
@@ -1021,7 +1021,7 @@ def test_a_node_count_that_matches_the_wrong_nodes_is_not_ownership(win_rocm, mo
     the node it does NOT own reports: the counts agree, only the identities disagree.
     Taking that as ownership would sum the other node's work as this card's."""
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([TWIN_CARDS[0]], free_equals_total=True))
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xAAAA, 0b01)))
     dev_meta = [
         {
@@ -1114,7 +1114,7 @@ class _Callable:
 def _r0600_blob(
     name,
     luid,
-    node_mask = 0,
+    node_mask=0,
 ):
     """The documented prefix of hipDeviceProp_tR0600: name[256], uuid[16],
     luid[8], luidDeviceNodeMask[4]."""
@@ -1129,9 +1129,9 @@ def _r0600_blob(
 def _fake_ctypes(
     blobs,
     *,
-    loaded = ("amdhip64_7.dll",),
-    has_symbol = True,
-    rc = 0,
+    loaded=("amdhip64_7.dll",),
+    has_symbol=True,
+    rc=0,
 ):
     """A `ctypes` whose loaded amdhip64 answers with ``blobs[ordinal]``."""
 
@@ -1156,10 +1156,10 @@ def _fake_ctypes(
             return _Callable(get_properties)
 
     kernel32 = types.SimpleNamespace(
-        GetModuleHandleW = _Callable(lambda name: 0x1234 if name in loaded else None)
+        GetModuleHandleW=_Callable(lambda name: 0x1234 if name in loaded else None)
     )
     mod = types.ModuleType("ctypes")
-    mod.WinDLL = lambda name, handle = None, use_last_error = False: (
+    mod.WinDLL = lambda name, handle=None, use_last_error=False: (
         kernel32 if name == "kernel32" else _Hip()
     )
     mod.create_string_buffer = _Buffer
@@ -1181,7 +1181,7 @@ NINE_SIXTY = "AMD Radeon RX 9060 XT"
 
 def test_hip_probe_reads_the_luid_and_node_mask(hip_probe_host, monkeypatch):
     monkeypatch.setitem(
-        sys.modules, "ctypes", _fake_ctypes([_r0600_blob(NINE_SIXTY, 0x14AD4, node_mask = 0b11)])
+        sys.modules, "ctypes", _fake_ctypes([_r0600_blob(NINE_SIXTY, 0x14AD4, node_mask=0b11)])
     )
     assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) == [(0x14AD4, 0b11)]
 
@@ -1200,9 +1200,9 @@ def test_hip_probe_declines_what_it_cannot_answer(hip_probe_host, monkeypatch):
     blob = [_r0600_blob(NINE_SIXTY, 0x14AD4)]
     for label, fake in (
         ("no LUID for this device", _fake_ctypes([_r0600_blob(NINE_SIXTY, 0)])),
-        ("the ordinal will not answer", _fake_ctypes(blob, rc = 1)),
-        ("the runtime is not in this process", _fake_ctypes(blob, loaded = ())),
-        ("the versioned symbol is absent", _fake_ctypes(blob, has_symbol = False)),
+        ("the ordinal will not answer", _fake_ctypes(blob, rc=1)),
+        ("the runtime is not in this process", _fake_ctypes(blob, loaded=())),
+        ("the versioned symbol is absent", _fake_ctypes(blob, has_symbol=False)),
     ):
         monkeypatch.setitem(sys.modules, "ctypes", fake)
         assert hw._rocm_windows_hip_adapter_ids([0], [NINE_SIXTY]) is None, label
@@ -1251,7 +1251,7 @@ def test_unified_used_declines_when_the_shared_query_fails(monkeypatch):
     # FAILED shared query as zero reports the measured 48 GiB case as 30.5 and
     # overstates free by 19 GiB. Nothing here knows where the carve-out sits, so
     # a failed query has to decline rather than guess.
-    def fake(counter = "Dedicated Usage"):
+    def fake(counter="Dedicated Usage"):
         return [("luid_compute", 30.5 * GB)] if counter == "Dedicated Usage" else None
 
     monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", fake)
@@ -1261,7 +1261,7 @@ def test_unified_used_declines_when_the_shared_query_fails(monkeypatch):
 def test_unified_used_keeps_a_successful_query_that_omits_the_luid(monkeypatch):
     # A query that SUCCEEDS but has no row for this adapter is a real zero, not a
     # failure, and must stay usable.
-    def fake(counter = "Dedicated Usage"):
+    def fake(counter="Dedicated Usage"):
         if counter == "Dedicated Usage":
             return [("luid_compute", 1.2 * GB)]
         return [("luid_other", 3.0 * GB)]
@@ -1278,7 +1278,7 @@ def test_per_device_vram_uses_the_snapshot_it_is_given(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_rocm_windows_perf_counter_vram_by_adapter",
-        lambda counter = "Dedicated Usage": (_ for _ in ()).throw(
+        lambda counter="Dedicated Usage": (_ for _ in ()).throw(
             AssertionError("must not re-sample when a snapshot was passed in")
         ),
     )
@@ -1287,8 +1287,8 @@ def test_per_device_vram_uses_the_snapshot_it_is_given(monkeypatch):
         "_torch_get_device_module",
         lambda: (
             types.SimpleNamespace(
-                get_device_properties = lambda _o: types.SimpleNamespace(
-                    name = "APU", total_memory = 89 * GB
+                get_device_properties=lambda _o: types.SimpleNamespace(
+                    name="APU", total_memory=89 * GB
                 )
             ),
             None,
@@ -1356,7 +1356,7 @@ def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
                 ("AMD Radeon Graphics", 24 * GB, "gfx1100"),
                 ("AMD Radeon Graphics", 16 * GB, "gfx1200"),
             ],
-            free_equals_total = True,
+            free_equals_total=True,
         ),
     )
     monkeypatch.setattr(
@@ -1371,7 +1371,7 @@ def test_a_name_collision_falls_through_to_the_gfx_pass(win_rocm, monkeypatch):
         hw.subprocess,
         "run",
         _subprocess_run(
-            adapter_output = _adapter_output(
+            adapter_output=_adapter_output(
                 [
                     ("luid_0x00000000_0x0000aaaa_phys_0", 9.0 * GB),
                     ("luid_0x00000000_0x0000bbbb_phys_0", 3.0 * GB),
@@ -1448,7 +1448,7 @@ def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monk
         "torch",
         _fake_torch(
             [("AMD Radeon(TM) 8060S Graphics", int(89.465 * GB), "gfx1151")],
-            free_equals_total = True,
+            free_equals_total=True,
         ),
     )
     adapters = [
@@ -1457,7 +1457,7 @@ def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monk
         ("luid_0x00000000_0x00017099_phys_0", 0.0),  # placeholder, permanent
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
     monkeypatch.setattr(
         hw,
@@ -1469,12 +1469,12 @@ def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monk
     # sum directly, as the other APU tests here do, and give it the two figures
     # actually measured together on this host.
     monkeypatch.setattr(
-        hw, "_rocm_windows_unified_used_bytes", lambda dedicated = None: (31.681 + 17.820) * GB
+        hw, "_rocm_windows_unified_used_bytes", lambda dedicated=None: (31.681 + 17.820) * GB
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
-    assert devices[0]["used_gb"] == pytest.approx(49.5, abs = 0.01)
-    assert aggregate == pytest.approx(49.5, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(49.5, abs=0.01)
+    assert aggregate == pytest.approx(49.5, abs=0.01)
 
     # The claim itself, put to the helper rather than inferred from the caller:
     # capacity ranking cannot produce an aggregate on this host at any load,
@@ -1493,7 +1493,7 @@ def test_the_measured_strix_halo_needs_the_join_for_any_aggregate(win_rocm, monk
     # than capacity ranking, which is still declining underneath.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     _, fallback_aggregate = hw._rocm_windows_per_device_vram([0])
-    assert fallback_aggregate == pytest.approx(49.5, abs = 0.01)
+    assert fallback_aggregate == pytest.approx(49.5, abs=0.01)
 
 
 def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
@@ -1505,7 +1505,7 @@ def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)], free_equals_total = True),
+        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)], free_equals_total=True),
     )
     monkeypatch.setattr(
         hw,
@@ -1521,7 +1521,7 @@ def test_the_join_declines_usage_it_cannot_place(win_rocm, monkeypatch):
         hw.subprocess,
         "run",
         _subprocess_run(
-            adapter_output = _adapter_output(
+            adapter_output=_adapter_output(
                 [
                     ("luid_0x00000000_0x0000aaaa_phys_0", 2.0 * GB),
                     ("luid_0x00000000_0x0000bbbb_phys_0", 17.0 * GB),
@@ -1555,11 +1555,11 @@ def test_windows_apu_total_is_the_driver_pool_not_the_carve_out(win_rocm, monkey
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (96 * GB, 128 * GB))
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(APU_ADAPTERS))
     )
 
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
-    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d = None: 12.0 * GB)
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d=None: 12.0 * GB)
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 128.0
     # Dedicated Usage alone saturates at the carve-out, so a widened total takes
@@ -1573,24 +1573,24 @@ def test_an_unsettled_classifier_does_not_cost_a_card_its_occupancy(win_rocm, mo
     """The classifier answers "carve-out" for a discrete card too whenever the
     runtime leaves it unsettled (no integrated flag, HIP below 6.2). The driver
     total comes back equal there, so nothing widened and nothing is unknown."""
-    torch = _fake_torch(DEVICES, free_equals_total = True)
+    torch = _fake_torch(DEVICES, free_equals_total=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
-    assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(40.0, abs=0.01)
 
 
 def test_a_discrete_card_must_not_pay_a_context_for_its_total(win_rocm, monkeypatch):
     """Only an APU pays mem_get_info for its total; a poll that attaches a
     context on a discrete card never gives the memory back."""
-    torch = _fake_torch(DEVICES, free_equals_total = True)
+    torch = _fake_torch(DEVICES, free_equals_total=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda i: pytest.fail("a discrete card must not be asked")
     )
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: False)
-    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output="__NONE__\n"))
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
@@ -1617,7 +1617,7 @@ MIXED_ADAPTERS = [
 
 def _mixed_host(monkeypatch):
     """APU (8 GiB carve-out, 128 GiB pool) at ordinal 0, discrete 24 GiB at 1."""
-    torch = _fake_torch(MIXED, free_equals_total = True)
+    torch = _fake_torch(MIXED, free_equals_total=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     # _Props carries no is_integrated, so the classifier stays patched; keying it
     # on the total is what lets one fake host hold an APU and a discrete card.
@@ -1641,13 +1641,13 @@ def test_widened_apu_total_does_not_cost_the_discrete_card_its_usage(win_rocm, m
     the discrete card reads Unknown."""
     _mixed_host(monkeypatch)
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(MIXED_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(MIXED_ADAPTERS))
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert [d["total_gb"] for d in devices] == [128.0, 24.0]  # displayed total still widened
     assert devices[0]["used_gb"] is None  # Dedicated Usage is not the pool's numerator
-    assert devices[1]["used_gb"] == pytest.approx(10.0, abs = 0.01)
+    assert devices[1]["used_gb"] == pytest.approx(10.0, abs=0.01)
     assert aggregate is None  # one member of the visible set is unknown
 
 
@@ -1658,11 +1658,11 @@ def test_widened_apu_total_does_not_make_every_pairing_ambiguous(win_rocm, monke
     slot, so every ranking on a mixed host becomes swappable."""
     _mixed_host(monkeypatch)
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(MIXED_ADAPTERS[:2]))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(MIXED_ADAPTERS[:2]))
     )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
-    assert devices[1]["used_gb"] == pytest.approx(10.0, abs = 0.01)
+    assert devices[1]["used_gb"] == pytest.approx(10.0, abs=0.01)
     assert devices[0]["used_gb"] is None
 
 
@@ -1677,7 +1677,7 @@ def test_widened_apu_total_does_not_admit_an_impossible_counter(win_rocm, monkey
             ("AMD Radeon PRO W7900", 48 * GB),
             ("AMD Radeon PRO W7800", 24 * GB),
         ],
-        free_equals_total = True,
+        free_equals_total=True,
     )
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1,2")
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -1692,7 +1692,7 @@ def test_widened_apu_total_does_not_admit_an_impossible_counter(win_rocm, monkey
         ("luid_0x00000000_0x0000f001_phys_0", 3 * MiB),
     ]
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(adapters))
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1, 2])
@@ -1706,7 +1706,7 @@ def test_a_driver_total_below_the_carve_out_is_not_adopted(win_rocm, monkeypatch
     too, and this path carries a used alongside the total. A driver total below
     props.total_memory there reports past 100% utilization and, through
     free = max(total - used, 0), zero free on a card that is mostly empty."""
-    torch = _fake_torch(DEVICES, free_equals_total = True)
+    torch = _fake_torch(DEVICES, free_equals_total=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     # Driver under-reports the 48 GiB card.
@@ -1715,7 +1715,7 @@ def test_a_driver_total_below_the_carve_out_is_not_adopted(win_rocm, monkeypatch
     )
     devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
-    assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(40.0, abs=0.01)
     assert all(d["used_gb"] <= d["total_gb"] for d in devices if d["used_gb"] is not None)
 
 
@@ -1723,7 +1723,7 @@ def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
     """The correction is a probe, and it is the first thing this path asks the
     classifier. A probe that throws must cost the device its correction, not its
     place in the visible set: dropping it shows the System tab no GPU at all."""
-    torch = _fake_torch(DEVICES, free_equals_total = True)
+    torch = _fake_torch(DEVICES, free_equals_total=True)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     def _boom(props):
@@ -1732,7 +1732,7 @@ def test_a_failing_carve_out_probe_keeps_the_device(win_rocm, monkeypatch):
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", _boom)
     devices = _shared_setup_1(monkeypatch)
     assert [d["total_gb"] for d in devices] == [48.0, 8.0]
-    assert devices[0]["used_gb"] == pytest.approx(40.0, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(40.0, abs=0.01)
 
 
 def test_the_inventory_path_also_refuses_to_shrink_a_total(monkeypatch):
@@ -1760,7 +1760,7 @@ def test_the_inventory_path_also_refuses_to_shrink_a_total(monkeypatch):
     assert all(d["used_gb"] is None for d in devices)
 
 
-def _apu_host(monkeypatch, unified_used = 12.0 * GB):
+def _apu_host(monkeypatch, unified_used=12.0 * GB):
     """A lone 8 GiB carve-out / 128 GiB pool APU.
 
     ``unified_used`` stands in for _rocm_windows_unified_used_bytes, which sums
@@ -1775,9 +1775,9 @@ def _apu_host(monkeypatch, unified_used = 12.0 * GB):
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (96 * GB, 128 * GB))
     monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda props: True)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: True)
-    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d = None: unified_used)
+    monkeypatch.setattr(hw, "_rocm_windows_unified_used_bytes", lambda d=None: unified_used)
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(APU_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(APU_ADAPTERS))
     )
 
 
@@ -1790,7 +1790,7 @@ def test_widened_total_survives_get_gpu_utilization(win_rocm, monkeypatch):
     result = hw.get_gpu_utilization()
     assert result["devices"][0]["vram_total_gb"] == 128.0
     assert result["devices"][0]["vram_used_gb"] == 12.0
-    assert result["devices"][0]["vram_utilization_pct"] == pytest.approx(9.4, abs = 0.1)
+    assert result["devices"][0]["vram_utilization_pct"] == pytest.approx(9.4, abs=0.1)
     assert result["vram_total_gb"] == 128.0  # legacy mirror carries it too
     assert result["vram_used_gb"] == 12.0
 
@@ -1804,14 +1804,14 @@ def test_the_system_tab_does_not_invent_free_vram_on_an_apu(win_rocm, monkeypatc
     devices = hw.get_visible_gpu_utilization()["devices"]
     assert devices[0]["vram_total_gb"] == 128.0
     assert devices[0]["vram_used_gb"] == 12.0
-    assert devices[0]["vram_utilization_pct"] == pytest.approx(9.4, abs = 0.1)
+    assert devices[0]["vram_utilization_pct"] == pytest.approx(9.4, abs=0.1)
 
 
 def test_a_declining_unified_read_leaves_the_apu_unknown(win_rocm, monkeypatch):
     """When the sum cannot be established the carve-out reading must not be left
     standing under a pool-sized total: that is the reading that reports a loaded
     128 GiB card as almost entirely free."""
-    _apu_host(monkeypatch, unified_used = None)
+    _apu_host(monkeypatch, unified_used=None)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 128.0
@@ -1824,7 +1824,7 @@ def test_shared_usage_needs_a_positively_unified_part(win_rocm, monkeypatch):
     unsettled runtime can widen. Shared Usage is host memory that its
     props.total_memory never counted, so the sum must not become its numerator:
     the stricter classifier has to gate it, exactly as get_gpu_memory_info does."""
-    _apu_host(monkeypatch, unified_used = 90.0 * GB)
+    _apu_host(monkeypatch, unified_used=90.0 * GB)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda props: False)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
@@ -1840,12 +1840,12 @@ def test_a_nonzero_sub_threshold_row_declines_the_unified_sum(win_rocm, monkeypa
     visible but a hidden GPU active, that counter is the hidden one and the APU is
     the small row, so its usage would be published as the APU's. The matcher
     declines this shape by requiring every dropped counter to be an exact zero."""
-    _apu_host(monkeypatch, unified_used = 30.0 * GB)
+    _apu_host(monkeypatch, unified_used=30.0 * GB)
     monkeypatch.setattr(
         hw.subprocess,
         "run",
         _subprocess_run(
-            adapter_output = _adapter_output(
+            adapter_output=_adapter_output(
                 [
                     ("luid_0x00000000_0x0000c001_phys_0", 10 * MiB),  # the visible APU, idle
                     ("luid_0x00000000_0x0000d1e2_phys_0", 30.0 * GB),  # a hidden GPU, loaded
@@ -1863,7 +1863,7 @@ def test_a_negative_counter_never_publishes_negative_usage(win_rocm, monkeypatch
     """The helper declines a negative reading at source; this is the consumer end
     of the same guarantee, driven with the helper stubbed so the clamp that
     publishes the number is what gets tested rather than the decline above it."""
-    _apu_host(monkeypatch, unified_used = -5.0 * GB)
+    _apu_host(monkeypatch, unified_used=-5.0 * GB)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["used_gb"] == 0.0
@@ -1907,7 +1907,7 @@ def test_an_apu_beside_a_discrete_card_probes_only_the_apu(win_rocm, monkeypatch
         hw.subprocess,
         "run",
         _subprocess_run(
-            adapter_output = _adapter_output(
+            adapter_output=_adapter_output(
                 [
                     ("luid_0x00000000_0x0001532a_phys_0", 31.58 * GB),  # APU, saturated
                     ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),  # the discrete card
@@ -1946,7 +1946,7 @@ def test_a_failed_driver_probe_keeps_the_apu_on_the_dedicated_counter(win_rocm, 
     confirmed APU whose mem_get_info probe fails keeps a carve-out-sized total,
     and Dedicated Usage is the correct numerator for that one. Summing Shared
     into it would clamp to a fabricated 100%."""
-    _apu_host(monkeypatch, unified_used = 40.0 * GB)
+    _apu_host(monkeypatch, unified_used=40.0 * GB)
     torch = sys.modules["torch"]
     monkeypatch.setattr(
         torch.cuda,
@@ -1981,13 +1981,13 @@ def test_the_measured_strix_halo_at_64_gib_held(win_rocm, monkeypatch):
     monkeypatch.setattr(
         hw,
         "_rocm_windows_unified_used_bytes",
-        lambda dedicated = None: (31.637 + 33.887) * GB,
+        lambda dedicated=None: (31.637 + 33.887) * GB,
     )
     monkeypatch.setattr(
         hw.subprocess,
         "run",
         _subprocess_run(
-            adapter_output = _adapter_output(
+            adapter_output=_adapter_output(
                 [
                     (
                         "luid_0x00000000_0x0001532a_phys_0",
@@ -2011,7 +2011,7 @@ def test_a_confirmed_apu_takes_the_unified_sum_even_unwidened(win_rocm, monkeypa
     nothing widens and total_is_pool stays false. The total is pool-scoped all
     the same, and Dedicated alone plateaus at the carve-out under it, which is
     the reading that reports a loaded APU as mostly free."""
-    _apu_host(monkeypatch, unified_used = 4.0 * GB)
+    _apu_host(monkeypatch, unified_used=4.0 * GB)
     torch = sys.modules["torch"]
     # Both totals agree: the driver has nothing wider to offer.
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (0, APU[1]))
@@ -2028,7 +2028,7 @@ def test_the_unified_sum_is_clamped_to_the_widened_total(win_rocm, monkeypatch):
     exceed torch's pool. Every other reading is clamped on its way through the
     matcher; this one bypasses it and the payload derives free as total minus
     used, so an unclamped sum publishes negative free."""
-    _apu_host(monkeypatch, unified_used = 140.0 * GB)
+    _apu_host(monkeypatch, unified_used=140.0 * GB)
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["used_gb"] == 128.0
@@ -2043,7 +2043,7 @@ def test_the_dedicated_snapshot_is_not_sampled_twice(win_rocm, monkeypatch):
     monkeypatch.setattr(
         hw,
         "_rocm_windows_unified_used_bytes",
-        lambda dedicated = None: (seen.append(dedicated), 12.0 * GB)[1],
+        lambda dedicated=None: (seen.append(dedicated), 12.0 * GB)[1],
     )
 
     hw._rocm_windows_per_device_vram([0])
@@ -2060,7 +2060,7 @@ def test_an_unavailable_dedicated_snapshot_is_not_requeried(win_rocm, monkeypatc
     monkeypatch.setattr(
         hw,
         "_rocm_windows_unified_used_bytes",
-        lambda dedicated = None: (seen.append(dedicated), None)[1],
+        lambda dedicated=None: (seen.append(dedicated), None)[1],
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
@@ -2074,7 +2074,7 @@ def test_a_negative_counter_reading_is_declined(win_rocm, monkeypatch):
     clamps the upper bound only and the payload derives free as total minus used,
     so a negative sum would publish a negative used and a free above the total."""
 
-    def counters(counter = "Dedicated Usage"):
+    def counters(counter="Dedicated Usage"):
         if counter == "Dedicated Usage":
             return [("luid_0x00000000_0x0000abcd_phys_0", 2.0 * GB)]
         return [("luid_0x00000000_0x0000abcd_phys_0", -1.0 * GB)]
@@ -2124,8 +2124,8 @@ PHOENIX_SHARED = 4.10 * GB  # the overflow
 
 def _phoenix_host(
     monkeypatch,
-    gfx = "gfx1103",
-    name = "AMD Radeon(TM) 780M Graphics",
+    gfx="gfx1103",
+    name="AMD Radeon(TM) 780M Graphics",
 ):
     """A lone Windows APU on a pre-6.2 HIP runtime, driven through the counters.
 
@@ -2135,14 +2135,14 @@ def _phoenix_host(
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
     torch = _fake_torch([(name, int(PHOENIX_POOL), gfx)])
     torch.__version__ = "2.9.0+rocm6.1"
-    torch.version = types.SimpleNamespace(hip = "6.1", cuda = None)
+    torch.version = types.SimpleNamespace(hip="6.1", cuda=None)
     monkeypatch.setitem(sys.modules, "torch", torch)
     # The same variable read twice in clr, so the driver has nothing wider.
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (0, int(PHOENIX_POOL)))
     monkeypatch.setattr(
         hw,
         "_rocm_windows_perf_counter_vram_by_adapter",
-        lambda counter = "Dedicated Usage": [
+        lambda counter="Dedicated Usage": [
             (
                 "luid_0x00000000_0x0000c001_phys_0",
                 PHOENIX_DEDICATED if counter == "Dedicated Usage" else PHOENIX_SHARED,
@@ -2194,24 +2194,24 @@ def test_a_phoenix_pool_total_takes_the_shared_sum_not_the_plateau(win_rocm, mon
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 16.9
-    assert devices[0]["used_gb"] == pytest.approx(12.0, abs = 0.01)  # not the 7.90 plateau
-    assert aggregate == pytest.approx(12.0, abs = 0.01)
-    assert devices[0]["total_gb"] - devices[0]["used_gb"] == pytest.approx(4.9, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(12.0, abs=0.01)  # not the 7.90 plateau
+    assert aggregate == pytest.approx(12.0, abs=0.01)
+    assert devices[0]["total_gb"] - devices[0]["used_gb"] == pytest.approx(4.9, abs=0.01)
 
 
 def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_rocm, monkeypatch):
     """The other half of the guarantee, through the same fixture: an unsettled
     runtime does not let Shared Usage into a discrete card's numerator, and its
     total is never probed for a pool it does not have."""
-    torch = _phoenix_host(monkeypatch, gfx = "gfx1100", name = "AMD Radeon RX 7900 XTX")
+    torch = _phoenix_host(monkeypatch, gfx="gfx1100", name="AMD Radeon RX 7900 XTX")
     monkeypatch.setattr(
         torch.cuda, "mem_get_info", lambda i: pytest.fail("a discrete card must not be asked")
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["total_gb"] == 16.9
-    assert devices[0]["used_gb"] == pytest.approx(7.90, abs = 0.01)  # Dedicated alone
-    assert aggregate == pytest.approx(7.90, abs = 0.01)
+    assert devices[0]["used_gb"] == pytest.approx(7.90, abs=0.01)  # Dedicated alone
+    assert aggregate == pytest.approx(7.90, abs=0.01)
 
 
 # This card at 17%, other adapters at 61%, so a wrong selection still reads 78.
@@ -2226,11 +2226,11 @@ FOREIGN_ENGINES = [
 def _engine_query(
     monkeypatch,
     adapters,
-    engine_samples = None,
+    engine_samples=None,
 ):
     """Run the poll; hand back the devices and the counter path."""
     seen = []
-    inner = _subprocess_run(adapter_output = _adapter_output(adapters), engine_samples = engine_samples)
+    inner = _subprocess_run(adapter_output=_adapter_output(adapters), engine_samples=engine_samples)
 
     def fake_run(cmd, *a, **k):
         seen.append(" ".join(cmd) if isinstance(cmd, list) else str(cmd))
@@ -2242,9 +2242,9 @@ def _engine_query(
     return devices, query
 
 
-def _solo_host(monkeypatch, identity = None):
+def _solo_host(monkeypatch, identity=None):
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total=True))
     if identity is not None:
         monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids(identity))
 
@@ -2408,7 +2408,7 @@ def test_the_luid_is_internal_and_never_reaches_a_payload(win_rocm, monkeypatch)
     """Keeping the internal LUID out of both payloads is a convention, not a mechanism."""
     _solo_host(monkeypatch, (0x15369, 0))
     monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
+        hw.subprocess, "run", _subprocess_run(adapter_output=_adapter_output(SOLO_ADAPTERS))
     )
 
     def carries_luid(value):

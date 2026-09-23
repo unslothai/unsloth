@@ -28,30 +28,30 @@ from auth.bootstrap_timeout import (
 
 
 def test_default_when_unset():
-    assert bootstrap_timeout_seconds(env = {}) == DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+    assert bootstrap_timeout_seconds(env={}) == DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
 
 
 def test_default_when_empty():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "  "}) == (
+    assert bootstrap_timeout_seconds(env={"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "  "}) == (
         DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     )
 
 
 def test_explicit_value_parsed():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "1800"}) == 1800
+    assert bootstrap_timeout_seconds(env={"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "1800"}) == 1800
 
 
 def test_zero_disables():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "0"}) == 0
+    assert bootstrap_timeout_seconds(env={"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "0"}) == 0
 
 
 def test_negative_disables():
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "-5"}) == 0
+    assert bootstrap_timeout_seconds(env={"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "-5"}) == 0
 
 
 def test_invalid_falls_back_to_default():
     # A typo must keep the protection, not silently disable it.
-    assert bootstrap_timeout_seconds(env = {"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}) == (
+    assert bootstrap_timeout_seconds(env={"UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT": "abc"}) == (
         DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
     )
 
@@ -61,13 +61,13 @@ def test_invalid_falls_back_to_default():
 
 def _arm_kwargs(**overrides):
     kwargs = dict(
-        host = "0.0.0.0",
-        secure = False,
-        api_only = False,
-        frontend_served = True,
-        is_colab = False,
-        requires_change = True,
-        timeout_seconds = 3600,
+        host="0.0.0.0",
+        secure=False,
+        api_only=False,
+        frontend_served=True,
+        is_colab=False,
+        requires_change=True,
+        timeout_seconds=3600,
     )
     kwargs.update(overrides)
     return kwargs
@@ -79,31 +79,31 @@ def test_arm_exposed_wildcard_web_ui():
 
 def test_arm_secure_loopback_bind():
     # --secure forces a loopback bind but exposes a public tunnel.
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = True)) is True
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(host="127.0.0.1", secure=True)) is True
 
 
 def test_no_arm_loopback_bind():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(host = "127.0.0.1", secure = False)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(host="127.0.0.1", secure=False)) is False
 
 
 def test_no_arm_api_only():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(api_only = True)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(api_only=True)) is False
 
 
 def test_no_arm_no_frontend():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(frontend_served = False)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(frontend_served=False)) is False
 
 
 def test_no_arm_colab():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(is_colab = True)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(is_colab=True)) is False
 
 
 def test_no_arm_password_already_changed():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(requires_change = False)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(requires_change=False)) is False
 
 
 def test_no_arm_timeout_disabled():
-    assert should_arm_bootstrap_timeout(**_arm_kwargs(timeout_seconds = 0)) is False
+    assert should_arm_bootstrap_timeout(**_arm_kwargs(timeout_seconds=0)) is False
 
 
 # ── enforce_bootstrap_password_deadline ─────────────────────────────
@@ -111,17 +111,17 @@ def test_no_arm_timeout_disabled():
 
 def _fake_storage(requires_change: bool):
     return SimpleNamespace(
-        DEFAULT_ADMIN_USERNAME = "unsloth",
-        requires_password_change = lambda _username: requires_change,
+        DEFAULT_ADMIN_USERNAME="unsloth",
+        requires_password_change=lambda _username: requires_change,
     )
 
 
 def test_deadline_shuts_down_when_password_unchanged():
     calls = []
     result = enforce_bootstrap_password_deadline(
-        _fake_storage(requires_change = True),
+        _fake_storage(requires_change=True),
         lambda: calls.append("shutdown"),
-        timeout_seconds = 3600,
+        timeout_seconds=3600,
     )
     assert result is True
     assert calls == ["shutdown"]
@@ -130,9 +130,9 @@ def test_deadline_shuts_down_when_password_unchanged():
 def test_deadline_keeps_running_when_password_changed():
     calls = []
     result = enforce_bootstrap_password_deadline(
-        _fake_storage(requires_change = False),
+        _fake_storage(requires_change=False),
         lambda: calls.append("shutdown"),
-        timeout_seconds = 3600,
+        timeout_seconds=3600,
     )
     assert result is False
     assert calls == []
@@ -144,9 +144,9 @@ def test_deadline_swallows_shutdown_errors():
 
     # A failing shutdown must not propagate out of the timer thread.
     result = enforce_bootstrap_password_deadline(
-        _fake_storage(requires_change = True),
+        _fake_storage(requires_change=True),
         _boom,
-        timeout_seconds = 3600,
+        timeout_seconds=3600,
     )
     assert result is True
 
@@ -181,10 +181,10 @@ def test_shutdown_message_uses_formatted_duration():
             logged.append(msg)
 
     enforce_bootstrap_password_deadline(
-        _fake_storage(requires_change = True),
+        _fake_storage(requires_change=True),
         lambda: None,
-        timeout_seconds = 3600,
-        logger = _Logger(),
+        timeout_seconds=3600,
+        logger=_Logger(),
     )
     assert any("60 minutes" in m for m in logged)
     assert not any("minute(s)" in m for m in logged)
@@ -217,6 +217,7 @@ def test_an_expired_deadline_floors_at_zero_rather_than_going_negative():
     record_bootstrap_deadline(1)
     try:
         import auth.bootstrap_timeout as bt
+
         bt._deadline_at = time.monotonic() - 30
         assert bootstrap_deadline_remaining_seconds() == 0
     finally:
@@ -227,9 +228,9 @@ def test_arming_publishes_the_deadline():
     """Arming is the only thing that starts the clock, so it must be what records it."""
     clear_bootstrap_deadline()
     timer = arm_bootstrap_timeout(
-        _fake_storage(requires_change = True),
+        _fake_storage(requires_change=True),
         lambda: None,
-        timeout_seconds = 1800,
+        timeout_seconds=1800,
     )
     try:
         remaining = bootstrap_deadline_remaining_seconds()

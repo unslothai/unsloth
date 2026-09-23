@@ -40,6 +40,7 @@ def _apply_gpu_cell(cell: str) -> dict:
     sys.path.insert(0, str(_REPO_ROOT / "tests"))
     if cell == "nvidia":
         import _zoo_aggressive_cuda_spoof as spoof
+
         spoof.apply()
     elif cell == "rocm":
         import _zoo_rocm_spoof as spoof
@@ -68,7 +69,7 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
 
 
 def _load_helper():
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef) and node.name == "_model_basename":
             ns: dict = {"os": os}
@@ -130,7 +131,7 @@ def test_the_gpu_cell_really_is_what_it_claims():
 
 def test_the_fix_imports_no_gpu_library():
     """_model_basename must stay pure: no torch, no accelerator probing."""
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     fn = next(
         n
         for n in ast.parse(src).body

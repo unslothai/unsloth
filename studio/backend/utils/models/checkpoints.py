@@ -114,7 +114,7 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
             expected_dir_name = build_default_output_dir_name(
                 model_name,
                 project_name,
-                timestamp = timestamp,
+                timestamp=timestamp,
             )
             if expected_dir_name == checkpoint_name:
                 return model_name
@@ -132,7 +132,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     if not own_entry(trainer_state):
         return None
     try:
-        with open(trainer_state, encoding = "utf-8-sig") as f:
+        with open(trainer_state, encoding="utf-8-sig") as f:
             state = json.load(f)
         log_history = state.get("log_history", [])
         if log_history:
@@ -181,18 +181,18 @@ def scan_checkpoints(
             metadata: dict = {}
             try:
                 if own_entry(adapter_config):
-                    cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
+                    cfg = json.loads(adapter_config.read_text(encoding="utf-8-sig"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
                 elif own_entry(config_file):
-                    cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+                    cfg = json.loads(config_file.read_text(encoding="utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
                 # Detect BNB quantization from config.json
                 if own_entry(config_file):
                     if "cfg" not in dir():
-                        cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+                        cfg = json.loads(config_file.read_text(encoding="utf-8-sig"))
                     quant_cfg = cfg.get("quantization_config")
                     if (
                         isinstance(quant_cfg, dict)
@@ -236,7 +236,7 @@ def scan_checkpoints(
                     valid_checkpoints.append(sub)
 
             intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
+            for sub in sorted(valid_checkpoints, key=_checkpoint_sort_key):
                 loss = _read_checkpoint_loss(sub)
                 intermediate_checkpoints.append((sub.name, str(sub), loss))
 
@@ -255,7 +255,7 @@ def scan_checkpoints(
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
         # Sort by modification time (newest first)
-        models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
+        models.sort(key=lambda x: Path(x[1][0][1]).stat().st_mtime, reverse=True)
 
         logger.debug(f"Found {len(models)} training runs in {outputs_dir}")
         return models
@@ -274,7 +274,7 @@ def is_unquantized_full_model_dir(path: str | Path) -> bool:
     try:
         if (model_dir / "adapter_config.json").exists():
             return False
-        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+        config = json.loads((model_dir / "config.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return False
     return isinstance(config, dict) and "quantization_config" not in config

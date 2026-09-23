@@ -24,7 +24,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def auth():
     """routes/auth.py by path, as test_desktop_auth.py loads it.
 
@@ -95,7 +95,7 @@ def test_the_bootstrap_matches_the_one_the_cli_uses(auth):
     because the constant there is written as adjacent literals.
     """
     repo_root = _BACKEND.parents[1]
-    studio_py = (repo_root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    studio_py = (repo_root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding="utf-8")
     canonical = None
     for node in ast.walk(ast.parse(studio_py)):
         if isinstance(node, ast.Assign) and any(
@@ -118,8 +118,8 @@ def test_a_spaced_interpreter_path_still_falls_through_to_the_cmd_shim(auth, mon
 def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatch):
     """A package outside the prefix must answer False, and a missing one too."""
     inside = tmp_path / "venv" / "Lib" / "site-packages" / "unsloth_cli"
-    inside.mkdir(parents = True)
-    (inside / "__init__.py").write_text("", encoding = "utf-8")
+    inside.mkdir(parents=True)
+    (inside / "__init__.py").write_text("", encoding="utf-8")
 
     class _Spec:
         def __init__(self, origin):
@@ -141,7 +141,7 @@ def test_the_prefix_check_locates_rather_than_imports(auth, tmp_path, monkeypatc
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "spoofs os.name=posix, but tmp_path is then a real Windows path and shlex.quote "
+    reason="spoofs os.name=posix, but tmp_path is then a real Windows path and shlex.quote "
     "escapes its backslashes, so the assertion compares POSIX quoting against a Windows path",
 )
 def test_posix_is_untouched(auth, monkeypatch, tmp_path):
@@ -149,7 +149,7 @@ def test_posix_is_untouched(auth, monkeypatch, tmp_path):
     monkeypatch.setattr(auth.os, "name", "posix")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "unsloth").write_text("", encoding = "utf-8")
+    (bin_dir / "unsloth").write_text("", encoding="utf-8")
     monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
 
     assert auth._reset_password_command() == f"{bin_dir / 'unsloth'} studio reset-password"
@@ -162,7 +162,7 @@ def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
     `unsloth` on PATH is left with a hint they cannot run. These two warnings go to the host's own
     console, so naming the install there costs nothing and is the point.
     """
-    run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding = "utf-8")
+    run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding="utf-8")
 
     tree = ast.parse(run_py)
     calls = sum(
@@ -190,8 +190,8 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
     """
     monkeypatch.setattr(auth.os, "name", "posix")
     bin_dir = tmp_path / "home" / "alice" / "unsloth" / ".venv" / "bin"
-    bin_dir.mkdir(parents = True)
-    (bin_dir / "unsloth").write_text("", encoding = "utf-8")
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "unsloth").write_text("", encoding="utf-8")
     monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
 
     # The console form is unchanged: that is the one the person at the machine reads.

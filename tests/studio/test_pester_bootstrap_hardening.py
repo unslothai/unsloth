@@ -40,7 +40,7 @@ def _pester_steps() -> list[dict]:
     keying on the id meant this whole file went red on a rename that changed nothing it
     asserts.
     """
-    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     for job in workflow["jobs"].values():
         steps = job.get("steps") or []
         if any("Install Pester" in (s.get("name") or "") for s in steps):
@@ -123,7 +123,7 @@ def test_module_presence_is_verified_after_install():
 
 def test_the_guard_runs_from_the_workflow_it_guards():
     """No pytest workflow filters on this file, so the job must run the guard itself."""
-    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     on = workflow.get("on") or workflow.get(True)
     # as_posix(), not str(): this runs on windows-latest, where str() would give
     # backslashes and never match the forward-slash paths in the YAML.
@@ -135,7 +135,7 @@ def test_the_guard_runs_from_the_workflow_it_guards():
 
 def test_editing_the_guard_runs_it_on_windows():
     """The heavy workflow has no job-level gating, so the guard gets its own cheap one."""
-    workflow = yaml.safe_load(_GUARD_WORKFLOW.read_text(encoding = "utf-8"))
+    workflow = yaml.safe_load(_GUARD_WORKFLOW.read_text(encoding="utf-8"))
     on = workflow.get("on") or workflow.get(True)
     assert Path(__file__).resolve().relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
     jobs = list(workflow["jobs"].values())

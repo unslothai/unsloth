@@ -5,14 +5,14 @@ from pathlib import Path
 def _load_remove_special_tokens():
     # Extract remove_special_tokens without importing unsloth (importing unsloth needs unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     funcs = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "remove_special_tokens"
     ]
     namespace = {}
-    module = ast.Module(body = funcs, type_ignores = [])
+    module = ast.Module(body=funcs, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)
     return namespace["remove_special_tokens"]

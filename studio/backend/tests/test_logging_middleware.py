@@ -42,7 +42,7 @@ def logs(monkeypatch):
     return capture
 
 
-def _http_scope(path, method = "GET"):
+def _http_scope(path, method="GET"):
     return {"type": "http", "path": path, "method": method}
 
 
@@ -88,7 +88,7 @@ def test_exception_logs_real_status_and_reraises(logs):
         await send({"type": "http.response.start", "status": 418, "headers": []})
         raise RuntimeError("stream failed")
 
-    with pytest.raises(RuntimeError, match = "stream failed"):
+    with pytest.raises(RuntimeError, match="stream failed"):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
 
     assert logs.events[0][1] == "request_failed"
@@ -144,7 +144,7 @@ def test_mutations_and_errors_are_never_deduped(logs, monkeypatch):
 
     mw = LoggingMiddleware(post_ok)
     for _ in range(2):
-        _run(mw(_http_scope("/api/chat/threads", method = "POST"), _noop_receive, send))
+        _run(mw(_http_scope("/api/chat/threads", method="POST"), _noop_receive, send))
     mw_404 = LoggingMiddleware(get_404)
     for _ in range(2):
         _run(mw_404(_http_scope("/api/models"), _noop_receive, send))
@@ -195,7 +195,7 @@ def test_watchdog_window_outlasts_the_probe_interval():
     """
     commands_rs = (
         Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "commands.rs"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
 
     def _secs(name):
         match = re.search(rf"{name}: Duration = Duration::from_secs\((\d+)\)", commands_rs)
@@ -274,7 +274,7 @@ def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
 def test_fastapi_static_asset_success_skips_log(tmp_path, logs):
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
-    (assets_dir / "app.css").write_text("body { color: black; }", encoding = "utf-8")
+    (assets_dir / "app.css").write_text("body { color: black; }", encoding="utf-8")
 
     app = FastAPI()
     app.add_middleware(LoggingMiddleware)
@@ -283,7 +283,7 @@ def test_fastapi_static_asset_success_skips_log(tmp_path, logs):
     async def health():
         return {"ok": True}
 
-    app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     client = TestClient(app)
 
     response = client.get("/api/health")
@@ -344,7 +344,7 @@ def test_quiet_success_is_get_only(logs):
     for method in ("POST", "PUT", "DELETE"):
         _run(
             LoggingMiddleware(_status_app(200))(
-                _http_scope("/api/chat/threads", method = method), _noop_receive, _drop
+                _http_scope("/api/chat/threads", method=method), _noop_receive, _drop
             )
         )
     assert len(logs.events) == 3
@@ -382,7 +382,7 @@ def test_chat_401_logged_after_first_auth_refresh(logs):
 
     # A successful refresh (POST, always logged) closes the bootstrap window.
     responses[("POST", "/api/auth/refresh")] = 200
-    _run(mw(_http_scope("/api/auth/refresh", method = "POST"), _noop_receive, _drop))
+    _run(mw(_http_scope("/api/auth/refresh", method="POST"), _noop_receive, _drop))
     assert _paths_logged(logs) == ["/api/auth/refresh"]
 
     # Now the same chat 401 is a real failure and logs.
@@ -679,7 +679,7 @@ def test_boot_burst_catalog_mutations_still_log(logs):
     ):
         _run(
             LoggingMiddleware(_status_app(200))(
-                _http_scope(path, method = method), _noop_receive, _drop
+                _http_scope(path, method=method), _noop_receive, _drop
             )
         )
     assert _paths_logged(logs) == ["/api/providers/", "/api/settings/personalization"]
@@ -776,7 +776,7 @@ def test_thread_mutations_still_log(logs, monkeypatch):
 
     mw = LoggingMiddleware(_status_app(200))
     for _ in range(3):
-        _run(mw(_http_scope("/api/chat/threads/abc", method = "PATCH"), _noop_receive, _drop))
+        _run(mw(_http_scope("/api/chat/threads/abc", method="PATCH"), _noop_receive, _drop))
     assert len(_paths_logged(logs)) == 3
 
 

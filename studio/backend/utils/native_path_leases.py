@@ -65,8 +65,8 @@ def native_gguf_companion_parent_allowed(
     than one flag per kind: each caller admits exactly the kind it is
     resolving, so an MTP load never accepts a sidecar out of ``dspark/``.
     """
-    companion_parent = Path(companion_path).resolve(strict = True).parent
-    gguf_parent = Path(gguf_path).resolve(strict = True).parent
+    companion_parent = Path(companion_path).resolve(strict=True).parent
+    gguf_parent = Path(gguf_path).resolve(strict=True).parent
     if companion_parent == gguf_parent:
         return True
     permitted = {name.casefold() for name in allowed_subdirs}
@@ -74,13 +74,13 @@ def native_gguf_companion_parent_allowed(
         return False
     allowed_roots = {gguf_parent}
     if mtp_search_root is not None:
-        search_root = Path(mtp_search_root).resolve(strict = True)
+        search_root = Path(mtp_search_root).resolve(strict=True)
         if search_root in {gguf_parent, gguf_parent.parent}:
             allowed_roots.add(search_root)
     return companion_parent.parent in allowed_roots
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class NativePathGrant:
     operation: str
     canonical_path: Path
@@ -126,6 +126,7 @@ def run_without_native_path_secret(
     if _stderr_mirror_path:
         try:
             from utils.worker_stderr import install_worker_stderr_mirror
+
             install_worker_stderr_mirror(_stderr_mirror_path)
         except Exception:
             pass
@@ -136,12 +137,14 @@ def run_without_native_path_secret(
     # combined import would lose the binding as well.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
+
         bind_current_process_to_parent_lifetime()
     except Exception:
         pass
     try:
         # Clear the worker's daemon policy so HF prefetch can spawn (#9094).
         from utils.process_lifetime import allow_child_processes
+
         allow_child_processes()
     except Exception:
         pass
@@ -162,6 +165,7 @@ def run_without_native_path_secret(
     # dummy-class path and its unguarded `import sentencepiece as spm`.
     try:
         from utils.sentencepiece_guard import disable_sentencepiece_on_windows
+
         disable_sentencepiece_on_windows()
     except Exception:
         pass
@@ -211,7 +215,7 @@ def verify_native_path_lease(
         raise NativePathLeaseError("Native path grant signature is invalid.")
 
     payload = _decode_payload(payload_b64)
-    _validate_payload(payload, operation = operation, expected_kind = expected_kind)
+    _validate_payload(payload, operation=operation, expected_kind=expected_kind)
 
     path = Path(str(payload["canonical_path"]))
     _reject_network_or_device_path(path)
@@ -222,7 +226,7 @@ def verify_native_path_lease(
     if _stat_module.S_ISLNK(signed_lstat.st_mode):
         raise NativePathLeaseError("Native path is no longer a regular file.")
     try:
-        resolved = path.resolve(strict = True)
+        resolved = path.resolve(strict=True)
     except OSError as exc:
         raise NativePathLeaseError("Native path is no longer accessible.") from exc
     _reject_network_or_device_path(resolved)
@@ -231,18 +235,18 @@ def verify_native_path_lease(
 
     identity_options = _identity_options(payload)
     grant = NativePathGrant(
-        operation = str(payload["operation"]),
-        canonical_path = resolved,
-        path_kind = str(payload["path_kind"]),
-        path_type = str(payload["path_type"]),
-        source_kind = str(payload["source_kind"]),
-        token_id_hash = str(payload["token_id_hash"]),
-        display_label = str(payload.get("display_label") or resolved.name),
-        expires_at_ms = _required_int(payload, "expires_at_ms"),
-        size_bytes = _optional_int(payload.get("size_bytes")),
-        modified_ms = _optional_int(payload.get("modified_ms")),
-        device_id = identity_options[0][0] if identity_options else None,
-        file_id = identity_options[0][1] if identity_options else None,
+        operation=str(payload["operation"]),
+        canonical_path=resolved,
+        path_kind=str(payload["path_kind"]),
+        path_type=str(payload["path_type"]),
+        source_kind=str(payload["source_kind"]),
+        token_id_hash=str(payload["token_id_hash"]),
+        display_label=str(payload.get("display_label") or resolved.name),
+        expires_at_ms=_required_int(payload, "expires_at_ms"),
+        size_bytes=_optional_int(payload.get("size_bytes")),
+        modified_ms=_optional_int(payload.get("modified_ms")),
+        device_id=identity_options[0][0] if identity_options else None,
+        file_id=identity_options[0][1] if identity_options else None,
     )
 
     if expected_path_type and grant.path_type != expected_path_type:
@@ -253,7 +257,7 @@ def verify_native_path_lease(
 
     current_identity = _validate_current_stat(grant, identity_options)
     if current_identity is not None:
-        grant = replace(grant, device_id = current_identity[0], file_id = current_identity[1])
+        grant = replace(grant, device_id=current_identity[0], file_id=current_identity[1])
     _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
@@ -275,7 +279,7 @@ def is_registered_native_path_label(path_value: str | None, label: str | None) -
 
 def redact_native_paths(value: str) -> str:
     with _REDACTION_LOCK:
-        paths = sorted(_NATIVE_PATH_REDACTIONS, key = len, reverse = True)
+        paths = sorted(_NATIVE_PATH_REDACTIONS, key=len, reverse=True)
     redacted = value
     for path in paths:
         for variant in {path, path.replace("/", "\\"), path.replace("\\", "/")}:

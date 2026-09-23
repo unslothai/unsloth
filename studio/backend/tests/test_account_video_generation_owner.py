@@ -52,6 +52,7 @@ class FakeVideoBackend:
 
     def begin_generate(self, **kwargs):
         from utils.account_context import current_account
+
         self.started.append(current_account().username)
         return {"queued": 1, "width": 512, "height": 512, "num_frames": 49, "fps": 24}
 
@@ -60,18 +61,19 @@ class FakeVideoBackend:
 
     def cancel_generate(self, *args, **kwargs):
         from utils.account_context import current_account
+
         self.cancelled.append(current_account().username)
         return True
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    monkeypatch.setattr(video, "_generation_account", None, raising = False)
+    monkeypatch.setattr(video, "_generation_account", None, raising=False)
     policy.invalidate_account_cache()
     connection = auth_storage.get_connection()
     with connection:
@@ -109,8 +111,8 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(video.router, prefix = "/api/inference")
-    app.include_router(video.openai_router, prefix = "/v1")
+    app.include_router(video.router, prefix="/api/inference")
+    app.include_router(video.openai_router, prefix="/v1")
     return TestClient(app)
 
 
@@ -132,7 +134,7 @@ def test_the_starting_account_owns_its_clip_and_the_models_loader_does_not(backe
     cancel = "/api/inference/video/generate/cancel"
 
     with _client(BOB) as client:
-        assert client.post(generate, json = {"prompt": "p", "steps": 5}).status_code == 200
+        assert client.post(generate, json={"prompt": "p", "steps": 5}).status_code == 200
         assert backend.started == ["bob"]
         assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
 
@@ -153,7 +155,7 @@ def test_a_clip_started_on_the_openai_route_belongs_to_that_account_too(backend)
     with _client(BOB) as client:
         created = client.post(
             "/v1/videos",
-            json = {
+            json={
                 "prompt": "p",
                 "model": "public/video-model",
                 "seconds": "2",
@@ -179,7 +181,7 @@ def test_the_installation_owner_does_not_see_a_managed_accounts_clip(backend):
     cancel = "/api/inference/video/generate/cancel"
 
     with _client(BOB) as client:
-        assert client.post(generate, json = {"prompt": "p", "steps": 5}).status_code == 200
+        assert client.post(generate, json={"prompt": "p", "steps": 5}).status_code == 200
         assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
 
     with _client(OWNER) as client:

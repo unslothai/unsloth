@@ -30,11 +30,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
 def _deps():
     from unsloth_cli import _studio_deps as _mod
+
     return _mod
 
 
@@ -45,7 +47,7 @@ def _make_dist(
     site: Path,
     name: str,
     files: dict[str, bytes],
-    record_sizes = None,
+    record_sizes=None,
     version: str = "1.0",
 ):
     """Install `files` under `site` and write a dist-info RECORD describing them.
@@ -54,7 +56,7 @@ def _make_dist(
     simulated without having to corrupt anything after the fact.
     """
     info = site / f"{name}-{version}.dist-info"
-    info.mkdir(parents = True, exist_ok = True)
+    info.mkdir(parents=True, exist_ok=True)
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
     (info / "WHEEL").write_text("Wheel-Version: 1.0\n")
     rows = [
@@ -63,7 +65,7 @@ def _make_dist(
     ]
     for rel, body in files.items():
         target = site / rel
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(body)
         size = (record_sizes or {}).get(rel, len(body))
         rows.append(f"{rel},sha256=x,{size}")
@@ -83,7 +85,7 @@ def site(tmp_path, monkeypatch):
     real = md.distributions
 
     def only_fixture(**kwargs):
-        return real(path = [str(d)])
+        return real(path=[str(d)])
 
     monkeypatch.setattr(md, "distributions", only_fixture)
     return d
@@ -96,8 +98,8 @@ def test_an_intact_install_reports_nothing(site):
 
 def test_superseded_metadata_is_not_treated_as_file_damage(site):
     removed = "studio/frontend/dist/assets/removed-hash.js"
-    _make_dist(site, "unsloth", {removed: b"old\n"}, version = "1.0")
-    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "unsloth", {removed: b"old\n"}, version="1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version="2.0")
     (site / removed).unlink()
 
     assert _deps().damaged_installed_files() == []
@@ -108,10 +110,10 @@ def test_superseded_metadata_is_not_treated_as_file_damage(site):
 
 
 def test_duplicate_metadata_names_are_canonicalized(site):
-    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version="1.0")
     info = site / "foo_bar-1.0.dist-info"
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo.bar\nVersion: 1.0\n")
-    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version="2.0")
     info = site / "foo_bar-2.0.dist-info"
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: foo-bar\nVersion: 2.0\n")
 
@@ -120,27 +122,27 @@ def test_duplicate_metadata_names_are_canonicalized(site):
 
 
 def test_duplicate_metadata_conflicts_can_be_scoped_by_canonical_name(site):
-    _make_dist(site, "unsloth", {"unsloth/old.py": b"old\n"}, version = "1.0")
-    _make_dist(site, "unsloth", {"unsloth/new.py": b"new\n"}, version = "2.0")
-    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version = "1.0")
-    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "unsloth", {"unsloth/old.py": b"old\n"}, version="1.0")
+    _make_dist(site, "unsloth", {"unsloth/new.py": b"new\n"}, version="2.0")
+    _make_dist(site, "foo_bar", {"foo_bar/old.py": b"old\n"}, version="1.0")
+    _make_dist(site, "foo_bar", {"foo_bar/new.py": b"new\n"}, version="2.0")
 
     deps = _deps()
-    included = deps.installed_metadata_conflicts(names = ("foo.bar",))
-    excluded = deps.installed_metadata_conflicts(exclude_names = ("foo-bar",))
+    included = deps.installed_metadata_conflicts(names=("foo.bar",))
+    excluded = deps.installed_metadata_conflicts(exclude_names=("foo-bar",))
 
     assert len(included) == 1 and included[0].startswith("foo-bar:")
     assert len(excluded) == 1 and excluded[0].startswith("unsloth:")
 
 
 def test_duplicate_metadata_does_not_hide_another_packages_damage(site):
-    _make_dist(site, "unsloth", {"studio/old.py": b"old\n"}, version = "1.0")
-    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version = "2.0")
+    _make_dist(site, "unsloth", {"studio/old.py": b"old\n"}, version="1.0")
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"new\n"}, version="2.0")
     _make_dist(
         site,
         "fastapi",
         {"fastapi/__init__.py": b""},
-        record_sizes = {"fastapi/__init__.py": 1081},
+        record_sizes={"fastapi/__init__.py": 1081},
     )
 
     found = _deps().damaged_installed_files()
@@ -150,7 +152,7 @@ def test_duplicate_metadata_does_not_hide_another_packages_damage(site):
 def test_a_truncated_file_is_reported(site):
     # The observed failure: fastapi/__init__.py emptied, metadata untouched.
     _make_dist(
-        site, "fastapi", {"fastapi/__init__.py": b""}, record_sizes = {"fastapi/__init__.py": 1081}
+        site, "fastapi", {"fastapi/__init__.py": b""}, record_sizes={"fastapi/__init__.py": 1081}
     )
     found = _deps().damaged_installed_files()
     assert len(found) == 1
@@ -190,7 +192,7 @@ def test_a_file_larger_than_recorded_is_not_damage(site):
         site,
         "delta",
         {"tests/__init__.py": b"a much longer body\n"},
-        record_sizes = {"tests/__init__.py": 0},
+        record_sizes={"tests/__init__.py": 0},
     )
     assert _deps().damaged_installed_files() == []
 
@@ -201,17 +203,17 @@ def test_a_shared_file_shorter_than_recorded_is_not_damage(site):
     # a collision that overwrote with a shorter file was reported as corruption and blocked every
     # update.
     _make_dist(
-        site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 900}
+        site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes={"shared/__init__.py": 900}
     )
     _make_dist(
-        site, "kappa", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 5}
+        site, "kappa", {"shared/__init__.py": b"short\n"}, record_sizes={"shared/__init__.py": 5}
     )
     assert _deps().damaged_installed_files() == []
 
 
 def test_a_singly_owned_short_file_is_still_damage(site):
     # The collision rule must not become a blanket exemption.
-    _make_dist(site, "lam", {"lam/a.py": b"x"}, record_sizes = {"lam/a.py": 900})
+    _make_dist(site, "lam", {"lam/a.py": b"x"}, record_sizes={"lam/a.py": 900})
     found = _deps().damaged_installed_files()
     assert len(found) == 1 and "lam/a.py" in found[0]
 
@@ -221,7 +223,7 @@ def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp
     # through an inherited PYTHONPATH failed every update while sitting outside the installation,
     # where neither printed repair command can reach it. Only --no-verify broke the loop.
     external = tmp_path / "elsewhere"
-    (external / "ext-1.0.dist-info").mkdir(parents = True)
+    (external / "ext-1.0.dist-info").mkdir(parents=True)
     (external / "ext").mkdir()
     (external / "ext-1.0.dist-info" / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: ext\nVersion: 1.0\n"
@@ -245,8 +247,8 @@ def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp
 def test_a_deleted_shared_file_is_still_reported(site):
     # Multiple ownership makes the recorded SIZES ambiguous; it cannot explain the file being gone,
     # and skipping shared paths outright hid real deletions.
-    _make_dist(site, "mu", {"shared/x.py": b"hello\n"}, record_sizes = {"shared/x.py": 10})
-    _make_dist(site, "nu", {}, record_sizes = {})
+    _make_dist(site, "mu", {"shared/x.py": b"hello\n"}, record_sizes={"shared/x.py": 10})
+    _make_dist(site, "nu", {}, record_sizes={})
     (site / "nu-1.0.dist-info" / "RECORD").write_text(
         "nu-1.0.dist-info/METADATA,,\nshared/x.py,sha256=x,10\n"
     )
@@ -269,9 +271,9 @@ def test_a_row_without_a_recorded_size_is_still_checked(site):
 def test_a_directory_standing_in_for_a_module_is_damage(site):
     # An empty directory is commonly 4096 bytes on POSIX, so it sails past the shrinkage test while
     # importing as something other than the recorded module.
-    _make_dist(site, "omicron", {}, record_sizes = {})
+    _make_dist(site, "omicron", {}, record_sizes={})
     (site / "omicron-1.0.dist-info" / "RECORD").write_text("omicron/mod.py,sha256=x,10\n")
-    (site / "omicron" / "mod.py").mkdir(parents = True)
+    (site / "omicron" / "mod.py").mkdir(parents=True)
     found = _deps().damaged_installed_files()
     assert len(found) == 1 and "not a regular file" in found[0]
 
@@ -290,7 +292,7 @@ def test_installer_owned_metadata_is_ignored(site):
 def test_a_distribution_without_RECORD_is_not_damage(site):
     # Editable and system installs legitimately have none.
     info = site / "zeta-1.0.dist-info"
-    info.mkdir(parents = True)
+    info.mkdir(parents=True)
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: zeta\nVersion: 1.0\n")
     assert _deps().damaged_installed_files() == []
 
@@ -298,8 +300,8 @@ def test_a_distribution_without_RECORD_is_not_damage(site):
 def test_findings_are_capped(site):
     files = {f"eta/m{i}.py": b"" for i in range(40)}
     sizes = {k: 500 for k in files}
-    _make_dist(site, "eta", files, record_sizes = sizes)
-    assert len(_deps().damaged_installed_files(limit = 3)) == 3
+    _make_dist(site, "eta", files, record_sizes=sizes)
+    assert len(_deps().damaged_installed_files(limit=3)) == 3
 
 
 def test_findings_are_capped_when_the_files_are_deleted(site):
@@ -311,7 +313,7 @@ def test_findings_are_capped_when_the_files_are_deleted(site):
     _make_dist(site, "theta", files)
     for rel in files:
         (site / rel).unlink()
-    found = _deps().damaged_installed_files(limit = 3)
+    found = _deps().damaged_installed_files(limit=3)
     assert len(found) == 3
     assert all("is missing" in line for line in found)
 
@@ -365,8 +367,8 @@ def test_other_duplicate_metadata_warns_without_an_unsafe_command(monkeypatch, c
 
     def conflicts(
         *_args,
-        names = None,
-        exclude_names = (),
+        names=None,
+        exclude_names=(),
     ):
         if names is not None:
             return []
@@ -595,11 +597,11 @@ def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys
     seen = {}
 
     def _module(*a, **k):
-        def _recorded(root = None):
+        def _recorded(root=None):
             seen["root"] = root
             return True
 
-        return SimpleNamespace(recorded_no_torch = _recorded)
+        return SimpleNamespace(recorded_no_torch=_recorded)
 
     monkeypatch.setattr(studio._studio_deps, "load_install_manifest_module", _module)
     monkeypatch.setattr(_platform, "system", lambda: system)
@@ -626,7 +628,7 @@ def test_an_unrecorded_or_torch_install_does_not_gain_the_flag(monkeypatch, caps
     monkeypatch.setattr(
         studio._studio_deps,
         "load_install_manifest_module",
-        lambda *a, **k: SimpleNamespace(recorded_no_torch = lambda **kw: recorded),
+        lambda *a, **k: SimpleNamespace(recorded_no_torch=lambda **kw: recorded),
     )
     monkeypatch.setattr(_platform, "system", lambda: "Linux")
     with pytest.raises(typer.Exit):
@@ -731,7 +733,7 @@ def test_an_installer_rewritten_lockfile_is_not_damage(site):
         site,
         "unsloth",
         {"unsloth/__init__.py": b"u\n", lock: b"L" * 27225},
-        record_sizes = {lock: 28473},
+        record_sizes={lock: 28473},
     )
     assert _deps().damaged_installed_files() == []
 
@@ -780,7 +782,7 @@ def test_runtime_damage_still_fails_when_ignored_rows_are_present(site):
         site,
         "unsloth",
         {"unsloth/__init__.py": b"u\n", lock: b"L" * 10},
-        record_sizes = {lock: 28473},
+        record_sizes={lock: 28473},
     )
     (site / "unsloth" / "__init__.py").unlink()
     found = _deps().damaged_installed_files()
@@ -795,7 +797,7 @@ def test_ignored_rows_do_not_consume_the_finding_budget(site):
     _make_dist(site, "tau", files)
     for rel in files:
         (site / rel).unlink()
-    found = _deps().damaged_installed_files(limit = 3)
+    found = _deps().damaged_installed_files(limit=3)
     assert len(found) == 1 and "tau/__init__.py is missing" in found[0]
 
 
@@ -809,7 +811,7 @@ def test_our_own_shared_top_level_trees_are_exempt_too(site):
         site,
         "unsloth_zoo",
         {"unsloth_zoo/__init__.py": b"z\n", conftest: b"c" * 8107},
-        record_sizes = {conftest: 11429},
+        record_sizes={conftest: 11429},
     )
     assert _deps().damaged_installed_files() == []
 

@@ -23,13 +23,13 @@ _SCRIPT = _ROOT / "scripts" / "enforce_kwargs_spacing.py"
 
 def _rewrite(tmp_path: Path, mode: int) -> Path:
     target = tmp_path / "tool.py"
-    target.write_text("def f(a=1):\n    return g(b=2)\n", encoding = "utf-8")
+    target.write_text("def f(a=1):\n    return g(b=2)\n", encoding="utf-8")
     os.chmod(target, mode)
     proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), str(target)], capture_output = True, text = True, timeout = 120
+        [sys.executable, str(_SCRIPT), str(target)], capture_output=True, text=True, timeout=120
     )
     assert proc.returncode == 0, proc.stderr
-    assert "g(b = 2)" in target.read_text(encoding = "utf-8"), "the pass did not rewrite the file"
+    assert "g(b = 2)" in target.read_text(encoding="utf-8"), "the pass did not rewrite the file"
     return target
 
 

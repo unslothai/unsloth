@@ -35,7 +35,7 @@ MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 def _drive(
     monkeypatch,
     requests,
-    gap_s = 0.0,
+    gap_s=0.0,
 ):
     """Send requests through one middleware instance, advancing the clock by `gap_s`."""
     from loggers.handlers import LoggingMiddleware
@@ -82,11 +82,11 @@ class TestFailuresAreNeverSuppressed:
             and not (status == 401 and p in hmod._CHAT_LIST_PATHS)
         )
         requests = [
-            replay.Request(method = "GET", path = path, status = status)
+            replay.Request(method="GET", path=path, status=status)
             for path in paths
             for _ in range(3)
         ]
-        capture = _drive(monkeypatch, requests, gap_s = 0.0)
+        capture = _drive(monkeypatch, requests, gap_s=0.0)
 
         logged = [kw.get("path") for _lvl, _ev, kw in capture.events]
         missing = sorted({p for p in paths if logged.count(p) != 3})
@@ -101,9 +101,9 @@ class TestFailuresAreNeverSuppressed:
     @pytest.mark.parametrize("method", MUTATING_METHODS)
     def test_repeated_mutations_all_log(self, method, monkeypatch):
         requests = [
-            replay.Request(method = method, path = "/api/chat/threads", status = 200) for _ in range(3)
+            replay.Request(method=method, path="/api/chat/threads", status=200) for _ in range(3)
         ]
-        capture = _drive(monkeypatch, requests, gap_s = 0.0)
+        capture = _drive(monkeypatch, requests, gap_s=0.0)
         assert len(capture.events) == 3, (
             f"three identical {method} requests produced {len(capture.events)} lines. "
             "Mutations change state and must never be collapsed, however fast they repeat."
@@ -127,7 +127,7 @@ class TestFailuresAreNeverSuppressed:
                 replay.Request("GET", path, 503),  # must not be
                 replay.Request("GET", path, 503),
             ],
-            gap_s = 0.0,
+            gap_s=0.0,
         )
 
         failures = [kw for _l, _e, kw in capture.events if kw.get("status_code") == 503]
@@ -292,12 +292,12 @@ class TestSlowSuccessIsNotYetSignal:
         self,
         monkeypatch,
         path,
-        count = 6,
+        count=6,
     ):
         capture = _drive(
             monkeypatch,
-            [replay.Request("GET", path, 200, duration_ms = self.SLOW_MS) for _ in range(count)],
-            gap_s = 0.0,
+            [replay.Request("GET", path, 200, duration_ms=self.SLOW_MS) for _ in range(count)],
+            gap_s=0.0,
         )
         return capture.records_for(path)
 
@@ -325,8 +325,8 @@ class TestSlowSuccessIsNotYetSignal:
         path = "/api/models/list"
         capture = _drive(
             monkeypatch,
-            [replay.Request("GET", path, 200, duration_ms = self.SLOW_MS)],
-            gap_s = 0.0,
+            [replay.Request("GET", path, 200, duration_ms=self.SLOW_MS)],
+            gap_s=0.0,
         )
         records = capture.records_for(path)
         assert records, f"{path} is in the normal class and should log on the first hit"

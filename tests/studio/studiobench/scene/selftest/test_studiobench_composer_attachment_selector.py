@@ -45,7 +45,7 @@ def _shipped_constant(name: str) -> tuple[str, ...]:
     Read from source, not imported: importing the scene package drags in Playwright and the whole
     action registry, and the point here is to check the literal that ships.
     """
-    tree = ast.parse(_ACTIONS.read_text(encoding = "utf-8"))
+    tree = ast.parse(_ACTIONS.read_text(encoding="utf-8"))
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -77,7 +77,7 @@ def test_each_counted_handle_is_one_its_composer_renders(constant, index):
     selector = selectors[index]
     source = _RENDERED_BY[index]
     assert source.is_file(), f"{source} moved; update this test with it"
-    text = source.read_text(encoding = "utf-8")
+    text = source.read_text(encoding="utf-8")
 
     klass = _BARE_CLASS.match(selector)
     attribute = _BARE_ATTRIBUTE.match(selector)
@@ -117,7 +117,7 @@ def test_the_compare_composer_tags_its_image_thumb_and_not_only_its_audio_chip()
         match is not None
     ), f"the compare composer's tile selector {attribute!r} is not an attribute"
     handle = match.group(1)
-    body = _component_body(_SHARED_COMPOSER_TSX.read_text(encoding = "utf-8"), "PendingImageThumb")
+    body = _component_body(_SHARED_COMPOSER_TSX.read_text(encoding="utf-8"), "PendingImageThumb")
     assert handle in _tokens(body), (
         f"PendingImageThumb no longer carries {handle}, so an image attached on the compare screen "
         "is counted by nothing and image_upload reports a working upload as broken."
@@ -152,7 +152,7 @@ def test_every_composer_container_is_probed_on_failure():
 
 def test_the_dead_selector_is_not_reintroduced():
     """The exact string that could never match, pinned so it cannot come back by copy-paste."""
-    source = _ACTIONS.read_text(encoding = "utf-8")
+    source = _ACTIONS.read_text(encoding="utf-8")
     for dead in (".aui-composer-attachment,", 'data-slot="composer-attachment"'):
         assert dead not in source, (
             f"{dead!r} is back in {_ACTIONS.name}. The frontend has never rendered it; counting it "
@@ -166,7 +166,7 @@ def _shipped_constant_expression(name: str) -> str:
     `ast.literal_eval` cannot fold an f-string or a join, so the module's own constants are bound in
     order and the expression is evaluated against them plus `zip`, and nothing else.
     """
-    tree = ast.parse(_ACTIONS.read_text(encoding = "utf-8"))
+    tree = ast.parse(_ACTIONS.read_text(encoding="utf-8"))
     bound: dict[str, object] = {}
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:

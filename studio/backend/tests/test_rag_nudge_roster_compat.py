@@ -25,9 +25,10 @@ TOOLS = [{"type": "function", "function": {"name": "search_knowledge_base"}}]
 MARK = "The attached documents are:"
 
 
-def _nudge(rag_scope, base = ""):
+def _nudge(rag_scope, base=""):
     from routes import inference
-    return asyncio.run(inference._apply_rag_nudge(base, TOOLS, rag_scope = rag_scope))
+
+    return asyncio.run(inference._apply_rag_nudge(base, TOOLS, rag_scope=rag_scope))
 
 
 def _roster(out):
@@ -57,17 +58,17 @@ def _doc(
     scope,
     doc_id,
     filename,
-    status = "completed",
-    chunks = 3,
-    folder_id = None,
+    status="completed",
+    chunks=3,
+    folder_id=None,
 ):
     store.create_document(
         conn,
-        scope = scope,
-        filename = filename,
-        sha256 = doc_id,
-        document_id = doc_id,
-        status = status,
+        scope=scope,
+        filename=filename,
+        sha256=doc_id,
+        document_id=doc_id,
+        status=status,
     )
     conn.execute(
         "UPDATE documents SET num_chunks=?, linked_folder_id=? WHERE id=?",
@@ -122,20 +123,21 @@ def _requires_rag():
     here would only make the suite red on macOS.
     """
     from storage import rag_db
+
     if not rag_db.rag_available():
         pytest.skip("sqlite-vec unavailable here, so there is no roster to migrate into")
 
 
 def _write_legacy_db(
     rag_home,
-    schema = _ANCIENT_SCHEMA,
-    rows = (("legacy.pdf", "project_p1"),),
+    schema=_ANCIENT_SCHEMA,
+    rows=(("legacy.pdf", "project_p1"),),
 ):
     """Put a pre-migration rag.db where the backend will find it."""
     from utils.paths import rag_db_path
 
     path = rag_db_path()
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.executescript(schema)
     for i, (filename, scope) in enumerate(rows):
@@ -175,7 +177,7 @@ def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_
         );
     """
     )
-    _write_legacy_db(rag_home, schema = schema, rows = (("halfway.pdf", "project_p1"),))
+    _write_legacy_db(rag_home, schema=schema, rows=(("halfway.pdf", "project_p1"),))
     _requires_rag()
     out = _nudge({"project_id": "p1"})
     assert '"halfway.pdf"' in out, out
@@ -183,7 +185,7 @@ def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_
 
 def test_roster_is_quiet_on_an_empty_database(rag_home, fresh_process):
     """A5."""
-    _write_legacy_db(rag_home, rows = ())
+    _write_legacy_db(rag_home, rows=())
     assert _roster(_nudge({"project_id": "p1"})) == ""
 
 
@@ -241,7 +243,7 @@ def test_roster_failure_does_not_break_the_rest_of_the_nudge(rag_home, monkeypat
     monkeypatch.setattr(rag_db, "get_metadata_connection", lambda: 1 / 0)
     monkeypatch.setattr(rag_db, "rag_available", lambda: True)
     monkeypatch.setattr(inference, "_roster_failure_logged", False)
-    out = _nudge({"project_id": "p1"}, base = "Existing tool nudge.")
+    out = _nudge({"project_id": "p1"}, base="Existing tool nudge.")
     assert out.startswith("Existing tool nudge.")
     assert inference._RAG_GROUNDING_NUDGE in out
     assert "attached documents are:" not in out
@@ -271,7 +273,7 @@ _HOSTILE = [
 ]
 
 
-@pytest.mark.parametrize("label,filename,forbidden", _HOSTILE, ids = [c[0] for c in _HOSTILE])
+@pytest.mark.parametrize("label,filename,forbidden", _HOSTILE, ids=[c[0] for c in _HOSTILE])
 def test_no_control_or_format_character_reaches_the_prompt(rag_conn, label, filename, forbidden):
     """B1/B2. Quoting is not a boundary for something that renders as nothing. A
     direction override reorders every character after it, so one file name could rewrite
@@ -438,7 +440,7 @@ def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
     async def _burst(n):
         return await asyncio.gather(
             *[
-                inference._apply_rag_nudge("", TOOLS, rag_scope = {"project_id": "p1"})
+                inference._apply_rag_nudge("", TOOLS, rag_scope={"project_id": "p1"})
                 for _ in range(n)
             ]
         )
@@ -499,13 +501,15 @@ def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
 
     async def _go():
         import threading
+
         loop_thread["main"] = threading.get_ident()
-        return await inference._apply_rag_nudge("", TOOLS, rag_scope = {"project_id": "p1"})
+        return await inference._apply_rag_nudge("", TOOLS, rag_scope={"project_id": "p1"})
 
     real = inference._read_roster
 
     def _record(scope):
         import threading
+
         loop_thread["read"] = threading.get_ident()
         return real(scope)
 
@@ -649,7 +653,7 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
 
     _doc(rag_conn, "project_p1", "d1", "syllabus.pdf")
     _doc(rag_conn, "project_p1", "d2", "allotment.pdf")
-    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    _switched, counted = _count_tokens_backend(monkeypatch, count=99, supports_tools=True)
 
     async def _select(payload, *, tools_on, mcp_allowed):
         return TOOLS
@@ -666,8 +670,8 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
                 {"role": "user", "content": "what files do I have?"},
                 {"role": "assistant", "content": "Two."},
             ],
-            enable_tools = True,
-            rag_scope = {"project_id": "p1"},
+            enable_tools=True,
+            rag_scope={"project_id": "p1"},
         )
     )
     system = "".join(

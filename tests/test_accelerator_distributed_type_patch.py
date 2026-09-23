@@ -35,7 +35,7 @@ accelerate = pytest.importorskip("accelerate")
 
 def _patch_statement() -> ast.Assign:
     """The one assignment to `Accelerator.distributed_type`; a second would be ambiguous."""
-    tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
+    tree = ast.parse(_UTILS.read_text(encoding="utf-8"))
     matches = [
         node
         for node in ast.walk(tree)
@@ -74,7 +74,7 @@ def test_patched_distributed_type_reads_as_no():
         print(value == DistributedType.NO, value != DistributedType.NO)
         """
     )
-    result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     value, comparisons = result.stdout.strip().splitlines()[-2:]
     assert value == repr(accelerate.utils.dataclasses.DistributedType.NO), value

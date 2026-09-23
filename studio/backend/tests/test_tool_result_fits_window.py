@@ -35,7 +35,7 @@ from core.inference.context_window import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _unknown_window(monkeypatch):
     """Default to "no model loaded", and to "the caller did not price the thread"."""
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
@@ -55,7 +55,7 @@ def _spill_path(out: str) -> str:
     return out.split("saved to ")[1].split(" ")[0].rstrip(".,)")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _records(tmp_path_factory, monkeypatch):
     """Ownership records live in Unsloth's own storage, so tests get their own copy of it
     rather than writing into the real one."""
@@ -199,7 +199,7 @@ class TestPagingTheRest:
         loses it."""
         text = "\n".join(f"line {i}" for i in range(1, 501))
 
-        out = tools._truncate(text, 200, workdir = str(tmp_path))
+        out = tools._truncate(text, 200, workdir=str(tmp_path))
 
         head = out.split("\n\n... (truncated")[0]
         shown = head.count("\n") + 1
@@ -214,7 +214,7 @@ class TestPagingTheRest:
         """So the hint's line number is exact rather than approximate."""
         text = "\n".join(f"line {i}" for i in range(1, 501))
 
-        out = tools._truncate(text, 200, workdir = str(tmp_path))
+        out = tools._truncate(text, 200, workdir=str(tmp_path))
 
         head = out.split("\n\n... (truncated")[0]
         assert not head.endswith("\n")
@@ -223,7 +223,7 @@ class TestPagingTheRest:
     def test_one_enormous_line_is_still_cut_rather_than_dropped(self, tmp_path):
         """Minified JS and base64 have no newline to rewind to. Rewinding anyway would
         throw the whole result away to keep the hint tidy."""
-        out = tools._truncate("A" * 40_000, 500, workdir = str(tmp_path))
+        out = tools._truncate("A" * 40_000, 500, workdir=str(tmp_path))
 
         head = out.split("\n\n... (truncated")[0]
         assert len(head) == 500
@@ -236,7 +236,7 @@ class TestPagingTheRest:
         still unread in it. On single-line output -- minified JS, base64, one long JSON --
         that is the entire remainder, and `sed` returns nothing at all.
         """
-        out = tools._truncate("A" * 40_000, 500, workdir = str(tmp_path))
+        out = tools._truncate("A" * 40_000, 500, workdir=str(tmp_path))
 
         assert "sed -n" not in out, "a line number cannot resume a mid-line cut"
         assert "tail -c +501" in out
@@ -247,7 +247,7 @@ class TestPagingTheRest:
     def test_a_boundary_cut_still_resumes_by_line(self, tmp_path):
         """The byte fallback must not swallow the readable case."""
         out = tools._truncate(
-            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir=str(tmp_path)
         )
 
         assert "sed -n" in out
@@ -256,7 +256,7 @@ class TestPagingTheRest:
     def test_a_multibyte_mid_line_cut_counts_bytes_not_characters(self, tmp_path):
         """`tail -c` counts bytes. Handing it a character count resumes in the middle of a
         codepoint on any non-ASCII output, which is most of a CJK result."""
-        out = tools._truncate("你好" * 10_000, 300, workdir = str(tmp_path))
+        out = tools._truncate("你好" * 10_000, 300, workdir=str(tmp_path))
 
         head = out.split("\n\n... (truncated")[0]
         offset = int(out.split("tail -c +")[1].split(" ")[0]) - 1
@@ -266,7 +266,7 @@ class TestPagingTheRest:
     def test_the_full_output_is_recoverable_from_the_spill(self, tmp_path):
         text = "\n".join(f"line {i}" for i in range(1, 2_001))
 
-        out = tools._truncate(text, 300, workdir = str(tmp_path))
+        out = tools._truncate(text, 300, workdir=str(tmp_path))
 
         spill = _spill_path(out)
         assert (tmp_path / spill).read_text() == text
@@ -275,7 +275,7 @@ class TestPagingTheRest:
         """It lives in a dot-directory, which `_snapshot_workdir_files` skips. Without
         that, every truncated result would grow a phantom download beside it."""
         before = tools._snapshot_workdir_files(str(tmp_path))
-        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path))
         after = tools._snapshot_workdir_files(str(tmp_path))
 
         assert after == before
@@ -288,7 +288,7 @@ class TestPagingTheRest:
         monkeypatch.setattr(tools, "_windows_bash", lambda: None)
 
         out = tools._truncate(
-            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir=str(tmp_path)
         )
 
         assert "saved to" in out, "the spill is still worth naming"
@@ -302,7 +302,7 @@ class TestPagingTheRest:
         monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
 
         out = tools._truncate(
-            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir = str(tmp_path)
+            "\n".join(f"line {i}" for i in range(1, 501)), 200, workdir=str(tmp_path)
         )
 
         assert "continue with" in out
@@ -323,7 +323,7 @@ class TestPagingTheRest:
 
         def _recording_fdopen(
             fd,
-            mode = "r",
+            mode="r",
             *args,
             **kwargs,
         ):
@@ -335,7 +335,7 @@ class TestPagingTheRest:
 
         monkeypatch.setattr(os, "fdopen", _recording_fdopen)
         text = "\n".join(f"line {i}" for i in range(1, 200))
-        out = tools._truncate(text, 120, workdir = str(tmp_path))
+        out = tools._truncate(text, 120, workdir=str(tmp_path))
 
         assert seen.get("newline") == "", f"spill opened with newline={seen.get('newline')!r}"
         assert (tmp_path / _spill_path(out)).read_bytes() == text.encode("utf-8")
@@ -353,7 +353,7 @@ class TestPagingTheRest:
         # addressed onto one file and would never exercise the prune at all.
         for n in range(tools._SPILL_KEEP + 6):
             tools._truncate(
-                f"run {n}\n" + "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+                f"run {n}\n" + "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
             )
 
         assert len(_spills(tmp_path / tools._SPILL_DIR)) <= tools._SPILL_KEEP
@@ -364,8 +364,8 @@ class TestPagingTheRest:
         the sandbox with copies."""
         text = "\n".join(f"line {i}" for i in range(1, 2_000))
 
-        first = tools._truncate(text, 200, workdir = str(tmp_path))
-        second = tools._truncate(text, 200, workdir = str(tmp_path))
+        first = tools._truncate(text, 200, workdir=str(tmp_path))
+        second = tools._truncate(text, 200, workdir=str(tmp_path))
 
         assert first == second
         assert len(_spills(tmp_path / tools._SPILL_DIR)) == 1
@@ -383,7 +383,7 @@ def _tokenizer(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_loaded_token_counter",
-        lambda ctx: (lambda chunk, token_budget = 0.0: len(chunk) // _CHARS_PER_TOKEN),
+        lambda ctx: (lambda chunk, token_budget=0.0: len(chunk) // _CHARS_PER_TOKEN),
     )
 
 
@@ -394,7 +394,7 @@ def _cat_game_html(monkeypatch, page, *, price_the_room):
     for _ in range(3):
         _room(tool_result_budget(ctx, None, spent) if price_the_room else None)
         limit = tools._dense_char_limit(page, tools._tool_result_char_budget())
-        served = tools._truncate(page, limit, workdir = None)
+        served = tools._truncate(page, limit, workdir=None)
         spent += len(served) // _CHARS_PER_TOKEN + 40  # the result plus the turn's framing
     return spent
 
@@ -411,7 +411,7 @@ class TestTheReportedScenario:
         _tokenizer(monkeypatch)
         target = prompt_budget(4096, None)
 
-        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room = True)
+        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room=True)
 
         assert spent < target, (
             f"three printed results spent {spent} tokens of a {target}-token budget; "
@@ -425,7 +425,7 @@ class TestTheReportedScenario:
         _tokenizer(monkeypatch)
         target = prompt_budget(4096, None)
 
-        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room = False)
+        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room=False)
 
         assert spent > target
 
@@ -441,7 +441,7 @@ class TestTheReportedScenario:
         _window(monkeypatch, 4096)  # deliberately NO _tokenizer()
         target = prompt_budget(4096, None)
 
-        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room = True)
+        spent = _cat_game_html(monkeypatch, _dense(40_000), price_the_room=True)
 
         assert spent < target
 
@@ -470,7 +470,7 @@ class TestEveryToolIsHeldToTheRoom:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: _dense(40_000))
-        out = tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens = 120)
+        out = tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens=120)
 
         assert len(out) < 40_000
         _within_room(out, 120)
@@ -487,7 +487,7 @@ class TestEveryToolIsHeldToTheRoom:
         monkeypatch.setattr(tools, "is_stdio", lambda _u: False)
         monkeypatch.setattr(tools, "call_tool_sync", lambda **k: _dense(40_000))
         out = tools.execute_tool(
-            f"{tools.MCP_TOOL_PREFIX}srv__read_file", {}, result_budget_tokens = 120
+            f"{tools.MCP_TOOL_PREFIX}srv__read_file", {}, result_budget_tokens=120
         )
 
         assert len(out) < 40_000
@@ -498,7 +498,7 @@ class TestEveryToolIsHeldToTheRoom:
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_edit_file", lambda *a, **k: _dense(8_000))
         out = tools.execute_tool(
-            "edit_file", {"path": "game.html"}, session_id = None, result_budget_tokens = 120
+            "edit_file", {"path": "game.html"}, session_id=None, result_budget_tokens=120
         )
 
         assert len(out) < 8_000
@@ -512,7 +512,7 @@ class TestEveryToolIsHeldToTheRoom:
         page = _dense(40_000)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: page)
         assert (
-            tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens = None)
+            tools.execute_tool("web_search", {"query": "flappy bird"}, result_budget_tokens=None)
             == page
         )
 
@@ -523,7 +523,7 @@ class TestEveryToolIsHeldToTheRoom:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_web_search", lambda *a, **k: "done")
-        assert tools.execute_tool("web_search", {"query": "x"}, result_budget_tokens = 0) == "done"
+        assert tools.execute_tool("web_search", {"query": "x"}, result_budget_tokens=0) == "done"
 
 
 class TestPruningOnlyTouchesStudioSpills:
@@ -556,7 +556,7 @@ class TestPruningOnlyTouchesStudioSpills:
         theirs = target / "abcdef123456.txt"
         theirs.write_text("mine")
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
 
         assert theirs.read_text() == "mine"
 
@@ -585,7 +585,7 @@ class TestPruningOnlyTouchesStudioSpills:
         (tmp_path / tools._SPILL_DIR).mkdir()
         (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
 
-        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path))
 
         assert "saved to" not in out
         assert [p.name for p in (tmp_path / tools._SPILL_DIR).iterdir()] == ["notes.txt"]
@@ -622,7 +622,7 @@ class TestTheFrontendEnvelopeSurvivesTheCap:
         monkeypatch.setattr(tools, "is_stdio", lambda _u: False)
         monkeypatch.setattr(tools, "call_tool_sync", lambda **k: result)
         return tools.execute_tool(
-            f"{tools.MCP_TOOL_PREFIX}srv__screenshot", {}, result_budget_tokens = 120
+            f"{tools.MCP_TOOL_PREFIX}srv__screenshot", {}, result_budget_tokens=120
         )
 
     def test_an_image_envelope_comes_back_whole(self, monkeypatch):
@@ -671,9 +671,9 @@ class TestTheSpillStaysInsideTheSandbox:
         workdir.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
-        (workdir / tools._SPILL_DIR).symlink_to(outside, target_is_directory = True)
+        (workdir / tools._SPILL_DIR).symlink_to(outside, target_is_directory=True)
 
-        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir))
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(workdir))
 
         assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
         # Refused, not crashed: the notice is still served, just without a paging hint.
@@ -690,7 +690,7 @@ class TestTheSpillStaysInsideTheSandbox:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         (target / f"{digest}.txt").symlink_to(victim)
 
-        out = tools._truncate(text, 200, workdir = str(workdir))
+        out = tools._truncate(text, 200, workdir=str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
         # Refused rather than replaced: whatever is at that path is not a spill this
@@ -706,7 +706,7 @@ class TestTheSpillStaysInsideTheSandbox:
             (target / f"{i:012x}.txt").write_text("spill")
         # Oldest by mtime, so a prune that follows links would unlink it first.
         (target / ("f" * 12 + ".txt")).symlink_to(victim)
-        os.utime(target / ("f" * 12 + ".txt"), (0, 0), follow_symlinks = False)
+        os.utime(target / ("f" * 12 + ".txt"), (0, 0), follow_symlinks=False)
 
         tools._prune_spills(str(target))
 
@@ -724,7 +724,7 @@ class TestSpillsAreBoundedInBytes:
         monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
         text = _dense(50_000)
 
-        out = tools._truncate(text, 200, workdir = str(tmp_path))
+        out = tools._truncate(text, 200, workdir=str(tmp_path))
 
         spill = tmp_path / _spill_path(out)
         assert spill.stat().st_size <= 4_096
@@ -736,7 +736,7 @@ class TestSpillsAreBoundedInBytes:
         """Twenty large-but-legal spills are still tens of gigabytes of the host's disk."""
         monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 20_000)
         for n in range(10):
-            tools._truncate(f"run {n}\n" + _dense(9_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(9_000), 200, workdir=str(tmp_path))
 
         spills = list((tmp_path / tools._SPILL_DIR).iterdir())
         assert sum(p.stat().st_size for p in spills) <= 20_000
@@ -747,7 +747,7 @@ class TestSpillsAreBoundedInBytes:
         way out leaves the model a hint pointing at nothing."""
         monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 100)
 
-        out = tools._truncate(_dense(50_000), 200, workdir = str(tmp_path))
+        out = tools._truncate(_dense(50_000), 200, workdir=str(tmp_path))
 
         assert (tmp_path / _spill_path(out)).exists()
 
@@ -755,7 +755,7 @@ class TestSpillsAreBoundedInBytes:
         """At zero room a short result is served as it is, so nothing was cut and there is
         nothing to page through. Writing a file (and creating the directory) for it is a
         side effect with nothing on the other side of it."""
-        assert tools._truncate("done", 0, workdir = str(tmp_path)) == "done"
+        assert tools._truncate("done", 0, workdir=str(tmp_path)) == "done"
 
         assert not (tmp_path / tools._SPILL_DIR).exists()
 
@@ -767,7 +767,7 @@ class TestTheHintCountsTheLinesItShowed:
         reader never saw."""
         text = "\n" + "\n".join(f"line {i}" for i in range(2, 400))
 
-        out = tools._truncate(text, 1, workdir = str(tmp_path))
+        out = tools._truncate(text, 1, workdir=str(tmp_path))
 
         assert "showing lines 1-1 of" in out
         assert "sed -n '2," in out
@@ -787,7 +787,7 @@ class TestTheSpillCannotBeAimedElsewhere:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         os.link(victim, target / f"{digest}.txt")
 
-        out = tools._truncate(text, 200, workdir = str(workdir))
+        out = tools._truncate(text, 200, workdir=str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
         # And nothing is written at that name either: it is not a spill this recorded, so
@@ -796,7 +796,7 @@ class TestTheSpillCannotBeAimedElsewhere:
         assert (target / f"{digest}.txt").read_text() == "do not overwrite me"
 
     def test_no_temporary_file_is_left_behind(self, tmp_path):
-        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path))
 
         names = [p.name for p in _spills(tmp_path / tools._SPILL_DIR)]
         assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names
@@ -834,7 +834,7 @@ class TestOneChatsOutputStaysItsOwn:
         monkeypatch,
         tmp_path,
         session_id,
-        thread_id = None,
+        thread_id=None,
     ):
         seen = {}
         # A real directory: the command runs with it as cwd, and a path that is not there
@@ -844,17 +844,17 @@ class TestOneChatsOutputStaysItsOwn:
 
         def _recording(
             text,
-            limit = None,
-            workdir = None,
+            limit=None,
+            workdir=None,
             **kwargs,
         ):
-            seen.update(kwargs, workdir = workdir)
+            seen.update(kwargs, workdir=workdir)
             return real(text, limit if limit is not None else 200)
 
         monkeypatch.setattr(tools, "_truncate", _recording)
         # Builtin printf over a brace expansion: no command substitution, because the
         # sandbox caps processes and a fork fails the call before it ever truncates.
-        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id)
+        tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id=thread_id)
         return seen
 
     def test_a_call_without_a_session_does_not_spill(self, monkeypatch, tmp_path):
@@ -888,14 +888,14 @@ class TestOneChatsOutputStaysItsOwn:
         """And the notice names that path, so paging still works from the sandbox cwd."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        out = tools._truncate(text, 200, workdir = str(tmp_path), scope = "abc123abc123")
+        out = tools._truncate(text, 200, workdir=str(tmp_path), scope="abc123abc123")
 
         assert _spill_path(out).startswith(f"{tools._SPILL_DIR}/abc123abc123/")
         assert (tmp_path / _spill_path(out)).read_text().startswith("0\n1\n")
 
     def test_a_scope_of_none_retains_nothing(self, tmp_path):
         out = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path), scope = None
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path), scope=None
         )
 
         assert "saved to" not in out
@@ -915,7 +915,7 @@ class TestTheRetryHintIsInsideTheCap:
         punctuation-heavy path tokenises far more densely than the prose it displaces."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        capped = tools._truncate(text, 4_000, hint = self._HINT)
+        capped = tools._truncate(text, 4_000, hint=self._HINT)
         plain = tools._truncate(text, 4_000)
 
         assert capped.endswith(self._HINT)
@@ -926,7 +926,7 @@ class TestTheRetryHintIsInsideTheCap:
         """Past half the room the output is worth more than the advice about it."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        capped = tools._truncate(text, 900, hint = self._HINT)
+        capped = tools._truncate(text, 900, hint=self._HINT)
 
         assert self._HINT not in capped
 
@@ -941,7 +941,7 @@ class TestTheRetryHintIsInsideTheCap:
             tools,
             "_loaded_token_counter",
             lambda ctx: (
-                lambda chunk, token_budget = 0.0: sum(1.0 if c == "/" else 0.25 for c in chunk)
+                lambda chunk, token_budget=0.0: sum(1.0 if c == "/" else 0.25 for c in chunk)
             ),
         )
         _room(400)
@@ -949,7 +949,7 @@ class TestTheRetryHintIsInsideTheCap:
         hint = "/" * 100
 
         without = tools._truncate(text, tools._MAX_OUTPUT_CHARS).split("\n\n... (")[0]
-        with_hint = tools._truncate(text, tools._MAX_OUTPUT_CHARS, hint = hint)
+        with_hint = tools._truncate(text, tools._MAX_OUTPUT_CHARS, hint=hint)
 
         assert with_hint.endswith(hint)
         body = with_hint.split("\n\n... (")[0]
@@ -962,7 +962,7 @@ class TestTheRetryHintIsInsideTheCap:
         ), "the body gave up about the hint's length, so the hint was charged as prose"
 
     def test_a_result_that_fits_still_carries_it(self):
-        assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT
+        assert tools._truncate("ok", 1_000, hint=self._HINT) == "ok" + self._HINT
 
 
 class TestTheSafetensorsLoopPricesItToo:
@@ -973,8 +973,8 @@ class TestTheSafetensorsLoopPricesItToo:
     @staticmethod
     def _run(
         context_length,
-        messages = None,
-        calls = 1,
+        messages=None,
+        calls=1,
     ):
         """One `terminal` call through the real loop, returning the kwargs it was given."""
         import threading
@@ -998,15 +998,15 @@ class TestTheSafetensorsLoopPricesItToo:
         seen = []
         list(
             run_safetensors_tool_loop(
-                single_turn = _model,
-                messages = list(messages or [{"role": "user", "content": "print game.html"}]),
-                tools = [{"type": "function", "function": {"name": "terminal"}}],
-                execute_tool = lambda name, args, **kwargs: seen.append(kwargs) or "x" * 40_000,
-                cancel_event = threading.Event(),
-                max_tool_iterations = 2,
-                thread_id = "t-sf",
-                context_length = context_length,
-                max_tokens = 512,
+                single_turn=_model,
+                messages=list(messages or [{"role": "user", "content": "print game.html"}]),
+                tools=[{"type": "function", "function": {"name": "terminal"}}],
+                execute_tool=lambda name, args, **kwargs: seen.append(kwargs) or "x" * 40_000,
+                cancel_event=threading.Event(),
+                max_tool_iterations=2,
+                thread_id="t-sf",
+                context_length=context_length,
+                max_tokens=512,
             )
         )
         return seen[0]
@@ -1040,14 +1040,14 @@ class TestTheSafetensorsLoopPricesItToo:
         body = "abcd " * 800
         as_result = self._run(
             4096,
-            messages = [
+            messages=[
                 {"role": "user", "content": "print it"},
                 {"role": "tool", "content": body},
             ],
         )["result_budget_tokens"]
         as_prose = self._run(
             4096,
-            messages = [
+            messages=[
                 {"role": "user", "content": "print it"},
                 {"role": "user", "content": body},
             ],
@@ -1061,7 +1061,7 @@ class TestTheSafetensorsLoopPricesItToo:
         first result takes the room the other calls and their results still need, and the
         finished exchange is protected as the newest turn."""
         alone = self._run(4096)["result_budget_tokens"]
-        first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
+        first_of_three = self._run(4096, calls=3)["result_budget_tokens"]
 
         assert first_of_three <= alone // 3
 
@@ -1077,7 +1077,7 @@ class TestAProjectIsBoundedAsOneWorkspace:
         monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 30_000)
         for chat in range(6):
             tools._truncate(
-                f"chat {chat}\n" + _dense(9_000), 200, workdir = str(tmp_path), scope = f"{chat:012x}"
+                f"chat {chat}\n" + _dense(9_000), 200, workdir=str(tmp_path), scope=f"{chat:012x}"
             )
 
         root = tmp_path / tools._SPILL_DIR
@@ -1091,7 +1091,7 @@ class TestAProjectIsBoundedAsOneWorkspace:
         monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 12_000)
         for chat in range(4):
             tools._truncate(
-                f"chat {chat}\n" + _dense(9_000), 200, workdir = str(tmp_path), scope = f"{chat:012x}"
+                f"chat {chat}\n" + _dense(9_000), 200, workdir=str(tmp_path), scope=f"{chat:012x}"
             )
 
         root = tmp_path / tools._SPILL_DIR
@@ -1110,8 +1110,8 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
         tools._truncate(
             "\n".join(str(i) for i in range(5_000)),
             200,
-            workdir = str(tmp_path),
-            scope = "abc123abc123",
+            workdir=str(tmp_path),
+            scope="abc123abc123",
         )
 
         assert tools._holds_no_user_files(str(tmp_path))
@@ -1119,9 +1119,10 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
     def test_a_real_file_beside_them_still_counts(self):
         """The control: this must not turn into "delete any sandbox"."""
         import tempfile
+
         with tempfile.TemporaryDirectory() as workdir:
             tools._truncate(
-                "\n".join(str(i) for i in range(5_000)), 200, workdir = workdir, scope = "abc123abc123"
+                "\n".join(str(i) for i in range(5_000)), 200, workdir=workdir, scope="abc123abc123"
             )
             open(os.path.join(workdir, "game.html"), "w").close()
 
@@ -1133,8 +1134,8 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
         tools._truncate(
             "\n".join(str(i) for i in range(5_000)),
             200,
-            workdir = str(tmp_path),
-            scope = "abc123abc123",
+            workdir=str(tmp_path),
+            scope="abc123abc123",
         )
         (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
 
@@ -1160,7 +1161,7 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
         text = _dense(40_000)
 
         assert tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS) == pytest.approx(
-            400 * 4 * tools._UNMEASURED_ROOM_MARGIN, rel = 0.02
+            400 * 4 * tools._UNMEASURED_ROOM_MARGIN, rel=0.02
         )
 
     def test_a_measurable_room_is_not(self, monkeypatch):
@@ -1183,7 +1184,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
     which turns the cleanup into a delete. The record lives in Unsloth's own storage."""
 
     def test_nothing_about_ownership_is_written_into_the_sandbox(self, tmp_path):
-        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path))
 
         names = [p.name for p in (tmp_path / tools._SPILL_DIR).iterdir()]
         assert names == [os.path.basename(_spill_path(out))]
@@ -1192,7 +1193,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         (tmp_path / tools._SPILL_DIR).mkdir()
         (tmp_path / tools._SPILL_DIR / "notes.txt").write_text("mine")
 
-        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
+        out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path))
 
         assert "saved to" not in out
         assert not tools._holds_no_user_files(str(tmp_path))
@@ -1202,7 +1203,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         Same path, different directory, and a record that only knew the path would hand
         the new one's contents to the prune."""
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
         name = os.path.basename(_spill_path(spilled))
         root = tmp_path / tools._SPILL_DIR
@@ -1214,7 +1215,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         theirs = root / name
         theirs.write_text("mine")
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
 
         assert theirs.read_text() == "mine"
         assert not tools._is_spill_artifact(str(tmp_path), str(root), name)
@@ -1224,13 +1225,13 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         spill, in place, and from then on it is the user's: not something to prune, and
         not something the cleanup may delete the sandbox on top of."""
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
         theirs = tmp_path / _spill_path(spilled)
         theirs.write_text("the user's own data")
 
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
 
         assert theirs.read_text() == "the user's own data"
         assert not tools._holds_no_user_files(str(tmp_path))
@@ -1239,7 +1240,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         """The control: reading a spill back, which is the whole point of writing it, must
         not turn it into user content."""
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
         (tmp_path / _spill_path(spilled)).read_text()
 
@@ -1262,11 +1263,11 @@ class TestConcurrentSpillsKeepTheirRecords:
             started.wait()
             results.append(
                 tools._truncate(
-                    f"chat {n}\n" + _dense(3_000), 200, workdir = workdir, scope = f"{n:012x}"
+                    f"chat {n}\n" + _dense(3_000), 200, workdir=workdir, scope=f"{n:012x}"
                 )
             )
 
-        threads = [threading.Thread(target = _spill, args = (n,)) for n in range(8)]
+        threads = [threading.Thread(target=_spill, args=(n,)) for n in range(8)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -1283,19 +1284,19 @@ class TestConcurrentSpillsKeepTheirRecords:
         coarse-grained filesystem can leave it unchanged without any help. ctime moves on
         any write and cannot be set from userspace, and the content is checked besides."""
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
         theirs = tmp_path / _spill_path(spilled)
         was = theirs.stat()
         theirs.write_bytes(b"m" * was.st_size)
-        os.utime(theirs, ns = (was.st_atime_ns, was.st_mtime_ns))
+        os.utime(theirs, ns=(was.st_atime_ns, was.st_mtime_ns))
 
         assert theirs.stat().st_size == was.st_size
         assert theirs.stat().st_mtime_ns == was.st_mtime_ns
         assert not tools._holds_no_user_files(str(tmp_path))
 
     @pytest.mark.skipif(
-        not tools._DIR_FD_WRITES, reason = "no dir_fd support; the path-based write stands"
+        not tools._DIR_FD_WRITES, reason="no dir_fd support; the path-based write stands"
     )
     def test_the_spill_write_never_follows_a_swapped_directory(self, tmp_path):
         """A shared project sandbox can lose the race between checking the directory and
@@ -1308,7 +1309,7 @@ class TestConcurrentSpillsKeepTheirRecords:
         outside = tmp_path / "outside"
         outside.mkdir()
         swapped = tmp_path / "scope"
-        swapped.symlink_to(outside, target_is_directory = True)
+        swapped.symlink_to(outside, target_is_directory=True)
 
         assert tools._write_spill_file(str(swapped), "abcdef123456.txt", "x" * 100) is None
         assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
@@ -1329,7 +1330,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
         tools._workdirs.clear()
         workdir = tools.get_sandbox_workdir(session)
-        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = workdir)
+        tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir=workdir)
         record = tools._spill_record_path(os.path.join(workdir, tools._SPILL_DIR))
         assert os.path.exists(record)
         return workdir, record
@@ -1347,7 +1348,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill222")
         open(os.path.join(workdir, "game.html"), "w").close()
 
-        assert tools.remove_session_sandbox("__LOCALID_spill222", delete_files = True) is True
+        assert tools.remove_session_sandbox("__LOCALID_spill222", delete_files=True) is True
 
         assert not os.path.exists(record)
 
@@ -1362,7 +1363,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
 
         monkeypatch.setattr(tools.os, "rename", _no_rename)
 
-        assert tools.remove_session_sandbox("__LOCALID_spill444", delete_files = True) is True
+        assert tools.remove_session_sandbox("__LOCALID_spill444", delete_files=True) is True
 
         assert not os.path.exists(workdir)
         assert not os.path.exists(record)
@@ -1383,11 +1384,11 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         replace it: the manifest already knows it stopped being ours, and the write has to
         ask."""
         text = "\n".join(str(i) for i in range(5_000))
-        spilled = tools._truncate(text, 200, workdir = str(tmp_path))
+        spilled = tools._truncate(text, 200, workdir=str(tmp_path))
         theirs = tmp_path / _spill_path(spilled)
         theirs.write_text("the user's own data")
 
-        again = tools._truncate(text, 200, workdir = str(tmp_path))
+        again = tools._truncate(text, 200, workdir=str(tmp_path))
 
         assert theirs.read_text() == "the user's own data"
         assert "saved to" not in again
@@ -1397,8 +1398,8 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         change is about keeps working instead of refusing on its own file."""
         text = "\n".join(str(i) for i in range(5_000))
 
-        first = tools._truncate(text, 200, workdir = str(tmp_path))
-        second = tools._truncate(text, 200, workdir = str(tmp_path))
+        first = tools._truncate(text, 200, workdir=str(tmp_path))
+        second = tools._truncate(text, 200, workdir=str(tmp_path))
 
         assert first == second
         assert len(_spills(tmp_path / tools._SPILL_DIR)) == 1
@@ -1414,9 +1415,9 @@ class TestARemovedSandboxTakesItsRecordWithIt:
 
         def _spill(n):
             ready.wait()
-            outs.append(tools._truncate(f"chat {n}\n" + _dense(3_000), 200, workdir = str(tmp_path)))
+            outs.append(tools._truncate(f"chat {n}\n" + _dense(3_000), 200, workdir=str(tmp_path)))
 
-        threads = [threading.Thread(target = _spill, args = (n,)) for n in range(6)]
+        threads = [threading.Thread(target=_spill, args=(n,)) for n in range(6)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -1445,7 +1446,7 @@ class TestTheContinuationChunkDecodes:
         # what follows is 100 characters plus two bytes of the next.
         text = "a" * 299 + "€" * 4_000
 
-        out = tools._truncate(text, 300, workdir = str(tmp_path))
+        out = tools._truncate(text, 300, workdir=str(tmp_path))
         offset, span = self._resume(out)
 
         blob = (tmp_path / _spill_path(out)).read_bytes()
@@ -1456,7 +1457,7 @@ class TestTheContinuationChunkDecodes:
     def test_the_chunk_resumes_where_the_head_stopped(self, tmp_path):
         text = "a" * 299 + "€" * 4_000
 
-        out = tools._truncate(text, 300, workdir = str(tmp_path))
+        out = tools._truncate(text, 300, workdir=str(tmp_path))
         offset, span = self._resume(out)
 
         shown = out.split("\n\n... (")[0]
@@ -1491,14 +1492,14 @@ class TestInstallingASpillNeverReplacesAnything:
         """And the repeat case does not go near the install at all: the name is the digest
         of the text, so a recorded spill at it already holds exactly this content."""
         text = "\n".join(str(i) for i in range(5_000))
-        first = tools._truncate(text, 200, workdir = str(tmp_path))
+        first = tools._truncate(text, 200, workdir=str(tmp_path))
 
         def _refuse(*args, **kwargs):
             raise AssertionError("rewrote a spill that was already there")
 
         monkeypatch.setattr(tools, "_write_spill_file", _refuse)
 
-        assert tools._truncate(text, 200, workdir = str(tmp_path)) == first
+        assert tools._truncate(text, 200, workdir=str(tmp_path)) == first
 
     def test_the_record_names_what_was_installed_not_what_is_there_now(self, tmp_path):
         """Between the install and the record, another call sharing the sandbox can replace
@@ -1544,9 +1545,9 @@ class TestPruningDeletesOnlyWhatItChecked:
         # Enough that the oldest are on their way out: a prune with nothing to delete
         # would prove nothing about what it deletes.
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
         root = tmp_path / tools._SPILL_DIR
-        victim = sorted(_spills(root), key = lambda p: p.stat().st_mtime)[0]
+        victim = sorted(_spills(root), key=lambda p: p.stat().st_mtime)[0]
         # Lowered so this pass has files to delete: the prune after each spill has already
         # brought the directory back to the limit.
         monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
@@ -1561,13 +1562,13 @@ class TestPruningDeletesOnlyWhatItChecked:
         """The control: the budget still has to bite, or the fix above is just "never
         delete anything"."""
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
 
         assert len(_spills(tmp_path / tools._SPILL_DIR)) <= tools._SPILL_KEEP
 
     def test_nothing_is_left_under_a_temporary_name(self, tmp_path):
         for n in range(tools._SPILL_KEEP + 5):
-            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir=str(tmp_path))
 
         names = [p.name for p in _spills(tmp_path / tools._SPILL_DIR)]
         assert all(tools._SPILL_NAME_RE.fullmatch(n) for n in names), names
@@ -1603,7 +1604,7 @@ class TestReadingASpillCannotBeRedirected:
     def test_an_ordinary_spill_still_reads(self, tmp_path):
         """The control: everything above has to leave the normal case working."""
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
 
         assert tools._holds_no_user_files(str(tmp_path)), spilled
@@ -1622,7 +1623,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
     @staticmethod
     def _a_recorded_spill(tmp_path) -> "tuple[str, str, dict]":
         spilled = tools._truncate(
-            "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
+            "\n".join(str(i) for i in range(5_000)), 200, workdir=str(tmp_path)
         )
         root = str(tmp_path / tools._SPILL_DIR)
         return root, str(tmp_path / _spill_path(spilled)), tools._spill_manifest(root)
@@ -1737,7 +1738,7 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         uncapped = tools._check_code_safety(self._tampering(400))
         assert uncapped and len(uncapped) > 10_000, "the analyzer stopped amplifying"
 
-        out = tools.execute_tool("python", {"code": self._tampering(400)}, result_budget_tokens = 400)
+        out = tools.execute_tool("python", {"code": self._tampering(400)}, result_budget_tokens=400)
 
         assert out.startswith("Error: unsafe code detected")
         _within_room(out, 400)
@@ -1747,7 +1748,7 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         _tokenizer(monkeypatch)
         monkeypatch.setattr(tools, "_find_blocked_commands", lambda command: {_dense(40_000)})
 
-        out = tools.execute_tool("terminal", {"command": "ls"}, result_budget_tokens = 400)
+        out = tools.execute_tool("terminal", {"command": "ls"}, result_budget_tokens=400)
 
         assert out.startswith("Blocked command(s) for safety:")
         _within_room(out, 400)
@@ -1757,7 +1758,7 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
 
-        out = tools.execute_tool("python", {"code": self._tampering(1)}, result_budget_tokens = 120)
+        out = tools.execute_tool("python", {"code": self._tampering(1)}, result_budget_tokens=120)
 
         assert out == tools._check_code_safety(self._tampering(1))
 
@@ -1828,7 +1829,7 @@ class TestACounterThatCannotAnswerIsNotACounter:
     def _mute(monkeypatch):
         """A backend that exposes a counter and can never price anything with it."""
         monkeypatch.setattr(
-            tools, "_loaded_token_counter", lambda ctx: (lambda chunk, token_budget = 0.0: None)
+            tools, "_loaded_token_counter", lambda ctx: (lambda chunk, token_budget=0.0: None)
         )
 
     def test_a_counter_that_measures_nothing_gets_the_conservative_margin(self, monkeypatch):
@@ -1918,10 +1919,10 @@ class TestADenseNativeTurnIsPricedAsOne:
         # Sized to leave room either way at this window: two threads that both fit, one
         # of which has spent twice what the other has on the same character count.
         blob = TestTheSafetensorsLoopPricesItToo._run(
-            4096, messages = [{"role": "user", "content": _dense(4_000).replace("\n", "")}]
+            4096, messages=[{"role": "user", "content": _dense(4_000).replace("\n", "")}]
         )["result_budget_tokens"]
         prose = TestTheSafetensorsLoopPricesItToo._run(
-            4096, messages = [{"role": "user", "content": "word " * 800}]
+            4096, messages=[{"role": "user", "content": "word " * 800}]
         )["result_budget_tokens"]
 
         assert blob < prose
@@ -1967,7 +1968,7 @@ class TestSpillingDoesNotCopyTheResultAgain:
 
         whole = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
         assert complete and spilled.endswith(f"{whole}.txt")
-        assert (tmp_path / _spill_path(f"saved to {spilled} ")).read_text(encoding = "utf-8") == text
+        assert (tmp_path / _spill_path(f"saved to {spilled} ")).read_text(encoding="utf-8") == text
 
     def test_an_oversized_result_is_still_cut_at_the_cap(self, tmp_path, monkeypatch):
         monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
@@ -1990,7 +1991,7 @@ class TestAToolResultIsPricedOnceOnTheNativePath:
     @staticmethod
     def _budget(message: dict) -> int:
         return TestTheSafetensorsLoopPricesItToo._run(
-            8192, messages = [{"role": "user", "content": "print it"}, message]
+            8192, messages=[{"role": "user", "content": "print it"}, message]
         )["result_budget_tokens"]
 
     def test_a_wide_result_costs_what_the_same_text_costs_anywhere(self):
@@ -2029,9 +2030,9 @@ class TestTheResultIsPricedAsItWillBeSent:
         from types import SimpleNamespace
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            context_length = ctx,
-            count_chat_tokens = lambda messages, *a, **k: sum(len(m["content"]) for m in messages),
+            is_loaded=True,
+            context_length=ctx,
+            count_chat_tokens=lambda messages, *a, **k: sum(len(m["content"]) for m in messages),
         )
         monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
         return backend
@@ -2151,7 +2152,7 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         return tools.execute_tool(
-            "python", {"code": f"print('x' * {self.PRINTED})"}, result_budget_tokens = room
+            "python", {"code": f"print('x' * {self.PRINTED})"}, result_budget_tokens=room
         )
 
     def _timed_out(self, monkeypatch, room: int) -> str:
@@ -2161,7 +2162,7 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         code = (
             f"print('x' * {self.PRINTED})\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
         )
-        return tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = room)
+        return tools.execute_tool("python", {"code": code}, timeout=1, result_budget_tokens=room)
 
     def _captured_everything(self, out: str) -> None:
         """The notice counts the whole captured text, so this is what says the drain got
@@ -2187,12 +2188,12 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         _tokenizer(monkeypatch)
         printing = f"awk 'BEGIN {{ for (i = 0; i < {self.PRINTED}; i++) printf \"x\" }}'"
 
-        completed = tools.execute_tool("terminal", {"command": printing}, result_budget_tokens = 400)
+        completed = tools.execute_tool("terminal", {"command": printing}, result_budget_tokens=400)
         timed_out = tools.execute_tool(
             "terminal",
             {"command": f"{printing}; sleep 30"},
-            timeout = 1,
-            result_budget_tokens = 400,
+            timeout=1,
+            result_budget_tokens=400,
         )
         assert f"{self.PRINTED} chars total" in completed
         assert f"{self.PRINTED} chars total" in timed_out
@@ -2227,11 +2228,11 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         _tokenizer(monkeypatch)
         code = "import sys, time\nprint('Error: failed')\nsys.stdout.flush()\ntime.sleep(30)\n"
 
-        tight = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 40)
+        tight = tools.execute_tool("python", {"code": code}, timeout=1, result_budget_tokens=40)
         assert tight == "Execution timed out after 1 seconds."
         _within_room(tight + (TOOL_ERROR_NUDGE if is_tool_error(tight) else ""), 40)
 
-        roomy = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 400)
+        roomy = tools.execute_tool("python", {"code": code}, timeout=1, result_budget_tokens=400)
         assert roomy.startswith("Error: failed"), roomy
 
     def test_a_silent_timeout_pays_nothing_for_output_it_never_had(self, monkeypatch):
@@ -2243,8 +2244,8 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         out = tools.execute_tool(
             "python",
             {"code": "import time\ntime.sleep(30)\n"},
-            timeout = 1,
-            result_budget_tokens = 400,
+            timeout=1,
+            result_budget_tokens=400,
         )
 
         assert out == "Execution timed out after 1 seconds."
@@ -2270,7 +2271,7 @@ class TestTheResultIsFittedAsItIsReplayed:
         out = tools.execute_tool(
             "terminal",
             {"command": "seq 4000 | sed 's/.*/__FILES__:x/'"},
-            result_budget_tokens = 400,
+            result_budget_tokens=400,
         )
 
         head, _, notice = out.partition("\n\n... (truncated to ")

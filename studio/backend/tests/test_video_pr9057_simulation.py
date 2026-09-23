@@ -167,9 +167,10 @@ def test_an_unreachable_props_leaves_the_capability_off_rather_than_guessing():
 
 def _llama_cpp_source() -> str:
     from pathlib import Path
+
     return (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
 
 
 def test_the_load_path_and_the_unload_path_both_clear_the_capability():
@@ -191,14 +192,14 @@ class _Resp:
 def _stub_props_http(
     monkeypatch,
     resp,
-    record = None,
+    record=None,
 ):
     """Replace httpx.get inside the backend module and capture the call."""
     import core.inference.llama_cpp as llama_mod
 
     def _get(url, **kwargs):
         if record is not None:
-            record.update(url = url, **kwargs)
+            record.update(url=url, **kwargs)
         if isinstance(resp, Exception):
             raise resp
         return resp
@@ -206,7 +207,7 @@ def _stub_props_http(
     monkeypatch.setattr(llama_mod.httpx, "get", _get)
 
 
-def _live_backend(api_key = None):
+def _live_backend(api_key=None):
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._has_video_input = False
     b._api_key = api_key
@@ -251,16 +252,16 @@ def test_the_props_request_carries_the_child_api_key_when_direct_stream_set_one(
     public_endpoints set), so an unauthenticated read 401s and the capability
     silently reads False under UNSLOTH_DIRECT_STREAM=1."""
     record: dict = {}
-    b = _live_backend(api_key = "secret-token")
-    _stub_props_http(monkeypatch, _Resp(200, {"modalities": {"video": True}}), record = record)
+    b = _live_backend(api_key="secret-token")
+    _stub_props_http(monkeypatch, _Resp(200, {"modalities": {"video": True}}), record=record)
     b._query_server_props()
     assert record.get("headers") == {"Authorization": "Bearer secret-token"}
 
 
 def test_the_props_request_sends_no_auth_header_when_there_is_no_child_key(monkeypatch):
     record: dict = {}
-    b = _live_backend(api_key = None)
-    _stub_props_http(monkeypatch, _Resp(200, {}), record = record)
+    b = _live_backend(api_key=None)
+    _stub_props_http(monkeypatch, _Resp(200, {}), record=record)
     b._query_server_props()
     assert record.get("headers") is None
 
@@ -305,7 +306,7 @@ def test_the_generic_runtime_mapper_actually_picks_the_capability_up():
 
 
 def test_an_old_client_that_sends_no_video_field_is_unaffected():
-    req = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
     assert req.video_base64 is None
 
 
@@ -404,8 +405,9 @@ def test_the_part_shape_is_exactly_what_llama_server_parses():
 
 def _routes_source() -> str:
     from pathlib import Path
+
     return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
 

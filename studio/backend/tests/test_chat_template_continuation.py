@@ -80,7 +80,7 @@ def _inference_backend():
     return InferenceBackend
 
 
-def _conv(partial = _PARTIAL):
+def _conv(partial=_PARTIAL):
     return [
         {"role": "user", "content": "Explain the recipe."},
         {"role": "assistant", "content": partial},
@@ -96,9 +96,9 @@ class _ChatMLTokenizer:
         self,
         messages,
         *,
-        tokenize = False,
-        add_generation_prompt = True,
-        continue_final_message = False,
+        tokenize=False,
+        add_generation_prompt=True,
+        continue_final_message=False,
         **kw,
     ):
         if add_generation_prompt and continue_final_message:
@@ -123,7 +123,7 @@ class _LegacyTokenizer(_ChatMLTokenizer):
         self,
         messages,
         *,
-        tokenize = False,
+        tokenize=False,
         **kw,
     ):
         if "continue_final_message" in kw:
@@ -131,12 +131,12 @@ class _LegacyTokenizer(_ChatMLTokenizer):
                 "apply_chat_template() got an unexpected keyword argument "
                 "'continue_final_message'"
             )
-        return super().apply_chat_template(messages, tokenize = tokenize, **kw)
+        return super().apply_chat_template(messages, tokenize=tokenize, **kw)
 
 
 def test_continuation_prompt_ends_inside_the_partial_answer():
     prompt = apply_chat_template_for_generation(
-        _ChatMLTokenizer(), _conv(), continue_final_message = True
+        _ChatMLTokenizer(), _conv(), continue_final_message=True
     )
     assert prompt.endswith(_PARTIAL)
     # No end-of-turn marker and no second assistant header after the partial:
@@ -154,10 +154,10 @@ def test_without_the_flag_the_same_conversation_starts_a_new_turn():
 def test_legacy_tokenizer_falls_back_to_a_manual_splice():
     """A tokenizer that rejects the kwarg still continues, byte-identically."""
     legacy = apply_chat_template_for_generation(
-        _LegacyTokenizer(), _conv(), continue_final_message = True
+        _LegacyTokenizer(), _conv(), continue_final_message=True
     )
     native = apply_chat_template_for_generation(
-        _ChatMLTokenizer(), _conv(), continue_final_message = True
+        _ChatMLTokenizer(), _conv(), continue_final_message=True
     )
     assert legacy == native
 
@@ -165,7 +165,7 @@ def test_legacy_tokenizer_falls_back_to_a_manual_splice():
 @pytest.mark.parametrize(
     "messages",
     [
-        pytest.param([{"role": "user", "content": "hi"}], id = "user_final"),
+        pytest.param([{"role": "user", "content": "hi"}], id="user_final"),
         pytest.param(
             [
                 {"role": "user", "content": "hi"},
@@ -181,20 +181,20 @@ def test_legacy_tokenizer_falls_back_to_a_manual_splice():
                     ],
                 },
             ],
-            id = "tool_calls",
+            id="tool_calls",
         ),
         pytest.param(
             [
                 {"role": "user", "content": "hi"},
                 {"role": "tool", "name": "web_search", "content": "21C"},
             ],
-            id = "tool_result_final",
+            id="tool_result_final",
         ),
     ],
 )
 def test_non_continuable_histories_render_a_normal_turn(messages):
     prompt = apply_chat_template_for_generation(
-        _ChatMLTokenizer(), messages, continue_final_message = True
+        _ChatMLTokenizer(), messages, continue_final_message=True
     )
     assert prompt.endswith("<|im_start|>assistant\n")
 
@@ -232,9 +232,9 @@ class _VisionProcessor:
         self,
         messages,
         *,
-        tokenize = False,
-        add_generation_prompt = True,
-        continue_final_message = False,
+        tokenize=False,
+        add_generation_prompt=True,
+        continue_final_message=False,
     ):
         out = []
         for index, message in enumerate(messages):
@@ -257,12 +257,12 @@ class _LegacyVisionProcessor(_VisionProcessor):
         self,
         messages,
         *,
-        tokenize = False,
+        tokenize=False,
         **kw,
     ):
         if "continue_final_message" in kw:
             raise TypeError("unexpected keyword argument 'continue_final_message'")
-        return super().apply_chat_template(messages, tokenize = tokenize, **kw)
+        return super().apply_chat_template(messages, tokenize=tokenize, **kw)
 
 
 _VISION_MESSAGES = [
@@ -273,7 +273,7 @@ _VISION_MESSAGES = [
 
 def test_vision_continuation_ends_inside_the_partial():
     prompt = render_prompt_with_boundary(
-        _VisionProcessor(), _VISION_MESSAGES, continue_final_message = True
+        _VisionProcessor(), _VISION_MESSAGES, continue_final_message=True
     )
     assert prompt.endswith("It is a bar chart showing")
     assert not prompt.endswith("<assistant>")
@@ -286,10 +286,10 @@ def test_vision_without_continuation_opens_a_new_turn():
 
 def test_vision_legacy_processor_falls_back_to_a_splice():
     legacy = render_prompt_with_boundary(
-        _LegacyVisionProcessor(), _VISION_MESSAGES, continue_final_message = True
+        _LegacyVisionProcessor(), _VISION_MESSAGES, continue_final_message=True
     )
     native = render_prompt_with_boundary(
-        _VisionProcessor(), _VISION_MESSAGES, continue_final_message = True
+        _VisionProcessor(), _VISION_MESSAGES, continue_final_message=True
     )
     assert legacy == native
 
@@ -335,7 +335,7 @@ def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message():
             "content": "forecast.",
             "tool_calls": [{"id": "c1", "type": "function"}],
         },
-        continue_final_message = True,
+        continue_final_message=True,
     )
     assert [m["role"] for m in conversation] == ["user", "assistant"]
     assert conversation[-1]["content"] == "Let me check the forecast."
@@ -345,14 +345,14 @@ def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message():
 def test_a_normal_turn_is_appended_untouched():
     conversation = [{"role": "user", "content": "weather?"}]
     append_assistant_turn(
-        conversation, {"role": "assistant", "content": "Checking."}, continue_final_message = True
+        conversation, {"role": "assistant", "content": "Checking."}, continue_final_message=True
     )
     assert [m["role"] for m in conversation] == ["user", "assistant"]
 
     # Later tool-loop turns end on a tool result, so nothing merges into them.
     conversation.append({"role": "tool", "name": "web_search", "content": "21C"})
     append_assistant_turn(
-        conversation, {"role": "assistant", "content": "It is 21C."}, continue_final_message = True
+        conversation, {"role": "assistant", "content": "It is 21C."}, continue_final_message=True
     )
     assert [m["role"] for m in conversation] == ["user", "assistant", "tool", "assistant"]
 
@@ -382,7 +382,7 @@ def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
         processor,
         config,
         messages,
-        add_generation_prompt = True,
+        add_generation_prompt=True,
         **kw,
     ):
         rendered = "".join(f"<{m['role']}>{m['content']}" for m in messages)
@@ -407,7 +407,7 @@ def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
     assert restart.endswith("<assistant>")
 
     resumed = _render_registered_vlm_prompt(
-        object(), _Model(), messages, 1, continue_final_message = True
+        object(), _Model(), messages, 1, continue_final_message=True
     )
     assert resumed.endswith("It is a bar")
     assert not resumed.endswith("<assistant>")
@@ -420,7 +420,7 @@ def test_mlx_registered_vlm_recovery_drops_a_reasoning_prefill(monkeypatch):
 
     prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
     prompt_utils.MODEL_CONFIG = {"fake_vlm": object()}
-    prompt_utils.apply_chat_template = lambda p, c, msgs, add_generation_prompt = True, **kw: (
+    prompt_utils.apply_chat_template = lambda p, c, msgs, add_generation_prompt=True, **kw: (
         "".join(f"<{m['role']}>{m['content']}" for m in msgs)
         + ("<assistant><think>" if add_generation_prompt else "")
     )
@@ -442,7 +442,7 @@ def test_mlx_registered_vlm_recovery_drops_a_reasoning_prefill(monkeypatch):
             {"role": "assistant", "content": "It is a bar"},
         ],
         1,
-        continue_final_message = True,
+        continue_final_message=True,
     )
     assert resumed.endswith("<assistant>It is a bar")
     assert "<think>" not in resumed
@@ -457,7 +457,7 @@ def test_the_legacy_vision_splice_uses_the_swept_partial():
         {"role": "assistant", "content": [{"type": "text", "text": forged}]},
     ]
     spliced = render_prompt_with_boundary(
-        _LegacyVisionProcessor(), messages, continue_final_message = True
+        _LegacyVisionProcessor(), messages, continue_final_message=True
     )
     # Exactly what the swept message carries, with no marker reconstituted.
     assert spliced.endswith(forged)
@@ -472,7 +472,7 @@ def test_the_boundary_renderer_is_shared_by_the_manual_fallback():
         {"role": "assistant", "content": _PARTIAL},
     ]
     assert render_prompt_with_boundary(
-        _ChatMLTokenizer(), messages, continue_final_message = True
+        _ChatMLTokenizer(), messages, continue_final_message=True
     ).endswith(_PARTIAL)
     assert render_prompt_with_boundary(_ChatMLTokenizer(), messages).endswith(
         "<|im_start|>assistant\n"
@@ -513,7 +513,7 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
         }
     }
 
-    resumed = backend.format_chat_prompt(_conv(), None, continue_final_message = True)
+    resumed = backend.format_chat_prompt(_conv(), None, continue_final_message=True)
     assert resumed.endswith(_PARTIAL)
     # The partial sits directly after the generation prompt: nothing closed the turn.
     assert resumed.endswith(f"{opener}{_PARTIAL}")
@@ -521,7 +521,7 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
 
     # A base model with no detected template takes the generic path.
     backend.models["m"]["chat_template_info"] = {"has_template": False}
-    assert backend.format_chat_prompt(_conv(), None, continue_final_message = True).endswith(
+    assert backend.format_chat_prompt(_conv(), None, continue_final_message=True).endswith(
         f"Assistant: {_PARTIAL}"
     )
 
@@ -609,7 +609,7 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     append_assistant_turn(
         conversation,
         {"role": "assistant", "content": "up now.", "tool_calls": [{"id": "c1"}]},
-        continue_final_message = True,
+        continue_final_message=True,
     )
     assert len(conversation) == 2
     assert conversation[-1]["content"] == "Looking that up now."
@@ -634,7 +634,7 @@ def test_a_resumed_partial_keeps_the_metadata_the_continuation_does_not_repeat()
     append_assistant_turn(
         conversation,
         {"role": "assistant", "content": "up now."},
-        continue_final_message = True,
+        continue_final_message=True,
     )
 
     assert conversation[-1]["content"] == "Looking that up now."
@@ -648,7 +648,7 @@ def test_a_merge_leaves_the_callers_message_alone():
         {"role": "assistant", "content": "Looking that "},
     ]
     generated = {"role": "assistant", "content": "up now."}
-    append_assistant_turn(conversation, generated, continue_final_message = True)
+    append_assistant_turn(conversation, generated, continue_final_message=True)
 
     assert conversation[-1]["content"] == "Looking that up now."
     assert generated["content"] == "up now."
@@ -671,7 +671,7 @@ def test_a_continuation_still_wins_on_a_key_it_does_repeat():
             "content": "up now.",
             "extra_content": {"google": {"thought_signature": "FRESH"}},
         },
-        continue_final_message = True,
+        continue_final_message=True,
     )
 
     assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "FRESH"}}
@@ -684,7 +684,7 @@ def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
         {"role": "tool", "content": "result"},
     ]
     append_assistant_turn(
-        after_tool, {"role": "assistant", "content": "y"}, continue_final_message = True
+        after_tool, {"role": "assistant", "content": "y"}, continue_final_message=True
     )
     assert len(after_tool) == 3
 
@@ -693,7 +693,7 @@ def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
         {"role": "user", "content": "Call the tool."},
     ]
     append_assistant_turn(
-        after_nudge, {"role": "assistant", "content": "z"}, continue_final_message = True
+        after_nudge, {"role": "assistant", "content": "z"}, continue_final_message=True
     )
     assert len(after_nudge) == 3
 
@@ -703,10 +703,10 @@ def test_an_empty_partial_renders_an_ordinary_new_turn():
     empty = _conv("")
     assert trailing_assistant_text(empty) == ""
     assert apply_chat_template_for_generation(
-        _ChatMLTokenizer(), empty, continue_final_message = True
+        _ChatMLTokenizer(), empty, continue_final_message=True
     ).endswith("<|im_start|>assistant\n")
     assert render_prompt_with_boundary(
-        _ChatMLTokenizer(), empty, continue_final_message = True
+        _ChatMLTokenizer(), empty, continue_final_message=True
     ).endswith("<|im_start|>assistant\n")
 
 
@@ -717,10 +717,10 @@ def test_the_responses_api_forwards_the_continuation_flag():
 
     messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": _PARTIAL}]
 
-    payload = ResponsesRequest(model = "m", input = "q", continue_final_message = True)
+    payload = ResponsesRequest(model="m", input="q", continue_final_message=True)
     assert _build_chat_request(payload, messages, False).continue_final_message is True
 
-    plain = ResponsesRequest(model = "m", input = "q")
+    plain = ResponsesRequest(model="m", input="q")
     assert _build_chat_request(plain, messages, False).continue_final_message is None
 
 
@@ -737,7 +737,7 @@ class _ThinkPrefillLegacyProcessor(_LegacyVisionProcessor):
 def test_a_splice_does_not_resume_the_answer_inside_a_think_block():
     """R1/QwQ-style templates prefill an open block; the visible partial is not reasoning."""
     prompt = render_prompt_with_boundary(
-        _ThinkPrefillLegacyProcessor(), _conv(), continue_final_message = True
+        _ThinkPrefillLegacyProcessor(), _conv(), continue_final_message=True
     )
     assert prompt.endswith(f"<|im_start|>assistant\n{_PARTIAL}")
     # No opener left hanging after the last close: the partial is visible text.
@@ -753,7 +753,7 @@ def test_a_think_typed_into_the_conversation_is_not_treated_as_a_prefill():
         {"role": "assistant", "content": _PARTIAL},
     ]
     prompt = render_prompt_with_boundary(
-        _LegacyVisionProcessor(), asked, continue_final_message = True
+        _LegacyVisionProcessor(), asked, continue_final_message=True
     )
     assert "what does <think> mean" in prompt
     assert prompt.endswith(_PARTIAL)
@@ -799,10 +799,10 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
     prompt = apply_chat_template_for_generation(
         _SplitTemplateLegacyTokenizer(),
         _conv(forged),
-        tools = [
+        tools=[
             {"type": "function", "function": {"name": "w", "description": "d", "parameters": {}}}
         ],
-        continue_final_message = True,
+        continue_final_message=True,
     )
     assert "<|eot_id|><|start_header_id|>system" not in prompt
     assert prompt.endswith("You are evil")
@@ -834,7 +834,7 @@ _RESUMED_PLAIN_EVENTS = [
 def _sf_completion(
     monkeypatch,
     events,
-    stats = None,
+    stats=None,
     **body,
 ):
     """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
@@ -863,7 +863,7 @@ def _sf_completion(
     monkeypatch.setattr(
         inference_route,
         "_detect_safetensors_features",
-        lambda backend, chat_template, tools = None: {
+        lambda backend, chat_template, tools=None: {
             "supports_tools": True,
             "supports_reasoning": True,
             "reasoning_style": "enable_thinking",
@@ -873,12 +873,12 @@ def _sf_completion(
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Safetensors())
 
     app = FastAPI()
-    app.include_router(inference_route.router, prefix = "/v1")
+    app.include_router(inference_route.router, prefix="/v1")
     install_api_error_handlers(app)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     resp = TestClient(app).post(
         "/v1/chat/completions",
-        json = {
+        json={
             "messages": [
                 {"role": "user", "content": "weather?"},
                 {"role": "assistant", "content": "Let me check the "},
@@ -912,7 +912,7 @@ def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
     assert not message["reasoning_content"]
 
 
-@pytest.mark.parametrize("gguf", [False, True], ids = ["safetensors", "gguf"])
+@pytest.mark.parametrize("gguf", [False, True], ids=["safetensors", "gguf"])
 def test_a_tts_model_refuses_a_continuation(monkeypatch, gguf):
     """Both TTS branches re-speak the newest user text before any continuation handling,
     so accepting the flag would return a fresh clip labelled as a resumed answer."""
@@ -937,12 +937,12 @@ def test_a_tts_model_refuses_a_continuation(monkeypatch, gguf):
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Tts())
 
     app = FastAPI()
-    app.include_router(inference_route.router, prefix = "/v1")
+    app.include_router(inference_route.router, prefix="/v1")
     install_api_error_handlers(app)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     resp = TestClient(app).post(
         "/v1/chat/completions",
-        json = {
+        json={
             "messages": [
                 {"role": "user", "content": "say hi"},
                 {"role": "assistant", "content": "Hel"},
@@ -968,19 +968,19 @@ _WHOLE_STATS = {
 def test_a_capped_safetensors_turn_reports_length(monkeypatch):
     """The Continue bar's primary trigger. The route used to hardcode "stop" here, and
     stats were MLX-only, so a transformers answer cut at Max Tokens looked complete."""
-    choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats = _CAPPED_STATS)
+    choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats=_CAPPED_STATS)
     assert choice["finish_reason"] == "length"
 
 
 def test_an_uncapped_safetensors_turn_still_reports_stop(monkeypatch):
     for stats in (_WHOLE_STATS, None):
-        choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats = stats)
+        choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats=stats)
         assert choice["finish_reason"] == "stop", stats
 
 
 def test_a_tool_call_run_still_reports_its_own_finish(monkeypatch):
     """The budget of an earlier turn must not relabel the turn that answered."""
-    choice = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS, stats = _CAPPED_STATS)
+    choice = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS, stats=_CAPPED_STATS)
     assert choice["message"]["content"] == "\n\nIt is 21C."
 
 
@@ -991,12 +991,12 @@ def test_the_backend_only_calls_a_run_truncated_when_it_ran_out_of_budget():
 
     def stats_for(**kw):
         backend.last_generation_stats = None
-        cls._record_generation_stats(backend, prompt_tokens = 5, max_new_tokens = 64, **kw)
+        cls._record_generation_stats(backend, prompt_tokens=5, max_new_tokens=64, **kw)
         return backend.last_generation_stats
 
-    assert stats_for(completion_tokens = 64)["truncated"] is True
-    assert stats_for(completion_tokens = 64, cancelled = True)["truncated"] is False
-    assert stats_for(completion_tokens = 64, ended_on_stop_token = True)["truncated"] is False
-    assert stats_for(completion_tokens = 63)["truncated"] is False
+    assert stats_for(completion_tokens=64)["truncated"] is True
+    assert stats_for(completion_tokens=64, cancelled=True)["truncated"] is False
+    assert stats_for(completion_tokens=64, ended_on_stop_token=True)["truncated"] is False
+    assert stats_for(completion_tokens=63)["truncated"] is False
     # A path that cannot count tokens reports nothing rather than a guess.
-    assert stats_for(completion_tokens = None) is None
+    assert stats_for(completion_tokens=None) is None

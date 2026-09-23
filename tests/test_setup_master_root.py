@@ -37,7 +37,7 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 # here and in tests/studio/, so skipping loses no coverage.
 NEEDS_POSIX_BASH = pytest.mark.skipif(
     shutil.which("bash") is None or os.name == "nt",
-    reason = "runs studio/setup.sh blocks: needs bash on a POSIX filesystem",
+    reason="runs studio/setup.sh blocks: needs bash on a POSIX filesystem",
 )
 
 
@@ -57,7 +57,7 @@ def _runtime_parent(env: dict[str, str]) -> tuple[str, str]:
     The two blocks are executed rather than pattern-matched, so a later edit that keeps the
     words and changes the order still fails here.
     """
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     master = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
     node = _slice(src, "# Mirror the llama.cpp UNSLOTH_HOME derivation", "NODE_DIR=")
     llama = _slice(src, 'if [ -n "$STAGE_ROOT" ]; then\n    UNSLOTH_HOME=', "LLAMA_CPP_DIR=")
@@ -72,10 +72,10 @@ def _runtime_parent(env: dict[str, str]) -> tuple[str, str]:
     )
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     node_parent, llama_parent = completed.stdout.splitlines()
@@ -111,13 +111,13 @@ foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
 }}
 {environment}
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     out = run_pwsh(
         [PWSH, "-NoProfile", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        check = True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert "EXTRACT-FAILED" not in out, out
     return out
@@ -126,13 +126,13 @@ foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
 @NEEDS_POSIX_BASH
 def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     root = tmp_path / "portable"
-    (root / "studio").mkdir(parents = True)
+    (root / "studio").mkdir(parents=True)
     env = _env(
         tmp_path / "home",
-        UNSLOTH_HOME = str(root),
+        UNSLOTH_HOME=str(root),
         # What unsloth_cli/commands/studio.py exports before it runs setup.
-        STUDIO_HOME = str(root / "studio"),
-        _STUDIO_HOME_IS_CUSTOM = "true",
+        STUDIO_HOME=str(root / "studio"),
+        _STUDIO_HOME_IS_CUSTOM="true",
     )
     node_parent, llama_parent = _runtime_parent(env)
     assert Path(node_parent) == root
@@ -143,11 +143,11 @@ def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
 def test_no_master_root_keeps_the_studio_home_layout(tmp_path):
     """The pre-existing custom-root behaviour, which the new branch must not disturb."""
     studio = tmp_path / "elsewhere" / "studio"
-    studio.mkdir(parents = True)
+    studio.mkdir(parents=True)
     env = _env(
         tmp_path / "home",
-        STUDIO_HOME = str(studio),
-        _STUDIO_HOME_IS_CUSTOM = "true",
+        STUDIO_HOME=str(studio),
+        _STUDIO_HOME_IS_CUSTOM="true",
     )
     node_parent, llama_parent = _runtime_parent(env)
     assert Path(node_parent) == studio
@@ -157,7 +157,7 @@ def test_no_master_root_keeps_the_studio_home_layout(tmp_path):
 @NEEDS_POSIX_BASH
 def test_a_default_install_still_uses_the_legacy_root(tmp_path):
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     node_parent, llama_parent = _runtime_parent(_env(home))
     assert Path(node_parent) == home / ".unsloth"
     assert Path(llama_parent) == home / ".unsloth"
@@ -169,9 +169,9 @@ def test_a_staging_root_still_outranks_the_master_root(tmp_path):
     stage.mkdir()
     env = _env(
         tmp_path / "home",
-        UNSLOTH_HOME = str(tmp_path / "portable"),
-        STAGE_ROOT = str(stage),
-        RUNTIME_ROOT = str(stage),
+        UNSLOTH_HOME=str(tmp_path / "portable"),
+        STAGE_ROOT=str(stage),
+        RUNTIME_ROOT=str(stage),
     )
     node_parent, llama_parent = _runtime_parent(env)
     assert Path(node_parent) == stage
@@ -181,7 +181,7 @@ def test_a_staging_root_still_outranks_the_master_root(tmp_path):
 def test_setup_ps1_derives_both_runtimes_from_the_master_root():
     """No PowerShell on the Linux runners, so the Windows half is held structurally: both
     derivations must go through the one helper, and it must read UNSLOTH_HOME."""
-    src = SETUP_PS1.read_text(encoding = "utf-8")
+    src = SETUP_PS1.read_text(encoding="utf-8")
     assert "function Get-MasterRootOverride" in src
     helper = _slice(src, "function Get-MasterRootOverride", "function Get-ManagedLlamaCppDir")
     assert "$env:UNSLOTH_HOME" in helper
@@ -199,12 +199,12 @@ def test_a_padded_master_root_names_the_same_directory(tmp_path):
     """storage_roots.unsloth_home() and the CLI both .strip(), so setup has to as well: an
     unstripped value installs under a directory whose name carries the whitespace."""
     root = tmp_path / "portable"
-    (root / "studio").mkdir(parents = True)
+    (root / "studio").mkdir(parents=True)
     env = _env(
         tmp_path / "home",
-        UNSLOTH_HOME = f"  {root}  ",
-        STUDIO_HOME = str(root / "studio"),
-        _STUDIO_HOME_IS_CUSTOM = "true",
+        UNSLOTH_HOME=f"  {root}  ",
+        STUDIO_HOME=str(root / "studio"),
+        _STUDIO_HOME_IS_CUSTOM="true",
     )
     node_parent, llama_parent = _runtime_parent(env)
     assert Path(node_parent) == root
@@ -214,8 +214,8 @@ def test_a_padded_master_root_names_the_same_directory(tmp_path):
 @NEEDS_POSIX_BASH
 def test_a_blank_master_root_counts_as_unset(tmp_path):
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
-    node_parent, llama_parent = _runtime_parent(_env(home, UNSLOTH_HOME = "   "))
+    (home / ".unsloth" / "studio").mkdir(parents=True)
+    node_parent, llama_parent = _runtime_parent(_env(home, UNSLOTH_HOME="   "))
     assert Path(node_parent) == home / ".unsloth"
     assert Path(llama_parent) == home / ".unsloth"
 
@@ -225,7 +225,7 @@ BUILD_WHISPER = REPO_ROOT / "scripts" / "build_whisper_cpp.sh"
 
 def _whisper_root_block() -> str:
     """The shipped root selection, from the normalizer down to the INSTALL_DIR it decides."""
-    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    src = BUILD_WHISPER.read_text(encoding="utf-8")
     return _slice(src, "_root_value() {", "STUDIO_OWNED_MARKER=")
 
 
@@ -242,7 +242,7 @@ def whisper_path(tmp_path_factory):
     stub_bin = tmp_path_factory.mktemp("stubbin")
     for tool in ("git", "cmake"):
         path = stub_bin / tool
-        path.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
     return f"{stub_bin}:/usr/bin:/bin"
 
@@ -252,20 +252,20 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path, whisper_pa
     """setup.sh runs this with UNSLOTH_STUDIO_HOME=<root>/studio still inherited, so a builder
     that preferred it would install a level below _managed_whisper_cpp_dir()."""
     root = tmp_path / "portable"
-    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    src = BUILD_WHISPER.read_text(encoding="utf-8")
     block = _whisper_root_block()
     script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = {
+        env={
             "HOME": str(tmp_path / "home"),
             "PATH": whisper_path,
             "UNSLOTH_HOME": str(root),
             "UNSLOTH_STUDIO_HOME": str(root / "studio"),
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == root / "whisper.cpp"
@@ -274,19 +274,19 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path, whisper_pa
 @NEEDS_POSIX_BASH
 def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path, whisper_path):
     studio = tmp_path / "elsewhere" / "studio"
-    src = BUILD_WHISPER.read_text(encoding = "utf-8")
+    src = BUILD_WHISPER.read_text(encoding="utf-8")
     block = _whisper_root_block()
     script = "\n".join(("set -eu", block, 'printf "%s\\n" "$INSTALL_DIR"'))
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = {
+        env={
             "HOME": str(tmp_path / "home"),
             "PATH": whisper_path,
             "UNSLOTH_STUDIO_HOME": str(studio),
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
@@ -309,15 +309,15 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path, 
                 )
             ),
         ],
-        env = {
+        env={
             "HOME": str(tmp_path / "home"),
             "PATH": whisper_path,
             "UNSLOTH_HOME": "   ",
             "UNSLOTH_STUDIO_HOME": str(studio),
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == studio / "whisper.cpp"
@@ -338,10 +338,10 @@ def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path, whisper_p
                 )
             ),
         ],
-        env = {"HOME": str(home), "PATH": whisper_path, "UNSLOTH_HOME": "~/portable"},
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        env={"HOME": str(home), "PATH": whisper_path, "UNSLOTH_HOME": "~/portable"},
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == home / "portable" / "whisper.cpp"
@@ -353,7 +353,7 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     value left relative names two different directories and the backend's neither."""
     caller = tmp_path / "caller"
     caller.mkdir()
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     script = "\n".join(
         (
             "set -u",
@@ -363,17 +363,17 @@ def test_a_relative_master_root_resolves_against_the_caller(tmp_path):
     )
     completed = subprocess.run(
         ["bash", "-c", script],
-        cwd = str(caller),
-        env = {
+        cwd=str(caller),
+        env={
             "HOME": str(tmp_path / "home"),
             "PATH": "/usr/bin:/bin",
             "PWD": str(caller),
             "UNSLOTH_HOME": "not-created-yet",
             "_STUDIO_HOME_IS_CUSTOM": "false",
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert Path(completed.stdout.strip()) == caller / "not-created-yet"
@@ -387,8 +387,8 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
     root = tmp_path / "portable"
     root.mkdir()
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    (home / ".unsloth" / "studio").mkdir(parents=True)
+    src = SETUP_SH.read_text(encoding="utf-8")
     script = "\n".join(
         (
             "set -u",
@@ -398,15 +398,15 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
     )
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = {
+        env={
             "HOME": str(home),
             "PATH": "/usr/bin:/bin",
             "UNSLOTH_HOME": str(root),
             "_STUDIO_HOME_IS_CUSTOM": "false",
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.split() == ["false", "true"]
@@ -423,7 +423,7 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
         pytest.param(
             {"UNSLOTH_STUDIO_STAGE_ROOT": "STAGE", "_STUDIO_HOME_IS_CUSTOM": "false"},
             ["false", "false"],
-            id = "a staged update ignores the master root",
+            id="a staged update ignores the master root",
         ),
         # And the flag has to be ASSIGNED, not only raised: a custom STUDIO_HOME whose runtimes
         # land in the legacy root kept it true and demanded markers from exactly the pre-marker
@@ -431,13 +431,13 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
         pytest.param(
             {"UNSLOTH_HOME": "LEGACY", "_STUDIO_HOME_IS_CUSTOM": "true"},
             ["true", "false"],
-            id = "a custom studio home whose runtimes stay legacy",
+            id="a custom studio home whose runtimes stay legacy",
         ),
     ],
 )
 def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environment, expected):
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     stage = tmp_path / "stage"
     stage.mkdir()
     resolved = {
@@ -451,7 +451,7 @@ def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environmen
     if "UNSLOTH_HOME" not in resolved:
         resolved["UNSLOTH_HOME"] = str(tmp_path / "portable")
         (tmp_path / "portable").mkdir()
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     script = "\n".join(
         (
             "set -u",
@@ -462,10 +462,10 @@ def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environmen
     )
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", **resolved},
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        env={"HOME": str(home), "PATH": "/usr/bin:/bin", **resolved},
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.split() == expected
@@ -473,7 +473,7 @@ def test_the_ownership_flag_follows_where_the_runtimes_land(tmp_path, environmen
 
 @NEEDS_POSIX_BASH
 def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     script = "\n".join(
         (
             "set -u",
@@ -484,14 +484,14 @@ def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
     for flag in ("false", "true"):
         completed = subprocess.run(
             ["bash", "-c", script],
-            env = {
+            env={
                 "HOME": str(tmp_path / "home"),
                 "PATH": "/usr/bin:/bin",
                 "_STUDIO_HOME_IS_CUSTOM": flag,
             },
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert completed.returncode == 0, completed.stderr
         assert completed.stdout.split() == [flag, flag]
@@ -500,14 +500,14 @@ def test_no_master_root_leaves_the_ownership_flag_alone(tmp_path):
 def test_every_runtime_ownership_guard_uses_the_runtime_flag():
     """The Studio home and its venvs keep _STUDIO_HOME_IS_CUSTOM; every guard that names a
     runtime child has to move, or a master-root install loses the marker check on it."""
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     for line in src.splitlines():
         if "_STUDIO_HOME_IS_CUSTOM" not in line:
             continue
         assert not any(
             name in line for name in ("$NODE_DIR", "$LLAMA_CPP_DIR", "$WHISPER_CPP_DIR")
         ), line
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     # Seeded from the Studio flag and raised only when the master root is elsewhere, as setup.sh
     # does; test_the_windows_legacy_root_named_explicitly_is_not_custom runs the divergence.
     assert "$RuntimeRootIsCustom = $StudioHomeIsCustom\n" in ps
@@ -529,8 +529,8 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     to come from where the runtimes LAND, not from whether the variable was set.
     """
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    (home / ".unsloth" / "studio").mkdir(parents=True)
+    src = SETUP_SH.read_text(encoding="utf-8")
     block = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
     script = "\n".join(
         (
@@ -544,10 +544,10 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     def flag(master: str) -> str:
         done = subprocess.run(
             ["bash", "-c", script],
-            env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": master},
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": master},
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
@@ -558,7 +558,7 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
     assert flag("") == "false"
 
 
-@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+@pytest.mark.skipif(PWSH is None, reason="needs pwsh")
 def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
     """The Windows half of the test above, run rather than pattern-matched.
 
@@ -570,8 +570,8 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
     differently for one environment.
     """
     profile = tmp_path / "profile"
-    (profile / ".unsloth" / "studio").mkdir(parents = True)
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    (profile / ".unsloth" / "studio").mkdir(parents=True)
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     # The derivation itself, from the flag it seeds to the line after it.
     block = _slice(ps, "$RuntimeRootIsCustom = $StudioHomeIsCustom", "$LlamaCppDir = ")
     script = tmp_path / "probe.ps1"
@@ -594,21 +594,21 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
                 "Write-Output $RuntimeRootIsCustom",
             )
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     def flag(master: str) -> str:
         out = run_pwsh(
             [PWSH, "-NoProfile", "-File", str(script)],
-            env = {
+            env={
                 "PATH": os.environ.get("PATH", ""),
                 "HOME": str(profile),
                 "USERPROFILE": str(profile),
                 "UNSLOTH_HOME": master,
             },
-            capture_output = True,
-            text = True,
-            check = True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         assert "EXTRACT-FAILED" not in out, out
         return out.splitlines()[-1].strip()
@@ -619,7 +619,7 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
     assert flag("") == "False"
 
 
-@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+@pytest.mark.skipif(PWSH is None, reason="needs pwsh")
 def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_path):
     """The master root and its .staging go only when empty, and by an operation that cannot do
     anything else.
@@ -636,7 +636,7 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
     that separates DELETE from LIST is Windows-only. What is checked instead is the mechanism,
     which is what removes the race as well.
     """
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
     assert "function _RemoveDirIfEmpty" in ps
     helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
     # One atomic call: no -Recurse anywhere in it, and no emptiness question asked separately.
@@ -661,16 +661,16 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
                 'Write-Output ("EXISTS=" + (Test-Path -LiteralPath $args[0]))',
             )
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     def still_there(path: Path) -> bool:
         out = run_pwsh(
             [PWSH, "-NoProfile", "-File", str(script), str(path)],
-            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
-            capture_output = True,
-            text = True,
-            check = True,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         assert "EXTRACT-FAILED" not in out, out
         assert "EXISTS=" in out, out
@@ -682,13 +682,13 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
 
     occupied = tmp_path / "occupied"
     occupied.mkdir()
-    (occupied / "theirs.txt").write_text("mine", encoding = "utf-8")
+    (occupied / "theirs.txt").write_text("mine", encoding="utf-8")
     assert still_there(occupied)
     assert (occupied / "theirs.txt").is_file(), "a non-empty root must keep its contents"
 
     # A directory holding only a subdirectory: rmdir refuses this too, and a -Recurse would not.
     nested = tmp_path / "nested"
-    (nested / "child").mkdir(parents = True)
+    (nested / "child").mkdir(parents=True)
     assert still_there(nested)
     assert (nested / "child").is_dir()
 
@@ -701,7 +701,7 @@ def test_only_a_directory_can_be_adopted_at_a_runtime_path(tmp_path):
     install_*_prebuilt.py os.replace() over it. A dangling link is the ordinary case: its target
     volume is simply not mounted, and resolving it later installs onto somebody's other disk.
     """
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     block = _slice(src, "_studio_path_shape() {", "\n_packaged_frontend_available")
     script = "\n".join(
         (
@@ -720,10 +720,10 @@ def test_only_a_directory_can_be_adopted_at_a_runtime_path(tmp_path):
     def verdict(path: pathlib.Path) -> str:
         done = subprocess.run(
             ["bash", "-c", script, "_", str(path)],
-            env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         return done.stdout.strip().splitlines()[-1] if done.stdout.strip() else done.stderr[-120:]
 
@@ -754,7 +754,7 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     refused for the same reason storage_roots.toolchain_path_unparseable refuses one, since the
     C++ builders paste it in unquoted and reparse it with shlex in POSIX mode.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(ps, "$TorchCacheDir = $null", "$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir")
     assert 'Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in block
     assert "$LongPathsEnabled" in block
@@ -771,7 +771,7 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     assert '"C:\\tc"' in block
 
     roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     # The same key, named by both sides, so the two cannot drift apart silently.
     assert '"TORCHINDUCTOR_CACHE_DIR",' in roots
@@ -790,7 +790,7 @@ def test_the_windows_node_guard_covers_a_master_root():
     The sibling test above only rejects $StudioHomeIsCustom beside $NodeDir, which this bug
     never wrote: it named a third variable. So the rule here is positive, not a denial.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     # Every site in the Node install section that decides whether the Node path is the user's.
     # Keyed on $NodeOverride, the variable the bug named, not $NodeDir: the guard's probe moved
     # to its own line, so a $NodeDir test would pass by seeing less. The section start drops the
@@ -809,7 +809,7 @@ UNINSTALL_SH = REPO_ROOT / "scripts" / "uninstall.sh"
 UNINSTALL_PS1 = REPO_ROOT / "scripts" / "uninstall.ps1"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not available")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not available")
 def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
     """setup.ps1 resolves through PowerShell's own location; uninstall.ps1 used
     [IO.Path]::GetFullPath, which anchors at [Environment]::CurrentDirectory.
@@ -824,7 +824,7 @@ def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
     """
     initial = tmp_path / "initial"
     chosen = tmp_path / "chosen"
-    (chosen / "portable").mkdir(parents = True)
+    (chosen / "portable").mkdir(parents=True)
     initial.mkdir()
     out = _master_root_answer(
         tmp_path,
@@ -847,8 +847,8 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
     Behaviour is covered by tests/sh/test_uninstall_master_root.sh for the POSIX half; this
     holds the PowerShell twin, which has no runner here.
     """
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
 
     assert "_remove_lock_file() {" in sh
     assert "function _RemoveLockFile" in ps
@@ -888,8 +888,8 @@ def test_both_uninstallers_clear_the_master_root_children():
     uninstaller that only knows the legacy siblings and the Studio root strands them. Behaviour
     is covered by tests/sh/test_uninstall_master_root.sh; this holds the PowerShell twin, which
     the Linux runners cannot execute, and pins the marker gate on both."""
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
     assert "_master_root() {" in sh
     assert "function _MasterRoot" in ps
     for src, marker in ((sh, ".unsloth-studio-owned"), (ps, ".unsloth-studio-owned")):
@@ -911,7 +911,7 @@ def test_the_stop_pass_covers_the_master_root_runtimes():
     to be stopped before its tree is removed or the delete exhausts its retries. _MasterRoot is
     resolved before the stop pass, and only marker-owned children join it, so an unmarked
     neighbour's process is never killed."""
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
     stop_line = next(l for l in ps.splitlines() if l.strip().startswith("$stopRoots = "))
     assert "$masterChildrenToStop" in stop_line, stop_line
     block = _slice(ps, "$masterRootToStop = _MasterRoot", "$stopRoots = ")
@@ -925,8 +925,8 @@ def test_the_stop_pass_covers_the_master_root_runtimes():
 def test_a_shared_staging_directory_is_pruned_not_deleted():
     """The prebuilt installers share <root>/.staging and prune it only when empty, so anything
     left in a user-chosen root is not ours to delete recursively."""
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
     assert 'rmdir "$_mr_root/.staging"' in sh
     assert '_remove_path "$_mr_root/.staging"' not in sh
     # The Windows equivalent of rmdir, for the same reason. Asking with Get-ChildItem and then
@@ -947,14 +947,14 @@ def test_the_windows_uninstaller_refuses_a_note_carried_in_from_elsewhere(tmp_pa
     which means the Studio directory it was read from lying inside the root it names.
     """
     original = tmp_path / "original"
-    (original / "studio").mkdir(parents = True)
+    (original / "studio").mkdir(parents=True)
     copied = tmp_path / "copied"
-    (copied / "studio" / "share").mkdir(parents = True)
+    (copied / "studio" / "share").mkdir(parents=True)
     (copied / "studio" / "share" / ".unsloth-master-root").write_text(
-        f"{original}\n", encoding = "utf-8"
+        f"{original}\n", encoding="utf-8"
     )
     profile = tmp_path / "profile"
-    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents=True)
 
     script = tmp_path / "probe.ps1"
     script.write_text(
@@ -971,13 +971,13 @@ $env:USERPROFILE = "{profile}"
 $answer = _MasterRoot
 Write-Output "ANSWER:$answer"
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     out = run_pwsh(
         [PWSH, "-NoProfile", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        check = True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert "EXTRACT-FAILED" not in out, out
     assert out == "ANSWER:", out
@@ -992,14 +992,14 @@ def test_the_windows_uninstaller_does_not_borrow_another_installs_note(tmp_path)
     Runs the shipped function, as the test below does.
     """
     profile = tmp_path / "profile"
-    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents=True)
     borrowed = tmp_path / "borrowed"
-    (borrowed / "studio").mkdir(parents = True)
+    (borrowed / "studio").mkdir(parents=True)
     (profile / ".unsloth" / "studio" / "share" / ".unsloth-master-root").write_text(
-        f"{borrowed}\n", encoding = "utf-8"
+        f"{borrowed}\n", encoding="utf-8"
     )
     named = tmp_path / "named"
-    (named / "share").mkdir(parents = True)
+    (named / "share").mkdir(parents=True)
 
     out = _master_root_answer(
         tmp_path,
@@ -1026,12 +1026,12 @@ def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):
     Runs the shipped function, so a rewrite that keeps the words and loses the behaviour fails.
     """
     master = tmp_path / "portable"
-    (master / "studio" / "share").mkdir(parents = True)
+    (master / "studio" / "share").mkdir(parents=True)
     (master / "studio" / "share" / ".unsloth-master-root").write_text(
-        f"{master}\n", encoding = "utf-8"
+        f"{master}\n", encoding="utf-8"
     )
     profile = tmp_path / "profile"
-    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents=True)
 
     out = _master_root_answer(
         tmp_path,
@@ -1052,7 +1052,7 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
     from paths the uninstaller already knows, so a note there would only ever be able to go
     stale. This is the same rule setup.sh applies.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(
         ps, "# Record the master root inside the Studio tree", "$WithLlamaCppDir = $null"
     )
@@ -1080,7 +1080,7 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     both skip, so a cleanup nested in there would never reach that account. The clear needs
     nothing that block computes, so it is hoisted out of it.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     body = _slice(
         ps, "function Clear-UnparseableTorchCacheEnv {", "\nClear-UnparseableTorchCacheEnv"
     )
@@ -1108,7 +1108,7 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     lines = ps.splitlines()
     gate = lines.index("if (-not $SkipPythonDeps) {")
     depth = 0
-    for close, line in enumerate(lines[gate:], start = gate):
+    for close, line in enumerate(lines[gate:], start=gate):
         depth += line.count("{") - line.count("}")
         if depth == 0:
             break
@@ -1127,7 +1127,7 @@ def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
     Only a value inside a root this run owned: a directory the user chose is theirs, and the
     shared C:\\tc fallback is not install specific and is not deleted here either.
     """
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
     block = _slice(
         ps, "# Clear the persisted Inductor cache path", "# Remove HKCU\\Software\\Unsloth"
     )
@@ -1149,7 +1149,7 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
     lives inside a directory, so a non-directory can never carry it and is refused outright.
     setup.sh's _assert_studio_owned_or_absent takes the same view of -d against -e and -L.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(
         ps,
         "        $nodeEntry = if ($NodeOverride -or $RuntimeRootIsCustom) {",
@@ -1175,7 +1175,7 @@ def test_the_windows_runtime_guard_treats_a_file_as_occupied():
     replaced. The behaviour is run for real in tests/studio/test_path_probe_access_denied.ps1,
     which the Linux runners cannot execute; this holds the shape there too.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(ps, "function Assert-StudioOwnedOrAbsent", "function Mark-StudioOwned")
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     # Get-Item -Force, not another Test-Path: 5.1 answers false for a dangling link.
@@ -1199,8 +1199,8 @@ def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
     removed wholesale; this was the one hole in that rule. Kept rather than pruned: data left
     behind is recoverable and printed, a deleted file is not.
     """
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
 
     sh_block = _slice(sh, "_crf_canon=", '_remove_root_recording_db "$_custom_root"')
     sh_code = "\n".join(l for l in sh_block.splitlines() if not l.lstrip().startswith("#"))
@@ -1224,8 +1224,8 @@ def test_neither_uninstaller_re_resolves_the_master_root_after_deleting_it():
     added to prevent, reintroduced by asking too late. Both scripts resolve it once, before
     anything is deleted, and every later use takes that value.
     """
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
 
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     saved = sh_code.index('_MASTER_ROOT_SAVED="$(_master_root)"')
@@ -1251,8 +1251,8 @@ def test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make():
     """prebuilt_core.py leaves <name>.stale.<pid>. A dotted glob also matched a user's own
     ".backup.install.lock.stale.copy", and in a root the user chose that file is theirs.
     Behaviour for the POSIX half is in tests/sh/test_uninstall_master_root.sh."""
-    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
-    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    sh = UNINSTALL_SH.read_text(encoding="utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding="utf-8")
 
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     assert ".*.install.lock.stale.*" not in sh_code
@@ -1279,16 +1279,16 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     setup.sh already states this rule for the uv cache probe ("mktemp (O_EXCL) not $$"); the note
     writer is now held to it too.
     """
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     block = _slice(src, "_master_root_note_is_honoured() {", "LLAMA_CPP_DIR=")
 
     # Contained, so the honoured-note gate passes and the writer below actually runs. The gate
     # itself is covered by test_the_master_root_note_is_only_written_when_a_reader_honours_it.
     master = tmp_path / "portable"
     studio_home = master / "studio"
-    (studio_home / "share").mkdir(parents = True)
+    (studio_home / "share").mkdir(parents=True)
     victim = tmp_path / "victim.txt"
-    victim.write_text("do not truncate me\n", encoding = "utf-8")
+    victim.write_text("do not truncate me\n", encoding="utf-8")
 
     script = "\n".join(
         (
@@ -1300,7 +1300,7 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     )
     completed = subprocess.run(
         ["bash", "-c", script],
-        env = {
+        env={
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "STUDIO_HOME": str(studio_home),
             "UNSLOTH_HOME": str(master),
@@ -1308,15 +1308,15 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
             "STAGE_ROOT": "",
             "VICTIM": str(victim),
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
 
-    assert victim.read_text(encoding = "utf-8") == "do not truncate me\n"
+    assert victim.read_text(encoding="utf-8") == "do not truncate me\n"
     note = studio_home / "share" / ".unsloth-master-root"
-    assert note.read_text(encoding = "utf-8").strip() == str(master)
+    assert note.read_text(encoding="utf-8").strip() == str(master)
     # The rename replaces a link at the final path rather than writing through it.
     assert not note.is_symlink()
     # No staging file survives the run, whatever name it was given.
@@ -1331,7 +1331,7 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
 def test_the_windows_note_writer_creates_its_staging_file_exclusively():
     """The setup.ps1 half of the test above. Held structurally: the Linux runners have no
     Windows filesystem to plant a link on, and CreateNew is the thing that must not regress."""
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot -and", "\n# ")
     # Comments stripped, as the other structural checks here do: the block explains the old
     # staging name in prose, and the name is only a finding when something executes it.
@@ -1349,23 +1349,23 @@ def _run_note_block(
     studio_home,
     master,
     *,
-    existing_note = None,
-    home = None,
+    existing_note=None,
+    home=None,
 ):
     """Run the shipped note gate + writer + legacy sweep against a fixture, and report the note.
 
     The whole region is executed, not pattern-matched: the gate, the writer it guards and the
     sweep below it are one decision, and slicing them apart is how a gate that never runs passes.
     """
-    src = SETUP_SH.read_text(encoding = "utf-8")
+    src = SETUP_SH.read_text(encoding="utf-8")
     block = _slice(src, "_master_root_note_is_honoured() {", "LLAMA_CPP_DIR=")
     note = studio_home / "share" / ".unsloth-master-root"
-    note.parent.mkdir(parents = True, exist_ok = True)
+    note.parent.mkdir(parents=True, exist_ok=True)
     if existing_note is not None:
-        note.write_text(str(existing_note) + "\n", encoding = "utf-8")
+        note.write_text(str(existing_note) + "\n", encoding="utf-8")
     completed = subprocess.run(
         ["bash", "-c", "set -u\n" + block],
-        env = {
+        env={
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(home if home is not None else tmp_path / "home"),
             "STUDIO_HOME": str(studio_home),
@@ -1373,12 +1373,12 @@ def _run_note_block(
             "_MASTER_ROOT": str(master),
             "STAGE_ROOT": "",
         },
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
-    value = note.read_text(encoding = "utf-8").strip() if note.exists() else None
+    value = note.read_text(encoding="utf-8").strip() if note.exists() else None
     return value, completed.stderr
 
 
@@ -1398,13 +1398,13 @@ def test_the_master_root_note_is_only_written_when_a_reader_honours_it(tmp_path)
     studio_home = home / ".unsloth" / "studio"
     master = tmp_path / "portable"
     master.mkdir()
-    value, stderr = _run_note_block(tmp_path, studio_home, master, home = home)
+    value, stderr = _run_note_block(tmp_path, studio_home, master, home=home)
     assert value is None, f"wrote a note no reader will honour: {value}"
     assert "cannot be recorded" in stderr, stderr
 
     # The contained layout, which every reader does honour, still records.
     contained = master / "studio"
-    value, _ = _run_note_block(tmp_path, contained, master, home = home)
+    value, _ = _run_note_block(tmp_path, contained, master, home=home)
     assert value == str(master)
 
 
@@ -1424,10 +1424,10 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
     home = tmp_path / "home"
     studio_home = home / ".unsloth" / "studio"
     legacy_master = home / ".unsloth"
-    studio_home.mkdir(parents = True)
+    studio_home.mkdir(parents=True)
 
     # Contained (studio IS inside ~/.unsloth), so only the legacy-root rule can refuse it.
-    value, _ = _run_note_block(tmp_path, studio_home, legacy_master, home = home)
+    value, _ = _run_note_block(tmp_path, studio_home, legacy_master, home=home)
     assert value is None, f"recorded the legacy default root: {value}"
 
     # An install that already carries one from an earlier build is repaired in place.
@@ -1435,8 +1435,8 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
         tmp_path,
         studio_home,
         legacy_master,
-        existing_note = legacy_master,
-        home = home,
+        existing_note=legacy_master,
+        home=home,
     )
     assert value is None, "a stale legacy-root note survived"
 
@@ -1447,8 +1447,8 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
         tmp_path,
         studio_home,
         legacy_master,
-        existing_note = other,
-        home = home,
+        existing_note=other,
+        home=home,
     )
     assert value == str(other)
 
@@ -1456,7 +1456,7 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
 def test_the_windows_note_gate_holds_the_same_two_rules():
     """The setup.ps1 half of the two tests above. Structural: no PowerShell-on-Linux run can
     exercise %USERPROFILE% canonicalisation the way a real Windows profile does."""
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     gate = _slice(ps, "function Test-MasterRootNoteIsHonoured {", "\nif ((Get-MasterRootOverride)")
     assert "$legacy = Get-CanonicalDir" in gate, "the legacy default root is not refused"
     assert "StartsWith($norm + $sep" in gate, "containment is not checked"
@@ -1476,7 +1476,7 @@ def test_the_windows_note_writer_is_a_no_op_when_the_note_already_says_this():
     Run under pwsh rather than asserted from source text: the comparison is the point, and a
     structural check would pass on a version that compares the wrong two things.
     """
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(
         ps, '        $notePath = Join-Path $noteDir ".unsloth-master-root"', "\n    } catch {"
     )
@@ -1484,11 +1484,11 @@ def test_the_windows_note_writer_is_a_no_op_when_the_note_already_says_this():
     assert "$noteSame" in block, "the note is rewritten even when it already says this"
 
 
-@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+@pytest.mark.skipif(PWSH is None, reason="needs pwsh")
 def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     """The behaviour, measured: same value twice leaves the file untouched; a different value
     replaces it; and no staging file survives either way."""
-    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    ps = SETUP_PS1.read_text(encoding="utf-8")
     block = _slice(
         ps, '        $notePath = Join-Path $noteDir ".unsloth-master-root"', "\n    } catch {"
     )
@@ -1502,10 +1502,10 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
         + "\n$final = Join-Path $noteDir '.unsloth-master-root'\n"
         "$stamp = (Get-Item -LiteralPath $final).LastWriteTimeUtc.Ticks\n"
         "Write-Output ((Get-Content -LiteralPath $final -Raw) + '|' + $stamp)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     argv = [PWSH, "-NoProfile", "-File", str(script)]
-    first = run_pwsh(argv, capture_output = True, text = True, check = True)
+    first = run_pwsh(argv, capture_output=True, text=True, check=True)
     note = note_dir / ".unsloth-master-root"
 
     # Back-dated so a rewrite is unmistakable: two runs a millisecond apart land on one
@@ -1514,7 +1514,7 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     old_stamp = 1_000_000_000
     os.utime(note, (old_stamp, old_stamp))
 
-    second = run_pwsh(argv, capture_output = True, text = True, check = True)
+    second = run_pwsh(argv, capture_output=True, text=True, check=True)
 
     body_1, _ = first.stdout.strip().rsplit("|", 1)
     body_2, _ = second.stdout.strip().rsplit("|", 1)
@@ -1527,11 +1527,11 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
 
     # And a CHANGED value must still be written, or the check above passes by doing nothing.
     script.write_text(
-        script.read_text(encoding = "utf-8").replace(
+        script.read_text(encoding="utf-8").replace(
             _ps_quote(str(tmp_path / "master")), _ps_quote(str(tmp_path / "moved"))
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    run_pwsh(argv, capture_output = True, text = True, check = True)
-    assert note.read_text(encoding = "utf-8").strip() == str(tmp_path / "moved")
+    run_pwsh(argv, capture_output=True, text=True, check=True)
+    assert note.read_text(encoding="utf-8").strip() == str(tmp_path / "moved")
     assert int(note.stat().st_mtime) != old_stamp

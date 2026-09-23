@@ -62,7 +62,7 @@ def _append_mcp_images_owned(
     conversation,
     results,
     owned,
-    lead = None,
+    lead=None,
 ):
     """append_image_turn with the loop's own part list, for asyncio.to_thread.
 
@@ -74,9 +74,9 @@ def _append_mcp_images_owned(
     append_mcp_image_turn(
         conversation,
         results,
-        per_result = True,
-        owned = owned,
-        reserve_caller_images = True,
+        per_result=True,
+        owned=owned,
+        reserve_caller_images=True,
         **({"lead": lead} if lead else {}),
     )
 
@@ -220,7 +220,7 @@ _MAX_FRUITLESS_TURNS = 2
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators = (",", ":"))
+    return "data: " + json.dumps(payload, separators=(",", ":"))
 
 
 def _is_done_sentinel(line: str) -> bool:
@@ -300,7 +300,7 @@ def _argument_fragment(value: Any) -> Any:
     field". Mirrors ``streamedToolCallArguments`` in ``tool-call-arguments.ts``."""
     if isinstance(value, (dict, list)):
         try:
-            return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         except (TypeError, ValueError, RecursionError):
             return ""
     return value
@@ -358,7 +358,7 @@ class ToolLoopTransport(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopRun:
     """Everything about the request that the loop, not the transport, needs."""
 
@@ -375,7 +375,7 @@ class ToolLoopRun:
     promoted_image_parts: tuple = ()
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -443,9 +443,9 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
                 try:
                     json.loads(
                         segment,
-                        parse_constant = _reject_json_constant,
+                        parse_constant=_reject_json_constant,
                         # As text: JSON.parse has no 4300-digit int cap.
-                        parse_int = str,
+                        parse_int=str,
                     )
                 except (ValueError, TypeError):
                     return unsplit
@@ -468,7 +468,7 @@ class _BoundaryScan:
     in_string: bool = False
     escaped: bool = False
     scanned: int = 0
-    complete: list[str] = field(default_factory = list)
+    complete: list[str] = field(default_factory=list)
     # Once unsplittable, appending can never make it splittable again.
     unsplittable: bool = False
 
@@ -509,8 +509,8 @@ class _BoundaryScan:
                     try:
                         json.loads(
                             segment,
-                            parse_constant = _reject_json_constant,
-                            parse_int = str,
+                            parse_constant=_reject_json_constant,
+                            parse_int=str,
                         )
                     except (ValueError, TypeError, RecursionError):
                         self.unsplittable = True
@@ -526,33 +526,33 @@ class _BoundaryScan:
 class _Turn:
     """Accumulated state for one provider turn."""
 
-    by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
-    order: list[Any] = field(default_factory = list)
+    by_index: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    order: list[Any] = field(default_factory=list)
     # call key each delta index maps to: the index itself until a second call forks off it, then (index, call_id), or
     # (index, "_split", n) for a call that had no id to fork on and was found on a JSON object boundary.
-    open_key_by_index: dict[int, Any] = field(default_factory = dict)
+    open_key_by_index: dict[int, Any] = field(default_factory=dict)
     last_index: int | None = None
     split_seq: int = 0
-    seq_by_key: dict[Any, int] = field(default_factory = dict)
+    seq_by_key: dict[Any, int] = field(default_factory=dict)
     seq_counter: int = 0
     # Which call each id names: a fragment repeating one returns to its call.
-    key_by_call_id: dict[str, Any] = field(default_factory = dict)
+    key_by_call_id: dict[str, Any] = field(default_factory=dict)
     # Resumable boundary scan per call, keyed the same as ``by_index``.
-    scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
+    scan_by_key: dict[Any, _BoundaryScan] = field(default_factory=dict)
     # Forks whose object never closed: reported only once it does, or a stream cut short after '{"a":1}{' runs the
     # tool on half an argument.
-    open_tail_keys: set[Any] = field(default_factory = set)
+    open_tail_keys: set[Any] = field(default_factory=set)
     # Metadata from a delta repeating the slot's name. That name is either the call's, resent, or the next call to the
     # same tool announcing itself, and only the object that follows tells them apart.
-    pending_extra: dict[Any, dict[str, Any]] = field(default_factory = dict)
+    pending_extra: dict[Any, dict[str, Any]] = field(default_factory=dict)
     round: int = 0
-    healed: list[dict[str, Any]] = field(default_factory = list)
-    text: list[str] = field(default_factory = list)
+    healed: list[dict[str, Any]] = field(default_factory=list)
+    text: list[str] = field(default_factory=list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
     # result twice
-    hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
+    hosted_results: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def note_hosted_tool_event(self, event: Any) -> None:
         """Record a provider-side tool call carried on ``_toolEvent``. These reach the client as
@@ -585,9 +585,9 @@ class _Turn:
             # Truncated with the same notice a result gets: Anthropic hands the model's whole tool input through, so a
             # file the code wrote lives here and nowhere else, and a silent cut reads as the whole thing.
             entry["arguments"] = _truncate_for_model(
-                json.dumps(merged, separators = (",", ":")),
+                json.dumps(merged, separators=(",", ":")),
                 _HOSTED_ARGUMENT_MAX_CHARS,
-                joiner = " ",
+                joiner=" ",
             )
 
         if kind == "tool_start":
@@ -939,7 +939,7 @@ class _Turn:
             if self._call_is_finished(key)
         ]
         ordered = [
-            (index, call) for _, index, call in sorted(numbered, key = lambda triple: triple[0])
+            (index, call) for _, index, call in sorted(numbered, key=lambda triple: triple[0])
         ]
         # An announcement another call took over, and a name that only looked like the closed call's resent, were
         # never calls. A lone announcement the provider opened is kept (a zero-parameter tool looks like that). Its
@@ -976,7 +976,7 @@ class _Turn:
         )
         for position, (index, call) in enumerate(ordered + [(None, call) for call in self.healed]):
             streamed_id = call.get("id")
-            normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
+            normalized = _normalized_call(call, fallback_id=f"call_{self.round}_{position}")
             if normalized is None:
                 continue
             if not (isinstance(streamed_id, str) and streamed_id):
@@ -1264,8 +1264,8 @@ async def stream_with_studio_tools(
     # Dedup, one-shot tracking and the force-final-answer transition are the same ledger the local loops keep, so an
     # external model cannot spend the budget repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
-        tools = tools,
-        auto_heal_tool_calls = policy.auto_heal is not False,
+        tools=tools,
+        auto_heal_tool_calls=policy.auto_heal is not False,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -1291,7 +1291,7 @@ async def stream_with_studio_tools(
             # nothing ever executes.
             break
         provider_turns += 1
-        turn = _Turn(round = provider_turns)
+        turn = _Turn(round=provider_turns)
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
         # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
@@ -1314,10 +1314,10 @@ async def stream_with_studio_tools(
             turn_tool_choice = "auto"
 
         generator = transport.stream(
-            messages = conversation,
-            tools = active_tools if tools_available else None,
-            tool_choice = turn_tool_choice,
-            cancel_event = cancel_event,
+            messages=conversation,
+            tools=active_tools if tools_available else None,
+            tool_choice=turn_tool_choice,
+            cancel_event=cancel_event,
         )
         try:
             async for line in generator:
@@ -1354,7 +1354,7 @@ async def stream_with_studio_tools(
                     # wholesale without losing the content. Drop just the usage: it is already in the totals, and
                     # leaving it here makes a client that sums chunks count this turn twice.
                     payload.pop("usage", None)
-                    line = "data: " + json.dumps(payload, separators = (",", ":"))
+                    line = "data: " + json.dumps(payload, separators=(",", ":"))
                 choices = payload.get("choices")
                 choice = choices[0] if isinstance(choices, list) and choices else {}
                 if not isinstance(choice, dict):
@@ -1512,13 +1512,13 @@ async def stream_with_studio_tools(
                 )
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
-                    tool_name = name,
-                    tool_call_id = truncated_id,
+                    tool_name=name,
+                    tool_call_id=truncated_id,
                     # The arguments are cut off mid-write, so there is nothing well formed to show; the result says
                     # what happened.
-                    arguments = {},
-                    result = _TOOL_TRUNCATED,
-                    provenance = _unrun_provenance(name, round_id + 1),
+                    arguments={},
+                    result=_TOOL_TRUNCATED,
+                    provenance=_unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call anyway has not been authorized to run
@@ -1573,7 +1573,7 @@ async def stream_with_studio_tools(
                         stalled_message,
                         # A resumed partial is the same turn as what the model just added, so merge rather than
                         # append: appending puts a turn boundary mid-sentence.
-                        continue_final_message = run.continue_final_message,
+                        continue_final_message=run.continue_final_message,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
@@ -1594,11 +1594,11 @@ async def stream_with_studio_tools(
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
-                    tool_name = call["function"]["name"],
-                    tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
-                    result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = _unrun_provenance(call["function"]["name"], round_id),
+                    tool_name=call["function"]["name"],
+                    tool_call_id=call.get("card_id") or call.get("stream_id") or call["id"],
+                    arguments=call.get("arguments"),
+                    result=_TOOL_BUDGET_EXHAUSTED,
+                    provenance=_unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
@@ -1641,13 +1641,13 @@ async def stream_with_studio_tools(
                 if decision.action == "disabled":
                     continue
                 for card_line in _unrun_call_card(
-                    tool_name = decision.tool_name,
-                    tool_call_id = (
+                    tool_name=decision.tool_name,
+                    tool_call_id=(
                         call.get("card_id") or call.get("stream_id") or decision.tool_call_id
                     ),
-                    arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
-                    provenance = decision.provenance,
+                    arguments=decision.arguments,
+                    result=_TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
+                    provenance=decision.provenance,
                 ):
                     yield card_line
                 continue
@@ -1695,12 +1695,12 @@ async def stream_with_studio_tools(
                         # Hold the first keepalive back so the gated card is flushed on its own write and the Allow /
                         # Deny buttons paint before the stream blocks waiting for the answer.
                         done, _pending = await asyncio.wait(
-                            {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
+                            {waiter}, timeout=_TOOL_APPROVAL_FLUSH_DELAY_S
                         )
                         while not done:
                             yield _SSE_KEEPALIVE
                             done, _pending = await asyncio.wait(
-                                {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
+                                {waiter}, timeout=TOOL_HEARTBEAT_INTERVAL_S
                             )
                     finally:
                         if not waiter.done():
@@ -1750,7 +1750,7 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            def _invoke(output_callback: Any, call=decision) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1774,6 +1774,7 @@ async def stream_with_studio_tools(
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config
+
                         kwargs["conversation_budget_tokens"] = max(
                             1, int(rag_config.CHUNK_TOKENS)
                         ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
@@ -1788,9 +1789,9 @@ async def stream_with_studio_tools(
             # call cannot idle the stream out.
             tool_stream = scoped_tool_stream(
                 _invoke,
-                tool_name = name,
-                tool_call_id = card_id,
-                cancel_event = cancel_event,
+                tool_name=name,
+                tool_call_id=card_id,
+                cancel_event=cancel_event,
             )
             outcome: dict[str, Any] = {}
             step_task: Any = None
@@ -1857,7 +1858,7 @@ async def stream_with_studio_tools(
             "role": "assistant",
             # Markup never replays: the call is carried structurally below.
             "content": strip_tool_markup(
-                "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
+                "".join(turn.text), final=True, enabled_tool_names=allowed_tool_names
             ),
         }
         hosted_text = turn.hosted_replay_text()
@@ -1879,7 +1880,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message = run.continue_final_message,
+                continue_final_message=run.continue_final_message,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them, and merged into a trailing user turn
@@ -1893,6 +1894,7 @@ async def stream_with_studio_tools(
             # above" is exact; with several it names whichever ran last, which may
             # have returned no picture at all, so the block says so instead.
             from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+
             _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
             # Off the event loop: each image is decoded and re-encoded.
             await asyncio.to_thread(

@@ -54,7 +54,7 @@ class _RecordingLogger:
 
     def __getattr__(self, name):
         def sink(
-            msg = "",
+            msg="",
             *a,
             **k,
         ):
@@ -67,7 +67,7 @@ class _Reader:
     def __init__(self):
         self.joined = False
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         self.joined = True
 
 
@@ -162,7 +162,7 @@ class _StubbornProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         if not self.killed:
             raise subprocess.TimeoutExpired("llama-server", timeout)
 
@@ -192,7 +192,7 @@ def test_sigkill_still_happens_when_the_log_write_fails(monkeypatch):
 class _UnkillableProcess(_StubbornProcess):
     """Ignores SIGKILL too, e.g. stuck in an uninterruptible wait."""
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         raise subprocess.TimeoutExpired("llama-server", timeout)
 
 

@@ -46,7 +46,7 @@ def test_chat_load_evicts_diffusion(calls):
 def test_chat_load_can_refuse_to_evict_diffusion(calls):
     arb.acquire_for(arb.DIFFUSION)
     with pytest.raises(arb.GpuOwnerBusyError) as excinfo:
-        arb.acquire_for(arb.CHAT, allow_evict = False)
+        arb.acquire_for(arb.CHAT, allow_evict=False)
     assert excinfo.value.owner == arb.DIFFUSION
     assert calls == []
     assert arb.current_owner() == arb.DIFFUSION
@@ -102,7 +102,7 @@ def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
         def unload_model(self, name):
             pass
 
-        def _shutdown_subprocess(self, timeout = 5.0):
+        def _shutdown_subprocess(self, timeout=5.0):
             pass
 
     monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
@@ -186,13 +186,13 @@ def test_competing_acquire_blocks_until_register_completes(monkeypatch):
         assert release_register.wait(2.0)
         return "loading"
 
-    loader = threading.Thread(target = lambda: arb.acquire_for(arb.DIFFUSION, register))
+    loader = threading.Thread(target=lambda: arb.acquire_for(arb.DIFFUSION, register))
     loader.start()
     assert in_register.wait(2.0)
 
     competitor_done = threading.Event()
     threading.Thread(
-        target = lambda: (arb.acquire_for(arb.VIDEO), competitor_done.set()),
+        target=lambda: (arb.acquire_for(arb.VIDEO), competitor_done.set()),
     ).start()
 
     # The competitor cannot evict DIFFUSION while register still holds the lock.
@@ -233,7 +233,7 @@ def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
         def unload_model(self, name):
             pass
 
-        def _shutdown_subprocess(self, timeout = 5.0):
+        def _shutdown_subprocess(self, timeout=5.0):
             pass
 
     monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
@@ -281,7 +281,7 @@ def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
             cancelled.append(name)
             return True
 
-        def _shutdown_subprocess(self, timeout = 5.0):
+        def _shutdown_subprocess(self, timeout=5.0):
             pass
 
     monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
@@ -320,7 +320,7 @@ def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch)
             cancelled.append(name)
             return True
 
-        def _shutdown_subprocess(self, timeout = 5.0):
+        def _shutdown_subprocess(self, timeout=5.0):
             pass
 
     orchestrator = _FakeOrchestrator()
@@ -338,7 +338,7 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
     from pathlib import Path
 
     route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     unsloth_load = load_impl.index("success = await asyncio.to_thread(")

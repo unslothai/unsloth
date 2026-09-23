@@ -30,8 +30,8 @@ HELPER_NAMES = (
 
 def load_dispatch_helpers():
     """Return ``{name: function}`` for the helpers, exec'd from the live source."""
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text, filename = str(SOURCE_PATH))
+    text = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(SOURCE_PATH))
     wanted = []
     for name in HELPER_NAMES:
         found = [
@@ -46,7 +46,7 @@ def load_dispatch_helpers():
         wanted.append(found[0])
 
     namespace: dict = {}
-    exec(compile(ast.Module(body = wanted, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
     return {name: namespace[name] for name in HELPER_NAMES}
 
 
@@ -57,8 +57,8 @@ def load_padded_loop_source():
     whose direct body holds ``for ... in zipped_inputs``. No text search, so a
     comment quoting the same code cannot match.
     """
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text, filename = str(SOURCE_PATH))
+    text = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(SOURCE_PATH))
     functions = [
         node
         for node in ast.walk(tree)
@@ -82,7 +82,7 @@ def load_padded_loop_source():
     ]
     if len(loops) != 1:
         raise AssertionError(f"expected exactly one padded loop, found {len(loops)}")
-    segment = ast.get_source_segment(text, loops[0], padded = True)
+    segment = ast.get_source_segment(text, loops[0], padded=True)
     if segment is None:
         raise AssertionError("could not recover the padded-loop source segment")
     return textwrap.dedent(segment)

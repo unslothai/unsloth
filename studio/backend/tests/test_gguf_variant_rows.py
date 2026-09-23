@@ -216,7 +216,7 @@ def test_local_lister_matches_the_remote_shape(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     (snapshot / "config.json").write_text("{}")
 
@@ -229,7 +229,7 @@ def test_local_lister_matches_the_remote_shape(tmp_path):
 
 def test_qualified_rows_carry_a_readable_label():
     variants = [
-        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1)
+        GgufVariantInfo(filename=path, quant=gguf_variant_key(path), size_bytes=1)
         for path, _ in LTX_FILES
     ]
     _apply_gguf_display_labels(variants)
@@ -285,7 +285,7 @@ def test_readiness_agrees_with_the_rows(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert {v.quant for v in variants} <= complete_snapshot_variants(str(snapshot))
@@ -295,7 +295,7 @@ def test_a_chosen_row_loads_its_own_checkpoint(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     (snapshot / "config.json").write_text("{}")
 
@@ -328,7 +328,7 @@ def test_delete_removes_only_the_chosen_checkpoint(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
 
     count, _ = _delete_gguf_variant_files(snapshot, "distilled/ltx-2.3-22b-distilled-Q6_K")
@@ -344,7 +344,7 @@ def test_delete_removes_every_shard_of_one_variant(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in SHARDED_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 8)
 
     count, _ = _delete_gguf_variant_files(snapshot, "BF16")
@@ -373,7 +373,7 @@ def test_row_filenames_are_real_paths_under_the_snapshot(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert len(variants) == 3
@@ -397,10 +397,10 @@ def test_the_route_model_carries_display_label_to_the_picker():
     )
 
     row = RouteDetail(
-        filename = "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
-        quant = "distilled/ltx-2.3-22b-distilled-Q6_K",
-        display_label = "Q6_K · distilled",
-        size_bytes = 17_774_906_400,
+        filename="distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
+        quant="distilled/ltx-2.3-22b-distilled-Q6_K",
+        display_label="Q6_K · distilled",
+        size_bytes=17_774_906_400,
     )
     assert row.model_dump()["display_label"] == "Q6_K · distilled"
 
@@ -410,7 +410,7 @@ def test_an_unqualified_row_still_reports_no_display_label():
     one, or every ordinary row gains a redundant second name."""
     from models.models import GgufVariantDetail as RouteDetail
 
-    row = RouteDetail(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1)
+    row = RouteDetail(filename="model-Q4_K_M.gguf", quant="Q4_K_M", size_bytes=1)
     assert row.model_dump()["display_label"] is None
 
 
@@ -429,11 +429,11 @@ def test_a_discarded_shard_family_leaves_the_download_targets_too():
     from hub.utils.gguf_plan import plan_from_expected_files
 
     expected = [
-        ExpectedFile(path = "BF16/QwQ-32B-BF16-00001-of-00002.gguf", size = 50, sha256 = "a1"),
-        ExpectedFile(path = "BF16/QwQ-32B-BF16-00002-of-00002.gguf", size = 15, sha256 = "a2"),
-        ExpectedFile(path = "BF16/QwQ-32B.BF16-00001-of-00002.gguf", size = 50, sha256 = "b1"),
-        ExpectedFile(path = "BF16/QwQ-32B.BF16-00002-of-00002.gguf", size = 15, sha256 = "b2"),
-        ExpectedFile(path = "mmproj-F16.gguf", size = 5, sha256 = "c1"),
+        ExpectedFile(path="BF16/QwQ-32B-BF16-00001-of-00002.gguf", size=50, sha256="a1"),
+        ExpectedFile(path="BF16/QwQ-32B-BF16-00002-of-00002.gguf", size=15, sha256="a2"),
+        ExpectedFile(path="BF16/QwQ-32B.BF16-00001-of-00002.gguf", size=50, sha256="b1"),
+        ExpectedFile(path="BF16/QwQ-32B.BF16-00002-of-00002.gguf", size=15, sha256="b2"),
+        ExpectedFile(path="mmproj-F16.gguf", size=5, sha256="c1"),
     ]
     plan = plan_from_expected_files("bf16", expected)
 
@@ -454,7 +454,7 @@ def test_a_genuine_split_keeps_every_shard_in_the_plan():
     from hub.utils.gguf_plan import plan_from_expected_files
 
     expected = [
-        ExpectedFile(path = f"BF16/DeepSeek-R1-BF16-0000{n}-of-00003.gguf", size = 10, sha256 = f"h{n}")
+        ExpectedFile(path=f"BF16/DeepSeek-R1-BF16-0000{n}-of-00003.gguf", size=10, sha256=f"h{n}")
         for n in (1, 2, 3)
     ]
     plan = plan_from_expected_files("bf16", expected)
@@ -509,7 +509,7 @@ def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
     """Two rows labelled ``Q6_K · experiments`` are two rows a user cannot tell apart."""
     paths = ("experiments/model-a-Q6_K.gguf", "experiments/model-b-Q6_K.gguf")
     variants = [
-        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1) for path in paths
+        GgufVariantInfo(filename=path, quant=gguf_variant_key(path), size_bytes=1) for path in paths
     ]
     _apply_gguf_display_labels(variants)
     labels = [v.display_label for v in variants]
@@ -529,7 +529,7 @@ def test_the_model_config_listers_advertise_the_qualified_keys(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _size in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     (snapshot / "config.json").write_text("{}")
 
@@ -569,7 +569,7 @@ def test_h3_variants_require_the_advertised_full_stem():
     from hub.utils.gguf_plan import plan_for_variant
 
     plans = build_gguf_variant_plans([_Sibling(name, 64) for name in H3_FILES])
-    variants = _gguf_variants([SimpleNamespace(rfilename = name, size = 64) for name in H3_FILES])
+    variants = _gguf_variants([SimpleNamespace(rfilename=name, size=64) for name in H3_FILES])
 
     ud_key = gguf_variant_key(H3_FILES[0]).lower()
     assert {key.lower() for key in variants} == set(plans)
@@ -588,7 +588,7 @@ def test_h3_auto_download_excludes_the_bundled_text_encoders():
     from core.inference.openai_auto_download import _gguf_variants
 
     siblings = [
-        SimpleNamespace(rfilename = name, size = 64)
+        SimpleNamespace(rfilename=name, size=64)
         for name in [
             *H3_FILES,
             "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
@@ -610,7 +610,7 @@ def test_the_ordinary_repo_keeps_its_bare_labels(tmp_path):
     snapshot.mkdir()
     for name in ("model-Q4_K_M.gguf", "model-Q6_K.gguf", "BF16/model-BF16-00001-of-00002.gguf"):
         target = snapshot / name
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 64)
     (snapshot / "config.json").write_text("{}")
     variants, _ = list_local_gguf_variants(str(snapshot))
@@ -625,7 +625,7 @@ def test_the_auto_download_map_is_keyed_like_the_plan():
 
     from core.inference.openai_auto_download import _gguf_variants
 
-    siblings = [SimpleNamespace(rfilename = path, size = size) for path, size in LTX_FILES]
+    siblings = [SimpleNamespace(rfilename=path, size=size) for path, size in LTX_FILES]
     sizes = _gguf_variants(siblings)
     assert set(sizes) == {gguf_variant_key(path) for path, _ in LTX_FILES}
     assert "distilled/ltx-2.3-22b-distilled-Q6_K" in sizes
@@ -641,7 +641,7 @@ def test_an_unknown_layout_row_keeps_the_label_it_always_had(tmp_path):
     from utils.models.model_config import list_local_gguf_variants
 
     snapshot = tmp_path / "snap"
-    (snapshot / "BF16").mkdir(parents = True)
+    (snapshot / "BF16").mkdir(parents=True)
     (snapshot / "Qwen3.6-27B-MTP-001-of-002.gguf").write_bytes(b"x" * 100)
     (snapshot / "BF16" / "gemma-4-12b-it-Q8_0-001-of-002.gguf").write_bytes(b"x" * 40)
     (snapshot / "config.json").write_text("{}")
@@ -660,7 +660,7 @@ def test_a_shared_container_directory_still_answers_its_bare_quant():
     from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
     siblings = [
-        SimpleNamespace(rfilename = f"weights/model-{q}.gguf", size = 10, lfs = None)
+        SimpleNamespace(rfilename=f"weights/model-{q}.gguf", size=10, lfs=None)
         for q in ("Q4_K_M", "Q6_K")
     ]
     plans = build_gguf_variant_plans(siblings)
@@ -682,7 +682,7 @@ def test_an_ambiguous_bare_quant_gets_no_fallback():
     from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
     siblings = [
-        SimpleNamespace(rfilename = path, size = 10, lfs = None)
+        SimpleNamespace(rfilename=path, size=10, lfs=None)
         for path in (
             "distilled/ltx-2.3-22b-distilled-Q6_K.gguf",
             "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q6_K.gguf",
@@ -739,7 +739,7 @@ def test_a_parent_only_quant_survives_the_endian_filter():
     from hub.utils.gguf_plan import build_gguf_variant_plans
 
     siblings = [
-        SimpleNamespace(rfilename = "distilled/Q4_K_M/foo.gguf", size = 10, lfs = None),
+        SimpleNamespace(rfilename="distilled/Q4_K_M/foo.gguf", size=10, lfs=None),
     ]
     plans = build_gguf_variant_plans(siblings)
     assert plans, "the only file in the repo was filtered out of every plan"
@@ -782,17 +782,17 @@ def test_a_local_load_keeps_the_qualified_identity_it_was_asked_for(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _size in LTX_FILES:
         target = snapshot / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     (snapshot / "config.json").write_text("{}")
 
     wanted = "distilled/ltx-2.3-22b-distilled-Q6_K"
-    cfg = ModelConfig.from_identifier(str(snapshot), gguf_variant = wanted)
+    cfg = ModelConfig.from_identifier(str(snapshot), gguf_variant=wanted)
     assert cfg is not None and cfg.is_gguf and cfg.is_local
     assert cfg.gguf_variant == wanted
     assert "distilled/" in Path(cfg.gguf_file).as_posix()
     # A bare request still records the bare identity it asked for.
-    bare = ModelConfig.from_identifier(str(snapshot), gguf_variant = "Q6_K")
+    bare = ModelConfig.from_identifier(str(snapshot), gguf_variant="Q6_K")
     assert bare is not None and bare.gguf_variant == "Q6_K"
 
 
@@ -803,28 +803,28 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
     repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
     snap = repo_dir / "snapshots" / "rev1"
     blobs = repo_dir / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    snap.mkdir(parents=True)
+    blobs.mkdir(parents=True)
     files = []
     for index, name in enumerate(names):
         blob = blobs / f"sha{index}"
         blob.write_bytes(b"x" * 64)
         link = snap / name
-        link.parent.mkdir(parents = True, exist_ok = True)
+        link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(blob)
         files.append(
             SimpleNamespace(
-                file_name = Path(name).name,
-                file_path = str(link),
-                blob_path = str(blob),
-                size_on_disk = 64,
+                file_name=Path(name).name,
+                file_path=str(link),
+                blob_path=str(blob),
+                size_on_disk=64,
             )
         )
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_dir,
-        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=repo_dir,
+        revisions=[SimpleNamespace(files=files, snapshot_path=str(snap))],
     ), snap
 
 
@@ -842,7 +842,7 @@ def test_deleting_a_container_variant_accepts_the_bare_quant_the_download_admits
     assert set(plans) == {"weights/model-q4_k_m"}
     assert plan_for_variant(plans, "Q4_K_M") is not None
 
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
     assert not (snap / "weights" / "model-Q4_K_M.gguf").is_symlink()
 
 
@@ -856,12 +856,12 @@ def test_deleting_an_h3_variant_requires_the_full_stem(tmp_path):
         H3_FILES[0][:-5],
         [repo],
         None,
-        root = tmp_path,
+        root=tmp_path,
     )
     assert not (snap / H3_FILES[0]).is_symlink()
 
     with pytest.raises(HTTPException) as exc_info:
-        _delete_gguf_variant_from_repos(repo.repo_id, "UD-Q2_K_XL", [repo], None, root = tmp_path)
+        _delete_gguf_variant_from_repos(repo.repo_id, "UD-Q2_K_XL", [repo], None, root=tmp_path)
     assert exc_info.value.status_code == 404
     assert (snap / H3_FILES[1]).is_symlink()
     assert (snap / H3_FILES[2]).is_symlink()
@@ -880,14 +880,14 @@ def test_an_ambiguous_bare_quant_deletes_nothing(tmp_path):
         ["distilled/model-Q4_K_M.gguf", "distilled-1.1/model-Q4_K_M.gguf"],
     )
     with pytest.raises(HTTPException) as excinfo:
-        _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+        _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
     assert excinfo.value.status_code == 404
     assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "distilled-1.1" / "model-Q4_K_M.gguf").is_symlink()
 
     # The qualified key still deletes exactly its own checkpoint.
     _delete_gguf_variant_from_repos(
-        "org/Model-GGUF", "distilled/model-Q4_K_M", [repo], None, root = tmp_path
+        "org/Model-GGUF", "distilled/model-Q4_K_M", [repo], None, root=tmp_path
     )
     assert not (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "distilled-1.1" / "model-Q4_K_M.gguf").is_symlink()
@@ -901,7 +901,7 @@ def test_a_bare_quant_that_is_its_own_key_still_deletes_only_itself(tmp_path):
     repo, snap = _cache_repo(
         tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "distilled/model-Q4_K_M.gguf"]
     )
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "distilled" / "model-Q4_K_M.gguf").is_symlink()
 
@@ -956,10 +956,10 @@ def test_a_bpw_key_needs_no_scope_label():
     """It reads as a label already, so the display pass must not append the whole filename to it
     the way it does for a path-qualified key."""
     variants = [
-        GgufVariantInfo(filename = "model-IQ4_XS-3.53bpw.gguf", quant = "IQ4_XS-3.53bpw", size_bytes = 1),
-        GgufVariantInfo(filename = "model-IQ4_XS-3.97bpw.gguf", quant = "IQ4_XS-3.97bpw", size_bytes = 2),
+        GgufVariantInfo(filename="model-IQ4_XS-3.53bpw.gguf", quant="IQ4_XS-3.53bpw", size_bytes=1),
+        GgufVariantInfo(filename="model-IQ4_XS-3.97bpw.gguf", quant="IQ4_XS-3.97bpw", size_bytes=2),
         GgufVariantInfo(
-            filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K", size_bytes = 3
+            filename="distilled/model-Q6_K.gguf", quant="distilled/model-Q6_K", size_bytes=3
         ),
     ]
     _apply_gguf_display_labels(variants)
@@ -1008,7 +1008,7 @@ def test_a_bpw_container_build_resolves_by_its_bare_spelling(tmp_path):
     assert plan_for_variant(plans, "IQ4_XS") is None
 
     repo, snap = _cache_repo(tmp_path, "org/Model-GGUF", ["weights/model-IQ4_XS-3.53bpw.gguf"])
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "IQ4_XS-3.53bpw", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "IQ4_XS-3.53bpw", [repo], None, root=tmp_path)
     assert not (snap / "weights" / "model-IQ4_XS-3.53bpw.gguf").is_symlink()
 
 
@@ -1104,8 +1104,8 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     from hub.services.models import gguf_variants as service
 
     rows = [
-        types.SimpleNamespace(filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K"),
-        types.SimpleNamespace(filename = "model-Q6_K.gguf", quant = "Q6_K"),
+        types.SimpleNamespace(filename="distilled/model-Q6_K.gguf", quant="distilled/model-Q6_K"),
+        types.SimpleNamespace(filename="model-Q6_K.gguf", quant="Q6_K"),
     ]
     assert service._default_variant_candidates(rows) == ["model-Q6_K.gguf"]
     # Nothing at the root falls back to the whole set rather than answering nothing.

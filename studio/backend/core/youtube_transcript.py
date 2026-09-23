@@ -51,7 +51,7 @@ class TranscriptUnavailable(Exception):
     """YouTube answered, but the video has no caption track we can read."""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Transcript:
     video_id: str
     title: str
@@ -108,7 +108,7 @@ async def fetch_transcript(video_id: str, languages: Sequence[str] = ()) -> Tran
     if not _VIDEO_ID_RE.fullmatch(video_id):
         raise TranscriptUnavailable("That is not a YouTube video link.")
 
-    async with httpx.AsyncClient(timeout = _TIMEOUT, follow_redirects = True) as client:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         player = await _fetch_player(client, video_id)
         status = (player.get("playabilityStatus") or {}).get("status")
         if status not in (None, "OK"):
@@ -131,15 +131,15 @@ async def fetch_transcript(video_id: str, languages: Sequence[str] = ()) -> Tran
 
     details = player.get("videoDetails") or {}
     return Transcript(
-        video_id = video_id,
-        title = str(details.get("title") or ""),
-        author = str(details.get("author") or ""),
-        length_seconds = _as_int(details.get("lengthSeconds")),
-        language = _track_label(track),
-        language_code = str(track.get("languageCode") or ""),
-        is_generated = track.get("kind") == "asr",
-        text = text,
-        truncated = truncated,
+        video_id=video_id,
+        title=str(details.get("title") or ""),
+        author=str(details.get("author") or ""),
+        length_seconds=_as_int(details.get("lengthSeconds")),
+        language=_track_label(track),
+        language_code=str(track.get("languageCode") or ""),
+        is_generated=track.get("kind") == "asr",
+        text=text,
+        truncated=truncated,
     )
 
 
@@ -154,13 +154,13 @@ async def _fetch_player(client: httpx.AsyncClient, video_id: str) -> dict[str, A
     async with client.stream(
         "POST",
         _PLAYER_URL,
-        headers = {
+        headers={
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,
             "X-YouTube-Client-Name": _CLIENT_NAME_ID,
             "X-YouTube-Client-Version": _CLIENT_VERSION,
         },
-        json = {
+        json={
             "context": {
                 "client": {
                     "clientName": "ANDROID",
@@ -237,9 +237,9 @@ def _validated_caption_url(url: str) -> SplitResult:
 def _caption_url(base_url: str) -> str:
     """Ask a caption baseUrl for json3, keeping the blank-valued params YouTube sends."""
     parsed = _validated_caption_url(base_url)
-    query = parse_qs(parsed.query, keep_blank_values = True)
+    query = parse_qs(parsed.query, keep_blank_values=True)
     query["fmt"] = ["json3"]
-    return urlunsplit(parsed._replace(query = urlencode(query, doseq = True)))
+    return urlunsplit(parsed._replace(query=urlencode(query, doseq=True)))
 
 
 async def _read_capped(response: httpx.Response, limit: int, message: str) -> bytes:
@@ -259,7 +259,7 @@ async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
         # Redirects are followed by hand so the host allowlist covers every hop, not just the URL the player
         # response handed us.
         async with client.stream(
-            "GET", url, headers = {"User-Agent": _USER_AGENT}, follow_redirects = False
+            "GET", url, headers={"User-Agent": _USER_AGENT}, follow_redirects=False
         ) as response:
             location = response.headers.get("location")
             if response.is_redirect and location:

@@ -43,7 +43,7 @@ _HEREDOC_START = re.compile(r"^(\s*)python3? - <<'PY'\s*$")
 def _python_blocks(path: Path) -> list[tuple[int, str]]:
     """Every `python - <<'PY' ... PY` block, as (1-based start line, source)."""
     blocks: list[tuple[int, str]] = []
-    lines = path.read_text(encoding = "utf-8").splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     i = 0
     while i < len(lines):
         match = _HEREDOC_START.match(lines[i])

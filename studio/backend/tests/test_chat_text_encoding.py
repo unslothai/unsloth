@@ -29,8 +29,8 @@ def test_config_json_round_trips_non_ascii(tmp_path: Path) -> None:
 
     name = "Modell für Grüße 世界"
     (tmp_path / "config.json").write_text(
-        json.dumps({"model_type": "llama", "_name_or_path": name}, ensure_ascii = False),
-        encoding = "utf-8",
+        json.dumps({"model_type": "llama", "_name_or_path": name}, ensure_ascii=False),
+        encoding="utf-8",
     )
     transformers_version._config_json_cache.clear()
 
@@ -48,9 +48,9 @@ def test_tokenizer_config_round_trips_non_ascii_chat_template(tmp_path: Path) ->
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps(
             {"tokenizer_class": "TokenizersBackend", "chat_template": template},
-            ensure_ascii = False,
+            ensure_ascii=False,
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     transformers_version._tokenizer_class_cache.clear()
 
@@ -65,8 +65,8 @@ def test_config_json_survives_a_utf8_bom(tmp_path: Path) -> None:
 
     name = "Grüße 世界"
     (tmp_path / "config.json").write_text(
-        json.dumps({"model_type": "llama", "_name_or_path": name}, ensure_ascii = False),
-        encoding = "utf-8-sig",
+        json.dumps({"model_type": "llama", "_name_or_path": name}, ensure_ascii=False),
+        encoding="utf-8-sig",
     )
     transformers_version._config_json_cache.clear()
 
@@ -86,8 +86,8 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
     with open(
         tmp_path / "modeling_custom.py",
         "w",
-        encoding = "utf-8",
-        newline = "",
+        encoding="utf-8",
+        newline="",
     ) as handle:
         handle.write(source)
 
@@ -125,15 +125,15 @@ def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -
         ("config.json", {"model_type": "llama", "_name_or_path": "Grüße"}),
         ("tokenizer_config.json", {"tokenizer_class": "TokenizersBackend"}),
     ):
-        (tmp_path / name).write_text(json.dumps(payload, ensure_ascii = False), encoding = "utf-8")
+        (tmp_path / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     result = subprocess.run(
         [sys.executable, "-X", "warn_default_encoding", "-c", script],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
     )
 
     assert result.returncode == 0, result.stderr
@@ -146,19 +146,19 @@ def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
 
     payload = "Grüße über Öl → 世界"
     child = tmp_path / "child.py"
-    child.write_text("import sys\nsys.stdout.write(" + repr(payload) + ")\n", encoding = "utf-8")
+    child.write_text("import sys\nsys.stdout.write(" + repr(payload) + ")\n", encoding="utf-8")
 
     env = utf8_child_env()
     assert env["PYTHONIOENCODING"] == "utf-8"
 
     proc = subprocess.run(
         [sys.executable, str(child)],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        env = env,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=120,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -175,8 +175,8 @@ def test_python_children_are_told_to_emit_utf8() -> None:
         parts = path.relative_to(BACKEND_ROOT).parts
         if any(p in ("tests", "node_modules", "plugins", "__pycache__") for p in parts):
             continue
-        source = path.read_text(encoding = "utf-8")
-        for node in ast.walk(ast.parse(source, filename = str(path))):
+        source = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source, filename=str(path))):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func

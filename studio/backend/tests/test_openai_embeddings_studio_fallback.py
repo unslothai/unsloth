@@ -15,9 +15,9 @@ _backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend not in sys.path:
     sys.path.insert(0, _backend)
 
-inference_route = pytest.importorskip("routes.inference", reason = "inference stack not installed")
-rag_embeddings = pytest.importorskip("core.rag.embeddings", reason = "rag stack not installed")
-rag_config = pytest.importorskip("core.rag.config", reason = "rag stack not installed")
+inference_route = pytest.importorskip("routes.inference", reason="inference stack not installed")
+rag_embeddings = pytest.importorskip("core.rag.embeddings", reason="rag stack not installed")
+rag_config = pytest.importorskip("core.rag.config", reason="rag stack not installed")
 
 MODEL = "unsloth/bge-small-en-v1.5"
 IDENTITY = f"sentence-transformers:{MODEL}"
@@ -27,8 +27,8 @@ class _Request:
     def __init__(self, body):
         self._body = body
         self.method = "POST"
-        self.url = SimpleNamespace(path = "/v1/embeddings")
-        self.state = SimpleNamespace(skip_api_monitor = True)
+        self.url = SimpleNamespace(path="/v1/embeddings")
+        self.state = SimpleNamespace(skip_api_monitor=True)
         self.scope = {"type": "http", "path": "/v1/embeddings"}
 
     async def json(self):
@@ -39,7 +39,7 @@ class _Request:
 
 
 def _vectors(texts, **_):
-    return np.array([[1.0, 0.0]] * len(texts), dtype = np.float32)
+    return np.array([[1.0, 0.0]] * len(texts), dtype=np.float32)
 
 
 @pytest.fixture
@@ -59,16 +59,16 @@ def studio_embedder(monkeypatch):
     def _encode_with_identity(
         texts,
         *,
-        model_name = None,
-        normalize = True,
+        model_name=None,
+        normalize=True,
     ):
         # Delegates to the test's encode, so a blowing-up or blocking one still drives the route.
-        return rag_embeddings.encode(texts, model_name = model_name, normalize = normalize), IDENTITY
+        return rag_embeddings.encode(texts, model_name=model_name, normalize=normalize), IDENTITY
 
     monkeypatch.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
-    monkeypatch.setattr(rag_embeddings, "token_counter", lambda model_name = None: len)
-    monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name = None: None)
-    monkeypatch.setattr(rag_embeddings, "dim", lambda model_name = None: 2)
+    monkeypatch.setattr(rag_embeddings, "token_counter", lambda model_name=None: len)
+    monkeypatch.setattr(rag_embeddings, "max_tokens", lambda model_name=None: None)
+    monkeypatch.setattr(rag_embeddings, "dim", lambda model_name=None: 2)
     return monkeypatch
 
 
@@ -82,6 +82,7 @@ def _call(body):
 
 def _http_error(body):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(_Request(body), "tester"))
     return exc.value
@@ -89,7 +90,7 @@ def _http_error(body):
 
 def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     payload = _call({"input": ["alpha", "beta"], "model": "text-embedding-3-small"})
     assert payload["object"] == "list"
@@ -104,7 +105,7 @@ def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     studio_embedder.setattr(
         inference_route, "_direct_llama_request_started", lambda: started.append(1)
@@ -119,7 +120,7 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
 
     class _Client:
         async def post(self, *_args, **_kwargs):
-            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}]})
+            return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
 
         async def aclose(self):
             return None
@@ -133,11 +134,11 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
         inference_route,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_embedding_gguf = True,
-            base_url = "http://llama.test",
-            context_length = 512,
-            model_identifier = "org/E-GGUF",
+            is_loaded=True,
+            is_embedding_gguf=True,
+            base_url="http://llama.test",
+            context_length=512,
+            model_identifier="org/E-GGUF",
         ),
     )
     payload = _call({"input": "alpha", "model": "org/E-GGUF"})
@@ -146,11 +147,11 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
 
 def test_base64_encoding_format(studio_embedder):
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     payload = _call({"input": "alpha", "encoding_format": "base64"})
     raw = base64.b64decode(payload["data"][0]["embedding"])
-    assert np.frombuffer(raw, dtype = np.float32).tolist() == [1.0, 0.0]
+    assert np.frombuffer(raw, dtype=np.float32).tolist() == [1.0, 0.0]
 
 
 @pytest.mark.parametrize(
@@ -169,16 +170,16 @@ def test_base64_encoding_format(studio_embedder):
 )
 def test_invalid_requests_are_400(studio_embedder, body):
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     assert _http_error(body).status_code == 400
 
 
 def test_over_length_input_is_rejected_not_truncated(studio_embedder):
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
-    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name=None: 3)
     error = _http_error({"input": ["ab", "abcd"]})
     assert error.status_code == 400
     assert "3-token limit" in error.detail
@@ -189,7 +190,7 @@ def test_embedder_failure_is_502(studio_embedder):
         raise RuntimeError("llama-server embedder POST /v1/embeddings -> 500")
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", boom)
     assert _http_error({"input": "alpha"}).status_code == 502
@@ -272,7 +273,7 @@ def test_identity_redaction_covers_a_local_repo_under_a_hub_model(monkeypatch):
 def test_a_non_string_model_is_not_a_server_error(studio_embedder, named):
     """Both pre-switch readers decline a non-string selector, so the empty-slot branch sees it."""
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     payload = _call({"input": "alpha", "model": named})
     assert payload["model"] == IDENTITY
@@ -311,7 +312,7 @@ def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fra
         raise exc
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", boom)
     error = _http_error({"input": "alpha"})
@@ -366,7 +367,7 @@ def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch
         )
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", boom)
     error = _http_error({"input": "alpha"})
@@ -384,14 +385,14 @@ def test_guard_model_security_names_the_configured_model_not_the_snapshot(monkey
     monkeypatch.setattr(
         security,
         "evaluate_file_security",
-        lambda *a, **k: SimpleNamespace(blocked = True),
+        lambda *a, **k: SimpleNamespace(blocked=True),
     )
     monkeypatch.setattr(security, "security_load_subdirs", lambda *a, **k: ())
     monkeypatch.setattr(rag_embeddings, "_st_module_subdirs", lambda *a, **k: ())
     with pytest.raises(rag_embeddings.UnsafeEmbeddingModelError) as excinfo:
         rag_embeddings._guard_model_security(
             "/home/me/.cache/huggingface/hub/models--org--bge/snapshots/abc123",
-            display = "org/bge",
+            display="org/bge",
         )
     assert "org/bge" in str(excinfo.value)
     assert ".cache/huggingface" not in str(excinfo.value)
@@ -406,13 +407,13 @@ def test_studio_embedder_requests_are_admission_limited(studio_embedder):
         with lock:
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
-        gate.wait(timeout = 5)
+        gate.wait(timeout=5)
         with lock:
             active["now"] -= 1
         return _vectors(texts)
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", encode)
 
@@ -442,7 +443,7 @@ def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedde
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     request = _Request({"input": "alpha"})
     before = kw._inflight
@@ -463,7 +464,7 @@ def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
 
     class _Client:
         async def post(self, *_args, **_kwargs):
-            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}]})
+            return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
 
         async def aclose(self):
             return None
@@ -475,11 +476,11 @@ def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
         inference_route,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_embedding_gguf = True,
-            base_url = "http://llama.test",
-            context_length = 512,
-            model_identifier = "org/E-GGUF",
+            is_loaded=True,
+            is_embedding_gguf=True,
+            base_url="http://llama.test",
+            context_length=512,
+            model_identifier="org/E-GGUF",
         ),
     )
     request = _Request({"input": "alpha", "model": "org/E-GGUF"})
@@ -492,13 +493,13 @@ def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
     # per-text limit reports 100% context use for a batch that used a fraction per text.
     seen = []
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
-    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 8)
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name=None: 8)
     studio_embedder.setattr(
         inference_route,
         "_monitor_openai_chunk",
-        lambda monitor_id, payload, context_length = None, **_: seen.append(context_length),
+        lambda monitor_id, payload, context_length=None, **_: seen.append(context_length),
     )
     request = _Request({"input": ["alpha", "beta", "gamma"]})
     request.state.skip_api_monitor = False
@@ -523,13 +524,13 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
         with lock:
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
-        gate.wait(timeout = 5)
+        gate.wait(timeout=5)
         with lock:
             active["now"] -= 1
         return _vectors(texts)
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", encode)
     cap = inference_route._STUDIO_EMBED_CONCURRENCY
@@ -548,7 +549,7 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
         # Every in-flight request goes away, but its thread is still inside encode().
         for task in first:
             task.cancel()
-        await asyncio.gather(*first, return_exceptions = True)
+        await asyncio.gather(*first, return_exceptions=True)
 
         second = [
             asyncio.create_task(inference_route.openai_embeddings(_Request({"input": "y"}), "t"))
@@ -558,7 +559,7 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
         # The permits are still held by the running threads, so nothing new started.
         assert active["peak"] == cap, f"admission cap exceeded: peak={active['peak']}"
         gate.set()
-        await asyncio.gather(*second, return_exceptions = True)
+        await asyncio.gather(*second, return_exceptions=True)
 
     asyncio.run(run())
     assert active["peak"] == cap
@@ -569,7 +570,7 @@ def test_reported_model_follows_the_backend_that_made_the_vectors(studio_embedde
     # name the space the vectors are in, or a client files two under one label.
     llama_identity = f"llama-server:{MODEL}:unsloth/bge-small-en-v1.5-GGUF"
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(
         rag_embeddings,
@@ -584,22 +585,22 @@ def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
     # A Settings change while queued must not mix one model's limit/dim with another's vectors.
     seen = {"max_tokens": [], "token_counter": [], "dim": [], "encode": []}
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(
         rag_embeddings,
         "max_tokens",
-        lambda model_name = None: (seen["max_tokens"].append(model_name), None)[1],
+        lambda model_name=None: (seen["max_tokens"].append(model_name), None)[1],
     )
     studio_embedder.setattr(
         rag_embeddings,
         "token_counter",
-        lambda model_name = None: (seen["token_counter"].append(model_name), len)[1],
+        lambda model_name=None: (seen["token_counter"].append(model_name), len)[1],
     )
     studio_embedder.setattr(
         rag_embeddings,
         "dim",
-        lambda model_name = None: (seen["dim"].append(model_name), 2)[1],
+        lambda model_name=None: (seen["dim"].append(model_name), 2)[1],
     )
     studio_embedder.setattr(
         rag_embeddings,
@@ -626,7 +627,7 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     request = _Request({"input": "alpha"})
     # Relative: the tally is module state shared with the suite, so absolutes need this file alone.
@@ -649,7 +650,7 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
     closed = []
     gate = threading.Event()
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(inference_route.api_monitor, "start", lambda **_kwargs: "entry-1")
     studio_embedder.setattr(
@@ -660,7 +661,7 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
     studio_embedder.setattr(
         rag_embeddings,
         "encode_with_identity",
-        lambda texts, **_kw: (gate.wait(timeout = 5), (_vectors(texts), IDENTITY))[1],
+        lambda texts, **_kw: (gate.wait(timeout=5), (_vectors(texts), IDENTITY))[1],
     )
 
     async def run():
@@ -681,7 +682,7 @@ def _identity_names(monkeypatch):
     monkeypatch.setattr(
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
     )
-    monkeypatch.setattr(rag_embeddings, "embedding_identity", lambda model_name = None: IDENTITY)
+    monkeypatch.setattr(rag_embeddings, "embedding_identity", lambda model_name=None: IDENTITY)
 
 
 @pytest.mark.parametrize("requested", [MODEL, f"{MODEL}-GGUF", IDENTITY, MODEL.upper()])
@@ -689,14 +690,14 @@ def test_naming_the_configured_embedder_skips_the_chat_slot_check(studio_embedde
     from fastapi import HTTPException
 
     async def reject(request, current_subject, **_kwargs):
-        raise HTTPException(status_code = 404, detail = "model_not_found")
+        raise HTTPException(status_code=404, detail="model_not_found")
 
     _identity_names(studio_embedder)
     studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", reject)
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     payload = _call({"input": "alpha", "model": requested})
     assert payload["model"] == IDENTITY
@@ -713,7 +714,7 @@ def test_other_model_names_still_run_auto_switch(studio_embedder):
     _identity_names(studio_embedder)
     studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     _call({"input": "alpha", "model": "text-embedding-3-small"})
     assert seen == ["tester"]
@@ -721,10 +722,10 @@ def test_other_model_names_still_run_auto_switch(studio_embedder):
 
 def test_st_max_tokens_leaves_room_for_the_special_tokens(monkeypatch):
     model = SimpleNamespace(
-        max_seq_length = 512,
-        tokenizer = SimpleNamespace(num_special_tokens_to_add = lambda: 2),
+        max_seq_length=512,
+        tokenizer=SimpleNamespace(num_special_tokens_to_add=lambda: 2),
     )
-    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name = None: model)
+    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name=None: model)
     assert rag_embeddings._SentenceTransformersBackend().max_tokens() == 510
 
 
@@ -778,7 +779,7 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
     )
-    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name=None: None)
     # Larger than the header, so the GGUF is still what binds; confirmed, so it caches.
     monkeypatch.setattr(backend, "_server_context", lambda: 4096)
     monkeypatch.setattr(backend, "_server_batch", lambda: 4096)
@@ -787,7 +788,7 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     def post(
         path,
         payload,
-        model_name = None,
+        model_name=None,
     ):
         posts.append((path, payload))
         return {"tokens": [101, 102]}
@@ -820,7 +821,7 @@ def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkey
     backend._binary_path_revision = 1
     monkeypatch.setattr(backend, "_process_alive", lambda: True)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
-    monkeypatch.setattr(backend, "_spawn", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_spawn", lambda model_name=None: None)
     monkeypatch.setattr(
         embed_llama_server.config,
         "effective_gguf_repo_for_embedding_model",
@@ -843,16 +844,16 @@ def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkey
 
 def test_st_max_tokens_reserves_the_default_prompt(monkeypatch):
     tokenizer = SimpleNamespace(
-        num_special_tokens_to_add = lambda: 2,
-        encode = lambda text, add_special_tokens = False: text.split(),
+        num_special_tokens_to_add=lambda: 2,
+        encode=lambda text, add_special_tokens=False: text.split(),
     )
     model = SimpleNamespace(
-        max_seq_length = 512,
-        tokenizer = tokenizer,
-        prompts = {"query": "Represent this sentence for retrieval:"},
-        default_prompt_name = "query",
+        max_seq_length=512,
+        tokenizer=tokenizer,
+        prompts={"query": "Represent this sentence for retrieval:"},
+        default_prompt_name="query",
     )
-    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name = None: model)
+    monkeypatch.setattr(rag_embeddings, "_get", lambda model_name=None: model)
     assert rag_embeddings._SentenceTransformersBackend().max_tokens() == 512 - 2 - 5
 
 
@@ -863,7 +864,7 @@ def test_llama_max_tokens_is_capped_by_the_running_context(tmp_path, monkeypatch
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
     )
-    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name=None: None)
     monkeypatch.setattr(backend, "_server_context", lambda: 256)
     monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
     assert backend.max_tokens() == 254
@@ -881,14 +882,14 @@ def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, mon
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
     )
-    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name=None: None)
     monkeypatch.setattr(backend, "_server_context", lambda: 8192)
     monkeypatch.setattr(
         backend, "_server_props", lambda: {"default_generation_settings": {"n_ctx": 8192}}
     )
     monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
     assert backend.max_tokens() == embed_llama_server._UBATCH_SIZE - 2
-    assert "-ub" in backend._build_cmd("llama-server", "m.gguf", 1, use_gpu = False)
+    assert "-ub" in backend._build_cmd("llama-server", "m.gguf", 1, use_gpu=False)
 
 
 def test_only_a_smaller_reported_ubatch_lowers_the_launch_value(monkeypatch):
@@ -914,10 +915,10 @@ def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):
         rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
     )
     studio_embedder.setattr(
-        rag_embeddings, "embedding_identity", lambda model_name = None: f"llama-server:{MODEL}"
+        rag_embeddings, "embedding_identity", lambda model_name=None: f"llama-server:{MODEL}"
     )
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     # A warm index is what makes this reachable: cold, the name falls back to "has a slash".
     from core.inference import local_model_resolver
@@ -957,7 +958,7 @@ def test_invalid_fallback_input_is_rejected_before_the_switch(studio_embedder, b
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     assert _http_error(body).status_code == 400
     assert bool(seen) is switched
@@ -978,11 +979,11 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
         lambda texts, **_kwargs: (_vectors(texts), identity),
     )
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     reported = _call({"input": "alpha"})["model"]
     assert reported.startswith("sentence-transformers:bge-") and str(tmp_path) not in reported
-    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name=None: 3)
     error = _http_error({"input": "alphabet"})
     assert error.status_code == 400
     assert "bge" in error.detail and str(tmp_path) not in error.detail
@@ -994,7 +995,7 @@ def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embed
 
     class _Client:
         async def post(self, *_args, **_kwargs):
-            return httpx.Response(200, json = {"data": [{"embedding": [0.5]}], "model": "proxy"})
+            return httpx.Response(200, json={"data": [{"embedding": [0.5]}], "model": "proxy"})
 
         async def aclose(self):
             return None
@@ -1006,11 +1007,11 @@ def test_resident_embedding_gguf_answering_the_name_keeps_the_proxy(studio_embed
         inference_route,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_embedding_gguf = True,
-            base_url = "http://llama.test",
-            context_length = 512,
-            model_identifier = f"{MODEL}-GGUF",
+            is_loaded=True,
+            is_embedding_gguf=True,
+            base_url="http://llama.test",
+            context_length=512,
+            model_identifier=f"{MODEL}-GGUF",
         ),
     )
     payload = _call({"input": "alpha", "model": MODEL})
@@ -1039,7 +1040,7 @@ def test_flat_token_array_passes_the_pre_switch_check(studio_embedder):
     studio_embedder.setattr(
         inference_route,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
+        lambda: SimpleNamespace(is_loaded=True, is_embedding_gguf=False),
     )
     assert _http_error({"input": [1, 2, 3]}).status_code == 400
     assert seen == ["tester"]
@@ -1081,7 +1082,7 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
     def encode(texts, **_kwargs):
         with lock:
             calls["n"] += 1
-        gate.wait(timeout = 5)
+        gate.wait(timeout=5)
         return _vectors(texts)
 
     class _Gone(_Request):
@@ -1089,7 +1090,7 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
             return True
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", encode)
     cap = inference_route._STUDIO_EMBED_CONCURRENCY
@@ -1119,7 +1120,7 @@ def test_batch_cap_applies_only_to_the_studio_fallback():
     from fastapi import HTTPException
 
     body = {"input": ["x"] * (inference_route._STUDIO_EMBED_MAX_INPUTS + 1)}
-    assert len(inference_route._embeddings_items(body, tokens_ok = True)) == len(body["input"])
+    assert len(inference_route._embeddings_items(body, tokens_ok=True)) == len(body["input"])
     with pytest.raises(HTTPException) as exc:
         inference_route._embeddings_texts(body)
     assert exc.value.status_code == 400
@@ -1130,7 +1131,7 @@ def test_a_decisively_named_model_is_refused_when_nothing_is_loaded(studio_embed
     # weights. The slot being empty makes _reject_unservable_model defer, so the fallback decides.
     _identity_names(studio_embedder)
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(inference_route, "_reference_is_decisive", lambda name: True)
     error = _http_error({"input": "alpha", "model": "unsloth/embeddinggemma-300m-GGUF:Q8_0"})
@@ -1141,7 +1142,7 @@ def test_a_foreign_model_name_still_reaches_the_studio_embedder(studio_embedder)
     # The other half: a vendor id is no evidence, so it keeps falling through instead of 404ing.
     _identity_names(studio_embedder)
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     assert _call({"input": "alpha", "model": "text-embedding-3-small"})["model"] == IDENTITY
 
@@ -1149,7 +1150,7 @@ def test_a_foreign_model_name_still_reaches_the_studio_embedder(studio_embedder)
 def test_reference_is_decisive_only_on_positive_evidence(monkeypatch):
     from core.inference import local_model_resolver as _resolver
 
-    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
+    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan=False: None)
     # An explicit quant label is evidence no foreign id carries.
     assert inference_route._reference_is_decisive("unsloth/gemma-3-270m-it-GGUF:Q8_0") is True
     # A vendor id is not, so LiteLLM/OpenRouter style names keep working.
@@ -1168,7 +1169,7 @@ def test_advertised_local_identity_is_accepted_as_an_alias(studio_embedder, tmp_
     studio_embedder.setattr(
         rag_embeddings,
         "embedding_identity",
-        lambda model_name = None: f"sentence-transformers:{_escape_identity_segment(model_dir)}",
+        lambda model_name=None: f"sentence-transformers:{_escape_identity_segment(model_dir)}",
     )
     public = inference_route._public_embedding_name(model_dir)
     assert inference_route._names_studio_embedder(f"sentence-transformers:{public}") == model_dir
@@ -1184,7 +1185,7 @@ def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder)
             return True
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(
         rag_embeddings, "encode", lambda texts, **_: calls.append(texts) or _vectors(texts)
@@ -1207,8 +1208,8 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
     def _encode_with_identity(
         texts,
         *,
-        model_name = None,
-        normalize = True,
+        model_name=None,
+        normalize=True,
     ):
         seen.append(model_name)
         return _vectors(texts), IDENTITY
@@ -1217,7 +1218,7 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
     studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: next(settings))
     studio_embedder.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     _call({"input": "alpha", "model": MODEL})
     assert seen == [MODEL]
@@ -1232,7 +1233,7 @@ def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
     )
-    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name=None: None)
     monkeypatch.setattr(backend, "_server_context", lambda: 8192)
     monkeypatch.setattr(backend, "_server_batch", lambda: 512)
     monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
@@ -1246,7 +1247,7 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
 
     backend = embed_llama_server.LlamaServerBackend()
     model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)])
-    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = True)
+    cmd = backend._build_cmd("llama-server", model, 9999, use_gpu=True)
     assert "-b" not in cmd
     # Pinned at llama.cpp's own default, so nothing is allocated that was not already, and
     # max_tokens has a batch to bound the advert with (/props publishes none).
@@ -1262,7 +1263,7 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
     backend._model_path = _gguf(
         tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
     )
-    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name=None: None)
     monkeypatch.setattr(backend, "_server_batch", lambda: None)
     monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
     monkeypatch.setattr(backend, "_server_context", lambda: None)
@@ -1294,7 +1295,7 @@ def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_emb
         with lock:
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
-        gate.wait(timeout = 5)
+        gate.wait(timeout=5)
         with lock:
             active["now"] -= 1
         return _vectors(texts)
@@ -1305,7 +1306,7 @@ def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_emb
             return False
 
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     studio_embedder.setattr(rag_embeddings, "encode", encode)
     cap = inference_route._STUDIO_EMBED_CONCURRENCY
@@ -1336,12 +1337,12 @@ def test_a_boolean_is_not_a_token_id():
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        inference_route._embeddings_items({"input": [True]}, tokens_ok = True)
+        inference_route._embeddings_items({"input": [True]}, tokens_ok=True)
     assert exc.value.status_code == 400
     with pytest.raises(HTTPException):
-        inference_route._embeddings_items({"input": [[1, True, 3]]}, tokens_ok = True)
+        inference_route._embeddings_items({"input": [[1, True, 3]]}, tokens_ok=True)
     # A real token array is still one text.
-    assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok = True) == [[1, 2, 3]]
+    assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok=True) == [[1, 2, 3]]
 
 
 def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
@@ -1349,7 +1350,7 @@ def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
     # reading that as foreign served another embedding space under the requested name.
     from core.inference import local_model_resolver as _resolver
 
-    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
+    monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan=False: None)
     monkeypatch.setattr(_resolver, "index_is_built", lambda: False)
     monkeypatch.setattr(_resolver, "warm_index_soon", lambda: None)
     assert inference_route._reference_is_decisive("org/my-local-model") is True
@@ -1375,7 +1376,7 @@ def test_default_request_restores_the_chat_slot_only_for_an_embedding_stash(
     studio_embedder.setattr(inference_route, "_auto_switch_from_request_body", record)
     studio_embedder.setattr(inference_route, "_stashed_gguf_embeds", lambda: stash_embeds)
     studio_embedder.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     payload = _call({"input": "alpha"})
     assert payload["model"] == IDENTITY

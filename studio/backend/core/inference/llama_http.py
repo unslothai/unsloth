@@ -18,11 +18,11 @@ import weakref
 
 import httpx
 
-_LIMITS = httpx.Limits(max_connections = 64, max_keepalive_connections = 32)
+_LIMITS = httpx.Limits(max_connections=64, max_keepalive_connections=32)
 
 
 def _new_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(limits = _LIMITS, trust_env = False)
+    return httpx.AsyncClient(limits=_LIMITS, trust_env=False)
 
 
 # One client per running event loop: an httpx client binds its transport to the loop it first runs on, so a single

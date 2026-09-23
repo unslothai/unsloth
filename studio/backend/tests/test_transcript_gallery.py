@@ -8,12 +8,12 @@ import pytest
 from core.inference import gallery_flags, transcript_gallery as gallery
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_gallery(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
 
 
-def save(title = "speech.wav"):
+def save(title="speech.wav"):
     return gallery.save({"text": "Hello 世界", "model": "tiny", "duration": 3.5}, title)
 
 
@@ -26,11 +26,11 @@ def test_round_trip_preserves_text_and_origin():
 
 def test_cursor_survives_new_records_and_deletion():
     first, second = save(), save()
-    page = gallery.list_transcripts(limit = 1)
+    page = gallery.list_transcripts(limit=1)
     assert page["transcripts"] == [second]
     gallery.delete(second["id"])
     save()
-    assert gallery.list_transcripts(before = page["next_cursor"])["transcripts"] == [first]
+    assert gallery.list_transcripts(before=page["next_cursor"])["transcripts"] == [first]
 
 
 def test_clear_keeps_archived_transcripts():
@@ -38,7 +38,7 @@ def test_clear_keeps_archived_transcripts():
     gallery.set_archived(keep["id"], True)
     assert gallery.clear() == 1
     assert gallery.get(remove["id"]) is None
-    assert gallery.list_transcripts(archived = True)["transcripts"][0]["id"] == keep["id"]
+    assert gallery.list_transcripts(archived=True)["transcripts"][0]["id"] == keep["id"]
     gallery.set_archived(keep["id"], False)
     assert gallery.list_transcripts()["transcripts"][0]["id"] == keep["id"]
 

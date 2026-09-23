@@ -163,7 +163,7 @@ def _memo_set(memo_key: tuple[str, str], value: str) -> None:
         _CACHE_CASE_RESOLUTION_MEMO[memo_key] = value
         _CACHE_CASE_RESOLUTION_MEMO.move_to_end(memo_key)
         while len(_CACHE_CASE_RESOLUTION_MEMO) > _CACHE_CASE_RESOLUTION_MEMO_MAX:
-            _CACHE_CASE_RESOLUTION_MEMO.popitem(last = False)
+            _CACHE_CASE_RESOLUTION_MEMO.popitem(last=False)
 
 
 def _memo_drop(memo_key: tuple[str, str]) -> None:
@@ -173,6 +173,7 @@ def _memo_drop(memo_key: tuple[str, str]) -> None:
 
 def _hf_hub_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
+
     return get_hf_cache_paths().hub_cache
 
 

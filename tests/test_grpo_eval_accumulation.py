@@ -30,7 +30,7 @@ HELPER_NAME = "_unsloth_grpo_accumulation_steps"
 
 
 def _load_helper():
-    tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"), filename = str(SOURCE_PATH))
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
     found = [
         node
         for node in tree.body
@@ -38,7 +38,7 @@ def _load_helper():
     ]
     assert len(found) == 1, f"expected one module-level def {HELPER_NAME}, found {len(found)}"
     namespace: dict = {}
-    exec(compile(ast.Module(body = found, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=found, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
     return namespace[HELPER_NAME]
 
 
@@ -50,8 +50,8 @@ class _Model:
 class _Trainer:
     def __init__(
         self,
-        training = None,
-        steps = None,
+        training=None,
+        steps=None,
     ):
         if training is not None:
             self.model = _Model(training)
@@ -81,7 +81,7 @@ def test_grpo_accumulation_divisor_is_one_outside_training(training, steps, expe
 
 def test_compute_loss_uses_the_helper():
     """The generated trainer's `compute_loss` must go through the helper, not the raw attribute."""
-    tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"), filename = str(SOURCE_PATH))
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
     outer = next(
         node
         for node in tree.body

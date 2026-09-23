@@ -51,10 +51,10 @@ def test_the_old_close_name_takes_the_same_arguments():
 # --------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    monkeypatch.delenv(ENV, raising = False)
-    monkeypatch.delenv(LEGACY_ENV, raising = False)
+    monkeypatch.delenv(ENV, raising=False)
+    monkeypatch.delenv(LEGACY_ENV, raising=False)
 
 
 def test_unset_falls_back_to_the_default():
@@ -99,6 +99,7 @@ def test_the_cap_never_drops_below_one(monkeypatch, raw, expected):
 
 def test_the_transports_this_code_builds_still_exist():
     from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
+
     for cls in (StdioTransport, SSETransport, StreamableHttpTransport):
         assert cls is not None
 
@@ -108,8 +109,9 @@ def test_only_stdio_answers_the_liveness_probe():
     fastmcp gives the HTTP transports a real probe, this test fails and the
     recheck can become cheaper."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
     for cls in (StreamableHttpTransport, SSETransport):
-        transport = cls(url = "https://x.test/mcp")
+        transport = cls(url="https://x.test/mcp")
         assert not hasattr(
             transport, "_is_session_dead"
         ), f"{cls.__name__} grew a liveness probe; _transport_dead can use it now"

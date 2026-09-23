@@ -27,7 +27,7 @@ from core.training.worker import _rocm_classify_unified_memory  # noqa: F401
 def _binary_with_marker(tmp_path, payload):
     """Lay out <root>/UNSLOTH_PREBUILT_INFO.json with a binary path below it,
     matching the managed install layout the marker walk-up covers."""
-    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding = "utf-8")
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding="utf-8")
     return str(tmp_path / "build" / "bin" / "llama-server")
 
 
@@ -115,7 +115,7 @@ class TestInstalledLlamaGfxArchsCorpus:
     (this runs inside the GPU probe); a non-None set no device can match is quieter
     and just as fatal, dropping every GPU. None or concrete archs, nothing between."""
 
-    @pytest.mark.parametrize("label,payload", _MARKER_CORPUS, ids = [c[0] for c in _MARKER_CORPUS])
+    @pytest.mark.parametrize("label,payload", _MARKER_CORPUS, ids=[c[0] for c in _MARKER_CORPUS])
     def test_never_raises_and_never_fails_closed(self, label, payload, tmp_path):
         import utils.llama_cpp_freshness as freshness
 
@@ -125,7 +125,7 @@ class TestInstalledLlamaGfxArchsCorpus:
         if callable(payload):
             payload(marker)
         elif payload is not None:
-            marker.write_text(payload, encoding = "utf-8")
+            marker.write_text(payload, encoding="utf-8")
         # The walk-up memoizes per binary path; each case gets its own root.
         freshness._marker_cache.clear()
 
@@ -154,6 +154,7 @@ class TestInstalledLlamaGfxArchsCorpus:
         # can produce is ALSO caught downstream, so the corpus cannot tell the guard
         # from its absence. A tuple is not JSON-reachable, which is the point.
         import utils.llama_cpp_freshness as freshness
+
         monkeypatch.setattr(
             freshness, "read_install_marker", lambda _b: {"mapped_targets": ("gfx1030",)}
         )
@@ -230,7 +231,7 @@ class TestForwardsCompatibleArchTokens:
         monkeypatch.setitem(
             sys.modules, "torch", _fake_torch(["gfx1100", "gfx1101"], [12000, 13000])
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12000),
             (1, 13000),
         ]
@@ -275,18 +276,18 @@ def _fake_torch(
     archs,
     free_mib,
     *,
-    props_cls = _FakeProps,
-    hip = "7.1.0",
-    version_str = "",
+    props_cls=_FakeProps,
+    hip="7.1.0",
+    version_str="",
 ):
     torch = types.ModuleType("torch")
-    torch.version = types.SimpleNamespace() if hip is None else types.SimpleNamespace(hip = hip)
+    torch.version = types.SimpleNamespace() if hip is None else types.SimpleNamespace(hip=hip)
     torch.__version__ = version_str
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: True,
-        device_count = lambda: len(archs),
-        mem_get_info = lambda o: (free_mib[o] * 1024 * 1024, 32 * 1024**3),
-        get_device_properties = lambda o: props_cls(archs[o]),
+        is_available=lambda: True,
+        device_count=lambda: len(archs),
+        mem_get_info=lambda o: (free_mib[o] * 1024 * 1024, 32 * 1024**3),
+        get_device_properties=lambda o: props_cls(archs[o]),
     )
     return torch
 
@@ -306,7 +307,7 @@ def rocm_probe_env(tmp_path, monkeypatch):
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: fake_binary)
     )
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
 
 
 class TestGpuArchGate:
@@ -320,14 +321,14 @@ class TestGpuArchGate:
         monkeypatch.setitem(
             sys.modules, "torch", _fake_torch(["gfx1101", "gfx1036"], [12049, 12176])
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     def test_unknown_coverage_keeps_all_devices(self, tmp_path, monkeypatch, rocm_probe_env):
         # No install marker (source build / custom link): behavior unchanged.
         monkeypatch.setitem(
             sys.modules, "torch", _fake_torch(["gfx1101", "gfx1036"], [12049, 12176])
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -336,7 +337,7 @@ class TestGpuArchGate:
         # A device torch can't describe is kept, never silently dropped.
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101"]})
         monkeypatch.setitem(sys.modules, "torch", _fake_torch(["gfx1101", ""], [12049, 12176]))
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -351,10 +352,10 @@ class TestGpuArchGate:
         monkeypatch.setitem(
             sys.modules,
             "torch",
-            _fake_torch(["gfx1101", "gfx1036"], [12049, 12176], props_cls = props_cls),
+            _fake_torch(["gfx1101", "gfx1036"], [12049, 12176], props_cls=props_cls),
         )
         assert LlamaCppBackend._rocm_arch_by_physical_id() == {0: "gfx1101", 1: "gfx1036"}
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     def test_amd_sdk_wheel_without_version_hip_is_gated(
         self, tmp_path, monkeypatch, rocm_probe_env
@@ -367,10 +368,10 @@ class TestGpuArchGate:
             sys.modules,
             "torch",
             _fake_torch(
-                ["gfx1101", "gfx1036"], [12049, 12176], hip = None, version_str = "2.6.0+rocm6.4"
+                ["gfx1101", "gfx1036"], [12049, 12176], hip=None, version_str="2.6.0+rocm6.4"
             ),
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     def test_non_rocm_wheel_is_never_gated(self, tmp_path, monkeypatch, rocm_probe_env):
         # A CUDA wheel must not consult a ROCm marker at all.
@@ -379,10 +380,10 @@ class TestGpuArchGate:
             sys.modules,
             "torch",
             _fake_torch(
-                ["gfx1101", "gfx1036"], [12049, 12176], hip = None, version_str = "2.6.0+cu124"
+                ["gfx1101", "gfx1036"], [12049, 12176], hip=None, version_str="2.6.0+cu124"
             ),
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -445,7 +446,7 @@ class TestArchGateCoexistsWithUnifiedMemory:
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 30000)
         )
-        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server=True) == [
             # Shared pool: host reserve held back, total reported 0.
             (0, 20000 - _IGPU_HOST_RESERVE_MIB, 0),
             # Discrete supported card: untouched.
@@ -459,7 +460,7 @@ class TestArchGateCoexistsWithUnifiedMemory:
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 30000)
         )
-        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server=True) == [
             (0, 20000 - _IGPU_HOST_RESERVE_MIB, 0)
         ]
 

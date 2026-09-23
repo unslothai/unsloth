@@ -25,7 +25,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def _split_args(captured: str) -> list[str]:
@@ -51,7 +51,7 @@ def _code_only(source: str) -> str:
     A name discussed in prose is not a call. This file's own comments name the
     functions they explain, so a scan that skipped this would match the sentence.
     """
-    source = re.sub(r"/\*.*?\*/", " ", source, flags = re.S)
+    source = re.sub(r"/\*.*?\*/", " ", source, flags=re.S)
     source = re.sub(r"//[^\n]*", " ", source)
     return " ".join(source.split())
 
@@ -82,7 +82,7 @@ def _call_arguments(text: str, callee: str) -> list[str]:
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 # The frontend greps below have no parser to hand. The backend does, and a rule read out
@@ -92,7 +92,7 @@ def _read_backend(rel: str) -> str:
 # moves reddens here instead of passing vacuously.
 def _backend_function(rel: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     """The definition of ``name`` in backend file ``rel``."""
-    tree = ast.parse(_read_backend(rel), filename = rel)
+    tree = ast.parse(_read_backend(rel), filename=rel)
     found = [
         node
         for node in ast.walk(tree)
@@ -104,7 +104,7 @@ def _backend_function(rel: str, name: str) -> ast.FunctionDef | ast.AsyncFunctio
 
 def _backend_class(rel: str, name: str) -> ast.ClassDef:
     """The definition of class ``name`` in backend file ``rel``."""
-    tree = ast.parse(_read_backend(rel), filename = rel)
+    tree = ast.parse(_read_backend(rel), filename=rel)
     found = [
         node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == name
     ]
@@ -220,6 +220,7 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
         if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
             raise
         import pytest as _pytest
+
         _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
 
 
@@ -1145,7 +1146,7 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
         calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
         derived = len(re.findall(derived_backend, src))
         for bound in set(re.findall(hoisted, src)):
-            if re.search(hoist_source.format(name = re.escape(bound)), src):
+            if re.search(hoist_source.format(name=re.escape(bound)), src):
                 derived += src.count(f"isMlx: {bound},")
         assert derived >= calls, (name, derived, calls)
     for name in (*load_paths, "chat/lib/apply-inference-status-to-store.ts"):
@@ -1329,12 +1330,12 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
-    src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding="utf-8")
     assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
 
 
 def test_vulkan_inference_devices_do_not_replace_global_gpu_info():
-    backend = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    backend = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding="utf-8")
     assert '"gguf_gpu_ids_supported": gpu_ids_supported' in backend
     assert '"inference_gpu": inference_gpu_info' in backend
     frontend = _read("hooks/use-gpu-info.ts")
@@ -1524,7 +1525,7 @@ def test_every_diffusion_planner_filters_the_cache_before_staging():
     move together, so pin them together rather than leaving it to a comment."""
     root = WORKDIR / "studio" / "backend" / "core" / "inference"
     for name in ("diffusion.py", "sd_cpp_backend.py", "video.py"):
-        src = (root / name).read_text(encoding = "utf-8")
+        src = (root / name).read_text(encoding="utf-8")
         plan = re.search(r"def download_plan\(.*?\n    (?=@|def )", src, re.S)
         assert plan, f"{name}: download_plan not found"
         # Either probe: `_hub_file_is_loadable` is the stricter one, adding the stale-live-copy
@@ -1667,7 +1668,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
                 for tok in ("await requestDownloadPlan", "await getVideoDownloadPlan")
                 if tok in text
             ),
-            default = len(text),
+            default=len(text),
         )
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
@@ -2647,7 +2648,7 @@ def test_chat_autoload_records_every_validation_failure():
         "if",
         "||",
         {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
-        expected = 2,
+        expected=2,
     )
 
 
@@ -2655,7 +2656,7 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     """noteLoadFailure keys on the tag, so an untagged TypeError from a retry reads as a
     rejection: retries reissue through retryWithCurrentToken, so it tags like the first attempt."""
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     tagger = src.split("async function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
     assert "err instanceof TypeError" in tagger
@@ -3580,7 +3581,7 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
         "while",
         "&&",
         {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
-        expected = 1,
+        expected=1,
     )
     assert "skippedAutoLoadCandidates.add(" in cascade
 

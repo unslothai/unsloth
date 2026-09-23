@@ -26,14 +26,14 @@ from core.inference.diffusion_te_prequant import (
 
 
 def _fam(
-    te_prequant_repos = (),
-    name = "ltx-2",
-    base_repo = "Lightricks/LTX-2",
+    te_prequant_repos=(),
+    name="ltx-2",
+    base_repo="Lightricks/LTX-2",
 ):
     return types.SimpleNamespace(
-        name = name,
-        base_repo = base_repo,
-        te_prequant_repos = te_prequant_repos,
+        name=name,
+        base_repo=base_repo,
+        te_prequant_repos=te_prequant_repos,
     )
 
 
@@ -56,7 +56,7 @@ def test_repo_filename_convention():
 
 def test_family_repo_by_scheme_and_component():
     fam = _fam(
-        te_prequant_repos = (
+        te_prequant_repos=(
             ("fp8", "text_encoder", "org/hosted-fp8"),
             ("fp8", "text_encoder_2", "org/hosted-2-fp8"),
         )
@@ -67,17 +67,17 @@ def test_family_repo_by_scheme_and_component():
     assert family_te_prequant_repo(fam, "int8", "text_encoder") is None
     # A malformed entry is skipped, not fatal.
     assert (
-        family_te_prequant_repo(_fam(te_prequant_repos = (("bad",),)), "fp8", "text_encoder") is None
+        family_te_prequant_repo(_fam(te_prequant_repos=(("bad",),)), "fp8", "text_encoder") is None
     )
     # Families without the field resolve to None (both dataclasses default it, but a fake or older family object must not break).
-    assert family_te_prequant_repo(types.SimpleNamespace(name = "x"), "fp8", "text_encoder") is None
+    assert family_te_prequant_repo(types.SimpleNamespace(name="x"), "fp8", "text_encoder") is None
 
 
 def test_resolve_priority_and_scheme_gate():
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted-fp8"),))
     # Path override wins.
-    src = resolve_te_prequant_source(fam, "text_encoder", "fp8", path_override = "/tmp/te.pt")
-    assert src == TePrequantSource(kind = "path", location = "/tmp/te.pt", filename = None)
+    src = resolve_te_prequant_source(fam, "text_encoder", "fp8", path_override="/tmp/te.pt")
+    assert src == TePrequantSource(kind="path", location="/tmp/te.pt", filename=None)
     # Hosted repo second.
     src = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert src.kind == "repo" and src.location == "org/hosted-fp8"
@@ -110,7 +110,7 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
     src = resolve_te_prequant_source(
-        _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
+        _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted-fp8"),)),
         "text_encoder",
         "fp8",
     )
@@ -118,7 +118,7 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
     # A safetensors repo is found first, with no wasted request for the pickle.
     hosted = {"hosted-text_encoder-FP8.safetensors"}
     asked.clear()
-    assert tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache") == (
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir="/cache") == (
         "/cache/hosted-text_encoder-FP8.safetensors"
     )
     assert asked == ["hosted-text_encoder-FP8.safetensors"]
@@ -126,7 +126,7 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
     # A repo that still hosts the pickle resolves through the fallback.
     hosted = {"hosted-text_encoder-FP8.pt"}
     asked.clear()
-    assert tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache") == (
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir="/cache") == (
         "/cache/hosted-text_encoder-FP8.pt"
     )
     assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"]
@@ -135,7 +135,7 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
     # cannot tell apart from "this family hosts nothing".
     hosted = set()
     with pytest.raises(EntryNotFoundError):
-        tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
+        tpq._resolve_checkpoint_path(src, None, cache_dir="/cache")
 
 
 def test_a_transport_failure_is_not_mistaken_for_a_missing_file(monkeypatch):
@@ -151,19 +151,19 @@ def test_a_transport_failure_is_not_mistaken_for_a_missing_file(monkeypatch):
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
     src = resolve_te_prequant_source(
-        _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted-fp8"),)),
+        _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted-fp8"),)),
         "text_encoder",
         "fp8",
     )
     with pytest.raises(PermissionError):
-        tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
+        tpq._resolve_checkpoint_path(src, None, cache_dir="/cache")
 
 
 # ── checkpoint validation ────────────────────────────────────────────────────
 def _good_ckpt(
-    scheme = "fp8",
-    component = "text_encoder",
-    base = "Lightricks/LTX-2",
+    scheme="fp8",
+    component="text_encoder",
+    base="Lightricks/LTX-2",
 ):
     return {
         "format": TE_PREQUANT_FORMAT,
@@ -180,11 +180,11 @@ def _good_ckpt(
 @pytest.mark.parametrize(
     "mutate, reason",
     [
-        (lambda c: c.update(format = "other"), "format"),
+        (lambda c: c.update(format="other"), "format"),
         (lambda c: c.pop("state_dict"), "state_dict"),
-        (lambda c: c["metadata"].update(scheme = "int8"), "scheme"),
-        (lambda c: c["metadata"].update(component = "text_encoder_2"), "component"),
-        (lambda c: c["metadata"].update(base_model_id = "other/repo"), "base"),
+        (lambda c: c["metadata"].update(scheme="int8"), "scheme"),
+        (lambda c: c["metadata"].update(component="text_encoder_2"), "component"),
+        (lambda c: c["metadata"].update(base_model_id="other/repo"), "base"),
         (lambda c: c["metadata"].pop("base_model_id"), "missing base"),
     ],
 )
@@ -206,14 +206,14 @@ def test_validate_accepts_good_checkpoint_and_base_case_folding():
 def test_load_refuses_unallowlisted_local_path(monkeypatch, tmp_path):
     from core.inference.diffusion_prequant import ALLOW_LOCAL_PREQUANT_PATH_ENV
 
-    monkeypatch.delenv(ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
+    monkeypatch.delenv(ALLOW_LOCAL_PREQUANT_PATH_ENV, raising=False)
     path = tmp_path / "te.pt"
     path.write_bytes(b"x")
     out = tpq.load_prequant_text_encoder(
         "Lightricks/LTX-2",
         "text_encoder",
-        TePrequantSource(kind = "path", location = str(path)),
-        dtype = None,
+        TePrequantSource(kind="path", location=str(path)),
+        dtype=None,
     )
     assert out is None  # refused, caller falls back to dense
 
@@ -225,8 +225,8 @@ def test_load_missing_file_returns_none(monkeypatch, tmp_path):
     out = tpq.load_prequant_text_encoder(
         "Lightricks/LTX-2",
         "text_encoder",
-        TePrequantSource(kind = "path", location = str(tmp_path / "absent.pt")),
-        dtype = None,
+        TePrequantSource(kind="path", location=str(tmp_path / "absent.pt")),
+        dtype=None,
     )
     assert out is None
 
@@ -254,9 +254,9 @@ def test_hosted_checkpoint_and_config_honor_cache_only_and_the_active_root(monke
     out = tpq.load_prequant_text_encoder(
         "Lightricks/LTX-2",
         "text_encoder",
-        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.pt"),
-        dtype = None,
-        local_files_only = True,
+        TePrequantSource(kind="repo", location="org/hosted", filename="encoder.pt"),
+        dtype=None,
+        local_files_only=True,
     )
     assert out is None
     assert seen["download"]["local_files_only"] is True
@@ -269,26 +269,26 @@ def test_hosted_checkpoint_and_config_honor_cache_only_and_the_active_root(monke
 
 # ── pipeline-assembly injection gating ───────────────────────────────────────
 def _target():
-    return types.SimpleNamespace(device = "cuda", dtype = None)
+    return types.SimpleNamespace(device="cuda", dtype=None)
 
 
 def _budget_scale(
     fam,
-    mode = "fp8",
+    mode="fp8",
     *,
-    base = None,
+    base=None,
 ):
     return tpq.te_prequant_budget_scale(
-        fam, te_quant_mode = mode, target = _target(), base = base or fam.base_repo
+        fam, te_quant_mode=mode, target=_target(), base=base or fam.base_repo
     )
 
 
 def test_pipe_kwargs_empty_when_mode_not_fp8(monkeypatch):
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     for mode in (None, "", "off", "int8", "fp8_dynamic"):
         assert (
             te_prequant_pipe_kwargs(
-                fam, "Lightricks/LTX-2", te_quant_mode = mode, target = _target(), dtype = None
+                fam, "Lightricks/LTX-2", te_quant_mode=mode, target=_target(), dtype=None
             )
             == {}
         )
@@ -296,10 +296,11 @@ def test_pipe_kwargs_empty_when_mode_not_fp8(monkeypatch):
 
 def test_pipe_kwargs_empty_without_hosted_entry(monkeypatch):
     import core.inference.diffusion_precision as precision
+
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     assert (
         te_prequant_pipe_kwargs(
-            _fam(), "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+            _fam(), "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
         )
         == {}
     )
@@ -308,11 +309,11 @@ def test_pipe_kwargs_empty_without_hosted_entry(monkeypatch):
 def test_pipe_kwargs_empty_when_device_unsupported(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: False)
     assert (
         te_prequant_pipe_kwargs(
-            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+            fam, "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
         )
         == {}
     )
@@ -321,15 +322,15 @@ def test_pipe_kwargs_empty_when_device_unsupported(monkeypatch):
 def test_pipe_kwargs_respects_family_deny(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     # The deny helper ships on the video branch's precision module; simulate it here.
     monkeypatch.setattr(
-        precision, "_te_family_denied", lambda family, mode: family == "ltx-2", raising = False
+        precision, "_te_family_denied", lambda family, mode: family == "ltx-2", raising=False
     )
     assert (
         te_prequant_pipe_kwargs(
-            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+            fam, "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
         )
         == {}
     )
@@ -338,18 +339,18 @@ def test_pipe_kwargs_respects_family_deny(monkeypatch):
 def test_pipe_kwargs_injects_loaded_encoder(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     marker = object()
     seen = {}
 
     def fake_load(base, component, source, **kw):
-        seen.update(base = base, component = component, source = source)
+        seen.update(base=base, component=component, source=source)
         return marker
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
     out = te_prequant_pipe_kwargs(
-        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        fam, "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
     )
     assert out == {"text_encoder": marker}
     assert seen["base"] == "Lightricks/LTX-2"
@@ -359,7 +360,7 @@ def test_pipe_kwargs_injects_loaded_encoder(monkeypatch):
 def test_pipe_kwargs_does_not_download_a_checkpoint_for_a_custom_base(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
 
     def unexpected_load(*_args, **_kwargs):
@@ -370,9 +371,9 @@ def test_pipe_kwargs_does_not_download_a_checkpoint_for_a_custom_base(monkeypatc
         te_prequant_pipe_kwargs(
             fam,
             "someone/custom-ltx-2",
-            te_quant_mode = "fp8",
-            target = _target(),
-            dtype = None,
+            te_quant_mode="fp8",
+            target=_target(),
+            dtype=None,
         )
         == {}
     )
@@ -381,12 +382,12 @@ def test_pipe_kwargs_does_not_download_a_checkpoint_for_a_custom_base(monkeypatc
 def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    fam = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
     assert (
         te_prequant_pipe_kwargs(
-            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+            fam, "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
         )
         == {}
     )
@@ -398,7 +399,7 @@ def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
     import core.inference.diffusion_precision as precision
 
     fam = _fam(
-        te_prequant_repos = (
+        te_prequant_repos=(
             ("fp8", "text_encoder", "org/hosted"),
             ("fp8", "text_encoder_2", "org/hosted-2"),
         )
@@ -411,7 +412,7 @@ def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
         lambda base, component, source, **kw: markers[component],
     )
     out = te_prequant_pipe_kwargs(
-        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        fam, "Lightricks/LTX-2", te_quant_mode="fp8", target=_target(), dtype=None
     )
     assert out == markers
 
@@ -566,7 +567,7 @@ def test_hidream_te4_stays_dense_without_fp8(monkeypatch):
     recorder: list = []
     _hidream_transformers_stub(monkeypatch, recorder)
     out = hidream_te4_kwargs(
-        None, None, fam = _fam(name = "hidream-i1"), te_quant_mode = None, target = _target()
+        None, None, fam=_fam(name="hidream-i1"), te_quant_mode=None, target=_target()
     )
     assert out["tokenizer_4"] == "tok4"
     assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
@@ -594,16 +595,16 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
 
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", _fake_load)
     fam = _fam(
-        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
-        name = "hidream-i1",
+        te_prequant_repos=(("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        name="hidream-i1",
     )
     out = dh.hidream_te4_kwargs(
         None,
         None,
-        fam = fam,
-        te_quant_mode = "fp8",
-        target = _target(),
-        local_files_only = True,
+        fam=fam,
+        te_quant_mode="fp8",
+        target=_target(),
+        local_files_only=True,
     )
     assert out["text_encoder_4"] is precast
     assert calls["base"] == "unsloth/Meta-Llama-3.1-8B-Instruct"
@@ -627,10 +628,10 @@ def test_hidream_te4_falls_back_to_dense_cast(monkeypatch):
     cast: list = []
     monkeypatch.setattr(precision, "_cast_fp8", lambda enc, tgt: cast.append(enc))
     fam = _fam(
-        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
-        name = "hidream-i1",
+        te_prequant_repos=(("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        name="hidream-i1",
     )
-    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
+    out = dh.hidream_te4_kwargs(None, None, fam=fam, te_quant_mode="fp8", target=_target())
     assert cast == [out["text_encoder_4"]]
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") in recorder
 
@@ -648,8 +649,8 @@ def test_hidream_te4_partial_cast_reloads_dense(monkeypatch):
         raise RuntimeError("cast failed mid-pass")
 
     monkeypatch.setattr(precision, "_cast_fp8", _boom)
-    fam = _fam(name = "hidream-i1")  # no hosted entry -> dense + cast path
-    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
+    fam = _fam(name="hidream-i1")  # no hosted entry -> dense + cast path
+    out = dh.hidream_te4_kwargs(None, None, fam=fam, te_quant_mode="fp8", target=_target())
     dense_loads = [r for r in recorder if r[0] == "llama_from_pretrained"]
     assert len(dense_loads) == 2  # initial load + the fail-safe reload
     assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
@@ -681,9 +682,9 @@ def test_assemble_pipe_injects_precast_te(monkeypatch):
         None,
         "cpu",
         None,
-        fam = None,
-        te_quant_mode = "fp8",
-        target = object(),
+        fam=None,
+        te_quant_mode="fp8",
+        target=object(),
     )
     assert seen["text_encoder"] == "PRECAST"
     seen.clear()
@@ -696,7 +697,7 @@ def test_assemble_pipe_injects_precast_te(monkeypatch):
         None,
         "cpu",
         None,
-        fam = None,
+        fam=None,
     )
     assert "text_encoder" not in seen
 
@@ -710,7 +711,7 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     pytest.importorskip("diffusers")  # _cast_fp8 installs diffusers' layerwise hooks
     from core.inference.diffusion_precision import _cast_fp8
 
-    target = types.SimpleNamespace(dtype = torch.bfloat16)
+    target = types.SimpleNamespace(dtype=torch.bfloat16)
     enc = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.LayerNorm(64))
     _cast_fp8(enc, target)
     assert enc[0].weight.dtype == torch.float8_e4m3fn
@@ -755,15 +756,15 @@ def test_builder_metadata_survives_weights_only_load(tmp_path):
     }
     path = tmp_path / "te.pt"
     torch.save(ckpt, path)
-    loaded = torch.load(path, weights_only = True, map_location = "cpu")
+    loaded = torch.load(path, weights_only=True, map_location="cpu")
     assert tpq._validate_checkpoint(loaded, "fp8", "text_encoder", "Lightricks/LTX-2", None)
     # The regression: an unstringified TorchVersion in metadata must fail weights_only.
-    bad = dict(ckpt, metadata = dict(ckpt["metadata"], torch_version = torch.__version__))
+    bad = dict(ckpt, metadata=dict(ckpt["metadata"], torch_version=torch.__version__))
     bad_path = tmp_path / "bad.pt"
     torch.save(bad, bad_path)
     if not isinstance(torch.__version__, str):
         with pytest.raises(Exception):
-            torch.load(bad_path, weights_only = True, map_location = "cpu")
+            torch.load(bad_path, weights_only=True, map_location="cpu")
 
 
 # ── memory budgeting ─────────────────────────────────────────────────────────
@@ -796,9 +797,9 @@ def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypat
     import core.inference.diffusion_precision as precision
 
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
-    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    hosted = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     assert _budget_scale(hosted) == tpq.TE_PREQUANT_BUDGET_SCALE
-    assert _budget_scale(hosted, base = "someone/custom-ltx-2") == 1.0
+    assert _budget_scale(hosted, base="someone/custom-ltx-2") == 1.0
     # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so
     # its peak is bf16 and the budget must stay bf16.
     assert _budget_scale(_fam()) == 1.0
@@ -810,7 +811,7 @@ def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypat
 def test_budget_scale_is_bf16_when_the_device_cannot_quantise(monkeypatch):
     import core.inference.diffusion_precision as precision
 
-    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    hosted = _fam(te_prequant_repos=(("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: False)
     assert _budget_scale(hosted) == 1.0
 
@@ -838,8 +839,8 @@ def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
         ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 1.0),
     ):
         fam = detect_video_family(repo)
-        assert _budget_scale(fam, base = repo) == expected, repo
-    assert _budget_scale(detect_family("Qwen/Qwen-Image"), base = "Qwen/Qwen-Image") == scale
+        assert _budget_scale(fam, base=repo) == expected, repo
+    assert _budget_scale(detect_family("Qwen/Qwen-Image"), base="Qwen/Qwen-Image") == scale
 
 
 def test_a_sibling_release_keeps_the_pre_cast_encoder(monkeypatch):
@@ -862,9 +863,9 @@ def test_a_sibling_release_keeps_the_pre_cast_encoder(monkeypatch):
     ):
         fam = detect_family_for_pick(base, None, None)
         assert fam is not None, base
-        sources = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target())
+        sources = tpq.te_prequant_sources_for_base(fam, base, te_quant_mode="fp8", target=_target())
         assert "text_encoder" in sources, base
-        assert _budget_scale(fam, base = base) == tpq.TE_PREQUANT_BUDGET_SCALE, base
+        assert _budget_scale(fam, base=base) == tpq.TE_PREQUANT_BUDGET_SCALE, base
 
 
 def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
@@ -878,7 +879,7 @@ def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
     fam = detect_family_for_pick("Qwen/Qwen-Image", None, None)
     for base in ("someone/my-qwen-image-finetune", "randomuser/qwen-image-merged"):
         assert (
-            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode = "fp8", target = _target()) == {}
+            tpq.te_prequant_sources_for_base(fam, base, te_quant_mode="fp8", target=_target()) == {}
         ), base
 
 
@@ -892,10 +893,10 @@ def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
     change is for, and no test covered it because the plan lives beside the resolver, not in it.
     """
     src = TePrequantSource(
-        kind = "repo",
-        location = "unsloth/LTX-2-FP8",
-        filename = "LTX-2-text_encoder-FP8.safetensors",
-        fallback_filenames = ("LTX-2-text_encoder-FP8.pt",),
+        kind="repo",
+        location="unsloth/LTX-2-FP8",
+        filename="LTX-2-text_encoder-FP8.safetensors",
+        fallback_filenames=("LTX-2-text_encoder-FP8.pt",),
     )
 
     class _Sib:
@@ -950,7 +951,7 @@ def test_the_candidate_accessor_tolerates_a_planner_stand_in():
     must not raise, or the whole pre-cast plan is swallowed into a silent dense fallback."""
     import types
 
-    assert tpq.te_candidate_filenames(types.SimpleNamespace(filename = "a.pt")) == ("a.pt",)
+    assert tpq.te_candidate_filenames(types.SimpleNamespace(filename="a.pt")) == ("a.pt",)
     assert tpq.te_candidate_filenames(types.SimpleNamespace()) == ()
 
 
@@ -969,10 +970,10 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
         LocalEntryNotFoundError, EntryNotFoundError
     ), "if this stops holding the ordering below is no longer load-bearing"
     src = TePrequantSource(
-        kind = "repo",
-        location = "org/hosted-fp8",
-        filename = "hosted-text_encoder-FP8.safetensors",
-        fallback_filenames = ("hosted-text_encoder-FP8.pt",),
+        kind="repo",
+        location="org/hosted-fp8",
+        filename="hosted-text_encoder-FP8.safetensors",
+        fallback_filenames=("hosted-text_encoder-FP8.pt",),
     )
     asked: list = []
 
@@ -983,13 +984,13 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
     # ONLINE: surfaces as itself, and the second candidate is never attempted.
     with pytest.raises(LocalEntryNotFoundError):
-        tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
+        tpq._resolve_checkpoint_path(src, None, cache_dir="/tmp/x", local_files_only=False)
     assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
 
     # OFFLINE: a cache miss is the only verdict there is, so the chain is walked.
     asked.clear()
     with pytest.raises(LocalEntryNotFoundError):
-        tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = True)
+        tpq._resolve_checkpoint_path(src, None, cache_dir="/tmp/x", local_files_only=True)
     assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
 
     # A real 404 still advances online, which is the whole point of the chain.
@@ -1002,7 +1003,7 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
         return "/cache/hosted-text_encoder-FP8.pt"
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", only_pt)
-    got = tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
+    got = tpq._resolve_checkpoint_path(src, None, cache_dir="/tmp/x", local_files_only=False)
     assert got == "/cache/hosted-text_encoder-FP8.pt", got
     assert len(asked) == 2, asked
 
@@ -1021,15 +1022,15 @@ def test_the_video_prefetch_advances_only_on_a_missing_name():
 
     miss = VideoBackend._te_fetch_miss
     # A real 404 is a miss in both modes: try the next name.
-    assert miss(EntryNotFoundError("404"), local_files_only = False) is True
-    assert miss(EntryNotFoundError("404"), local_files_only = True) is True
+    assert miss(EntryNotFoundError("404"), local_files_only=False) is True
+    assert miss(EntryNotFoundError("404"), local_files_only=True) is True
     # Offline, a cache miss is the only verdict there is.
-    assert miss(LocalEntryNotFoundError("no local copy"), local_files_only = True) is True
+    assert miss(LocalEntryNotFoundError("no local copy"), local_files_only=True) is True
     # Online, the same exception means the Hub could not be reached: stop, do not blame the name.
-    assert miss(LocalEntryNotFoundError("connection error"), local_files_only = False) is False
+    assert miss(LocalEntryNotFoundError("connection error"), local_files_only=False) is False
     # Anything else is about the repo, not the name.
-    assert miss(PermissionError("401"), local_files_only = False) is False
-    assert miss(OSError("corrupt cache"), local_files_only = True) is False
+    assert miss(PermissionError("401"), local_files_only=False) is False
+    assert miss(OSError("corrupt cache"), local_files_only=True) is False
 
 
 # ── the family opt-in ────────────────────────────────────────────────────────────

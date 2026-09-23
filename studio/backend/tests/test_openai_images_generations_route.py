@@ -102,17 +102,17 @@ def test_parse_image_size_rejects(size):
 class _FakeBackend:
     def __init__(
         self,
-        loaded = True,
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        base_repo = None,
-        generate_error = None,
-        unload_on_generate = False,
-        native_seeds = False,
+        loaded=True,
+        repo_id="unsloth/Z-Image-Turbo-GGUF",
+        base_repo=None,
+        generate_error=None,
+        unload_on_generate=False,
+        native_seeds=False,
         # Supported workflows: a list, or a repo_id -> list map so a replacement changes them.
-        workflows = None,
+        workflows=None,
         # (repo_id, base_repo) pairs generate() reports as loaded, one per call: models a
         # replacement landing between the route's status() read and its lock (#9448).
-        replaced_by = None,
+        replaced_by=None,
     ) -> None:
         self._loaded = loaded
         self._repo_id = repo_id
@@ -154,8 +154,8 @@ class _FakeBackend:
         height,
         steps,
         guidance,
-        batch_size = 1,
-        expected_load = None,
+        batch_size=1,
+        expected_load=None,
     ):
         if not self._loaded:
             raise RuntimeError("No diffusion model is loaded.")
@@ -171,13 +171,13 @@ class _FakeBackend:
             raise self._generate_error
         self.calls.append(
             dict(
-                prompt = prompt,
-                width = width,
-                height = height,
-                steps = steps,
-                guidance = guidance,
-                batch_size = batch_size,
-                expected_load = expected_load,
+                prompt=prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                guidance=guidance,
+                batch_size=batch_size,
+                expected_load=expected_load,
             )
         )
         out = {
@@ -201,7 +201,7 @@ def _make_client(backend):
 
     app = FastAPI()
     install_api_error_handlers(app)
-    app.include_router(router, prefix = "/v1")
+    app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), store, _save
 
@@ -218,7 +218,7 @@ def client(monkeypatch):
 
 
 def _post(client, body):
-    return client.post("/v1/images/generations", json = body)
+    return client.post("/v1/images/generations", json=body)
 
 
 def test_url_response_shape(client):
@@ -234,13 +234,13 @@ def test_url_response_shape(client):
     assert "/images/gallery/img0/file-signed?token=" in item["url"]
     # Z-Image-Turbo defaults (9 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
-        prompt = "a sloth",
-        width = 256,
-        height = 256,
-        steps = 9,
-        guidance = 0.0,
-        batch_size = 1,
-        expected_load = load_identity("unsloth/Z-Image-Turbo-GGUF", None, "z-image"),
+        prompt="a sloth",
+        width=256,
+        height=256,
+        steps=9,
+        guidance=0.0,
+        batch_size=1,
+        expected_load=load_identity("unsloth/Z-Image-Turbo-GGUF", None, "z-image"),
     )
 
 
@@ -292,11 +292,11 @@ def test_keyless_caller_must_use_b64_response_format(client, monkeypatch):
 
 def test_local_load_uses_base_repo_for_defaults(monkeypatch):
     # repo_id is a local path naming no model; base_repo identifies FLUX.1-dev, so the route picks 28 steps / 3.5 guidance, not the 9/0 fallback.
-    backend = _FakeBackend(repo_id = "/models/my-flux", base_repo = "black-forest-labs/FLUX.1-dev")
+    backend = _FakeBackend(repo_id="/models/my-flux", base_repo="black-forest-labs/FLUX.1-dev")
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert backend.calls[0]["steps"] == 28 and backend.calls[0]["guidance"] == 3.5
 
@@ -304,11 +304,11 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
     # A RuntimeError raised inside the pipeline while the model stays loaded (e.g. CUDA OOM) is a sanitized 500, not a 503 echoing the raw text.
     oom = RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (GPU 0; 47.5 GiB total)")
-    backend = _FakeBackend(generate_error = oom)
+    backend = _FakeBackend(generate_error=oom)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 500
     assert resp.json()["error"]["message"] == "Image generation failed."
     assert "CUDA" not in resp.text  # raw exception text must not leak
@@ -317,13 +317,13 @@ def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
 def test_unload_race_returns_503(monkeypatch):
     # The model is evicted between the readiness check and the call: a RuntimeError with is_loaded now False is the one case that maps to 503.
     backend = _FakeBackend(
-        generate_error = RuntimeError("No diffusion model is loaded."),
-        unload_on_generate = True,
+        generate_error=RuntimeError("No diffusion model is loaded."),
+        unload_on_generate=True,
     )
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 503
     err = resp.json()["error"]
     assert err["type"] == "api_error"
@@ -333,11 +333,11 @@ def test_unload_race_returns_503(monkeypatch):
 
 def test_non_runtime_pipeline_error_is_500(monkeypatch):
     # A non-RuntimeError from the pipeline must not take the 503 branch (gated on isinstance RuntimeError), so it is a sanitized 500.
-    backend = _FakeBackend(generate_error = ValueError("bad tensor shape"))
+    backend = _FakeBackend(generate_error=ValueError("bad tensor shape"))
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 500
     assert "shape" not in resp.text
 
@@ -355,35 +355,35 @@ def test_batch_persists_batch_size(monkeypatch):
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256", "n": 3})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256", "n": 3})
     assert resp.status_code == 200
-    records = sorted(store.values(), key = lambda r: r["batch_index"])
+    records = sorted(store.values(), key=lambda r: r["batch_index"])
     assert [r["batch_index"] for r in records] == [0, 1, 2]
     assert all(r["batch_size"] == 3 for r in records)
 
 
 def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
     # On a no-GPU host the loaded model lives behind the native sd_cpp engine, so the route must query get_active_diffusion_engine or it 503s a usable model.
-    active = _FakeBackend(loaded = True)  # the active (e.g. sd_cpp) engine, loaded
-    idle_diffusers = _FakeBackend(loaded = False)  # diffusers singleton, empty
+    active = _FakeBackend(loaded=True)  # the active (e.g. sd_cpp) engine, loaded
+    idle_diffusers = _FakeBackend(loaded=False)  # diffusers singleton, empty
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: active)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: idle_diffusers)
     cli, store, _save = _make_client(active)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert len(active.calls) == 1  # the active engine did the work, not the idle singleton
 
 
 def test_native_batch_persists_per_image_seed(monkeypatch):
     # The native sd.cpp engine returns a distinct seed per image (base+index), so each record must store its own or a restored batch_index>0 image shows the wrong one.
-    backend = _FakeBackend(native_seeds = True)
+    backend = _FakeBackend(native_seeds=True)
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256", "n": 3})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256", "n": 3})
     assert resp.status_code == 200
-    records = sorted(store.values(), key = lambda r: r["batch_index"])
+    records = sorted(store.values(), key=lambda r: r["batch_index"])
     assert [r["seed"] for r in records] == [4242, 4243, 4244]
 
 
@@ -424,11 +424,11 @@ def test_n_out_of_range_400(client, n):
 
 
 def test_no_model_loaded_503(monkeypatch):
-    backend = _FakeBackend(loaded = False)
+    backend = _FakeBackend(loaded=False)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p"})
     assert resp.status_code == 503
     # 503 still wears the OpenAI envelope (api_error) on the /v1 surface.
     assert resp.json()["error"]["type"] == "api_error"
@@ -438,9 +438,9 @@ def test_auth_required():
     backend = _FakeBackend()
     app = FastAPI()
     install_api_error_handlers(app)
-    app.include_router(router, prefix = "/v1")
+    app.include_router(router, prefix="/v1")
     # No dependency override: the real auth dependency runs and rejects.
-    resp = TestClient(app).post("/v1/images/generations", json = {"prompt": "p"})
+    resp = TestClient(app).post("/v1/images/generations", json={"prompt": "p"})
     assert resp.status_code in (401, 403)
 
 
@@ -452,8 +452,8 @@ def _signed_link_app(monkeypatch, backend, png: "object"):
 
     app = FastAPI()
     install_api_error_handlers(app)
-    app.include_router(router, prefix = "/v1")
-    app.include_router(studio_router, prefix = "/api/inference")
+    app.include_router(router, prefix="/v1")
+    app.include_router(studio_router, prefix="/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     monkeypatch.setattr(gallery_module, "owned_image_path", lambda i: png if i == "img0" else None)
     return TestClient(app)
@@ -477,11 +477,11 @@ def test_url_response_link_is_fetchable_without_the_bearer(monkeypatch, tmp_path
 
     monkeypatch.setattr(gallery_module, "save", _save)
     cli = _signed_link_app(monkeypatch, backend, png)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     url = resp.json()["data"][0]["url"]
 
-    fetched = cli.get(url.replace("http://testserver", ""), headers = {})
+    fetched = cli.get(url.replace("http://testserver", ""), headers={})
     assert fetched.status_code == 200
     assert fetched.headers["content-type"] == "image/png"
     assert fetched.content == b"\x89PNG\r\n\x1a\nfake"
@@ -518,11 +518,11 @@ def test_activation_shortfall_is_an_actionable_400(monkeypatch):
         "Generating at 2048x2048 needs about 15.55 GB of working memory, but only about "
         "13.50 GB is usable on this device. Generate at a smaller resolution."
     )
-    backend = _FakeBackend(generate_error = ImageActivationShortfallError(reason))
+    backend = _FakeBackend(generate_error=ImageActivationShortfallError(reason))
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 400
     err = resp.json()["error"]
     assert err["message"] == reason
@@ -534,7 +534,7 @@ def test_activation_shortfall_is_an_actionable_400(monkeypatch):
 def test_generation_opens_a_monitor_row(client):
     api_monitor.clear()
     assert _post(client, {"prompt": "a sloth in space"}).status_code == 200
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/images/generations"
     assert rows[0]["method"] == "POST"
@@ -545,13 +545,13 @@ def test_generation_opens_a_monitor_row(client):
 
 
 def test_no_loaded_model_records_an_error_row(monkeypatch):
-    backend = _FakeBackend(loaded = False)
+    backend = _FakeBackend(loaded=False)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
     api_monitor.clear()
     assert _post(cli, {"prompt": "a sloth"}).status_code == 503
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     # The route's 503 detail, not _friendly_error's generic fallback.
@@ -561,16 +561,16 @@ def test_no_loaded_model_records_an_error_row(monkeypatch):
 def test_local_directory_load_is_not_leaked_into_the_monitor(monkeypatch):
     # A local pick puts the host directory in repo_id and the row goes out over the tunnel,
     # so the label gets the same path-free treatment as active_model.
-    backend = _FakeBackend(repo_id = "/home/ana/models/my-flux")
+    backend = _FakeBackend(repo_id="/home/ana/models/my-flux")
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
     api_monitor.clear()
     assert (
-        cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"}).status_code
+        cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"}).status_code
         == 200
     )
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["model"] == "my-flux"
 
@@ -589,13 +589,13 @@ def test_a_refused_request_records_nothing(client, body):
     their bad parameters before opening a row, and this route now matches them."""
     api_monitor.clear()
     assert _post(client, body).status_code == 400
-    assert api_monitor.snapshot(include_details = False) == []
+    assert api_monitor.snapshot(include_details=False) == []
 
 
 def test_a_failed_generation_does_not_leak_a_local_path_label(monkeypatch):
     """The relabel only runs after a successful generation, so a failure left whatever the
     client sent in body.model on a row that goes out over the tunnel."""
-    backend = _FakeBackend(loaded = False)
+    backend = _FakeBackend(loaded=False)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
     monkeypatch.setattr(gallery_module, "save", _save)
@@ -606,7 +606,7 @@ def test_a_failed_generation_does_not_leak_a_local_path_label(monkeypatch):
     ):
         api_monitor.clear()
         assert _post(cli, {"prompt": "a sloth", "model": sent}).status_code == 503
-        row = api_monitor.snapshot(include_details = False)[0]
+        row = api_monitor.snapshot(include_details=False)[0]
         assert row["status"] == "error"
         assert row["model"] == expected
 
@@ -626,7 +626,7 @@ def test_generation_pins_the_status_read_it_derived_its_params_from(monkeypatch)
     # Without the pin the backend cannot tell a stale snapshot from a fresh one.
     backend = _FakeBackend()
     cli, _ = _replacement_client(monkeypatch, backend)
-    assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
+    assert cli.post("/v1/images/generations", json={"prompt": "p"}).status_code == 200
     assert backend.calls[0]["expected_load"] == load_identity(
         "unsloth/Z-Image-Turbo-GGUF", None, "z-image"
     )
@@ -635,9 +635,9 @@ def test_generation_pins_the_status_read_it_derived_its_params_from(monkeypatch)
 def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
     # Z-Image-Turbo (9 steps, guidance 0) is replaced by Z-Image (20 steps, guidance 4). The first
     # attempt is refused in-lock; the retry must re-derive from fresh state, not reuse the turbo's.
-    backend = _FakeBackend(replaced_by = [("unsloth/Z-Image-GGUF", None)])
+    backend = _FakeBackend(replaced_by=[("unsloth/Z-Image-GGUF", None)])
     cli, _ = _replacement_client(monkeypatch, backend)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert len(backend.calls) == 1  # the refused attempt never generated
     assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (20, 4.0)
@@ -645,9 +645,9 @@ def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
 
 def test_second_replacement_is_a_503_not_a_sanitized_500(monkeypatch):
     # Bounded at one retry, and the client is told to retry rather than handed a server error.
-    backend = _FakeBackend(replaced_by = [("a/one", None), ("b/two", None)])
+    backend = _FakeBackend(replaced_by=[("a/one", None), ("b/two", None)])
     cli, _ = _replacement_client(monkeypatch, backend)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 503
     assert backend.calls == []
     err = resp.json()["error"]
@@ -659,11 +659,11 @@ def test_replacement_into_an_edit_only_model_is_a_400(monkeypatch):
     # The retry re-decides eligibility too, not just the parameters.
     edit_only = "unsloth/Qwen-Image-Edit-GGUF"
     backend = _FakeBackend(
-        replaced_by = [(edit_only, None)],
-        workflows = {"unsloth/Z-Image-Turbo-GGUF": ["txt2img"], edit_only: ["img2img"]},
+        replaced_by=[(edit_only, None)],
+        workflows={"unsloth/Z-Image-Turbo-GGUF": ["txt2img"], edit_only: ["img2img"]},
     )
     cli, _ = _replacement_client(monkeypatch, backend)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 400
     assert "edit-only" in resp.json()["error"]["message"]
     assert backend.calls == []
@@ -671,9 +671,9 @@ def test_replacement_into_an_edit_only_model_is_a_400(monkeypatch):
 
 def test_edit_only_model_is_an_actionable_400(monkeypatch):
     # No test covered this gate, so a broken error-envelope call there turned it into a 500.
-    backend = _FakeBackend(workflows = ["img2img", "inpaint"])
+    backend = _FakeBackend(workflows=["img2img", "inpaint"])
     cli, _ = _replacement_client(monkeypatch, backend)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 400
     err = resp.json()["error"]
     assert err["type"] == "invalid_request_error" and err["param"] == "model"
@@ -683,16 +683,16 @@ def test_edit_only_model_is_an_actionable_400(monkeypatch):
 
 def test_txt2img_capable_model_passes_the_gate(monkeypatch):
     # A model advertising txt2img among its workflows must not be caught by the edit-only refusal.
-    backend = _FakeBackend(workflows = ["txt2img", "img2img"])
+    backend = _FakeBackend(workflows=["txt2img", "img2img"])
     cli, _ = _replacement_client(monkeypatch, backend)
-    assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
+    assert cli.post("/v1/images/generations", json={"prompt": "p"}).status_code == 200
 
 
 def test_backend_reporting_no_repo_id_still_generates(monkeypatch):
     # An engine reporting no repo_id still pins its base and family, and still generates.
-    backend = _FakeBackend(repo_id = None)
+    backend = _FakeBackend(repo_id=None)
     cli, _ = _replacement_client(monkeypatch, backend)
-    assert cli.post("/v1/images/generations", json = {"prompt": "p"}).status_code == 200
+    assert cli.post("/v1/images/generations", json={"prompt": "p"}).status_code == 200
     assert backend.calls[0]["expected_load"] == load_identity(None, None, "z-image")
 
 
@@ -702,9 +702,9 @@ def test_same_repo_reloaded_under_a_different_base_is_a_replacement(monkeypatch)
     local = "/models/my-ckpt"
     dev, schnell = "black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell"
     assert default_generation_params(local, dev) != default_generation_params(local, schnell)
-    backend = _FakeBackend(repo_id = local, base_repo = dev, replaced_by = [(local, schnell)])
+    backend = _FakeBackend(repo_id=local, base_repo=dev, replaced_by=[(local, schnell)])
     cli, _ = _replacement_client(monkeypatch, backend)
-    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    resp = cli.post("/v1/images/generations", json={"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert len(backend.calls) == 1  # the refused attempt never generated
     assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (4, 0.0)

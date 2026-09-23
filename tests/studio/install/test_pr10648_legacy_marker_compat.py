@@ -219,7 +219,7 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     The four installer modules plus the ``backend.utils.prebuilt`` package they import at
     module scope -- roughly 600 KB, against 46 MB for the whole ``studio`` tree.
     """
-    destination.mkdir(parents = True, exist_ok = True)
+    destination.mkdir(parents=True, exist_ok=True)
     wanted = [f"studio/{name}" for name in _LEGACY_MODULES]
     wanted += ["studio/backend/__init__.py", "studio/backend/utils/__init__.py"]
     # prebuilt_core imports this too, and PYTHONPATH below is REPLACED with this tree.
@@ -242,7 +242,7 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
         if blob.returncode != 0:
             return None
         target = destination / Path(path).relative_to("studio")
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob.stdout)
     return destination
 
@@ -260,12 +260,12 @@ def _run_legacy(tree: Path, op: str, spec: dict) -> dict:
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = subprocess.run(
         [sys.executable, "-c", _LEGACY_DRIVER, json.dumps({"op": op, "spec": spec})],
-        cwd = str(tree),
-        env = environment,
-        capture_output = True,
-        text = True,
-        timeout = 600,
-        check = False,
+        cwd=str(tree),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
     )
     for line in proc.stdout.splitlines():
         if line.startswith(_SENTINEL):
@@ -400,7 +400,7 @@ MARKER_SPEC = {
 }
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def legacy_markers(tmp_path_factory) -> dict:
     """One marker per component, per released tag, written by that tag's own code."""
     if git("rev-parse", "--git-dir").returncode != 0:
@@ -431,7 +431,7 @@ def _legacy(legacy_markers: dict, tag: str) -> dict:
     return entry
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _offline(monkeypatch):
     """No fast-path assertion here may be bought with a network call.
 
@@ -444,7 +444,7 @@ def _offline(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("the marker fast path must not reach the network")
 
-    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
+    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising=False)
     for module in (ILP, WSP.llama, CORE):
         for name in (
             "_download_host_latest_release_tag",
@@ -459,56 +459,56 @@ def _offline(monkeypatch):
 
 def _llama_install(root: Path, marker):
     """A healthy published Vulkan tree, with *marker* written verbatim."""
-    return CORPUS.build_install(root, host = LINUX, marker = marker, payload_backend = "vulkan")
+    return CORPUS.build_install(root, host=LINUX, marker=marker, payload_backend="vulkan")
 
 
 def _whisper_install(root: Path, marker_text: "str | None"):
     install_dir = root / "whisper.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     server = bin_dir / "whisper-server"
-    server.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    server.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(server, 0o755)
     if marker_text is not None:
-        WSP.metadata_path(install_dir).write_text(marker_text, encoding = "utf-8")
+        WSP.metadata_path(install_dir).write_text(marker_text, encoding="utf-8")
     return install_dir
 
 
 def _node_install(root: Path, marker_text: "str | None"):
     install_dir = root / "node"
     node_binary = NDP.node_binary_path(install_dir, NODE_HOST)
-    node_binary.parent.mkdir(parents = True)
-    node_binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    node_binary.parent.mkdir(parents=True)
+    node_binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(node_binary, 0o755)
     npm_cli = NDP.npm_cli_path(install_dir, NODE_HOST)
-    npm_cli.parent.mkdir(parents = True)
-    npm_cli.write_text("// npm-cli\n", encoding = "utf-8")
+    npm_cli.parent.mkdir(parents=True)
+    npm_cli.write_text("// npm-cli\n", encoding="utf-8")
     if marker_text is not None:
-        NDP.metadata_path(install_dir).write_text(marker_text, encoding = "utf-8")
+        NDP.metadata_path(install_dir).write_text(marker_text, encoding="utf-8")
     return install_dir
 
 
 def _llama_route(
-    host = LINUX,
-    published_repo = LLAMA_REPO,
-    release_tag = LLAMA_RELEASE_TAG,
+    host=LINUX,
+    published_repo=LLAMA_REPO,
+    release_tag=LLAMA_RELEASE_TAG,
 ):
     return ILP.BackendRoute(
-        backend = "auto",
-        host = host,
-        published_repo = published_repo,
-        published_release_tag = release_tag,
-        persist_llama_backend = None,
-        persist_rocm_gfx = None,
+        backend="auto",
+        host=host,
+        published_repo=published_repo,
+        published_release_tag=release_tag,
+        persist_llama_backend=None,
+        persist_rocm_gfx=None,
     )
 
 
 def _llama_fast_path(
     install_dir: Path,
-    host = LINUX,
-    backend_request = "auto",
-    published_repo = LLAMA_REPO,
-    release_tag = LLAMA_RELEASE_TAG,
+    host=LINUX,
+    backend_request="auto",
+    published_repo=LLAMA_REPO,
+    release_tag=LLAMA_RELEASE_TAG,
 ) -> bool:
     """The pre-check as ``install_prebuilt`` calls it, with the release pinned.
 
@@ -518,44 +518,44 @@ def _llama_fast_path(
     """
     return ILP.existing_install_current_without_plan(
         install_dir,
-        llama_tag = "latest",
-        published_repo = published_repo,
-        published_release_tag = release_tag,
-        backend_request = backend_request,
-        force_cpu = False,
-        route = _llama_route(host, published_repo, release_tag),
+        llama_tag="latest",
+        published_repo=published_repo,
+        published_release_tag=release_tag,
+        backend_request=backend_request,
+        force_cpu=False,
+        route=_llama_route(host, published_repo, release_tag),
     )
 
 
 def _current_llama_install(root: Path):
     """A tree whose marker this very code wrote: the fast path's own best case."""
-    install_dir = _llama_install(root, marker = None)
+    install_dir = _llama_install(root, marker=None)
     ILP.write_prebuilt_metadata(
         install_dir,
-        host = LINUX,
-        requested_tag = "latest",
-        llama_tag = LLAMA_UPSTREAM_TAG,
-        release_tag = LLAMA_RELEASE_TAG,
-        choice = _llama_choice(),
-        approved_checksums = _fill(ILP.ApprovedReleaseChecksums, LLAMA_CHECKSUMS),
-        prebuilt_fallback_used = False,
-        backend_request = "auto",
+        host=LINUX,
+        requested_tag="latest",
+        llama_tag=LLAMA_UPSTREAM_TAG,
+        release_tag=LLAMA_RELEASE_TAG,
+        choice=_llama_choice(),
+        approved_checksums=_fill(ILP.ApprovedReleaseChecksums, LLAMA_CHECKSUMS),
+        prebuilt_fallback_used=False,
+        backend_request="auto",
     )
     return install_dir
 
 
 def _rewrite_marker(marker_path: Path, marker: dict) -> None:
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    marker_path.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 
 def _whisper_fast_path(install_dir: Path) -> bool:
     return WSP.existing_install_current_without_plan(
         install_dir,
         WHISPER_HOST,
-        whisper_tag = "latest",
-        published_repo = WHISPER_REPO,
-        published_release_tag = WHISPER_RELEASE_TAG,
-        requested_backend = "cpu",
+        whisper_tag="latest",
+        published_repo=WHISPER_REPO,
+        published_release_tag=WHISPER_RELEASE_TAG,
+        requested_backend="cpu",
     )
 
 
@@ -588,7 +588,7 @@ def test_a_llama_marker_from_a_released_unsloth_never_takes_the_fast_path(
 @pytest.mark.parametrize(
     ("name", "marker", "backend"),
     CORPUS.ALL_SHAPES,
-    ids = [shape[0] for shape in CORPUS.ALL_SHAPES],
+    ids=[shape[0] for shape in CORPUS.ALL_SHAPES],
 )
 def test_no_shipped_llama_marker_shape_reaches_the_fast_path(tmp_path, name, marker, backend):
     """The twelve marker shapes that have shipped, plus one captured from a real install.
@@ -598,15 +598,15 @@ def test_no_shipped_llama_marker_shape_reaches_the_fast_path(tmp_path, name, mar
     perfectly healthy -- the full path keeps it -- so the fast path refusing them is the
     ONLY thing forcing the one re-validation that backfills the new evidence.
     """
-    install_dir = CORPUS.build_install(tmp_path, host = LINUX, marker = marker, payload_backend = backend)
+    install_dir = CORPUS.build_install(tmp_path, host=LINUX, marker=marker, payload_backend=backend)
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True, name
     # The shape's own release and repo, so the tag comparison AGREES and the verdict turns
     # on the evidence the shape does not carry rather than on a release mismatch.
     assert (
         _llama_fast_path(
             install_dir,
-            published_repo = marker.get("published_repo") or LLAMA_REPO,
-            release_tag = marker.get("release_tag") or LLAMA_RELEASE_TAG,
+            published_repo=marker.get("published_repo") or LLAMA_REPO,
+            release_tag=marker.get("release_tag") or LLAMA_RELEASE_TAG,
         )
         is False
     ), name
@@ -674,7 +674,7 @@ def test_a_whisper_marker_missing_fingerprint_coverage_is_not_read_as_agreement(
     Without it the fingerprint cannot be recomputed, so a ``release_tag`` edited over an
     old binary would read as current. Every pre-PR whisper marker lacks it.
     """
-    install_dir = _whisper_install(tmp_path, marker_text = None)
+    install_dir = _whisper_install(tmp_path, marker_text=None)
     WSP.write_prebuilt_metadata(install_dir, _whisper_selection())
     assert _whisper_fast_path(install_dir) is True
 
@@ -690,10 +690,10 @@ def test_a_node_marker_missing_node_version_checked_is_not_read_as_agreement(tmp
     ``node_binary`` and ``npm_cli`` can be present (an install this code wrote) while the
     version record is not, and the spawn still has to happen.
     """
-    install_dir = _node_install(tmp_path, marker_text = None)
-    NDP.write_metadata(install_dir, version = NODE_VERSION, asset = NODE_ASSET, sha256 = NODE_SHA256)
+    install_dir = _node_install(tmp_path, marker_text=None)
+    NDP.write_metadata(install_dir, version=NODE_VERSION, asset=NODE_ASSET, sha256=NODE_SHA256)
     NDP.record_runtime_verification(
-        install_dir, NODE_HOST, version = NODE_VERSION, npm_major = NDP.NPM_MIN_MAJOR
+        install_dir, NODE_HOST, version=NODE_VERSION, npm_major=NDP.NPM_MIN_MAJOR
     )
     marker = NDP.load_metadata(install_dir)
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, marker, NODE_VERSION) is True
@@ -709,7 +709,7 @@ def test_the_full_check_env_var_puts_a_current_install_back_on_the_slow_path(tmp
     not two. Asserted for llama and whisper together for that reason.
     """
     llama_dir = _current_llama_install(tmp_path / "llama")
-    whisper_dir = _whisper_install(tmp_path / "whisper", marker_text = None)
+    whisper_dir = _whisper_install(tmp_path / "whisper", marker_text=None)
     WSP.write_prebuilt_metadata(whisper_dir, _whisper_selection())
     assert _llama_fast_path(llama_dir) is True
     assert _whisper_fast_path(whisper_dir) is True
@@ -746,11 +746,11 @@ def test_an_old_llama_install_pays_the_full_path_once_and_is_fast_afterwards(
 
     ILP.sync_marker_selection(
         install_dir,
-        choice = _llama_choice(),
-        backend_request = "auto",
-        ggml_tree = LLAMA_GGML_TREE,
-        host = LINUX,
-        prebuilt_fallback_used = False,
+        choice=_llama_choice(),
+        backend_request="auto",
+        ggml_tree=LLAMA_GGML_TREE,
+        host=LINUX,
+        prebuilt_fallback_used=False,
     )
     backfilled = ILP.load_prebuilt_metadata(install_dir)
     assert isinstance(backfilled.get("host_profile"), dict)
@@ -777,16 +777,16 @@ def test_the_backfilled_llama_marker_still_refuses_a_tree_whose_bytes_moved(
     install_dir = _llama_install(tmp_path, marker["text"])
     ILP.sync_marker_selection(
         install_dir,
-        choice = _llama_choice(),
-        backend_request = "auto",
-        ggml_tree = LLAMA_GGML_TREE,
-        host = LINUX,
-        prebuilt_fallback_used = False,
+        choice=_llama_choice(),
+        backend_request="auto",
+        ggml_tree=LLAMA_GGML_TREE,
+        host=LINUX,
+        prebuilt_fallback_used=False,
     )
     assert _llama_fast_path(install_dir) is True
 
     server = install_dir / "build" / "bin" / "llama-server"
-    server.write_text("#!/bin/sh\nexit 0\n# a different build\n", encoding = "utf-8")
+    server.write_text("#!/bin/sh\nexit 0\n# a different build\n", encoding="utf-8")
     os.chmod(server, 0o755)
     assert _llama_fast_path(install_dir) is False
 
@@ -810,7 +810,7 @@ def test_an_old_whisper_install_pays_the_full_path_once_and_is_fast_afterwards(
 
     assert _whisper_fast_path(install_dir) is False
 
-    CORE._settle_kept_install(WSP._OPS, install_dir, WHISPER_HOST, selection, locked = True)
+    CORE._settle_kept_install(WSP._OPS, install_dir, WHISPER_HOST, selection, locked=True)
     settled = WSP.load_prebuilt_metadata(install_dir)
     assert isinstance(settled.get("fingerprint_coverage"), dict)
     assert settled["install_fingerprint"] == marker["marker"]["install_fingerprint"]
@@ -843,7 +843,7 @@ def test_an_old_node_install_spawns_node_once_and_never_again(
 
     assert (
         NDP.existing_install_matches(
-            install_dir, NODE_HOST, version = NODE_VERSION, expected_sha = NODE_SHA256
+            install_dir, NODE_HOST, version=NODE_VERSION, expected_sha=NODE_SHA256
         )
         is True
     )
@@ -854,7 +854,7 @@ def test_an_old_node_install_spawns_node_once_and_never_again(
 
     assert (
         NDP.existing_install_matches(
-            install_dir, NODE_HOST, version = NODE_VERSION, expected_sha = NODE_SHA256
+            install_dir, NODE_HOST, version=NODE_VERSION, expected_sha=NODE_SHA256
         )
         is True
     )
@@ -876,13 +876,13 @@ def test_a_replaced_node_binary_is_probed_again_after_the_record_was_written(
     monkeypatch.setattr(NDP, "installed_npm_major", lambda *a, **k: NDP.NPM_MIN_MAJOR)
     assert (
         NDP.existing_install_matches(
-            install_dir, NODE_HOST, version = NODE_VERSION, expected_sha = NODE_SHA256
+            install_dir, NODE_HOST, version=NODE_VERSION, expected_sha=NODE_SHA256
         )
         is True
     )
 
     node_binary = NDP.node_binary_path(install_dir, NODE_HOST)
-    node_binary.write_text("#!/bin/sh\nexit 0\n# another build\n", encoding = "utf-8")
+    node_binary.write_text("#!/bin/sh\nexit 0\n# another build\n", encoding="utf-8")
     meta = NDP.load_metadata(install_dir)
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, meta, NODE_VERSION) is False
 
@@ -901,26 +901,26 @@ def test_a_marker_written_today_is_still_read_by_every_released_unsloth(
     """
     entry = _legacy(legacy_markers, tag)
 
-    llama_dir = _llama_install(tmp_path / "current", marker = None)
+    llama_dir = _llama_install(tmp_path / "current", marker=None)
     ILP.write_prebuilt_metadata(
         llama_dir,
-        host = LINUX,
-        requested_tag = "latest",
-        llama_tag = LLAMA_UPSTREAM_TAG,
-        release_tag = LLAMA_RELEASE_TAG,
-        choice = _llama_choice(),
-        approved_checksums = _fill(ILP.ApprovedReleaseChecksums, LLAMA_CHECKSUMS),
-        prebuilt_fallback_used = False,
-        backend_request = "auto",
+        host=LINUX,
+        requested_tag="latest",
+        llama_tag=LLAMA_UPSTREAM_TAG,
+        release_tag=LLAMA_RELEASE_TAG,
+        choice=_llama_choice(),
+        approved_checksums=_fill(ILP.ApprovedReleaseChecksums, LLAMA_CHECKSUMS),
+        prebuilt_fallback_used=False,
+        backend_request="auto",
     )
 
-    whisper_dir = _whisper_install(tmp_path / "current", marker_text = None)
+    whisper_dir = _whisper_install(tmp_path / "current", marker_text=None)
     WSP.write_prebuilt_metadata(whisper_dir, _whisper_selection())
 
-    node_dir = _node_install(tmp_path / "current", marker_text = None)
-    NDP.write_metadata(node_dir, version = NODE_VERSION, asset = NODE_ASSET, sha256 = NODE_SHA256)
+    node_dir = _node_install(tmp_path / "current", marker_text=None)
+    NDP.write_metadata(node_dir, version=NODE_VERSION, asset=NODE_ASSET, sha256=NODE_SHA256)
     NDP.record_runtime_verification(
-        node_dir, NODE_HOST, version = NODE_VERSION, npm_major = NDP.NPM_MIN_MAJOR
+        node_dir, NODE_HOST, version=NODE_VERSION, npm_major=NDP.NPM_MIN_MAJOR
     )
 
     # The keys that did not exist when these tags shipped, so the run below is a real test.

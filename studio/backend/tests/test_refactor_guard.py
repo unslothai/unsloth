@@ -22,7 +22,7 @@ sys.path.insert(0, str(BACKEND_ROOT / "tests" / "tools"))
 import refactor_guard  # noqa: E402
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def corpus():
     return refactor_guard.build_corpus()
 
@@ -101,7 +101,7 @@ def test_the_recorded_patch_target_inventory_still_matches():
     }
     live = {target: sorted(tests) for target, tests in refactor_guard.patch_targets().items()}
 
-    problems = refactor_guard._diff("patch-targets", recorded, live, additions_matter = False)
+    problems = refactor_guard._diff("patch-targets", recorded, live, additions_matter=False)
 
     assert not problems, "\n".join(problems[:20])
 
@@ -174,7 +174,7 @@ def test_the_scan_order_inside_strip_segment_is_pinned():
 
     text = "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>"
 
-    assert strip_segment(text, seg_final = True, enabled_tool_names = {"x"}) == "<parameter=p>"
+    assert strip_segment(text, seg_final=True, enabled_tool_names={"x"}) == "<parameter=p>"
 
 
 def test_strip_tool_markup_is_pinned_at_both_final_values():
@@ -187,8 +187,8 @@ def test_strip_tool_markup_is_pinned_at_both_final_values():
     )
     names = {"get_weather"}
 
-    assert strip_tool_markup(text, final = False, enabled_tool_names = names) == " tail"
-    assert strip_tool_markup(text, final = True, enabled_tool_names = names) == "tail"
+    assert strip_tool_markup(text, final=False, enabled_tool_names=names) == " tail"
+    assert strip_tool_markup(text, final=True, enabled_tool_names=names) == "tail"
 
 
 def test_an_unrelated_addition_elsewhere_does_not_fail_the_guard():
@@ -201,8 +201,8 @@ def test_an_unrelated_addition_elsewhere_does_not_fail_the_guard():
 
     added = copy.deepcopy(base[wide])
     added["symbols"]["_SOMETHING_A_LATER_PR_ADDS"] = {"kind": "assign"}
-    assert not refactor_guard._diff("ast", base[wide], added, additions_matter = False)
+    assert not refactor_guard._diff("ast", base[wide], added, additions_matter=False)
 
     dropped = copy.deepcopy(base[wide])
     dropped["symbols"].pop(next(iter(dropped["symbols"])))
-    assert refactor_guard._diff("ast", base[wide], dropped, additions_matter = False)
+    assert refactor_guard._diff("ast", base[wide], dropped, additions_matter=False)

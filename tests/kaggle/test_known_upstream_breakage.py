@@ -69,7 +69,7 @@ def test_a_listed_model_that_starts_AGREEING_fails():
     """The strict half, and the reason this is not a mute. Agreement in bf16
     means a kernel or the stack changed, and CI says so instead of carrying a
     stale expectation."""
-    agreeing = _record(agrees = {"2": True, "4": True, "8": True})
+    agreeing = _record(agrees={"2": True, "4": True, "8": True})
     broken = batched_generation_failures(agreeing, "unsloth/Qwen3.5-2B")
     assert broken, "a fixed upstream bug must turn the leg red"
     assert "delete the entry" in broken[0]

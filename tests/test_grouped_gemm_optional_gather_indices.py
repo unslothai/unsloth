@@ -27,16 +27,16 @@ sys.path.insert(0, str(ROOT))
 
 import torch  # noqa: E402
 
-pytest.importorskip("triton", reason = "the grouped GEMM is a Triton kernel")
+pytest.importorskip("triton", reason="the grouped GEMM is a Triton kernel")
 
 try:
     from unsloth.kernels.moe.grouped_gemm.interface import grouped_gemm
 except Exception as exc:  # pragma: no cover - depends on the installed stack
-    pytest.skip(f"grouped_gemm is unimportable here: {exc}", allow_module_level = True)
+    pytest.skip(f"grouped_gemm is unimportable here: {exc}", allow_module_level=True)
 
 
 CUDA = torch.cuda.is_available()
-requires_cuda = pytest.mark.skipif(not CUDA, reason = "grouped GEMM needs a real CUDA device")
+requires_cuda = pytest.mark.skipif(not CUDA, reason="grouped GEMM needs a real CUDA device")
 
 NUM_EXPERTS = 2
 TOKENS_PER_EXPERT = 4
@@ -45,10 +45,10 @@ TOTAL_TOKENS = NUM_EXPERTS * TOKENS_PER_EXPERT
 N = K = 256
 
 
-def _operands(device, requires_grad = False):
-    X = torch.randn(TOTAL_TOKENS, K, device = device, dtype = torch.bfloat16)
-    W = torch.randn(NUM_EXPERTS, N, K, device = device, dtype = torch.bfloat16)
-    m_sizes = torch.full((NUM_EXPERTS,), TOKENS_PER_EXPERT, device = device, dtype = torch.int32)
+def _operands(device, requires_grad=False):
+    X = torch.randn(TOTAL_TOKENS, K, device=device, dtype=torch.bfloat16)
+    W = torch.randn(NUM_EXPERTS, N, K, device=device, dtype=torch.bfloat16)
+    m_sizes = torch.full((NUM_EXPERTS,), TOKENS_PER_EXPERT, device=device, dtype=torch.int32)
     return X.requires_grad_(requires_grad), W.requires_grad_(requires_grad), m_sizes
 
 
@@ -59,15 +59,15 @@ def test_the_default_survives_the_wrapper_when_nothing_permutes():
     """On CPU the call has to die inside `grouped_gemm_forward` on its device
     assert. An AttributeError instead means the wrapper dereferenced None."""
     X, W, m_sizes = _operands("cpu")
-    with pytest.raises(AssertionError, match = "must be on CUDA"):
+    with pytest.raises(AssertionError, match="must be on CUDA"):
         grouped_gemm(
-            X = X,
-            W = W,
-            m_sizes = m_sizes,
-            topk = 1,
-            permute_x = False,
-            permute_y = False,
-            autotune = True,
+            X=X,
+            W=W,
+            m_sizes=m_sizes,
+            topk=1,
+            permute_x=False,
+            permute_y=False,
+            autotune=True,
         )
 
 
@@ -76,15 +76,15 @@ def test_permuting_without_indices_still_fails_with_the_explicit_message(permute
     """The guard is the whole reason the parameter can be optional, so it must
     keep firing ahead of anything that would dereference None."""
     X, W, m_sizes = _operands("cpu")
-    with pytest.raises(AssertionError, match = "gather_indices is required"):
+    with pytest.raises(AssertionError, match="gather_indices is required"):
         grouped_gemm(
-            X = X,
-            W = W,
-            m_sizes = m_sizes,
-            topk = 1,
-            permute_x = permute_x,
-            permute_y = permute_y,
-            autotune = True,
+            X=X,
+            W=W,
+            m_sizes=m_sizes,
+            topk=1,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            autotune=True,
         )
 
 
@@ -96,26 +96,26 @@ def test_forward_matches_the_dummy_index_workaround():
     """`torch.arange(total_tokens)` is what callers pass today to get past the
     crash, and the kernel never reads it, so both paths must agree exactly."""
     X, W, m_sizes = _operands("cuda")
-    dummy = torch.arange(TOTAL_TOKENS, device = "cuda", dtype = torch.int32)
+    dummy = torch.arange(TOTAL_TOKENS, device="cuda", dtype=torch.int32)
 
     without = grouped_gemm(
-        X = X,
-        W = W,
-        m_sizes = m_sizes,
-        topk = 1,
-        permute_x = False,
-        permute_y = False,
-        autotune = True,
+        X=X,
+        W=W,
+        m_sizes=m_sizes,
+        topk=1,
+        permute_x=False,
+        permute_y=False,
+        autotune=True,
     )
     with_dummy = grouped_gemm(
-        X = X,
-        W = W,
-        m_sizes = m_sizes,
-        topk = 1,
-        gather_indices = dummy,
-        permute_x = False,
-        permute_y = False,
-        autotune = True,
+        X=X,
+        W=W,
+        m_sizes=m_sizes,
+        topk=1,
+        gather_indices=dummy,
+        permute_x=False,
+        permute_y=False,
+        autotune=True,
     )
 
     assert without.shape == (TOTAL_TOKENS, N)
@@ -143,19 +143,19 @@ def test_backward_matches_the_dummy_index_workaround(topk):
     grads = {}
     for name, gather_indices in (
         ("none", None),
-        ("dummy", torch.arange(TOTAL_TOKENS, device = "cuda", dtype = torch.int32)),
+        ("dummy", torch.arange(TOTAL_TOKENS, device="cuda", dtype=torch.int32)),
     ):
         torch.manual_seed(0)
-        X, W, m_sizes = _operands("cuda", requires_grad = True)
+        X, W, m_sizes = _operands("cuda", requires_grad=True)
         grouped_gemm(
-            X = X,
-            W = W,
-            m_sizes = m_sizes,
-            topk = topk,
-            gather_indices = gather_indices,
-            permute_x = False,
-            permute_y = False,
-            autotune = True,
+            X=X,
+            W=W,
+            m_sizes=m_sizes,
+            topk=topk,
+            gather_indices=gather_indices,
+            permute_x=False,
+            permute_y=False,
+            autotune=True,
         ).sum().backward()
         grads[name] = (X.grad, W.grad)
 

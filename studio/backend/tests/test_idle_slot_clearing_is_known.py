@@ -27,52 +27,52 @@ class TestTheArgvIsWhatDecides:
     def test_a_modern_binary_clears_by_default(self):
         """--cache-ram defaults to 8192 MiB and Studio rarely emits the flag, so an
         absent flag is the common case and means ON."""
-        assert active(BASE, supports_cache_ram = True) is True
+        assert active(BASE, supports_cache_ram=True) is True
 
     def test_a_binary_without_cache_ram_never_clears(self):
         """It predates the feature, and Studio skips the flag rather than failing the
         launch, so the argv looks identical to the default case."""
-        assert active(BASE, supports_cache_ram = False) is False
+        assert active(BASE, supports_cache_ram=False) is False
 
     def test_windows_full_offload_does_not_clear(self):
         """The #5692 path: --cache-ram 0 force-disables --cache-idle-slots."""
-        assert active(BASE + ["--cache-ram", "0"], supports_cache_ram = True) is False
+        assert active(BASE + ["--cache-ram", "0"], supports_cache_ram=True) is False
 
     def test_an_explicit_cache_ram_clears(self):
-        assert active(BASE + ["--cache-ram", "4096"], supports_cache_ram = True) is True
+        assert active(BASE + ["--cache-ram", "4096"], supports_cache_ram=True) is True
 
     def test_the_flag_can_be_turned_off_by_name(self):
         assert (
             active(
                 BASE + ["--cache-ram", "4096", "--no-cache-idle-slots"],
-                supports_cache_ram = True,
+                supports_cache_ram=True,
             )
             is False
         )
 
     def test_it_can_be_turned_back_on_by_name(self):
         assert (
-            active(BASE + ["--cache-ram", "0", "--cache-idle-slots"], supports_cache_ram = True)
+            active(BASE + ["--cache-ram", "0", "--cache-idle-slots"], supports_cache_ram=True)
             is True
         )
 
     def test_last_wins_like_llama_cpp(self):
         assert (
-            active(BASE + ["--cache-ram", "4096", "--cache-ram", "0"], supports_cache_ram = True)
+            active(BASE + ["--cache-ram", "4096", "--cache-ram", "0"], supports_cache_ram=True)
             is False
         )
         assert (
-            active(BASE + ["--cache-ram", "0", "--cache-ram", "4096"], supports_cache_ram = True)
+            active(BASE + ["--cache-ram", "0", "--cache-ram", "4096"], supports_cache_ram=True)
             is True
         )
 
     @pytest.mark.parametrize("bad", ["", "abc", "-1", None])
     def test_an_unreadable_value_is_treated_as_no_clearing(self, bad):
         cmd = BASE + ["--cache-ram"] + ([] if bad is None else [bad])
-        assert active(cmd, supports_cache_ram = True) is False
+        assert active(cmd, supports_cache_ram=True) is False
 
     def test_a_trailing_flag_does_not_raise(self):
-        assert active(BASE + ["--cache-ram"], supports_cache_ram = True) is False
+        assert active(BASE + ["--cache-ram"], supports_cache_ram=True) is False
 
 
 class _Backend:

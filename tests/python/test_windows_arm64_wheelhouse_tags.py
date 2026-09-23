@@ -30,10 +30,10 @@ STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
 # Read once: the source-level tests below want these whole files and none of them mutate
 # what they read.
-INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
-STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
+INSTALL_SRC = INSTALL_PS1.read_text(encoding="utf-8")
+STACK_SRC = STACK_PY.read_text(encoding="utf-8")
 EXTRAS_SRC = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 
 # Constants of the running interpreter, restated in nearly every test below.
@@ -52,7 +52,7 @@ RESOLVER_INDEX_VARS = tuple(
 )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def ips():
     spec = importlib.util.spec_from_file_location("_ips_wheelhouse_tags", STACK_PY)
     module = importlib.util.module_from_spec(spec)
@@ -60,7 +60,7 @@ def ips():
     return module
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _fresh_find_links(ips):
     """Empty the memoized find-links listing around every test in this file.
 
@@ -82,7 +82,7 @@ PIP_FILES_SILENT = {
 }
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _pip_files_silent(ips, monkeypatch):
     """Keep the host's own pip.conf from deciding rows about the environment.
 
@@ -117,13 +117,13 @@ def _stage(
 ) -> None:
     """Put one wheel in `directory`, tagged for this interpreter unless told otherwise."""
     py = py or TAG
-    (directory / _wheel(dist, py, kw.pop("abi", py), version = version, **kw)).write_bytes(b"")
+    (directory / _wheel(dist, py, kw.pop("abi", py), version=version, **kw)).write_bytes(b"")
 
 
 def _req(directory: Path, text: str) -> Path:
     """A requirements file the skip list can read its pins from."""
     path = directory / "extras.txt"
-    path.write_text(text, encoding = "utf-8")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -133,7 +133,7 @@ def wheelhouse(tmp_path, monkeypatch):
     d = tmp_path / "wheels"
     d.mkdir()
     monkeypatch.setenv("UV_FIND_LINKS", str(d))
-    monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
+    monkeypatch.delenv("PIP_FIND_LINKS", raising=False)
     return d
 
 
@@ -208,7 +208,7 @@ class TestWheelMatchesInterpreter:
 
     def test_foreign_platform_does_not_match(self, ips):
         assert not ips._wheel_matches_interpreter(
-            _wheel("brotli", TAG, TAG, plat = "some_other_platform")
+            _wheel("brotli", TAG, TAG, plat="some_other_platform")
         )
 
     def test_unparseable_name_is_not_installable(self, ips):
@@ -217,7 +217,7 @@ class TestWheelMatchesInterpreter:
 
 class TestWheelhouseSkipList:
     def test_a_foreign_tagged_wheel_does_not_clear_the_skip(self, ips, wheelhouse):
-        _stage(wheelhouse, "tiktoken", py = f"cp{MAJOR}{MINOR + 1}")
+        _stage(wheelhouse, "tiktoken", py=f"cp{MAJOR}{MINOR + 1}")
         assert "tiktoken" not in ips._find_links_wheel_names()
         assert "tiktoken" in ips._windows_arm64_skip_packages()
 
@@ -264,7 +264,7 @@ class TestInstallPs1Mirror:
         )
         assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in INSTALL_SRC
         assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', INSTALL_SRC)
-        assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", INSTALL_SRC, flags = re.M)
+        assert not re.search(r"\$env:UV_OVERRIDE\s*=\s*\$WoaOverrides\s*$", INSTALL_SRC, flags=re.M)
 
     def test_the_selected_torch_index_is_redacted(self):
         for line in INSTALL_SRC.splitlines():
@@ -324,7 +324,7 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
                 "a package with no blockers still lifts on its own wheel",
             ),
         ],
-        ids = [
+        ids=[
             "tensorboard-alone",
             "tensorboard-and-grpcio",
             "grpcio-below-the-floor",
@@ -371,7 +371,7 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_the_optionals_are_the_ones_metadata_excludes(self, ips):
         """Named here only because pyproject.toml puts them out of reach on ARM64."""
-        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         for name in ips.WINDOWS_ARM64_WHEELHOUSE_OPTIONALS:
             stem = name.replace("-", "[-_]")
             rows = [
@@ -386,7 +386,7 @@ class TestAHostedOptionalIsActuallyInstalled:
         ips,
         monkeypatch,
         hosted,
-        install_ok = True,
+        install_ok=True,
         **stubs,
     ):
         """Run the step with `hosted` standing in for the wheelhouse listing."""
@@ -423,7 +423,7 @@ class TestAHostedOptionalIsActuallyInstalled:
 
     def test_a_failed_optional_does_not_fail_the_install(self, ips, monkeypatch):
         """It is an optional feature: off is where it already was."""
-        self._calls(ips, monkeypatch, {"hf-transfer": "0.1.9"}, install_ok = False)
+        self._calls(ips, monkeypatch, {"hf-transfer": "0.1.9"}, install_ok=False)
 
     def test_a_wheel_below_the_declared_floor_is_not_installed(self, ips, wheelhouse):
         """xformers>=0.0.22.post7 is what pyproject.toml asks for; 0.0.20 satisfies nobody."""
@@ -454,7 +454,7 @@ class TestAHostedOptionalIsActuallyInstalled:
             (False, True, OTHER_TORCH, True, "nothing hosted, and the resident copy is wrong"),
             (False, True, THIS_TORCH, False, "nothing hosted, and the resident copy matches"),
         ],
-        ids = [
+        ids=[
             "hosted-other-torch",
             "failed-refresh-other-torch",
             "failed-refresh-same-torch",
@@ -474,10 +474,10 @@ class TestAHostedOptionalIsActuallyInstalled:
             ips,
             monkeypatch,
             {"xformers": "0.0.31"} if hosted else {},
-            install_ok = install_ok,
-            _resident_xformers_build_torch = lambda: built_for,
-            _probe_installed_torch_version = lambda: self.THIS_TORCH,
-            _uninstall_distribution = lambda name: removed.append(name) or True,
+            install_ok=install_ok,
+            _resident_xformers_build_torch=lambda: built_for,
+            _probe_installed_torch_version=lambda: self.THIS_TORCH,
+            _uninstall_distribution=lambda name: removed.append(name) or True,
         )
         assert removed == (["xformers"] if evicted else []), why
         assert len(calls) == (1 if hosted else 0), "nothing hosted, nothing installed"
@@ -488,10 +488,10 @@ class TestAHostedOptionalIsActuallyInstalled:
             ips,
             monkeypatch,
             {"xformers": "0.0.31"},
-            _resident_xformers_build_torch = lambda: self.OTHER_TORCH,
-            _probe_installed_torch_version = lambda: self.THIS_TORCH,
-            _uninstall_distribution = lambda name: True,
-            _note = lambda *a, **kw: notes.append(a[0]),
+            _resident_xformers_build_torch=lambda: self.OTHER_TORCH,
+            _probe_installed_torch_version=lambda: self.THIS_TORCH,
+            _uninstall_distribution=lambda name: True,
+            _note=lambda *a, **kw: notes.append(a[0]),
         )
         assert any("removed" in n for n in notes), notes
         assert not any("installed xformers" in n for n in notes), notes
@@ -513,7 +513,7 @@ class TestAHostedOptionalIsActuallyInstalled:
         """And only wheels THIS interpreter could install: the staging copies cp311
         through cp314, and a wheel tagged for another MINOR is invisible to the resolver."""
         assert not ips._wheelhouse_hosts("torchcodec")
-        _stage(wheelhouse, "torchcodec", py = f"cp{MAJOR}{MINOR + 1}")
+        _stage(wheelhouse, "torchcodec", py=f"cp{MAJOR}{MINOR + 1}")
         # The listing is memoized for the process, so each state needs its own read.
         ips._find_links_wheel_versions.cache_clear()
         assert not ips._wheelhouse_hosts("torchcodec"), "a foreign-tagged wheel is not hosted"
@@ -556,7 +556,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
     @pytest.mark.parametrize(
         "grpcio, still_skipped",
         [("1.60.0", True), ("1.74.0", False)],
-        ids = ["below-the-floor", "at-the-floor"],
+        ids=["below-the-floor", "at-the-floor"],
     )
     def test_a_blocker_with_no_line_of_its_own_is_checked_against_its_floor(
         self, ips, wheelhouse, grpcio, still_skipped
@@ -631,7 +631,7 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             "elsewhere == 1.0 ; sys_platform == 'nonesuch'\n"
             "httpx[brotli]>=0.27\n"
             "local @ file:///x\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         pins = ips._requirement_pins(req)
         assert pins["hf_transfer"] == ["== 0.1.9"], "its marker holds on every host"
@@ -667,7 +667,7 @@ class TestDuplicateRequirementRowsAreSplitByMarker:
             ("0.996.5", True, "the hosted 0.996.5 satisfies only the row that does not apply here"),
             ("0.996.13", False, "the version the active row asks for still unskips"),
         ],
-        ids = ["inactive-row", "active-row"],
+        ids=["inactive-row", "active-row"],
     )
     def test_only_the_active_row_can_unskip(self, ips, wheelhouse, hosted, still_skipped, why):
         _stage(wheelhouse, "mecab", hosted)
@@ -729,9 +729,9 @@ class TestAPrereleaseWheelDoesNotSatisfyAFinalPin:
         """End to end: the wheel is in the wheelhouse, and the skip survives anyway."""
         if "win_arm64" not in _this_platform():
             monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: "tiktoken" in name)
-        _stage(wheelhouse, "tiktoken", "0.13.0rc1", plat = "win_arm64")
+        _stage(wheelhouse, "tiktoken", "0.13.0rc1", plat="win_arm64")
         req = _req(wheelhouse.parent, "tiktoken==0.13.0\n")
-        assert "tiktoken" in ips._windows_arm64_skip_packages(req = req), (
+        assert "tiktoken" in ips._windows_arm64_skip_packages(req=req), (
             "an rc wheel satisfied an exact pin, so tiktoken was unskipped and the "
             "resolve fell to the sdist"
         )
@@ -754,7 +754,7 @@ class TestOnlyTheResolversOwnLocationsCount:
             ),
             (True, False, False, "a uv location still unskips"),
         ],
-        ids = ["pip-only", "uv"],
+        ids=["pip-only", "uv"],
     )
     def test_only_a_uv_location_unskips(
         self, ips, tmp_path, monkeypatch, uv, pip, still_skipped, why
@@ -764,9 +764,9 @@ class TestOnlyTheResolversOwnLocationsCount:
             if wanted:
                 monkeypatch.setenv(name, str(tmp_path))
             else:
-                monkeypatch.delenv(name, raising = False)
+                monkeypatch.delenv(name, raising=False)
         req = _req(tmp_path, "tiktoken==0.13.0\n")
-        assert ("tiktoken" in ips._windows_arm64_skip_packages(req = req)) is still_skipped, why
+        assert ("tiktoken" in ips._windows_arm64_skip_packages(req=req)) is still_skipped, why
 
     def test_install_ps1_sets_both_so_the_managed_wheelhouse_is_unaffected(self):
         """The narrowing must not cost the path it was written for."""
@@ -788,7 +788,7 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
 
     @pytest.fixture
     def native_arm64_cuda_venv(self, ips, monkeypatch):
-        monkeypatch.setattr(ips, "NO_TORCH", False, raising = False)
+        monkeypatch.setattr(ips, "NO_TORCH", False, raising=False)
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_probe_installed_torch_version", lambda: "2.14.0+cu134")
 
@@ -797,7 +797,7 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
 
         monkeypatch.setattr(ips, "_expected_torch_flavor_tag", reached)
         for name in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
-            monkeypatch.delenv(name, raising = False)
+            monkeypatch.delenv(name, raising=False)
         return ips
 
     def test_an_unpinned_run_still_keeps_the_cuda_build(self, native_arm64_cuda_venv):
@@ -825,7 +825,7 @@ class TestAnExplicitPinIsNotOverriddenByThePreservationShortcut:
         assert (
             "if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:" in STACK_SRC
         )
-        setup = (REPO_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+        setup = (REPO_ROOT / "studio" / "setup.ps1").read_text(encoding="utf-8")
         assert "-not $_pinnedIdx) {" in setup, "setup.ps1's own preservation guard moved"
 
 
@@ -881,7 +881,7 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
     ):
         """The early return read "nothing hosted" as "skip everything", which threw the
         public-index answer away before it was asked for."""
-        monkeypatch.delenv("UV_FIND_LINKS", raising = False)
+        monkeypatch.delenv("UV_FIND_LINKS", raising=False)
         assert "librosa" not in ips._windows_arm64_skip_packages()
         assert "mecab" in ips._windows_arm64_skip_packages(), "the rest still drop"
 
@@ -891,12 +891,12 @@ class TestThePublicIndexClaimNeedsTheIndex:
     pointed at an exclusive corporate index, unblocking librosa drops the skip and then fails
     the whole extras pass on a numba chain nothing serves."""
 
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _native(self, ips, monkeypatch, native_cp314):
         # uv runs the pass; the pip rows below switch it off explicitly.
         monkeypatch.setattr(ips, "USE_UV", True)
         for var in RESOLVER_INDEX_VARS:
-            monkeypatch.delenv(var, raising = False)
+            monkeypatch.delenv(var, raising=False)
 
     @pytest.mark.parametrize(
         "env, why",
@@ -905,7 +905,7 @@ class TestThePublicIndexClaimNeedsTheIndex:
             ({"UV_DEFAULT_INDEX": PYPI}, "a default index that is PyPI itself is still PyPI"),
             ({"UV_EXTRA_INDEX_URL": CORP}, "--extra-index-url ADDS to the default"),
         ],
-        ids = ["unset", "pypi-as-default", "extra-index"],
+        ids=["unset", "pypi-as-default", "extra-index"],
     )
     def test_the_default_case_still_claims_them(self, ips, monkeypatch, env, why):
         for key, value in env.items():
@@ -971,13 +971,13 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     unblocked librosa and then failed the extras resolve on a numba the configured source
     does not carry."""
 
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _clean(self, ips, monkeypatch, tmp_path):
         # uv's configuration files only matter to uv, the resolver that runs the pass here.
         monkeypatch.setattr(ips, "USE_UV", True)
         extra = ("UV_NO_CONFIG", "UV_CONFIG_FILE", "APPDATA", "PROGRAMDATA")
         for var in RESOLVER_INDEX_VARS + extra:
-            monkeypatch.delenv(var, raising = False)
+            monkeypatch.delenv(var, raising=False)
         (tmp_path / "proj").mkdir()
         # uv reads the user file from %APPDATA% on Windows and $XDG_CONFIG_HOME elsewhere, so both
         # names point at one directory and the case is real on every platform.
@@ -992,8 +992,8 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
 
     def _write(self, rel, body):
         p = self.tmp / rel
-        p.parent.mkdir(parents = True, exist_ok = True)
-        p.write_text(body, encoding = "utf-8")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
 
     def test_nothing_configured_is_pypi(self, ips):
         assert ips._public_pypi_is_reachable() is True
@@ -1170,11 +1170,11 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
     `[global] index-url` or `no-index` replaces PyPI exactly as the variables do; a host with
     such a file had librosa unblocked and the extras pass then failed on numba."""
 
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _pip_runs(self, ips, monkeypatch, _pip_files_silent):
         monkeypatch.setattr(ips, "USE_UV", False)
         for var in ("PIP_NO_INDEX", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_CONFIG_FILE"):
-            monkeypatch.delenv(var, raising = False)
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(ips, "_pip_config_index_policy", _pip_files_silent)
         self.ips = ips
         self.monkeypatch = monkeypatch
@@ -1182,7 +1182,7 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
     def _listing(
         self,
         text,
-        returncode = 0,
+        returncode=0,
     ):
         """Stand in for `pip config list` with this output."""
 
@@ -1251,7 +1251,7 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
         self.monkeypatch.setenv("PIP_EXTRA_INDEX_URL", PYPI)
         assert self.ips._public_pypi_is_reachable() is True
 
-    @pytest.mark.parametrize("cannot_run", [False, True], ids = ["exit-1", "no-pip"])
+    @pytest.mark.parametrize("cannot_run", [False, True], ids=["exit-1", "no-pip"])
     def test_a_pip_config_that_fails_is_not_guessed_at(self, cannot_run):
         if cannot_run:
 
@@ -1260,14 +1260,14 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
 
             self.monkeypatch.setattr(self.ips.subprocess, "run", boom)
         else:
-            self._listing("", returncode = 1)
+            self._listing("", returncode=1)
         assert self.ips._public_pypi_is_reachable() is False
 
     def test_uv_never_reads_pip_files(self):
         self._listing("global.no-index='true'\n")
         self.monkeypatch.setattr(self.ips, "USE_UV", True)
         for var in ("UV_OFFLINE", "UV_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX"):
-            self.monkeypatch.delenv(var, raising = False)
+            self.monkeypatch.delenv(var, raising=False)
         self.monkeypatch.setenv("UV_NO_CONFIG", "1")
         assert self.ips._public_pypi_is_reachable() is True
 
@@ -1284,7 +1284,7 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
         """End to end through this interpreter's pip: PIP_CONFIG_FILE names the one file read."""
         pytest.importorskip("pip")
         conf = tmp_path / "pip.conf"
-        conf.write_text(body, encoding = "utf-8")
+        conf.write_text(body, encoding="utf-8")
         self.monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
         assert self.ips._public_pypi_is_reachable() is reachable, body
 
@@ -1305,7 +1305,7 @@ class TestSqliteVecIsAnExplicitOptionalToo:
     def test_no_torch_requirement_reaches_it_on_the_torch_path(self):
         """The premise: without an explicit install nothing asks for it."""
         for name in ("pyproject.toml", "studio/backend/requirements/studio.txt"):
-            text = (REPO_ROOT / name).read_text(encoding = "utf-8")
+            text = (REPO_ROOT / name).read_text(encoding="utf-8")
             rows = [
                 l for l in text.splitlines() if "sqlite-vec" in l and not l.strip().startswith("#")
             ]
@@ -1322,7 +1322,7 @@ class TestInstallPs1HandsOverWhatPyPIProvides:
     def native_on_pypi(self, ips, monkeypatch, wheelhouse):
         monkeypatch.setattr(ips, "_is_win_arm64_interpreter", lambda: True)
         monkeypatch.setattr(ips, "_public_pypi_is_reachable", lambda: True)
-        monkeypatch.delenv("UNSLOTH_WOA_PYPI_PROVIDED", raising = False)
+        monkeypatch.delenv("UNSLOTH_WOA_PYPI_PROVIDED", raising=False)
 
     def test_the_handed_over_versions_count_as_published(self, ips, monkeypatch, native_on_pypi):
         monkeypatch.setenv("UNSLOTH_WOA_PYPI_PROVIDED", "tiktoken==0.12.0 sqlite-vec==0.1.9")
@@ -1409,14 +1409,14 @@ class TestAHostedTorchcodecIsInstalledByItsStep:
         calls = []
         namespace = vars(ips).copy()
         namespace.update(
-            NO_TORCH = False,
-            PLATFORM_LACKS_TORCHCODEC_WHEEL = True,
-            _wheelhouse_hosts = lambda name: hosted is not None,
-            _wheelhouse_torchcodec_version = lambda torch_version: hosted,
-            _probe_installed_torch_version = lambda: "2.10.0+cu134",
-            _progress = Mock(),
-            _note = Mock(),
-            pip_install_try = lambda label, *a, **kw: calls.append((a, kw)) or True,
+            NO_TORCH=False,
+            PLATFORM_LACKS_TORCHCODEC_WHEEL=True,
+            _wheelhouse_hosts=lambda name: hosted is not None,
+            _wheelhouse_torchcodec_version=lambda torch_version: hosted,
+            _probe_installed_torch_version=lambda: "2.10.0+cu134",
+            _progress=Mock(),
+            _note=Mock(),
+            pip_install_try=lambda label, *a, **kw: calls.append((a, kw)) or True,
         )
         namespace.update(stubs)
         step = STACK_SRC.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
@@ -1437,13 +1437,13 @@ class TestAHostedTorchcodecIsInstalledByItsStep:
         ns["_progress"].assert_called_once_with("torchcodec (skipped, no wheel for this platform)")
 
     def test_a_hosted_wheel_outside_the_window_is_skipped_with_a_reason(self, ips):
-        calls, ns = self._run_step(ips, None, _wheelhouse_hosts = lambda name: True)
+        calls, ns = self._run_step(ips, None, _wheelhouse_hosts=lambda name: True)
         assert calls == []
         ns["_progress"].assert_called_once_with("torchcodec (skipped, no wheel for this platform)")
         assert any("outside the window" in c.args[0] for c in ns["_note"].call_args_list)
 
     def test_a_failed_install_leaves_audio_off_without_failing(self, ips):
-        calls, ns = self._run_step(ips, "0.10.1", pip_install_try = lambda *a, **kw: False)
+        calls, ns = self._run_step(ips, "0.10.1", pip_install_try=lambda *a, **kw: False)
         assert any("stays disabled" in c.args[0] for c in ns["_note"].call_args_list)
 
 

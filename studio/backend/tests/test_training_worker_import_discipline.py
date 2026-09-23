@@ -70,9 +70,9 @@ def test_worker_preflight_does_not_import_transformers():
     (and ``unsloth_zoo``) unimported, so the 5.x sidecar prepend is not defeated by a stale module."""
     result = subprocess.run(
         [sys.executable, "-c", _PREFLIGHT_SNIPPET],
-        cwd = str(_BACKEND_DIR),
-        capture_output = True,
-        text = True,
+        cwd=str(_BACKEND_DIR),
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         "Worker preflight imported transformers before sidecar activation.\n"

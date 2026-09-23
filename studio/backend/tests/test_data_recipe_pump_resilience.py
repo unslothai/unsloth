@@ -36,7 +36,7 @@ class _ScriptedQueue:
     def __init__(self, events):
         self._events = list(events)
 
-    def get(self, timeout = None):
+    def get(self, timeout=None):
         if self._events:
             return self._events.pop(0)
         raise queue.Empty
@@ -47,7 +47,7 @@ class _ScriptedQueue:
         raise queue.Empty
 
 
-def _wait_until(predicate, timeout = 5.0):
+def _wait_until(predicate, timeout=5.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -59,10 +59,10 @@ def _wait_until(predicate, timeout = 5.0):
 def _manager_with_active_job():
     m = JobManager.__new__(JobManager)
     m._lock = threading.Lock()
-    job = Job(job_id = "job-test")
+    job = Job(job_id="job-test")
     job.status = "active"
     m._job = job
-    m._proc = _FakeProc(alive = True)
+    m._proc = _FakeProc(alive=True)
     m._mp_q = _ScriptedQueue([])
     return m
 
@@ -86,7 +86,7 @@ def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
         [{"type": "boom"}, {"type": "log"}, {"type": "boom"}, {"type": "progress"}]
     )
 
-    pump = threading.Thread(target = m._pump_loop, daemon = True)
+    pump = threading.Thread(target=m._pump_loop, daemon=True)
     pump.start()
     try:
         assert _wait_until(
@@ -95,7 +95,7 @@ def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
         assert pump.is_alive()
     finally:
         m._proc._alive = False  # worker exits -> pump should finalize and stop
-        pump.join(timeout = 5)
+        pump.join(timeout=5)
 
     assert not pump.is_alive()
     # The exited worker is finalized as error (not left wedged "active") and the
@@ -111,13 +111,13 @@ def test_pump_finalizes_when_drain_raises(monkeypatch):
     monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
 
     class _BadDrainQueue:
-        def get(self, timeout = None):
+        def get(self, timeout=None):
             raise queue.Empty
 
         def get_nowait(self):
             raise RuntimeError("corrupt drain payload")
 
-    m._proc = _FakeProc(alive = False)
+    m._proc = _FakeProc(alive=False)
     m._mp_q = _BadDrainQueue()
 
     m._pump_loop()  # returns once it sees the dead worker
@@ -135,18 +135,18 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
 
     class _BrokenReadQueue:
-        def get(self, timeout = None):
+        def get(self, timeout=None):
             raise RuntimeError("broken queue pipe")
 
         def get_nowait(self):
             raise queue.Empty
 
-    m._proc = _FakeProc(alive = False)
+    m._proc = _FakeProc(alive=False)
     m._mp_q = _BrokenReadQueue()
 
-    pump = threading.Thread(target = m._pump_loop, daemon = True)
+    pump = threading.Thread(target=m._pump_loop, daemon=True)
     pump.start()
-    pump.join(timeout = 5)
+    pump.join(timeout=5)
     assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
     assert m._job.status == "error"
     assert retired and retired[0] is m._job

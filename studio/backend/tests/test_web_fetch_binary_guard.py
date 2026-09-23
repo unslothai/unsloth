@@ -42,7 +42,7 @@ class _FakeOpener:
     def open(
         self,
         req,
-        timeout = None,
+        timeout=None,
     ):
         return self._resp
 
@@ -57,7 +57,7 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         "build_opener",
         lambda *a, **k: _FakeOpener(_FakeResp(body, content_type)),
     )
-    return tools._fetch_page_text("https://example.com/thing", timeout = 5)
+    return tools._fetch_page_text("https://example.com/thing", timeout=5)
 
 
 def _pdf_bytes(*page_texts: str) -> bytes:
@@ -66,7 +66,7 @@ def _pdf_bytes(*page_texts: str) -> bytes:
     for text in page_texts:
         page = doc.new_page()
         if text:
-            page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), text, fontsize = 11)
+            page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), text, fontsize=11)
     data = doc.tobytes()
     doc.close()
     return data
@@ -134,9 +134,9 @@ def test_encrypted_pdf_returns_safe_placeholder(monkeypatch):
     doc = pymupdf.open()
     doc.new_page().insert_text((40, 40), "private text")
     data = doc.tobytes(
-        encryption = pymupdf.PDF_ENCRYPT_AES_256,
-        owner_pw = "owner",
-        user_pw = "secret",
+        encryption=pymupdf.PDF_ENCRYPT_AES_256,
+        owner_pw="owner",
+        user_pw="secret",
     )
     doc.close()
     out = _fetch_with(monkeypatch, data, "application/pdf")
@@ -162,9 +162,9 @@ def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
 
     seen = {}
 
-    def fake_parse(data, *, max_pages = None):
+    def fake_parse(data, *, max_pages=None):
         seen["max_pages"] = max_pages
-        pages = [Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)]
+        pages = [Page(text="x" * 1000, page_number=i, char_count=1000) for i in range(1, 51)]
         return pages, 60  # document actually has more pages than the cap
 
     monkeypatch.setattr("core.rag.parsers.parse_pdf_bytes", fake_parse)
@@ -181,8 +181,8 @@ def test_pdf_exactly_at_page_cap_not_marked_capped(monkeypatch):
     # Exactly _MAX_WEB_PDF_PAGES pages are fully read, so no "capped" marker.
     monkeypatch.setattr(
         "core.rag.parsers.parse_pdf_bytes",
-        lambda data, *, max_pages = None: (
-            [Page(text = "short", page_number = i, char_count = 5) for i in range(1, 51)],
+        lambda data, *, max_pages=None: (
+            [Page(text="short", page_number=i, char_count=5) for i in range(1, 51)],
             50,
         ),
     )
@@ -193,10 +193,11 @@ def test_pdf_exactly_at_page_cap_not_marked_capped(monkeypatch):
 
 def test_pdf_page_cap_does_not_claim_later_pages_are_textless(monkeypatch):
     from core.rag.parsers import Page
+
     monkeypatch.setattr(
         "core.rag.parsers.parse_pdf_bytes",
-        lambda data, *, max_pages = None: (
-            [Page(text = "", page_number = i, char_count = 0) for i in range(1, 51)],
+        lambda data, *, max_pages=None: (
+            [Page(text="", page_number=i, char_count=0) for i in range(1, 51)],
             60,
         ),
     )

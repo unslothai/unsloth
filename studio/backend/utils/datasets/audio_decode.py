@@ -52,7 +52,7 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
     chunks = []
     rate = 0
     resampler = None
-    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+    with av.open(source, mode="r", metadata_errors="ignore") as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
@@ -74,7 +74,7 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
                 rate = int(frame.sample_rate or 0)
                 if rate <= 0:
                     raise ValueError("decoded audio has an invalid sample rate")
-                resampler = av.AudioResampler(format = "flt", layout = "mono", rate = rate)
+                resampler = av.AudioResampler(format="flt", layout="mono", rate=rate)
             for out in resampler.resample(frame):
                 chunks.append(out.to_ndarray().reshape(-1))
         if resampler is not None:
@@ -82,7 +82,7 @@ def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[A
                 chunks.append(out.to_ndarray().reshape(-1))
     if not chunks:
         raise ValueError("audio container decoded to no samples")
-    return np.concatenate(chunks).astype(np.float32, copy = False), rate
+    return np.concatenate(chunks).astype(np.float32, copy=False), rate
 
 
 def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
@@ -94,7 +94,7 @@ def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, i
         # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
         return _decode_with_av(source, stream_index)
     try:
-        array, rate = sf.read(source, dtype = "float32", always_2d = False)
+        array, rate = sf.read(source, dtype="float32", always_2d=False)
     except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
         try:
             import av  # noqa: F401
@@ -110,7 +110,7 @@ def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, i
             ) from av_error
     if array.ndim > 1:
         # soundfile returns (frames, channels); torchcodec returns (channels, frames).
-        array = np.mean(array, axis = -1)
+        array = np.mean(array, axis=-1)
     return array, rate
 
 
@@ -143,14 +143,15 @@ def _decode_with_soundfile(
         source = xopen(
             path,
             "rb",
-            download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
+            download_config=DownloadConfig(token=_token_for_url(path, token_per_repo_id)),
         )
 
     array, sampling_rate = _read_mono(source, getattr(self, "stream_index", None))
     target = self.sampling_rate
     if target and sampling_rate != target:
         import librosa
-        array = librosa.resample(array, orig_sr = sampling_rate, target_sr = target)
+
+        array = librosa.resample(array, orig_sr=sampling_rate, target_sr=target)
         sampling_rate = target
     return {"path": path, "array": array, "sampling_rate": sampling_rate}
 
@@ -174,14 +175,14 @@ def _encode_with_soundfile(self, value) -> dict:
         array = np.asarray(value["array"])
         if array.dtype == object:
             array = np.asarray(
-                array.tolist(), dtype = "float32"
+                array.tolist(), dtype="float32"
             )  # a nested list back from Arrow arrives as an object array
         if array.ndim == 2 and array.shape[0] < array.shape[1]:
             array = (
                 array.T
             )  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
         buf = io.BytesIO()
-        sf.write(buf, array, value["sampling_rate"], format = "WAV")
+        sf.write(buf, array, value["sampling_rate"], format="WAV")
         return {"bytes": buf.getvalue(), "path": value.get("path")}
     if isinstance(value, dict) and ("bytes" in value or "path" in value):
         return {"bytes": value.get("bytes"), "path": value.get("path")}

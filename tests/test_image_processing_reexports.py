@@ -157,7 +157,7 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
         "import sys; import unsloth; "
         "print('transformers.models.siglip2.image_processing_siglip2' in sys.modules)"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     if out.returncode != 0:
         # No import happened, so there is no laziness to measure; asserting here
         # would test the runner. Not keyed on one exception: CPU runners produce
@@ -222,7 +222,7 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
         pytest.skip("this transformers still re-exports the image helpers")
 
     package = pathlib.Path(HF_MODULES_CACHE) / "unsloth_reexport_probe"
-    package.mkdir(parents = True, exist_ok = True)
+    package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("")
     (package / "image_processing_probe.py").write_text(
         "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
@@ -236,12 +236,13 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
         loaded = dynamic_module_utils.get_class_in_module(
             "ProbeImageProcessor",
             "unsloth_reexport_probe/image_processing_probe.py",
-            force_reload = True,
+            force_reload=True,
         )
         assert loaded.__name__ == "ProbeImageProcessor"
     finally:
         import shutil
-        shutil.rmtree(package, ignore_errors = True)
+
+        shutil.rmtree(package, ignore_errors=True)
 
 
 # Helpers transformers 5 kept but re-specified numpy -> torch. A module
@@ -251,7 +252,7 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
 
 def _numpy_image():
     np = pytest.importorskip("numpy")
-    return np.arange(4 * 4 * 3, dtype = np.float32).reshape(4, 4, 3)
+    return np.arange(4 * 4 * 3, dtype=np.float32).reshape(4, 4, 3)
 
 
 def test_retained_helpers_accept_the_numpy_arrays_remote_code_passes(siglip2_module):
@@ -276,7 +277,7 @@ def test_the_torch_contract_is_untouched(siglip2_module):
     model the module is named after, so the shim dispatches on the argument.
     """
     torch = pytest.importorskip("torch")
-    image = torch.arange(3 * 4 * 4, dtype = torch.float32).reshape(3, 4, 4)
+    image = torch.arange(3 * 4 * 4, dtype=torch.float32).reshape(3, 4, 4)
 
     try:
         before = siglip2_module.convert_image_to_patches(image, 2).clone()
@@ -325,16 +326,16 @@ def test_numpy_dispatch_covers_the_keyword_forms(siglip2_module, style):
         patches = siglip2_module.convert_image_to_patches(image, 2)
         padded, mask = siglip2_module.pad_along_first_dim(patches, 6)
     elif style == "keyword":
-        patches = siglip2_module.convert_image_to_patches(image = image, patch_size = 2)
+        patches = siglip2_module.convert_image_to_patches(image=image, patch_size=2)
         padded, mask = siglip2_module.pad_along_first_dim(
-            tensor = patches,
-            target_length = 6,
+            tensor=patches,
+            target_length=6,
         )
     else:
-        patches = siglip2_module.convert_image_to_patches(image = image, patch_size = 2)
+        patches = siglip2_module.convert_image_to_patches(image=image, patch_size=2)
         padded, mask = siglip2_module.pad_along_first_dim(
-            array = patches,
-            target_length = 6,
+            array=patches,
+            target_length=6,
         )
 
     assert isinstance(patches, np.ndarray) and patches.shape == (4, 12)
@@ -354,7 +355,7 @@ def test_every_import_path_installs_the_fix():
 
     root = pathlib.Path(__file__).parents[1] / "unsloth"
     for site in ("_gpu_init.py", "__init__.py"):
-        source = (root / site).read_text(encoding = "utf-8")
+        source = (root / site).read_text(encoding="utf-8")
         assert "fix_transformers5_image_processing_reexports" in source, site
 
 
@@ -473,7 +474,7 @@ def remote_processor_class():
 
 def _probe_image():
     np = pytest.importorskip("numpy")
-    return np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+    return np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
 
 
 def test_the_numpy_contract_is_restored_on_a_remote_subclass(remote_processor_class):
@@ -486,27 +487,27 @@ def test_the_numpy_contract_is_restored_on_a_remote_subclass(remote_processor_cl
     inst = object.__new__(remote_processor_class)
     image = _probe_image()
 
-    rescaled = inst.rescale(image = image, scale = 1.0 / 255.0, input_data_format = "channels_last")
+    rescaled = inst.rescale(image=image, scale=1.0 / 255.0, input_data_format="channels_last")
     expected = image_transforms.rescale(
         image,
-        scale = 1.0 / 255.0,
-        input_data_format = "channels_last",
+        scale=1.0 / 255.0,
+        input_data_format="channels_last",
     )
     assert isinstance(rescaled, np.ndarray)
     assert rescaled.dtype == expected.dtype
     assert np.array_equal(rescaled, expected)
 
     normalized = inst.normalize(
-        image = rescaled,
-        mean = [0.5, 0.5, 0.5],
-        std = [0.5, 0.5, 0.5],
-        input_data_format = "channels_last",
+        image=rescaled,
+        mean=[0.5, 0.5, 0.5],
+        std=[0.5, 0.5, 0.5],
+        input_data_format="channels_last",
     )
     expected = image_transforms.normalize(
         rescaled,
-        mean = [0.5, 0.5, 0.5],
-        std = [0.5, 0.5, 0.5],
-        input_data_format = "channels_last",
+        mean=[0.5, 0.5, 0.5],
+        std=[0.5, 0.5, 0.5],
+        input_data_format="channels_last",
     )
     assert isinstance(normalized, np.ndarray)
     assert normalized.dtype == expected.dtype
@@ -524,9 +525,9 @@ def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_pr
     image = _probe_image()
 
     upstream = siglip2.Siglip2ImageProcessor().rescale(
-        image = image,
-        scale = 1.0 / 255.0,
-        input_data_format = "channels_last",
+        image=image,
+        scale=1.0 / 255.0,
+        input_data_format="channels_last",
     )
     if upstream.dtype == np.float32:
         pytest.skip("this transformers already returns the 4.x dtype from rescale")
@@ -534,9 +535,9 @@ def test_rescale_is_in_scope_because_it_is_wrong_not_because_it_raises(remote_pr
 
     _install_legacy_numpy_image_methods(remote_processor_class)
     patched = object.__new__(remote_processor_class).rescale(
-        image = image,
-        scale = 1.0 / 255.0,
-        input_data_format = "channels_last",
+        image=image,
+        scale=1.0 / 255.0,
+        input_data_format="channels_last",
     )
     assert patched.dtype == np.float32
     assert np.allclose(patched, upstream)
@@ -553,14 +554,14 @@ def test_transformers_own_image_processor_is_untouched(remote_processor_class):
 
     own = siglip2.Siglip2ImageProcessor
     image = Image.fromarray((np.random.RandomState(0).rand(64, 64, 3) * 255).astype(np.uint8))
-    before = own()(images = [image], return_tensors = "pt")
+    before = own()(images=[image], return_tensors="pt")
 
     _install_legacy_numpy_image_methods(remote_processor_class)
 
     for name in _LEGACY_NUMPY_IMAGE_METHODS:
         assert name not in own.__dict__, f"{name} was set on transformers' own class"
         assert getattr(own, name) is getattr(backends.TorchvisionBackend, name)
-    after = own()(images = [image], return_tensors = "pt")
+    after = own()(images=[image], return_tensors="pt")
     for key in before:
         assert torch.equal(
             torch.as_tensor(before[key]),
@@ -593,15 +594,15 @@ def test_the_torch_contract_is_untouched_on_the_patched_class(remote_processor_c
 
     _install_legacy_numpy_image_methods(remote_processor_class)
     inst = object.__new__(remote_processor_class)
-    tensor = torch.arange(3 * 4 * 4, dtype = torch.float32).reshape(3, 4, 4) / 255.0
+    tensor = torch.arange(3 * 4 * 4, dtype=torch.float32).reshape(3, 4, 4) / 255.0
 
     assert torch.equal(
-        inst.normalize(tensor, mean = [0.5] * 3, std = [0.5] * 3),
-        backends.TorchvisionBackend.normalize(inst, tensor, mean = [0.5] * 3, std = [0.5] * 3),
+        inst.normalize(tensor, mean=[0.5] * 3, std=[0.5] * 3),
+        backends.TorchvisionBackend.normalize(inst, tensor, mean=[0.5] * 3, std=[0.5] * 3),
     )
     assert torch.equal(
-        inst.rescale(tensor, scale = 2.0),
-        backends.TorchvisionBackend.rescale(inst, tensor, scale = 2.0),
+        inst.rescale(tensor, scale=2.0),
+        backends.TorchvisionBackend.rescale(inst, tensor, scale=2.0),
     )
 
 
@@ -683,9 +684,9 @@ def test_a_subclass_of_a_patched_class_is_not_double_wrapped(remote_processor_cl
         assert _install_legacy_numpy_image_methods(sub) == []
         assert "normalize" not in sub.__dict__
         out = object.__new__(sub).rescale(
-            image = _probe_image(),
-            scale = 1.0 / 255.0,
-            input_data_format = "channels_last",
+            image=_probe_image(),
+            scale=1.0 / 255.0,
+            input_data_format="channels_last",
         )
         assert out.dtype == np.float32
     finally:
@@ -782,14 +783,14 @@ def test_one_thread_inside_the_finder_does_not_blind_another():
 
     try:
         finder._finding.active = True
-        thread = threading.Thread(target = ask)
+        thread = threading.Thread(target=ask)
         thread.start()
         thread.join()
         # Still guarded on the thread that raised it, or find_spec recurses.
         result["same_thread"] = finder.find_spec(module_name)
     finally:
         finder._finding.active = False
-        shutil.rmtree(package, ignore_errors = True)
+        shutil.rmtree(package, ignore_errors=True)
         sys.modules.pop(module_name, None)
 
     assert result["spec"] is not None
@@ -817,7 +818,7 @@ def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_pat
         pytest.skip("this transformers still re-exports the image helpers")
 
     package = pathlib.Path(HF_MODULES_CACHE) / "unsloth_method_probe"
-    package.mkdir(parents = True, exist_ok = True)
+    package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("")
     (package / "image_processing_probe.py").write_text(
         "import numpy as np\n"
@@ -834,15 +835,16 @@ def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_pat
         loaded = dynamic_module_utils.get_class_in_module(
             "ProbeImageProcessor",
             "unsloth_method_probe/image_processing_probe.py",
-            force_reload = True,
+            force_reload=True,
         )
-        image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+        image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
         out = object.__new__(loaded).preprocess_like_2024(image)
         assert isinstance(out, np.ndarray)
         assert out.dtype == np.float32, "float64 here means rescale was left unpatched"
     finally:
         import shutil
-        shutil.rmtree(package, ignore_errors = True)
+
+        shutil.rmtree(package, ignore_errors=True)
 
 
 # The unpickle path: pickle stores a processor by (module, qualname), so a spawn
@@ -862,8 +864,8 @@ def _remote_probe_package():
 
     root = pathlib.Path(HF_MODULES_CACHE) / "transformers_modules"
     package = root / "unsloth_spawn_probe"
-    package.mkdir(parents = True, exist_ok = True)
-    (root / "__init__.py").touch(exist_ok = True)
+    package.mkdir(parents=True, exist_ok=True)
+    (root / "__init__.py").touch(exist_ok=True)
     (package / "__init__.py").write_text("")
     # The decorator is load-bearing: it is read while the CLASS BODY executes,
     # as the real checkpoint's file does. Without it this probe passed while the
@@ -912,12 +914,12 @@ def _run_spawn_child(pickled, preamble):
         [
             sys.executable,
             "-c",
-            _SPAWN_CHILD.format(preamble = preamble),
+            _SPAWN_CHILD.format(preamble=preamble),
             str(target),
             str(modules_root),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -943,7 +945,7 @@ def pickled_remote_processor(tmp_path):
         # `transformers_modules` package, not the package itself.
         yield target, package.parent.parent
     finally:
-        shutil.rmtree(package, ignore_errors = True)
+        shutil.rmtree(package, ignore_errors=True)
         sys.modules.pop(module_name, None)
 
 
@@ -987,7 +989,7 @@ def test_deepcopy_and_pickle_keep_the_override_in_process(pickled_remote_process
     np = pytest.importorskip("numpy")
     with open(pickled_remote_processor[0], "rb") as handle:
         processor = pickle.load(handle)
-    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+    image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
 
     assert processor.preprocess_like_2024(image).dtype == np.float32
     assert copy.deepcopy(processor).preprocess_like_2024(image).dtype == np.float32

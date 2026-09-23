@@ -25,14 +25,14 @@ def _atomic_write_text(
     """Atomic ``Path.write_text``: a crash mid-write leaves the prior file
     intact, so the build never reads a partial ``_studio_release_build.py``."""
     dirpath = str(path.parent) or "."
-    path.parent.mkdir(parents = True, exist_ok = True)
-    fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".stamp_studio.", dir=dirpath)
     try:
         # newline = "\n": the target is studio/backend/utils/_studio_release_build.py, a TRACKED
         # .py file that .gitattributes pins to `text eol=lf`, and `data` is a Python string
         # literal carrying LF. The default newline translates each "\n" to os.linesep, so a
         # release stamped on Windows landed CRLF and showed as a whole-file diff.
-        with os.fdopen(fd, "w", encoding = encoding, newline = "\n") as handle:
+        with os.fdopen(fd, "w", encoding=encoding, newline="\n") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -88,12 +88,12 @@ def _exact_git_tag() -> str | None:
                 "v[0-9]*",
                 "HEAD",
             ],
-            cwd = REPO_ROOT,
-            check = False,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 2.0,
+            cwd=REPO_ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -107,12 +107,12 @@ def _git_worktree_is_dirty() -> bool:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd = REPO_ROOT,
-            check = False,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 2.0,
+            cwd=REPO_ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
@@ -173,7 +173,7 @@ def stamp(require_release: bool) -> int:
     if version is not None and not is_valid_version(version):
         print(
             f"Invalid Unsloth release version from {source}: {version!r}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
 
@@ -184,7 +184,7 @@ def stamp(require_release: bool) -> int:
             print(
                 "UNSLOTH_STUDIO_RELEASE_VERSION does not match available "
                 f"release tag metadata: {details}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             return 2
 
@@ -193,7 +193,7 @@ def stamp(require_release: bool) -> int:
             "Refusing to publish from a dirty exact-tag checkout. Set "
             "UNSLOTH_STUDIO_RELEASE_VERSION explicitly from release automation "
             "or publish from a clean tag checkout.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return 2
 
@@ -203,15 +203,15 @@ def stamp(require_release: bool) -> int:
                 "No Unsloth release version available. Set "
                 "UNSLOTH_STUDIO_RELEASE_VERSION, build from a GitHub tag, "
                 "or run from an exact local Unsloth release tag.",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             return 2
-        _atomic_write_text(BUILD_INFO_PATH, PLACEHOLDER, encoding = "utf-8")
+        _atomic_write_text(BUILD_INFO_PATH, PLACEHOLDER, encoding="utf-8")
         print("dev")
         return 0
 
-    _atomic_write_text(BUILD_INFO_PATH, build_info_source(version), encoding = "utf-8")
-    print(f"Stamping Unsloth release version {version} from {source}", file = sys.stderr)
+    _atomic_write_text(BUILD_INFO_PATH, build_info_source(version), encoding="utf-8")
+    print(f"Stamping Unsloth release version {version} from {source}", file=sys.stderr)
     print(version)
     return 0
 
@@ -237,12 +237,12 @@ def _read_sdist_member(path: Path) -> str | None:
 
 def verify_dist(expected: str, dist_dir: Path) -> int:
     if not is_valid_version(expected):
-        print(f"Invalid expected Unsloth release version: {expected!r}", file = sys.stderr)
+        print(f"Invalid expected Unsloth release version: {expected!r}", file=sys.stderr)
         return 2
 
     artifacts = list(dist_dir.glob("*.whl")) + list(dist_dir.glob("*.tar.gz"))
     if not artifacts:
-        print(f"No wheel or sdist artifacts found in {dist_dir}", file = sys.stderr)
+        print(f"No wheel or sdist artifacts found in {dist_dir}", file=sys.stderr)
         return 2
 
     expected_line = f"STUDIO_RELEASE_VERSION = {expected!r}"
@@ -259,7 +259,7 @@ def verify_dist(expected: str, dist_dir: Path) -> int:
 
     if failures:
         for failure in failures:
-            print(failure, file = sys.stderr)
+            print(failure, file=sys.stderr)
         return 2
 
     print(f"Verified Unsloth release version {expected} in {len(artifacts)} artifact(s)")
@@ -267,9 +267,9 @@ def verify_dist(expected: str, dist_dir: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--require-release", action = "store_true")
-    parser.add_argument("--verify-dist", type = Path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-release", action="store_true")
+    parser.add_argument("--verify-dist", type=Path)
     parser.add_argument("--expected")
     args = parser.parse_args()
 
@@ -278,7 +278,7 @@ def main() -> int:
             parser.error("--verify-dist requires --expected")
         return verify_dist(args.expected, args.verify_dist)
 
-    return stamp(require_release = args.require_release)
+    return stamp(require_release=args.require_release)
 
 
 if __name__ == "__main__":

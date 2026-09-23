@@ -33,9 +33,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def source() -> str:
-    return INSTALL_PS1.read_text(encoding = "utf-8-sig")
+    return INSTALL_PS1.read_text(encoding="utf-8-sig")
 
 
 def _function_body(source: str, name: str) -> str:
@@ -115,7 +115,7 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
 DEFAULT_WHEELHOUSE = "https://github.com/unslothai/unsloth/releases/download/Windows-ARM64"
 
 PWSH = shutil.which("pwsh")
-requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+requires_pwsh = pytest.mark.skipif(PWSH is None, reason="pwsh not available")
 
 
 def _wheelhouse_assignment(source: str) -> str:
@@ -144,7 +144,7 @@ def test_the_release_tag_is_the_one_the_workflow_publishes(source):
     and the installer that downloads them. A rename on one side is a 404 on the other, and
     the installer reads that as 'no wheelhouse' and falls back to the emulated x64 stack."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "woa-wheelhouse.yml").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     match = re.search(r'release_tag:\s*\n\s*description:[^\n]*\n\s*default:\s*"([^"]+)"', workflow)
     assert match, "woa-wheelhouse.yml no longer declares a default release_tag"
@@ -191,9 +191,9 @@ def test_the_wheelhouse_override_is_normalised(source, configured, expected, why
     # across xdist workers kills ~1 startup in 500 before it reaches the script.
     done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert done.returncode == 0, done.stderr
     out = done.stdout

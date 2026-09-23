@@ -48,9 +48,9 @@ class Boom(Exception):
 def _aborted_payload(tmp_path: Path) -> list[dict]:
     """Run one cell that writes seven window rows and then dies. Return the payload rows in order."""
     rec = Recorder(tmp_path / "payload.jsonl", new_session_id())
-    ctx = BenchContext(recorder = rec, log = lambda *_a, **_k: None)
-    sess = session_mod.Session(ctx = ctx, instruments = [])
-    cell = Cell(cell_id = "r1M.treatment.rep0", rung = "r1M", rung_tokens = 1_000_000)
+    ctx = BenchContext(recorder=rec, log=lambda *_a, **_k: None)
+    sess = session_mod.Session(ctx=ctx, instruments=[])
+    cell = Cell(cell_id="r1M.treatment.rep0", rung="r1M", rung_tokens=1_000_000)
 
     runner = object.__new__(session_mod.CellRunner)
     runner.session = sess
@@ -92,7 +92,7 @@ def _aborted_payload(tmp_path: Path) -> list[dict]:
     rec.close()
     return [
         json.loads(line)
-        for line in (tmp_path / "payload.jsonl").read_text(encoding = "utf-8").splitlines()
+        for line in (tmp_path / "payload.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 

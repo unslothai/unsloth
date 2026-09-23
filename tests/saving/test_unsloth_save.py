@@ -55,30 +55,30 @@ tokenizer_files = [
 ]
 
 
-@pytest.fixture(scope = "session", params = model_to_test)
+@pytest.fixture(scope="session", params=model_to_test)
 def loaded_model_tokenizer(request):
     model_name = request.param
     print("Loading model and tokenizer...")
 
     model, tokenizer = FastModel.from_pretrained(
         model_name,
-        max_seq_length = 128,
-        dtype = None,
-        load_in_4bit = True,
+        max_seq_length=128,
+        dtype=None,
+        load_in_4bit=True,
     )
 
     model = FastModel.get_peft_model(
         model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_alpha = 16,
-        use_gradient_checkpointing = "unsloth",
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_alpha=16,
+        use_gradient_checkpointing="unsloth",
     )
 
     return model, tokenizer
 
 
-@pytest.fixture(scope = "session", params = torchao_models)
+@pytest.fixture(scope="session", params=torchao_models)
 def fp16_model_tokenizer(request):
     """Load model in FP16 for TorchAO quantization."""
     model_name = request.param
@@ -86,28 +86,28 @@ def fp16_model_tokenizer(request):
 
     model, tokenizer = FastModel.from_pretrained(
         model_name,
-        max_seq_length = 128,
-        dtype = None,
-        load_in_4bit = False,
+        max_seq_length=128,
+        dtype=None,
+        load_in_4bit=False,
     )
 
     model = FastModel.get_peft_model(
         model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_alpha = 16,
-        use_gradient_checkpointing = "unsloth",
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_alpha=16,
+        use_gradient_checkpointing="unsloth",
     )
 
     return model, tokenizer
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def model(loaded_model_tokenizer):
     return loaded_model_tokenizer[0]
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def tokenizer(loaded_model_tokenizer):
     return loaded_model_tokenizer[1]
 
@@ -141,7 +141,7 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
         model.config._name_or_path.replace("/", "_"),
     )
 
-    model.save_pretrained_merged(save_path, tokenizer = tokenizer, save_method = "merged_16bit")
+    model.save_pretrained_merged(save_path, tokenizer=tokenizer, save_method="merged_16bit")
 
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
     assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
@@ -168,9 +168,9 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
 
     loaded_model, loaded_tokenizer = FastLanguageModel.from_pretrained(
         save_path,
-        max_seq_length = 128,
-        dtype = None,
-        load_in_4bit = True,
+        max_seq_length=128,
+        dtype=None,
+        load_in_4bit=True,
     )
 
 
@@ -181,7 +181,7 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         model.config._name_or_path.replace("/", "_"),
     )
 
-    model.save_pretrained_merged(save_path, tokenizer = tokenizer, save_method = "merged_4bit_forced")
+    model.save_pretrained_merged(save_path, tokenizer=tokenizer, save_method="merged_4bit_forced")
 
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
     assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
@@ -213,15 +213,15 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
 
     loaded_model, loaded_tokenizer = FastModel.from_pretrained(
         save_path,
-        max_seq_length = 128,
-        dtype = None,
-        load_in_4bit = True,
+        max_seq_length=128,
+        dtype=None,
+        load_in_4bit=True,
     )
 
 
 @pytest.mark.skipif(
     importlib.util.find_spec("torchao") is None,
-    reason = "require torchao to be installed",
+    reason="require torchao to be installed",
 )
 def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     model, tokenizer = fp16_model_tokenizer
@@ -234,9 +234,9 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     torchao_config = Int8DynamicActivationInt8WeightConfig()
     model.save_pretrained_torchao(
         save_path,
-        tokenizer = tokenizer,
-        torchao_config = torchao_config,
-        push_to_hub = False,
+        tokenizer=tokenizer,
+        torchao_config=torchao_config,
+        push_to_hub=False,
     )
 
     weight_files_16bit = [
@@ -278,15 +278,15 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     with torch.serialization.safe_globals([getattr]):
         loaded_model, loaded_tokenizer = FastModel.from_pretrained(
             torchao_save_path,
-            max_seq_length = 128,
-            dtype = None,
-            load_in_4bit = False,
+            max_seq_length=128,
+            dtype=None,
+            load_in_4bit=False,
         )
 
 
 @pytest.mark.skipif(
     importlib.util.find_spec("torchao") is None,
-    reason = "require torchao to be installed",
+    reason="require torchao to be installed",
 )
 def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     model, tokenizer = fp16_model_tokenizer
@@ -302,9 +302,9 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
 
     model.save_pretrained_torchao(
         save_path,
-        tokenizer = tokenizer,
-        torchao_config = torchao_config,
-        push_to_hub = False,
+        tokenizer=tokenizer,
+        torchao_config=torchao_config,
+        push_to_hub=False,
     )
 
     torchao_save_path = save_path + "-torchao"
@@ -319,9 +319,9 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     with torch.serialization.safe_globals([getattr]):
         loaded_model, loaded_tokenizer = FastModel.from_pretrained(
             torchao_save_path,
-            max_seq_length = 128,
-            dtype = None,
-            load_in_4bit = False,
+            max_seq_length=128,
+            dtype=None,
+            load_in_4bit=False,
         )
 
     FastModel.for_inference(loaded_model)
@@ -334,23 +334,23 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     ]
     inputs = loaded_tokenizer.apply_chat_template(
         messages,
-        tokenize = True,
-        add_generation_prompt = True,  # required for generation
-        return_tensors = "pt",
+        tokenize=True,
+        add_generation_prompt=True,  # required for generation
+        return_tensors="pt",
     ).to("cuda")
 
     outputs = loaded_model.generate(
-        input_ids = inputs,
-        max_new_tokens = 64,
-        use_cache = False,  # avoid cache issues
-        temperature = 1.5,
-        min_p = 0.1,
-        do_sample = True,
-        pad_token_id = loaded_tokenizer.pad_token_id or loaded_tokenizer.eos_token_id,
+        input_ids=inputs,
+        max_new_tokens=64,
+        use_cache=False,  # avoid cache issues
+        temperature=1.5,
+        min_p=0.1,
+        do_sample=True,
+        pad_token_id=loaded_tokenizer.pad_token_id or loaded_tokenizer.eos_token_id,
     )
 
-    generated_text = loaded_tokenizer.decode(outputs[0], skip_special_tokens = True)
-    input_text = loaded_tokenizer.decode(inputs[0], skip_special_tokens = True)
+    generated_text = loaded_tokenizer.decode(outputs[0], skip_special_tokens=True)
+    input_text = loaded_tokenizer.decode(inputs[0], skip_special_tokens=True)
     response_part = generated_text[len(input_text) :].strip()
 
     print(f"Input: {input_text}")

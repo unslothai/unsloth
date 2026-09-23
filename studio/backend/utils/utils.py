@@ -61,9 +61,9 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
     # is left, and offline that resolves against the disk.
     return cached_read_refused(
         hf_token,
-        repo_id = repo_id,
-        is_cached = lambda: True,
-        offline = True,
+        repo_id=repo_id,
+        is_cached=lambda: True,
+        offline=True,
     )
 
 
@@ -82,6 +82,7 @@ def hf_endpoint_host() -> str:
     """Host of the configured endpoint; probing huggingface.co would misjudge a mirror."""
     try:
         from urllib.parse import urlparse
+
         return urlparse(hf_endpoint_url()).hostname or "huggingface.co"
     except Exception:
         return "huggingface.co"
@@ -116,6 +117,7 @@ def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
     url = endpoint or hf_endpoint_url()
     try:
         from requests.utils import get_environ_proxies, select_proxy
+
         return select_proxy(url, get_environ_proxies(url))
     except ImportError:
         # No requests (huggingface_hub 1.x); fall back rather than go blind.
@@ -162,7 +164,7 @@ def call_with_deadline(
         except BaseException as exc:  # noqa: BLE001 - re-raised below, in the caller
             outcome["error"] = exc
 
-    t = threading.Thread(target = _run, daemon = True, name = name)
+    t = threading.Thread(target=_run, daemon=True, name=name)
     t.start()
     t.join(timeout_s)
     if t.is_alive():
@@ -178,13 +180,14 @@ def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
 
     def _probe() -> None:
         import socket as _socket
+
         try:
             _socket.getaddrinfo(host, None)
             result[0] = False
         except Exception:
             result[0] = True
 
-    t = threading.Thread(target = _probe, daemon = True)
+    t = threading.Thread(target=_probe, daemon=True)
     t.start()
     t.join(timeout)
     return False if result[0] is None else result[0]
@@ -216,7 +219,7 @@ def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bo
     if not host:
         return True
     try:
-        with _socket.create_connection((host, port), timeout = timeout):
+        with _socket.create_connection((host, port), timeout=timeout):
             return True
     except ConnectionRefusedError:
         return True
@@ -255,7 +258,7 @@ def hf_probe_disabled() -> bool:
 
 
 # The memo above expires on wall-clock, right between requests and wrong inside one: a slow request outlives the TTL, so its later guards re-probe and can disagree with the first.
-_hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability_pin", default = None)
+_hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability_pin", default=None)
 
 
 @contextmanager
@@ -320,8 +323,8 @@ def hf_unreachable(timeout: int = 3) -> bool:
             # Both flags off for the same reason: an ambiguous answer must not force offline.
             unreachable = hf_endpoint_unreachable(
                 timeout,
-                gateway_errors_offline = False,
-                proxy_timeouts_offline = False,
+                gateway_errors_offline=False,
+                proxy_timeouts_offline=False,
             )
         except Exception:
             unreachable = False
@@ -506,6 +509,7 @@ def _hf_cache_roots() -> list:
 
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         _add(get_hf_cache_paths().hub_cache)
     except Exception:
         pass
@@ -571,7 +575,7 @@ def _repo_folder_name(repo_id: str) -> str:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
         return "models--" + repo_id.replace("/", "--")
-    return repo_folder_name(repo_id = repo_id, repo_type = "model")
+    return repo_folder_name(repo_id=repo_id, repo_type="model")
 
 
 def _snapshot_in_repo_dir(repo_dir: Path) -> Optional[Path]:
@@ -580,7 +584,7 @@ def _snapshot_in_repo_dir(repo_dir: Path) -> Optional[Path]:
         ref = repo_dir / "refs" / "main"
         if not ref.is_file():
             return None
-        commit = ref.read_text(encoding = "utf-8").strip()
+        commit = ref.read_text(encoding="utf-8").strip()
         if not commit:
             return None
         snapshot = repo_dir / "snapshots" / commit
@@ -621,7 +625,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
-def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
+def checkpoint_directory_is_complete(root: Path, weights=None) -> bool:
     """Whether ``root`` holds a whole checkpoint, shards and declared modules alike. Shared by the Hub-cache check and the local-path one so a directory is judged the same way however it got there: a single shard of a two-shard family, or a module ``modules.json`` declares and the directory does not have, is a torn checkpoint that SentenceTransformer fails to open at the first index. ``weights`` is the already-scanned weight list when the caller has one."""
     from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
 
@@ -639,7 +643,7 @@ def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
         from pathlib import PurePosixPath
 
         try:
-            modules = json.loads((root / "modules.json").read_text(encoding = "utf-8"))
+            modules = json.loads((root / "modules.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError):
             return False
         roots = []
@@ -657,8 +661,8 @@ def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
             if any(path == module_root or module_root in path.parents for path in weights):
                 roots.append(module_root)
         if roots:
-            return all(snapshot_holds_a_complete_payload(r, quants = False) for r in roots)
-    return snapshot_holds_a_complete_payload(root, quants = False)
+            return all(snapshot_holds_a_complete_payload(r, quants=False) for r in roots)
+    return snapshot_holds_a_complete_payload(root, quants=False)
 
 
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
@@ -673,6 +677,7 @@ def active_hf_cache_loadable_snapshot(repo_id: str) -> Optional[Path]:
     """Return a loadable snapshot from the active cache only, or None."""
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
+
         snapshot = _snapshot_in_root(_expand_path(active_hf_hub_cache()), repo_id)
     except Exception:
         return None
@@ -728,8 +733,9 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
         repo_id = model_name
         try:
             from huggingface_hub.file_download import repo_folder_name
+
             for candidate in st_repo_id_candidates(model_name):
-                if repo_folder_name(repo_id = candidate, repo_type = "model") == repo_dir.name:
+                if repo_folder_name(repo_id=candidate, repo_type="model") == repo_dir.name:
                     repo_id = candidate
                     break
         except Exception:
@@ -737,9 +743,9 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
         from hub.utils import download_manifest
         from hub.utils.hf_cache_state import snapshot_has_broken_symlinks
 
-        if download_manifest.has_cancel_marker("model", repo_id, None, hub_cache = hub_cache):
+        if download_manifest.has_cancel_marker("model", repo_id, None, hub_cache=hub_cache):
             return False
-        manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache = hub_cache)
+        manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache=hub_cache)
         if manifest is not None:
             # This exact full-snapshot plan is stronger evidence than an unrelated .incomplete blob left under the repository by another revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
@@ -762,6 +768,7 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     # A mid-stream llama-server failure carries a message that was written to be shown; without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported lazily: utils is low level and must not depend on core.inference at import time.
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+
         if isinstance(error, LlamaStreamError) and error.friendly:
             return error.friendly
     except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
@@ -793,7 +800,7 @@ def log_and_http_error(
     public_message: str,
     *,
     event: str = "request_failed",
-    log = None,
+    log=None,
     headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose ``detail`` is only ``public_message``, never the raw exception text.
@@ -807,8 +814,8 @@ def log_and_http_error(
     if 400 <= status_code < 500:
         emitter.warning(f"{event}: {error}")
     else:
-        emitter.error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
+        emitter.error(f"{event}: {error}", exc_info=error)
+    return HTTPException(status_code=status_code, detail=public_message, headers=headers)
 
 
 @contextmanager
@@ -839,7 +846,7 @@ def without_hf_auth():
 
     for token_loc in token_locations:
         if token_loc.exists():
-            temp = tempfile.NamedTemporaryFile(delete = False)
+            temp = tempfile.NamedTemporaryFile(delete=False)
             temp.close()
             shutil.move(str(token_loc), temp.name)
             token_files.append((token_loc, temp.name))
@@ -849,7 +856,7 @@ def without_hf_auth():
     finally:
         for original, temp in token_files:
             try:
-                original.parent.mkdir(parents = True, exist_ok = True)
+                original.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(temp, str(original))
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")

@@ -81,15 +81,16 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def browser():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         yield b
@@ -107,7 +108,7 @@ def make_page(browser):
         )
         page.set_content(body)
         # `set_content` does not reliably run an init script, so the module is attached after.
-        page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+        page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
         opened.append(page)
         return page
 
@@ -118,19 +119,19 @@ def make_page(browser):
 
 def _ctx(page) -> ActionContext:
     return ActionContext(
-        page = page,
-        cdp = None,
-        cell = Cell(cell_id = "r100K.base.rep0", rung = "100K", rung_tokens = 100_000),
-        window = None,
-        args = {"thread_id": "t1"},
-        budget_ms = 30_000,
-        dom = None,
-        log = lambda _m: None,
+        page=page,
+        cdp=None,
+        cell=Cell(cell_id="r100K.base.rep0", rung="100K", rung_tokens=100_000),
+        window=None,
+        args={"thread_id": "t1"},
+        budget_ms=30_000,
+        dom=None,
+        log=lambda _m: None,
     )
 
 
 def test_it_opens_exactly_one_pane_and_leaves_the_rest_shut(make_page):
-    got = A.reasoning_toggle_one(_ctx(make_page(panes = 8)))
+    got = A.reasoning_toggle_one(_ctx(make_page(panes=8)))
     assert got.ran is True, got.reason
     assert got.expect_ok is True, got.reason
     assert got.expect["open_after_expand"] == 1
@@ -146,15 +147,15 @@ def test_the_cost_does_not_scale_with_thread_length(make_page):
     spans, so it grows with the thread. This one materialises one pane's, so it does not -- and a
     reading that quietly grew with thread length would be the thread-wide action under a new name.
     """
-    small = A.reasoning_toggle_one(_ctx(make_page(panes = 2, spans_per_pane = 4)))
-    large = A.reasoning_toggle_one(_ctx(make_page(panes = 40, spans_per_pane = 4)))
+    small = A.reasoning_toggle_one(_ctx(make_page(panes=2, spans_per_pane=4)))
+    large = A.reasoning_toggle_one(_ctx(make_page(panes=40, spans_per_pane=4)))
     assert small.ran and large.ran
     # Twentyfold the thread, the same number of spans revealed.
     assert small.expect["highlight_spans_added"] == large.expect["highlight_spans_added"] == 4
 
 
 def test_a_thread_with_no_reasoning_pane_is_NOT_RUN(make_page):
-    got = A.reasoning_toggle_one(_ctx(make_page(panes = 0)))
+    got = A.reasoning_toggle_one(_ctx(make_page(panes=0)))
     assert got.ran is False
     assert "no reasoning pane" in (got.reason or "")
 
@@ -162,7 +163,7 @@ def test_a_thread_with_no_reasoning_pane_is_NOT_RUN(make_page):
 def test_it_refuses_a_thread_that_is_already_open(make_page):
     """A pane left open by an earlier action would make this measure a CLOSE and call it an open.
     Refusing is right: the number is the only reason the action exists."""
-    page = make_page(panes = 3)
+    page = make_page(panes=3)
     page.evaluate("() => window.__sb.dom.reasoningTriggers()[0].click()")
     got = A.reasoning_toggle_one(_ctx(page))
     assert got.ran is False
@@ -175,6 +176,6 @@ def test_it_is_not_in_the_standard_film(make_page):
     taken deliberately; it must not appear in the shipped scene until a corpus or tier bump is
     invalidating those payloads anyway."""
     schedule = (Path(_STUDIO_TESTS) / "studiobench" / "scene" / "schedule.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert '"reasoning_toggle_one"' not in schedule

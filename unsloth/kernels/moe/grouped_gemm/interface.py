@@ -81,7 +81,7 @@ def get_per_device_per_stream_alloc_fn(device):
         def alloc_fn(size: int, alignment: int, stream):
             assert alignment == 128
             if stream not in _per_stream_tensors or _per_stream_tensors[stream].numel() < size:
-                _per_stream_tensors[stream] = torch.empty(size, device = device, dtype = torch.int8)
+                _per_stream_tensors[stream] = torch.empty(size, device=device, dtype=torch.int8)
                 _per_stream_tensors[stream].__hibernate__ = {"type": "ignore"}
             return _per_stream_tensors[stream]
 
@@ -163,7 +163,7 @@ def grouped_gemm_forward(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = "cuda", dtype = torch.int8)
+                return torch.empty(size, device="cuda", dtype=torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -215,7 +215,7 @@ def grouped_gemm_forward(
         if debug:
             print(f"DEBUG::GROUPED_GEMM {topk_weights.tolist()} {gather_indices.tolist()}")
 
-    y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
+    y = torch.empty((total_tokens, N), device=X.device, dtype=X.dtype)
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -328,7 +328,7 @@ def grouped_gemm_dX(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = "cuda", dtype = torch.int8)
+                return torch.empty(size, device="cuda", dtype=torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -359,7 +359,7 @@ def grouped_gemm_dX(
 
     # The output stays [NUM_TOKENS * TOPK, K] even under permute_x: gradients accumulate across every expert a token chose, reduced in a post-processing step.
     output_shape = (total_tokens, K)
-    dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
+    dX = torch.zeros(output_shape, device=dY.device, dtype=dY.dtype)
 
     NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
 
@@ -467,7 +467,7 @@ def grouped_gemm_dW(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = "cuda", dtype = torch.int8)
+                return torch.empty(size, device="cuda", dtype=torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -492,7 +492,7 @@ def grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
 
-    dW = torch.zeros((num_experts, N, K), device = X.device, dtype = X.dtype)
+    dW = torch.zeros((num_experts, N, K), device=X.device, dtype=X.dtype)
 
     if not autotune:
         pass
@@ -611,16 +611,16 @@ class GroupedGemm(torch.autograd.Function):
             fwd_config["use_tma_store"] = kernel_config_fwd.use_tma_store
 
         return grouped_gemm_forward(
-            X = X,
-            W = W,
-            topk = topk,
-            m_sizes = m_sizes,
-            gather_indices = gather_indices,
-            topk_weights = topk_weights,
-            permute_x = permute_x,
-            permute_y = permute_y,
-            fuse_mul_post = fuse_mul_post,
-            autotune = autotune,
+            X=X,
+            W=W,
+            topk=topk,
+            m_sizes=m_sizes,
+            gather_indices=gather_indices,
+            topk_weights=topk_weights,
+            permute_x=permute_x,
+            permute_y=permute_y,
+            fuse_mul_post=fuse_mul_post,
+            autotune=autotune,
             **fwd_config,
         )
 
@@ -664,14 +664,14 @@ class GroupedGemm(torch.autograd.Function):
                 bwd_dW_config["num_stages"] = kernel_config_bwd_dW.num_stages
 
             dW = grouped_gemm_dW(
-                X = X,
-                dY = dY,
-                m_sizes = m_sizes,
-                gather_indices = gather_indices,
-                topk = topk,
-                permute_x = permute_x,
-                permute_y = permute_y,
-                autotune = autotune,
+                X=X,
+                dY=dY,
+                m_sizes=m_sizes,
+                gather_indices=gather_indices,
+                topk=topk,
+                permute_x=permute_x,
+                permute_y=permute_y,
+                autotune=autotune,
                 **bwd_dW_config,
             )
         else:
@@ -690,19 +690,19 @@ class GroupedGemm(torch.autograd.Function):
                 bwd_dX_config["num_stages"] = kernel_config_bwd_dX.num_stages
 
             dX = grouped_gemm_dX(
-                dY = dY,
-                W = W,
-                m_sizes = m_sizes,
-                gather_indices = gather_indices,
-                topk = topk,
-                permute_x = permute_x,
-                permute_y = permute_y,
-                autotune = autotune,
+                dY=dY,
+                W=W,
+                m_sizes=m_sizes,
+                gather_indices=gather_indices,
+                topk=topk,
+                permute_x=permute_x,
+                permute_y=permute_y,
+                autotune=autotune,
                 **bwd_dX_config,
             )
 
             if topk > 1 and permute_x:
-                dX = dX.view(X.shape[0], topk, -1).sum(dim = 1)
+                dX = dX.view(X.shape[0], topk, -1).sum(dim=1)
         else:
             dX = None
 
@@ -795,8 +795,8 @@ def grouped_gemm(
     gather_indices: torch.Tensor = None,
     permute_x: bool = False,
     permute_y: bool = False,
-    topk_weights = None,
-    fuse_mul_post = False,
+    topk_weights=None,
+    fuse_mul_post=False,
     kernel_config_fwd: KernelConfigForward = None,
     kernel_config_bwd_dX: KernelConfigBackward_dX = None,
     kernel_config_bwd_dW: KernelConfigBackward_dW = None,
@@ -822,31 +822,31 @@ def grouped_gemm(
         check_valid_config_fwd(
             permute_x,
             permute_y,
-            use_tma_load_x = kernel_config_fwd.use_tma_load_x,
-            use_tma_load_w = kernel_config_fwd.use_tma_load_w,
-            use_tma_store = kernel_config_fwd.use_tma_store,
-            fuse_mul_post = fuse_mul_post,
-            is_first_gemm = is_first_gemm,
+            use_tma_load_x=kernel_config_fwd.use_tma_load_x,
+            use_tma_load_w=kernel_config_fwd.use_tma_load_w,
+            use_tma_store=kernel_config_fwd.use_tma_store,
+            fuse_mul_post=fuse_mul_post,
+            is_first_gemm=is_first_gemm,
         )
         if kernel_config_bwd_dW is not None and not dX_only:
             check_valid_config_bwd_dW(
                 permute_x,
                 permute_y,
-                use_tma_load_dY = kernel_config_bwd_dW.use_tma_load_dy,
-                use_tma_load_x = kernel_config_bwd_dW.use_tma_load_x,
-                use_tma_store = kernel_config_bwd_dW.use_tma_store,
-                fuse_mul_post = fuse_mul_post,
-                is_first_gemm = is_first_gemm,
+                use_tma_load_dY=kernel_config_bwd_dW.use_tma_load_dy,
+                use_tma_load_x=kernel_config_bwd_dW.use_tma_load_x,
+                use_tma_store=kernel_config_bwd_dW.use_tma_store,
+                fuse_mul_post=fuse_mul_post,
+                is_first_gemm=is_first_gemm,
             )
         if kernel_config_bwd_dX is not None and not dW_only:
             check_valid_config_bwd_dX(
                 permute_x,
                 permute_y,
-                use_tma_load_dY = kernel_config_bwd_dX.use_tma_load_dy,
-                use_tma_load_w = kernel_config_bwd_dX.use_tma_load_w,
-                use_tma_store = kernel_config_bwd_dX.use_tma_store,
-                fuse_mul_post = fuse_mul_post,
-                is_first_gemm = is_first_gemm,
+                use_tma_load_dY=kernel_config_bwd_dX.use_tma_load_dy,
+                use_tma_load_w=kernel_config_bwd_dX.use_tma_load_w,
+                use_tma_store=kernel_config_bwd_dX.use_tma_store,
+                fuse_mul_post=fuse_mul_post,
+                is_first_gemm=is_first_gemm,
             )
 
     if permute_x or permute_y:

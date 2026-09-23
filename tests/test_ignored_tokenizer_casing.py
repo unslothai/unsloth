@@ -31,7 +31,7 @@ def _fake_auto_tokenizer():
     def from_pretrained(name, **kwargs):
         return _Tok("slow" if kwargs.get("from_slow") else "fast")
 
-    return types.SimpleNamespace(from_pretrained = from_pretrained)
+    return types.SimpleNamespace(from_pretrained=from_pretrained)
 
 
 def test_ignored_tokenizer_name_matched_case_insensitively():
@@ -43,7 +43,7 @@ def test_ignored_tokenizer_name_matched_case_insensitively():
         patch.object(tu, "assert_same_tokenization", lambda a, b: False),
         patch.object(tu, "convert_to_fast_tokenizer", lambda slow, **k: _Tok("converted")),
     ):
-        result = tu._load_correct_tokenizer(name, fix_tokenizer = True)
+        result = tu._load_correct_tokenizer(name, fix_tokenizer=True)
 
     assert result.kind == "fast", (
         "an ignored tokenizer (matched case-insensitively) must be returned unchanged, "

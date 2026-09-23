@@ -21,17 +21,17 @@ from utils.datasets.iterable import is_streaming_dataset
 
 def _shared_setup_1(request, training_route):
     backend = SimpleNamespace(
-        current_job_id = None,
-        is_training_active = lambda: False,
-        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+        current_job_id=None,
+        is_training_active=lambda: False,
+        start_training=lambda **kwargs: pytest.fail("backend should not start"),
     )
 
     with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "get_training_backend", return_value=backend),
+        patch.object(training_route.asyncio, "to_thread", new=_inline_to_thread),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+            asyncio.run(training_route.start_training(request, current_subject="test-user"))
     return exc_info
 
 
@@ -61,8 +61,8 @@ class _Tokenizer:
         self,
         conversation,
         *,
-        tokenize = False,
-        add_generation_prompt = False,
+        tokenize=False,
+        add_generation_prompt=False,
     ):
         assert tokenize is False
         assert add_generation_prompt is False
@@ -103,9 +103,9 @@ def test_chat_template_mapping_omits_eager_kwargs_for_streaming(monkeypatch):
             "chat_column": "conversations",
             "is_standardized": True,
         },
-        tokenizer = _Tokenizer(),
-        batch_size = 1,
-        num_proc = 2,
+        tokenizer=_Tokenizer(),
+        batch_size=1,
+        num_proc=2,
     )
 
     assert result["success"] is True
@@ -137,8 +137,8 @@ def test_format_conversion_omits_eager_kwargs_for_streaming(monkeypatch):
                 }
             ]
         ),
-        batch_size = 1,
-        num_proc = 2,
+        batch_size=1,
+        num_proc=2,
     )
 
     row = next(iter(converted))
@@ -172,7 +172,7 @@ def test_drop_invalid_text_rows_streaming_keeps_filter_skips_len():
     assert not hasattr(stream, "__len__")
 
     filtered, notices = _drop_invalid_text_rows(
-        stream, mode_title = "Raw text", split_scope = "this dataset"
+        stream, mode_title="Raw text", split_scope="this dataset"
     )
 
     # Result still streams; only string-'text' rows survive.
@@ -186,19 +186,19 @@ def test_drop_invalid_text_rows_streaming_keeps_filter_skips_len():
 def test_dataset_slice_bounds_are_non_negative():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            dataset_slice_start = -1,
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
+            dataset_slice_start=-1,
         )
 
     with pytest.raises(ValidationError):
         TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            dataset_slice_start = 5,
-            dataset_slice_end = 4,
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
+            dataset_slice_start=5,
+            dataset_slice_end=4,
         )
 
 
@@ -216,10 +216,10 @@ def test_dataset_slice_bounds_are_non_negative():
 def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
     with pytest.raises(ValidationError):
         TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            hf_dataset = bad_hf_dataset,
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
+            hf_dataset=bad_hf_dataset,
         )
 
 
@@ -229,10 +229,10 @@ def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
 )
 def test_hf_dataset_defers_benign_repo_id_validation_to_hugging_face(dataset_id):
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        hf_dataset = dataset_id,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        hf_dataset=dataset_id,
     )
 
     assert request.hf_dataset == dataset_id
@@ -241,10 +241,10 @@ def test_hf_dataset_defers_benign_repo_id_validation_to_hugging_face(dataset_id)
 def test_hf_dataset_accepts_max_length_namespaced_id():
     dataset_id = f"{'a' * 96}/{'b' * 96}"
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        hf_dataset = dataset_id,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        hf_dataset=dataset_id,
     )
 
     assert request.hf_dataset == dataset_id
@@ -253,10 +253,10 @@ def test_hf_dataset_accepts_max_length_namespaced_id():
 def test_project_name_rejects_values_over_ui_limit():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
-            model_name = "unsloth/test",
-            project_name = "x" * 81,
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
+            model_name="unsloth/test",
+            project_name="x" * 81,
+            training_type="LoRA/QLoRA",
+            format_type="alpaca",
         )
 
 
@@ -269,13 +269,13 @@ def test_streaming_start_rejects_train_on_completions_before_backend_start():
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        train_on_completions = True,
-        max_steps = 10,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        train_on_completions=True,
+        max_steps=10,
     )
 
     exc_info = _shared_setup_1(request, training_route)
@@ -291,15 +291,15 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        train_split = "train",
-        eval_split = eval_split,
-        eval_steps = 0.1,
-        max_steps = 10,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        train_split="train",
+        eval_split=eval_split,
+        eval_steps=0.1,
+        max_steps=10,
     )
 
     exc_info = _shared_setup_1(request, training_route)
@@ -314,12 +314,12 @@ def test_streaming_start_rejects_missing_max_steps():
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        max_steps = 0,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        max_steps=0,
     )
 
     exc_info = _shared_setup_1(request, training_route)
@@ -336,13 +336,13 @@ def test_streaming_start_rejects_embedding_models():
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        is_embedding = True,
-        max_steps = 10,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        is_embedding=True,
+        max_steps=10,
     )
 
     exc_info = _shared_setup_1(request, training_route)
@@ -365,12 +365,12 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = training_type,
-        hf_dataset = "org/dataset",
-        format_type = format_type,
-        dataset_streaming = True,
-        max_steps = 10,
+        model_name="unsloth/test",
+        training_type=training_type,
+        hf_dataset="org/dataset",
+        format_type=format_type,
+        dataset_streaming=True,
+        max_steps=10,
     )
 
     captured = {}
@@ -380,27 +380,27 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
         return True
 
     backend = SimpleNamespace(
-        current_job_id = "job_test",
-        is_training_active = lambda: False,
-        start_training = _start_training,
+        current_job_id="job_test",
+        is_training_active=lambda: False,
+        start_training=_start_training,
     )
 
     with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route, "get_training_backend", return_value=backend),
         patch.object(
             training_route,
             "_remote_untrainable_model_format",
-            return_value = None,
+            return_value=None,
         ),
         patch.object(
             training_route,
             "_preflight_hf_dataset_request",
-            return_value = None,
+            return_value=None,
         ),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-        patch.object(training_route, "load_model_defaults", return_value = {}),
+        patch.object(training_route.asyncio, "to_thread", new=_inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value={}),
     ):
-        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+        response = asyncio.run(training_route.start_training(request, current_subject="test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
@@ -413,16 +413,16 @@ def test_streaming_start_happy_path_reaches_backend():
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        start_request_id = "start-request-123",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        train_split = "train",
-        eval_split = "validation",
-        eval_steps = 0.1,
-        max_steps = 10,
+        model_name="unsloth/test",
+        start_request_id="start-request-123",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        train_split="train",
+        eval_split="validation",
+        eval_steps=0.1,
+        max_steps=10,
     )
 
     captured = {}
@@ -432,37 +432,37 @@ def test_streaming_start_happy_path_reaches_backend():
         return True
 
     start_record = SimpleNamespace(
-        start_request_id = "start-request-123",
-        job_id = "job_test",
-        state = "pending",
-        message = "Training start is being validated",
-        error = None,
+        start_request_id="start-request-123",
+        job_id="job_test",
+        state="pending",
+        message="Training start is being validated",
+        error=None,
     )
     backend = SimpleNamespace(
-        current_job_id = "job_test",
-        is_training_active = lambda: False,
-        start_training = _start_training,
-        peek_start_request = lambda request_id: None,
-        reserve_start_request = lambda request_id, job_id: ("reserved", start_record),
-        resolve_start_request = lambda *args, **kwargs: start_record,
+        current_job_id="job_test",
+        is_training_active=lambda: False,
+        start_training=_start_training,
+        peek_start_request=lambda request_id: None,
+        reserve_start_request=lambda request_id, job_id: ("reserved", start_record),
+        resolve_start_request=lambda *args, **kwargs: start_record,
     )
 
     with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route, "get_training_backend", return_value=backend),
         patch.object(
             training_route,
             "_remote_untrainable_model_format",
-            return_value = None,
+            return_value=None,
         ),
         patch.object(
             training_route,
             "_preflight_hf_dataset_request",
-            return_value = None,
+            return_value=None,
         ),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
-        patch.object(training_route, "load_model_defaults", return_value = {}),
+        patch.object(training_route.asyncio, "to_thread", new=_inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value={}),
     ):
-        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+        response = asyncio.run(training_route.start_training(request, current_subject="test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
@@ -477,35 +477,35 @@ def test_training_status_exposes_the_current_start_request_id():
         "routes/training.py",
     )
     start_record = SimpleNamespace(
-        start_request_id = "start-request-123",
-        job_id = "job_test",
-        state = "accepted",
-        message = "Training queued",
-        error = None,
+        start_request_id="start-request-123",
+        job_id="job_test",
+        state="accepted",
+        message="Training queued",
+        error=None,
     )
     backend = SimpleNamespace(
-        current_job_id = "job_test",
-        current_start_request_id = "start-request-123",
-        status_start_request = lambda: start_record,
-        get_start_request = lambda request_id: start_record,
-        is_training_active = lambda: True,
-        trainer = SimpleNamespace(
-            get_training_progress = lambda: SimpleNamespace(
-                status_message = "Training",
-                error = None,
-                warnings = ["Evaluation was disabled."],
-                is_completed = False,
+        current_job_id="job_test",
+        current_start_request_id="start-request-123",
+        status_start_request=lambda: start_record,
+        get_start_request=lambda request_id: start_record,
+        is_training_active=lambda: True,
+        trainer=SimpleNamespace(
+            get_training_progress=lambda: SimpleNamespace(
+                status_message="Training",
+                error=None,
+                warnings=["Evaluation was disabled."],
+                is_completed=False,
             )
         ),
-        eval_enabled = False,
-        step_history = [],
+        eval_enabled=False,
+        step_history=[],
     )
 
     with (
-        patch.object(training_route, "get_training_backend", return_value = backend),
-        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "get_training_backend", return_value=backend),
+        patch.object(training_route.asyncio, "to_thread", new=_inline_to_thread),
     ):
-        status = asyncio.run(training_route.get_training_status(current_subject = "test-user"))
+        status = asyncio.run(training_route.get_training_status(current_subject="test-user"))
 
     assert status.job_id == "job_test"
     assert status.start_request_id == "start-request-123"
@@ -551,12 +551,12 @@ def test_streaming_start_rejects_local_datasets():
         "routes/training.py",
     )
     request = TrainingStartRequest(
-        model_name = "unsloth/test",
-        training_type = "LoRA/QLoRA",
-        hf_dataset = "org/dataset",
-        format_type = "chatml",
-        dataset_streaming = True,
-        max_steps = 10,
+        model_name="unsloth/test",
+        training_type="LoRA/QLoRA",
+        hf_dataset="org/dataset",
+        format_type="chatml",
+        dataset_streaming=True,
+        max_steps=10,
     )
     # Bypass Pydantic's local-path validation by injecting directly after construction.
     object.__setattr__(request, "local_datasets", ["/some/local/file.jsonl"])
@@ -587,7 +587,7 @@ def test_drop_invalid_text_rows_from_generator_none_column_names():
     ), "precondition failed: expected column_names=None for from_generator dataset"
 
     filtered, notices = _drop_invalid_text_rows(
-        stream, mode_title = "Raw text", split_scope = "test split"
+        stream, mode_title="Raw text", split_scope="test split"
     )
 
     rows = list(filtered)

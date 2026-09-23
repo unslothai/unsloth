@@ -18,8 +18,8 @@ from core.data_recipe.jobs import manager as manager_mod
 from utils import process_lifetime
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux parent-death signal")
-@pytest.mark.parametrize("cancel", [False, True], ids = ["complete", "cancel"])
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux parent-death signal")
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
 def test_recipe_survives_its_starting_thread(tmp_path, monkeypatch, cancel):
     if not process_lifetime._pdeathsig_available():
         pytest.skip("PR_SET_PDEATHSIG unavailable")
@@ -35,7 +35,7 @@ def test_recipe_survives_its_starting_thread(tmp_path, monkeypatch, cancel):
         "    deadline = time.monotonic() + 30\n"
         "    while not Path(run['release']).exists() and time.monotonic() < deadline:\n"
         "        time.sleep(0.01)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -53,36 +53,36 @@ def test_recipe_survives_its_starting_thread(tmp_path, monkeypatch, cancel):
 
     def request_thread():
         try:
-            manager.start(recipe = {}, run = {"release": str(release)})
+            manager.start(recipe={}, run={"release": str(release)})
             # Do not end the spawning thread until the child has armed PDEATHSIG.
-            assert manager._mp_q.get(timeout = 10) == "ready"
+            assert manager._mp_q.get(timeout=10) == "ready"
         except BaseException as exc:
             errors.append(exc)
 
-    caller = threading.Thread(target = request_thread)
+    caller = threading.Thread(target=request_thread)
     try:
         caller.start()
-        caller.join(timeout = 15)
+        caller.join(timeout=15)
         assert not caller.is_alive(), "job start did not return"
         assert not errors, errors
         worker = manager._proc
         assert worker is not None
-        worker.join(timeout = 0.5)
+        worker.join(timeout=0.5)
         assert worker.is_alive(), f"request thread exit killed the worker: {worker.exitcode}"
         if cancel:
             assert manager.cancel(manager.get_current_job_id())
         else:
             release.touch()
-        worker.join(timeout = 5)
+        worker.join(timeout=5)
         assert not worker.is_alive()
         assert worker.exitcode == (-signal.SIGTERM if cancel else 0)
     finally:
         release.touch()
-        caller.join(timeout = 15)
+        caller.join(timeout=15)
         if manager._proc is not None:
             if manager._proc.is_alive():
                 manager._proc.kill()
-            manager._proc.join(timeout = 5)
+            manager._proc.join(timeout=5)
         if manager._mp_q is not None:
             manager._mp_q.close()
             manager._mp_q.join_thread()

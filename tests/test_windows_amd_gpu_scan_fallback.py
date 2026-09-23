@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
-requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 
 _RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
 _RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
@@ -66,7 +66,7 @@ def _function(src: str, name: str) -> str:
 
 
 def _setup_source() -> str:
-    return SETUP_PS1.read_text(encoding = "utf-8")
+    return SETUP_PS1.read_text(encoding="utf-8")
 
 
 # The two fixes, as (fixed, unfixed) pairs.
@@ -195,7 +195,7 @@ def _run(
 ) -> dict:
     script = tmp_path / "scan.ps1"
     script.write_text(
-        _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
+        _driver(source or _setup_source(), adapters, ps51=ps51, strict=strict), encoding="utf-8"
     )
     # Only what each case names may reach the child: a developer's own exported UNSLOTH_ROCM_GFX_ARCH would otherwise
     # silently win every inference assertion here.
@@ -203,10 +203,10 @@ def _run(
     child_env.update(env or {})
     proc = subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = child_env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=child_env,
     )
     assert proc.returncode == 0, f"scan block failed:\n{proc.stdout}\n{proc.stderr}"
     return json.loads(proc.stdout)
@@ -230,7 +230,7 @@ def test_gpu_name_list_wraps_the_whole_if_in_an_array():
 
 
 def test_installer_forwards_the_arch_through_a_private_handoff():
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    src = INSTALL_PS1.read_text(encoding="utf-8")
     forward = src.index(f"$env:{HANDOFF} = $ROCmGfxArch")
     invoke = src.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs")
     assert forward < invoke, "the arch must be handed over before setup.ps1 is invoked"
@@ -240,14 +240,14 @@ def test_installer_never_exports_the_public_override():
     """install_llama_prebuilt.py reads UNSLOTH_ROCM_GFX_ARCH back as _manual to decide whether a
     forwarded --rocm-gfx outranks its own probe, so publishing an auto-detected arch there disarms
     that safeguard on exactly the multi-GPU hosts it exists for."""
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    src = INSTALL_PS1.read_text(encoding="utf-8")
     assert re.search(r"\$env:UNSLOTH_ROCM_GFX_ARCH\s*=", src) is None
 
 
 def test_installer_restores_the_private_handoff_after_setup():
     """install.ps1 is documented as `irm ... | iex`, so it runs in the caller's own process and a
     value left behind would be read as an override by the next install in that terminal."""
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    src = INSTALL_PS1.read_text(encoding="utf-8")
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
@@ -268,10 +268,10 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
 
 
 @requires_pwsh
-@pytest.mark.parametrize("ps51", [False, True], ids = ["pwsh", "ps51"])
-@pytest.mark.parametrize("strict", [False, True], ids = ["lax", "strict"])
+@pytest.mark.parametrize("ps51", [False, True], ids=["pwsh", "ps51"])
+@pytest.mark.parametrize("strict", [False, True], ids=["lax", "strict"])
 def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
-    out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
+    out = _run(tmp_path, [(_RADEON, 0)], ps51=ps51, strict=strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
     # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
@@ -301,7 +301,7 @@ def test_a_healthy_adapter_wins_over_a_parked_one(tmp_path):
 
 
 @requires_pwsh
-@pytest.mark.parametrize("adapters", [[], [(_ARC, 0)]], ids = ["no_adapters", "intel_only"])
+@pytest.mark.parametrize("adapters", [[], [(_ARC, 0)]], ids=["no_adapters", "intel_only"])
 def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
     out = _run(tmp_path, adapters)
     assert out["labels"] == []
@@ -348,7 +348,7 @@ def test_a_single_adapter_infers_its_arch(tmp_path, name, expected):
 def test_a_pinned_single_gpu_host_still_infers_its_arch(tmp_path, mask, var):
     """The mask disables the $nameArches[0] rescue, so the string-indexing bug surfaced here as a
     host with a perfectly good Radeon reporting no arch and looping the installer."""
-    assert _run(tmp_path, [(_RADEON, 0)], env = {var: mask})["arch"] == "gfx1151"
+    assert _run(tmp_path, [(_RADEON, 0)], env={var: mask})["arch"] == "gfx1151"
 
 
 @requires_pwsh
@@ -359,7 +359,7 @@ def test_a_discrete_card_is_preferred_over_a_shadowing_igpu(tmp_path):
 
 @requires_pwsh
 def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
-    out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {"HIP_VISIBLE_DEVICES": "0"})
+    out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env={"HIP_VISIBLE_DEVICES": "0"})
     assert out["arch"] == "gfx1103", "an explicit selection must never be repicked"
 
 
@@ -367,7 +367,7 @@ def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
 def test_the_handoff_fills_the_gap_when_nothing_else_resolves(tmp_path):
     """The case the handoff exists for: setup's own scan came up empty where the installer's did
     not, and without this the two disagree and the install rolls back."""
-    out = _run(tmp_path, [], env = {HANDOFF: "gfx1151"})
+    out = _run(tmp_path, [], env={HANDOFF: "gfx1151"})
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -376,7 +376,7 @@ def test_the_handoff_fills_the_gap_when_nothing_else_resolves(tmp_path):
 def test_the_handoff_never_deposes_setups_own_inference(tmp_path):
     """install.ps1 would forward the iGPU here: it takes the first AMD adapter, with no shadowing
     repick. Setup's answer is the better one and has to win."""
-    out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {HANDOFF: "gfx1103"})
+    out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env={HANDOFF: "gfx1103"})
     assert out["arch"] == "gfx1201"
 
 
@@ -385,7 +385,7 @@ def test_a_user_override_still_wins_over_the_handoff(tmp_path):
     out = _run(
         tmp_path,
         [(_R780M, 0)],
-        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx90a", HANDOFF: "gfx1103"},
+        env={"UNSLOTH_ROCM_GFX_ARCH": "gfx90a", HANDOFF: "gfx1103"},
     )
     assert out["arch"] == "gfx90a", "the documented operator override outranks an inferred value"
 
@@ -393,12 +393,12 @@ def test_a_user_override_still_wins_over_the_handoff(tmp_path):
 @requires_pwsh
 @pytest.mark.parametrize("value", ["GFX1151", "  gfx1151  "])
 def test_the_handoff_is_normalized_like_the_override(tmp_path, value):
-    assert _run(tmp_path, [], env = {HANDOFF: value})["arch"] == "gfx1151"
+    assert _run(tmp_path, [], env={HANDOFF: value})["arch"] == "gfx1151"
 
 
 @requires_pwsh
 def test_an_empty_handoff_is_ignored(tmp_path):
-    assert _run(tmp_path, [], env = {HANDOFF: ""})["arch"] is None
+    assert _run(tmp_path, [], env={HANDOFF: ""})["arch"] is None
 
 
 @requires_pwsh
@@ -411,14 +411,14 @@ def test_a_mask_suppresses_the_handoff(tmp_path, var):
     and forwards that very arch, and taking it would install for a GPU the mask hides from the
     runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
     adapters = [(_R780M, 0), ("AMD Radeon RX 5700 XT", 0)]
-    assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
+    assert _run(tmp_path, adapters, env={var: "1", HANDOFF: "gfx1103"})["arch"] is None
 
 
 @requires_pwsh
 def test_a_mask_suppresses_the_handoff_even_with_no_adapters_to_check_it_against(tmp_path):
     """Setup saw no names at all, so it cannot confirm the forwarded arch is the selected device.
     Refuse rather than guess."""
-    assert _run(tmp_path, [], env = {"HIP_VISIBLE_DEVICES": "0", HANDOFF: "gfx1151"})["arch"] is None
+    assert _run(tmp_path, [], env={"HIP_VISIBLE_DEVICES": "0", HANDOFF: "gfx1151"})["arch"] is None
 
 
 @requires_pwsh
@@ -426,7 +426,7 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
     out = _run(
         tmp_path,
         [(_R780M, 0), ("AMD Radeon RX 5700 XT", 0)],
-        env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1010", HANDOFF: "gfx1103"},
+        env={"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1010", HANDOFF: "gfx1103"},
     )
     assert out["arch"] == "gfx1010"
 
@@ -438,7 +438,7 @@ def _installer_scan_block() -> str:
     """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds.
     The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
     this one: it feeds no label and no arch."""
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    src = INSTALL_PS1.read_text(encoding="utf-8")
     # Anchored on CODE at both ends. The end anchor used to be a comment and a comment
     # pass deleted it, which turned four tests into ValueError instead of a failure
     # that said anything. The next statement after the block is the hipconfig probe.
@@ -470,14 +470,14 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
                 "@{ label = $ROCmGpuLabel; arch = $ROCmGfxArch } | ConvertTo-Json -Compress",
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     proc = subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
     )
     assert proc.returncode == 0, f"installer scan failed:\n{proc.stdout}\n{proc.stderr}"
     return json.loads(proc.stdout)
@@ -565,8 +565,8 @@ _PRESENCE_MASK_BITS = max((len(_CALLER_ENV_NAMES) - 1).bit_length(), 1)
 _PRESENCE_PATTERNS = {
     "all": lambda i: True,
     "none": lambda i: False,
-    **{f"mask{k}": (lambda i, k = k: bool((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
-    **{f"cmask{k}": (lambda i, k = k: not ((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
+    **{f"mask{k}": (lambda i, k=k: bool((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
+    **{f"cmask{k}": (lambda i, k=k: not ((i >> k) & 1)) for k in range(_PRESENCE_MASK_BITS)},
 }
 
 
@@ -611,20 +611,20 @@ def _assert_caller_env_restored(out: dict, present: tuple[str, ...], what: str) 
 
 def _existing_llama_dir(tmp_path: Path) -> Path:
     path = tmp_path / "llama.cpp"
-    path.mkdir(exist_ok = True)
+    path.mkdir(exist_ok=True)
     return path
 
 
 def _studio_home_dir(tmp_path: Path) -> Path:
     path = tmp_path / "studio-home"
-    path.mkdir(exist_ok = True)
+    path.mkdir(exist_ok=True)
     return path
 
 
 def _studio_repo_dir(tmp_path: Path) -> Path:
     """DISTINCT from the studio home, so a restore that swapped the two shows rather than passing."""
     path = tmp_path / "studio-local-repo"
-    path.mkdir(exist_ok = True)
+    path.mkdir(exist_ok=True)
     return path
 
 
@@ -658,7 +658,7 @@ def _handoff_lifecycle_block() -> str:
 
     Anchored on the FIRST save, not the ROCm one: slicing below the five pairs above it left the
     harness supplying their $previous*, so those restores were measured against harness constants."""
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    src = INSTALL_PS1.read_text(encoding="utf-8")
     start = src.index("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE")
     end = src.index("    if ($setupExit -ne 0) {", start)
     return src[start:end]
@@ -752,7 +752,7 @@ def _run_handoff_lifecycle(
                 "} | ConvertTo-Json -Compress",
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
     # Built from scratch, so a name simply not added reads back $null: the finally's remove arm.
@@ -761,10 +761,10 @@ def _run_handoff_lifecycle(
         env[HANDOFF] = inherited
     proc = subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
     # Last JSON object only: a stub may emit its return value into the pipeline first.
@@ -785,13 +785,13 @@ def _run_handoff_lifecycle(
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+    "caller_env", list(_PRESENCE_PATTERNS), ids=[f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
-@pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
+@pytest.mark.parametrize("fails", [False, True], ids=["setup_ok", "setup_throws"])
 @pytest.mark.parametrize(
     "arch, inherited",
     [(None, None), ("gfx1151", None), (None, "gfx1030"), ("gfx1151", "gfx1030")],
-    ids = ["nothing", "resolved", "inherited", "resolved_over_inherited"],
+    ids=["nothing", "resolved", "inherited", "resolved_over_inherited"],
 )
 def test_the_caller_environment_survives_the_setup_call(
     tmp_path, arch, inherited, fails, caller_env
@@ -801,10 +801,10 @@ def test_the_caller_environment_survives_the_setup_call(
     and whether or not the caller had the variable to begin with."""
     out = _run_handoff_lifecycle(
         tmp_path,
-        arch = arch,
-        inherited = inherited,
-        fails = fails,
-        caller_env = caller_env,
+        arch=arch,
+        inherited=inherited,
+        fails=fails,
+        caller_env=caller_env,
     )
     assert out["after_set"] is (inherited is not None), "the handoff outlived the setup call"
     assert out["after"] == inherited
@@ -814,9 +814,9 @@ def test_the_caller_environment_survives_the_setup_call(
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+    "caller_env", list(_PRESENCE_PATTERNS), ids=[f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
-@pytest.mark.parametrize("fails", [False, True], ids = ["setup_ok", "setup_throws"])
+@pytest.mark.parametrize("fails", [False, True], ids=["setup_ok", "setup_throws"])
 def test_the_optional_handoffs_are_restored_when_this_run_sets_them(tmp_path, fails, caller_env):
     """UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the two the try does not always assign.
 
@@ -825,11 +825,11 @@ def test_the_optional_handoffs_are_restored_when_this_run_sets_them(tmp_path, fa
     assigned unconditionally, so the same deletion shows there at once."""
     out = _run_handoff_lifecycle(
         tmp_path,
-        arch = "gfx1151",
-        inherited = None,
-        fails = fails,
-        caller_env = caller_env,
-        studio_mode = "env_redirect_local",
+        arch="gfx1151",
+        inherited=None,
+        fails=fails,
+        caller_env=caller_env,
+        studio_mode="env_redirect_local",
     )
     assert out["seen_studio_home"] == str(
         _studio_home_dir(tmp_path)
@@ -926,7 +926,7 @@ def test_the_restore_reader_sees_both_spellings_and_no_others():
     # A SAVE is not a restore, in either direction of the assignment.
     assert _restored_names("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE\n") == set()
     # A table nobody walks restores nothing, and saying so is the whole point of the apply check.
-    with pytest.raises(AssertionError, match = "nothing walks it"):
+    with pytest.raises(AssertionError, match="nothing walks it"):
         _restored_names(table.split("        if (")[0])
 
 
@@ -955,7 +955,7 @@ def test_every_saved_variable_in_the_block_is_covered():
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+    "caller_env", list(_PRESENCE_PATTERNS), ids=[f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
 def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     """The --with-llama-cpp-dir bail returns from inside the try, so the finally still runs.
@@ -968,11 +968,11 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     fifteen the helper checks, in both directions rather than only for removal."""
     out = _run_handoff_lifecycle(
         tmp_path,
-        arch = "gfx1151",
-        inherited = "gfx1030",
-        fails = False,
-        bails = True,
-        caller_env = caller_env,
+        arch="gfx1151",
+        inherited="gfx1030",
+        fails=False,
+        bails=True,
+        caller_env=caller_env,
     )
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
@@ -983,7 +983,7 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
 
 @requires_pwsh
 @pytest.mark.parametrize(
-    "caller_env", list(_PRESENCE_PATTERNS), ids = [f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
+    "caller_env", list(_PRESENCE_PATTERNS), ids=[f"caller_env_{p}" for p in _PRESENCE_PATTERNS]
 )
 def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_env):
     """The other side of the bail: --with-llama-cpp-dir naming a directory that is there.
@@ -992,11 +992,11 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
     satisfied by never being dirtied, which is not the same as being correct."""
     out = _run_handoff_lifecycle(
         tmp_path,
-        arch = "gfx1151",
-        inherited = "gfx1030",
-        fails = False,
-        with_llama_cpp_dir = True,
-        caller_env = caller_env,
+        arch="gfx1151",
+        inherited="gfx1030",
+        fails=False,
+        with_llama_cpp_dir=True,
+        caller_env=caller_env,
     )
     assert out["seen_by_child"] == "gfx1151", "the block did not reach the setup call"
     # The RESOLVED path, since that is what the block writes and what setup.ps1 goes on to read.
@@ -1011,9 +1011,9 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
 @pytest.mark.parametrize(
     "arch, inherited, expected",
     [("gfx1151", None, "gfx1151"), ("gfx1151", "gfx1030", "gfx1151"), (None, "gfx1030", None)],
-    ids = ["resolved", "resolved_over_inherited", "stale_only"],
+    ids=["resolved", "resolved_over_inherited", "stale_only"],
 )
-@pytest.mark.parametrize("caller_env", sorted(_PRESENCE_PATTERNS), ids = sorted(_PRESENCE_PATTERNS))
+@pytest.mark.parametrize("caller_env", sorted(_PRESENCE_PATTERNS), ids=sorted(_PRESENCE_PATTERNS))
 def test_only_this_runs_arch_is_handed_to_the_child(
     tmp_path, arch, inherited, expected, caller_env
 ):
@@ -1026,7 +1026,7 @@ def test_only_this_runs_arch_is_handed_to_the_child(
     empty-caller case is the one that catches it, and running only the default lost it.
     """
     out = _run_handoff_lifecycle(
-        tmp_path, arch = arch, inherited = inherited, fails = False, caller_env = caller_env
+        tmp_path, arch=arch, inherited=inherited, fails=False, caller_env=caller_env
     )
     assert out["seen_by_child"] == expected
 
@@ -1036,8 +1036,8 @@ def test_these_assertions_fail_without_the_array_wraps(tmp_path):
     """A regression test that passes on the unfixed source is not one, and the first version of
     this file was exactly that. Undo just the two wraps and confirm the failures come back."""
     unfixed = _without_the_array_wraps(_setup_source())
-    before = _run(tmp_path, [(_RADEON, 0)], source = unfixed, ps51 = True)
-    pinned = _run(tmp_path, [(_RADEON, 0)], source = unfixed, env = {"HIP_VISIBLE_DEVICES": "0"})
+    before = _run(tmp_path, [(_RADEON, 0)], source=unfixed, ps51=True)
+    pinned = _run(tmp_path, [(_RADEON, 0)], source=unfixed, env={"HIP_VISIBLE_DEVICES": "0"})
     assert not before["wmi_array"], "the unwrapped scan should collapse to a scalar"
     assert before["label"] is None, "the unwrapped scan should report no GPU under 5.1 semantics"
     assert pinned["arch"] is None, "the unwrapped name list should infer nothing when pinned"

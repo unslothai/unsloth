@@ -42,10 +42,10 @@ def test_no_archive_fixture_is_committed():
     """
     tracked = subprocess.run(
         ["git", "ls-files", "--", "tests/security/fixtures"],
-        cwd = REPO_ROOT,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if tracked.returncode != 0:
         pytest.skip(f"not a git checkout: {tracked.stderr.strip()}")
@@ -70,11 +70,11 @@ def test_fixture_bytes_are_deterministic(tmp_path):
 
     rebuild_dir = tmp_path / "rebuild"
     rebuild_dir.mkdir()
-    builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
+    builder_src = (FIXTURES / "_build.py").read_text(encoding="utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
     # builder_src came out of a checked-in file, so it carries whatever
     # non-ASCII that file holds and cp1252 cannot encode it back out.
-    rebuilt_helper.write_text(builder_src, encoding = "utf-8")
+    rebuilt_helper.write_text(builder_src, encoding="utf-8")
     shim = rebuild_dir / "run.py"
     shim.write_text(
         "import sys, pathlib\n"
@@ -83,13 +83,13 @@ def test_fixture_bytes_are_deterministic(tmp_path):
         f"_build.HERE = pathlib.Path({str(rebuild_dir)!r})\n"
         "_build.build_all()\n"
     )
-    env = dict(os.environ, SOURCE_DATE_EPOCH = "0")
+    env = dict(os.environ, SOURCE_DATE_EPOCH="0")
     proc = subprocess.run(
         [sys.executable, str(shim)],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
 
@@ -142,7 +142,7 @@ _MAY12_AVAILABLE = hasattr(sp, "RE_MAY12_IOC")
 
 @pytest.mark.skipif(
     not _BLOCKED_AVAILABLE,
-    reason = "Fork 1 (BLOCKED_PYPI_VERSIONS) not merged yet",
+    reason="Fork 1 (BLOCKED_PYPI_VERSIONS) not merged yet",
 )
 def test_blocked_pypi_versions_complete():
     table = sp.BLOCKED_PYPI_VERSIONS
@@ -156,7 +156,7 @@ def test_blocked_pypi_versions_complete():
 
 @pytest.mark.skipif(
     not _MAY12_AVAILABLE,
-    reason = "Fork 1 (RE_MAY12_IOC) not merged yet",
+    reason="Fork 1 (RE_MAY12_IOC) not merged yet",
 )
 def test_re_may12_ioc_catches_each_literal():
     expected_literals = [
@@ -175,7 +175,7 @@ def test_re_may12_ioc_catches_each_literal():
 
 @pytest.mark.skipif(
     not _MAY12_AVAILABLE,
-    reason = "Fork 1 (RE_MAY12_IOC integration) not merged yet",
+    reason="Fork 1 (RE_MAY12_IOC integration) not merged yet",
 )
 def test_may12_ioc_caught_by_scan_archive():
     """Wired into check_py_file, the malicious wheel's setup.py must flag the May-12 IOC string."""
@@ -208,10 +208,10 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
     unresolvable = "pkg-that-does-not-exist-0123456789-fork-c-silentfail==0.0.0"
     proc = subprocess.run(
         [sys.executable, str(script), unresolvable],
-        cwd = str(tmp_path),
-        capture_output = True,
-        text = True,
-        timeout = 180,
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 2, (
@@ -392,7 +392,7 @@ def _mk(
     pkg,
     fname,
     check,
-    evidence = "evidence",
+    evidence="evidence",
 ):
     return sp.Finding(sev, pkg, fname, check, evidence)
 
@@ -452,7 +452,7 @@ def test_annotation_only_network_entries_are_digest_pinned():
     baseline = json.loads(
         (
             pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-        ).read_text(encoding = "utf-8")
+        ).read_text(encoding="utf-8")
     )
     credential_adjacent = {
         "openai/_client.py",
@@ -500,7 +500,7 @@ def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
     import re
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
     must_be_pinned = {
         (
             "unsloth_zoo/vision_utils.py",
@@ -574,7 +574,7 @@ def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
     import pathlib
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
     targets = [
         entry
         for entry in entries
@@ -653,7 +653,7 @@ def test_the_hf_backoff_suppression_is_narrow():
     baseline = json.loads(
         (
             _pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-        ).read_text(encoding = "utf-8")
+        ).read_text(encoding="utf-8")
     )
     entries = [
         e
@@ -1582,7 +1582,7 @@ def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
     import json
 
     bl = tmp_path / "bad_entries.json"
-    bl.write_text(json.dumps({"version": 1, "entries": None}), encoding = "utf-8")
+    bl.write_text(json.dumps({"version": 1, "entries": None}), encoding="utf-8")
     assert sp._load_baseline(str(bl)) == {}
     assert "entries is not a list" in capsys.readouterr().err
 
@@ -1595,7 +1595,7 @@ def test_committed_baseline_suppresses_known_but_not_a_new_payload():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(baseline_path.read_text(encoding="utf-8"))["entries"]
     target = next(
         e
         for e in entries
@@ -1630,7 +1630,7 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(baseline_path.read_text(encoding="utf-8"))["entries"]
     assert entries, "committed baseline should not be empty"
     missing = [
         f"{e['package']}:{e['file']}:{e['check']}" for e in entries if not e.get("evidence_hash")
@@ -1670,7 +1670,7 @@ def _f(packagetype: str, filename: str, url: str) -> dict:
 
 def _meta(
     files: list[dict],
-    requires = None,
+    requires=None,
     version: str = "1.0.0",
 ) -> dict:
     return {
@@ -1710,7 +1710,7 @@ def test_is_trusted_pypi_url_only_https_pypi():
 def test_requires_dist_skips_extras():
     meta = _meta(
         [],
-        requires = [
+        requires=[
             "numpy (>=1.20)",
             "torch ; extra == 'dev'",  # optional extra -> skipped
             "pyyaml>=5 ; python_version >= '3.8'",  # non-extra marker -> kept
@@ -1766,7 +1766,7 @@ def test_requires_dist_recovery_does_not_pull_a_dev_extra():
     pre-commit as if a default install pulled them, and their findings failed the extras shard."""
     meta = _meta(
         [],
-        requires = [
+        requires=[
             'colorama>=0.3.4; sys_platform == "win32"',
             'pre-commit==4.0.1; extra == "dev" and python_version >= "3.9"',
             'tox==4.23.2; extra == "dev" and python_version >= "3.8"',
@@ -1780,17 +1780,17 @@ def test_requires_dist_recovery_does_not_pull_a_dev_extra():
 def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
     # The pinned release's own metadata cannot be fetched -> recover nothing rather than substituting the latest
     # release's (wrong) dependency tree.
-    project = _meta([], requires = ["latestdep==9.9.9"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    project = _meta([], requires=["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version=None: None if version else project)
     assert sp._requires_dist_for("oldpkg", "1.0.0", project) == []
 
 
 def test_requires_dist_for_uses_pinned_release(monkeypatch):
     # Project-level (latest) metadata declares no malicious dep; the pinned release does. _requires_dist_for must follow
     # the pinned release's tree.
-    project = _meta([], requires = ["harmless>=1"])
-    pinned = _meta([], requires = ["payload==1.0.0"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: pinned if version else project)
+    project = _meta([], requires=["harmless>=1"])
+    pinned = _meta([], requires=["payload==1.0.0"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version=None: pinned if version else project)
     specs = sp._requires_dist_for("oldpkg", "1.0.0", project)
     assert "payload==1.0.0" in specs
     assert "harmless>=1" not in specs
@@ -1799,8 +1799,8 @@ def test_requires_dist_for_uses_pinned_release(monkeypatch):
 def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
     # Missing pinned metadata must surface an incomplete-scan error, not a silent [] that a caller cannot tell apart
     # from a genuine no-deps release.
-    project = _meta([], requires = ["latestdep==9.9.9"])
-    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    project = _meta([], requires=["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version=None: None if version else project)
     errors: list[str] = []
     assert sp._requires_dist_for("oldpkg", "1.0.0", project, errors) == []
     assert errors and "incomplete" in errors[0]
@@ -1810,7 +1810,7 @@ def test_release_files_pinned_missing_fails_closed():
     # A pin absent from metadata must NOT fall back to the latest artifact.
     meta = _meta(
         [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
-        version = "2.0.0",
+        version="2.0.0",
     )
     assert sp._release_files(meta, "9.9.9") == []  # missing pin -> empty, not latest
     assert sp._release_has_wheel(meta, "9.9.9") is False
@@ -1822,34 +1822,34 @@ def test_download_sdist_direct_missing_pin_does_not_scan_latest(tmp_path):
     # Pinned version absent -> no sdist returned (never the latest file).
     meta = _meta(
         [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
-        version = "2.0.0",
+        version="2.0.0",
     )
-    fpath, err = sp._download_sdist_direct("x", "9.9.9", str(tmp_path), meta = meta)
+    fpath, err = sp._download_sdist_direct("x", "9.9.9", str(tmp_path), meta=meta)
     assert fpath is None and "no sdist" in err
     assert list(tmp_path.iterdir()) == []
 
 
 def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):
     meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://evil.example/x.tar.gz")])
-    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
     assert fpath is None and "non-PyPI" in err
     assert list(tmp_path.iterdir()) == []
 
 
 def test_download_sdist_direct_no_sdist_published(tmp_path):
     meta = _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")])
-    fpath, err = sp._download_sdist_direct("x", None, str(tmp_path), meta = meta)
+    fpath, err = sp._download_sdist_direct("x", None, str(tmp_path), meta=meta)
     assert fpath is None and "no sdist" in err
 
 
 def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch):
     payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload))
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(payload))
     meta = _meta(
         [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")],
-        version = "1.1.6",
+        version="1.1.6",
     )
-    fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta = meta)
+    fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta=meta)
     assert err is None and fpath is not None
     assert fpath.endswith(".tar.gz")  # suffix preserved -> archive reader picks format
     assert Path(fpath).read_bytes() == payload
@@ -1857,9 +1857,9 @@ def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch
 
 def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "_MAX_SDIST_BYTES", 8)
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"x" * 100))
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"x" * 100))
     meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
-    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
     assert fpath is None and "cap" in err
 
 
@@ -1873,7 +1873,7 @@ def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sp,
         "_pypi_json",
-        lambda name, version = None: _meta(
+        lambda name, version=None: _meta(
             [_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")]
         ),
     )
@@ -1892,12 +1892,12 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sp,
         "_pypi_json",
-        lambda name, version = None: _meta(
+        lambda name, version=None: _meta(
             [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x-1.0.0.tar.gz")]
         ),
     )
     monkeypatch.setattr(
-        sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"\x1f\x8bdata")
+        sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"\x1f\x8bdata")
     )
     errors: list[str] = []
     sp._resolve_per_spec_with_deps(["x==1.0.0"], str(tmp_path), {}, errors)
@@ -1923,7 +1923,7 @@ def test_find_safe_version_handles_download_tuple(monkeypatch):
     monkeypatch.setattr(sp.os, "remove", lambda *a, **k: None)
     monkeypatch.setattr(sp.shutil, "rmtree", lambda *a, **k: None)
 
-    result = sp.find_safe_version("foo", "1.0.0", "/tmp/ignored", max_search = 10)
+    result = sp.find_safe_version("foo", "1.0.0", "/tmp/ignored", max_search=10)
     assert result == "0.9.0"
 
 
@@ -1956,7 +1956,7 @@ def test_run_fix_uses_first_archive_path(monkeypatch):
             "line_num": 1,
         }
     ]
-    sp._run_fix({"foo"}, entries, max_search = 10)  # must not raise
+    sp._run_fix({"foo"}, entries, max_search=10)  # must not raise
 
     assert seen.get("path") == "/tmp/foo-1.2.3.whl"
 
@@ -1975,10 +1975,10 @@ def test_pinned_baseline_entry_only_covers_the_reviewed_file(tmp_path):
     sp._write_baseline(str(bl), [reviewed])
 
     # _write_baseline only pins what was already pinned, so a fresh entry is unpinned.
-    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    doc = json.loads(bl.read_text(encoding="utf-8"))
     assert "file_sha256" not in doc["entries"][0]
     doc["entries"][0]["file_sha256"] = "a" * 64
-    bl.write_text(json.dumps(doc), encoding = "utf-8")
+    bl.write_text(json.dumps(doc), encoding="utf-8")
     baseline = sp._load_baseline(str(bl))
 
     active, suppressed = sp._partition_baseline([reviewed], baseline)
@@ -2012,12 +2012,12 @@ def test_write_baseline_preserves_an_existing_pin(tmp_path):
     f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
     f.file_sha256 = "a" * 64
     sp._write_baseline(str(bl), [f])
-    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    doc = json.loads(bl.read_text(encoding="utf-8"))
     doc["entries"][0]["file_sha256"] = "a" * 64
-    bl.write_text(json.dumps(doc), encoding = "utf-8")
+    bl.write_text(json.dumps(doc), encoding="utf-8")
 
     sp._write_baseline(str(bl), [f])
-    doc2 = json.loads(bl.read_text(encoding = "utf-8"))
+    doc2 = json.loads(bl.read_text(encoding="utf-8"))
     assert doc2["entries"][0]["file_sha256"] == "a" * 64
 
 
@@ -2038,7 +2038,7 @@ def test_the_shipped_baseline_hashes_match_their_evidence():
     import pathlib
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
     assert entries, "the shipped baseline is empty"
     wrong = [
         (e.get("package"), e.get("file"), e.get("check"))
@@ -2089,7 +2089,7 @@ def test_the_shipped_baseline_has_no_duplicate_keys():
     import pathlib
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
     dupes = _baseline_duplicates(entries)
     assert not dupes, f"duplicate baseline keys: {sorted(dupes)}"
 
@@ -2101,14 +2101,14 @@ def test_two_reviewed_versions_may_share_a_key_with_distinct_pins(tmp_path):
     import json
 
     same = dict(
-        package = "requests",
-        file = "requests/api.py",
-        check = "C2 polling/beaconing loop detected",
-        severity = "CRITICAL",
-        evidence = "L1:     while True:",
-        evidence_hash = sp._evidence_hash("L1:     while True:"),
+        package="requests",
+        file="requests/api.py",
+        check="C2 polling/beaconing loop detected",
+        severity="CRITICAL",
+        evidence="L1:     while True:",
+        evidence_hash=sp._evidence_hash("L1:     while True:"),
     )
-    entries = [dict(file_sha256 = "a" * 64, **same), dict(file_sha256 = "b" * 64, **same)]
+    entries = [dict(file_sha256="a" * 64, **same), dict(file_sha256="b" * 64, **same)]
     assert not _baseline_duplicates(entries)
 
     path = tmp_path / "baseline.json"
@@ -2128,10 +2128,10 @@ def test_two_reviewed_versions_may_share_a_key_with_distinct_pins(tmp_path):
 )
 def test_a_key_that_says_the_same_thing_twice_is_still_a_duplicate(pins):
     same = dict(
-        package = "requests",
-        file = "requests/api.py",
-        check = "C2 polling/beaconing loop detected",
-        evidence_hash = sp._evidence_hash("L1:     while True:"),
+        package="requests",
+        file="requests/api.py",
+        check="C2 polling/beaconing loop detected",
+        evidence_hash=sp._evidence_hash("L1:     while True:"),
     )
     entries = [dict(same, **({"file_sha256": p} if p else {})) for p in pins]
     assert _baseline_duplicates(entries) == {_baseline_key(entries[0])}
@@ -2144,14 +2144,14 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
     import json
 
     same = dict(
-        check = "C2 polling/beaconing loop detected",
-        severity = "CRITICAL",
-        evidence = "L1:     while True:",
-        evidence_hash = sp._evidence_hash("L1:     while True:"),
+        check="C2 polling/beaconing loop detected",
+        severity="CRITICAL",
+        evidence="L1:     while True:",
+        evidence_hash=sp._evidence_hash("L1:     while True:"),
     )
     entries = [
-        dict(package = "huggingface_hub", file = "foo-1.0/huggingface_hub/a.py", **same),
-        dict(package = "huggingface-hub", file = "huggingface_hub/a.py", **same),
+        dict(package="huggingface_hub", file="foo-1.0/huggingface_hub/a.py", **same),
+        dict(package="huggingface-hub", file="huggingface_hub/a.py", **same),
     ]
     assert _baseline_duplicates(entries) == {_baseline_key(entries[0])}
 
@@ -2278,7 +2278,7 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
 
     class _StalledResults:
-        def next(self, timeout = None):
+        def next(self, timeout=None):
             raise sp.multiprocessing.TimeoutError()
 
     class _StalledPool:
@@ -2294,7 +2294,7 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         sp.multiprocessing,
         "get_context",
-        lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})(),
+        lambda _method: type("C", (), {"Pool": lambda _s, processes=None: _StalledPool()})(),
     )
     monkeypatch.setattr(
         sys,
@@ -2323,6 +2323,7 @@ def _tomllib():
     """
     if sys.version_info >= (3, 11):
         import tomllib
+
         return tomllib
     return pytest.importorskip("tomli")
 
@@ -2352,7 +2353,7 @@ def _audited_requirements(root):
     """
     tomllib = _tomllib()
     for req in sorted((root / "studio" / "backend" / "requirements").glob("*.txt")):
-        for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
+        for lineno, raw in enumerate(req.read_text(encoding="utf-8").splitlines(), 1):
             spec = raw.split("#", 1)[0].strip()
             if spec and not spec.startswith("-") and "git+" not in spec:
                 yield f"{req.name}:{lineno}", spec
@@ -2428,7 +2429,7 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
 
     root = pathlib.Path(__file__).resolve().parents[2]
     baseline = json.loads(
-        (root / "scripts" / "scan_packages_baseline.json").read_text(encoding = "utf-8")
+        (root / "scripts" / "scan_packages_baseline.json").read_text(encoding="utf-8")
     )
     pinned_packages = {
         sp._norm_pkg(e["package"]) for e in baseline["entries"] if e.get("file_sha256")
@@ -2486,7 +2487,7 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
         "publishes: " + "; ".join(floating)
     )
     gaps = {
-        pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
+        pkg: sorted(set(pythons) - covered.get(pkg, set()), key=lambda v: int(v.split(".")[1]))
         for pkg in sorted(present)
     }
     gaps = {pkg: missing for pkg, missing in gaps.items() if missing}
@@ -2537,7 +2538,7 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 
     def without_tomllib(name, *args, **kwargs):
         if name == "tomllib":
-            raise ModuleNotFoundError("No module named 'tomllib'", name = "tomllib")
+            raise ModuleNotFoundError("No module named 'tomllib'", name="tomllib")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", without_tomllib)
@@ -2614,7 +2615,7 @@ def test_committed_baseline_covers_the_zoo_url_guard():
     these entries every Security audit run on main is red.
     """
     path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
     checks = {
         e["check"]
         for e in entries
@@ -2704,7 +2705,7 @@ def test_the_fixtures_are_published_atomically() -> None:
     from pathlib import Path as _Path
 
     source = (_Path(__file__).resolve().parent / "fixtures" / "_build.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert "os.replace" in source, (
         "the fixture builder no longer publishes through os.replace. A truncate-then-write at a "
@@ -2772,7 +2773,7 @@ def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
 def _reviewed_site_report(tmp_path, entries, findings):
     """Run the reopened-site reporter over a hand-written baseline and return what it printed."""
     path = tmp_path / "baseline.json"
-    path.write_text(json.dumps({"entries": entries}), encoding = "utf-8")
+    path.write_text(json.dumps({"entries": entries}), encoding="utf-8")
     loaded = sp._load_baseline(str(path))
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
@@ -2783,7 +2784,7 @@ def _reviewed_site_report(tmp_path, entries, findings):
 _EXEC_CHECK = "Advanced obfuscation (marshal/compile/zlib) + exec/eval"
 
 
-def _exec_entry(evidence, digest = None):
+def _exec_entry(evidence, digest=None):
     entry = {
         "package": "unsloth-zoo",
         "file": "unsloth_zoo/compiler.py",
@@ -2797,7 +2798,7 @@ def _exec_entry(evidence, digest = None):
     return entry
 
 
-def _exec_finding(evidence, digest = ""):
+def _exec_finding(evidence, digest=""):
     return sp.Finding(
         sp.HIGH, "unsloth-zoo", "unsloth_zoo/compiler.py", _EXEC_CHECK, evidence, digest
     )
@@ -2826,8 +2827,8 @@ def test_a_pin_miss_says_the_matched_code_is_unchanged(tmp_path):
     evidence = "L10: exec(compile(src, path, 'exec'))"
     report = _reviewed_site_report(
         tmp_path,
-        [_exec_entry(evidence, digest = "a" * 64)],
-        [_exec_finding(evidence, digest = "b" * 64)],
+        [_exec_entry(evidence, digest="a" * 64)],
+        [_exec_finding(evidence, digest="b" * 64)],
     )
     assert "same matched code, file digest outside the pin" in report, report
     assert "new matched line(s)" not in report, report

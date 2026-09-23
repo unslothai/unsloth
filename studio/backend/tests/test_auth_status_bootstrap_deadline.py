@@ -21,12 +21,12 @@ from routes import auth as auth_routes
 @pytest.fixture
 def client():
     app = FastAPI()
-    app.include_router(auth_routes.router, prefix = "/api/auth")
+    app.include_router(auth_routes.router, prefix="/api/auth")
     with TestClient(app) as test_client:
         yield test_client
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_leaked_deadline():
     clear_bootstrap_deadline()
     yield
@@ -57,13 +57,13 @@ class TestTheFieldIsPresent:
         assert body["bootstrap_deadline_seconds"] is None
 
     def test_an_armed_deadline_is_reported(self, client, monkeypatch):
-        _password_state(monkeypatch, requires_change = True)
+        _password_state(monkeypatch, requires_change=True)
         record_bootstrap_deadline(3600)
         remaining = _status(client)["bootstrap_deadline_seconds"]
         assert remaining is not None and 3590 <= remaining <= 3600
 
     def test_it_counts_down_between_calls(self, client, monkeypatch):
-        _password_state(monkeypatch, requires_change = True)
+        _password_state(monkeypatch, requires_change=True)
         record_bootstrap_deadline(3600)
         first = _status(client)["bootstrap_deadline_seconds"]
         import auth.bootstrap_timeout as bt
@@ -78,7 +78,7 @@ class TestItIsNotReportedWhenItCannotFire:
 
     def test_a_changed_password_reports_no_deadline(self, client, monkeypatch):
         record_bootstrap_deadline(3600)
-        _password_state(monkeypatch, requires_change = False)
+        _password_state(monkeypatch, requires_change=False)
         body = _status(client)
         assert body["requires_password_change"] is False
         assert body["bootstrap_deadline_seconds"] is None
@@ -86,16 +86,16 @@ class TestItIsNotReportedWhenItCannotFire:
     def test_the_timer_being_armed_is_not_enough_on_its_own(self, client, monkeypatch):
         """Arming is never undone on a password change, so the timer alone cannot answer this."""
         record_bootstrap_deadline(60)
-        _password_state(monkeypatch, requires_change = False)
+        _password_state(monkeypatch, requires_change=False)
         assert _status(client)["bootstrap_deadline_seconds"] is None
-        _password_state(monkeypatch, requires_change = True)
+        _password_state(monkeypatch, requires_change=True)
         assert _status(client)["bootstrap_deadline_seconds"] is not None
 
 
 class TestTheNumberIsUsable:
     def test_an_expired_deadline_reads_zero_not_negative(self, client, monkeypatch):
         """A negative would print as "shuts down in -12 minutes"."""
-        _password_state(monkeypatch, requires_change = True)
+        _password_state(monkeypatch, requires_change=True)
         record_bootstrap_deadline(1)
         import auth.bootstrap_timeout as bt
 
@@ -104,7 +104,7 @@ class TestTheNumberIsUsable:
 
     def test_the_endpoint_stays_anonymous(self, client, monkeypatch):
         """The deadline is implied by requires_password_change, already returned here."""
-        _password_state(monkeypatch, requires_change = True)
+        _password_state(monkeypatch, requires_change=True)
         record_bootstrap_deadline(3600)
         response = client.get("/api/auth/status")
         assert response.status_code == 200

@@ -34,7 +34,7 @@ _LEASE_MS = 1_200_000  # the shipped default, 1200s
 
 
 class _Clock:
-    def __init__(self, start = 1_700_000_000_000):
+    def __init__(self, start=1_700_000_000_000):
         self.now = int(start)
 
     def __call__(self):
@@ -51,7 +51,7 @@ def clock(monkeypatch):
     return fake
 
 
-def _seed(run_id = "run-1", thread_id = "thread-1"):
+def _seed(run_id="run-1", thread_id="thread-1"):
     studio_db.upsert_chat_thread(
         {
             "id": thread_id,
@@ -71,12 +71,12 @@ def _seed(run_id = "run-1", thread_id = "thread-1"):
         }
     )
     runs_db.create_run(
-        run_id = run_id,
-        owner_subject = "alice",
-        thread_id = thread_id,
-        user_message_id = f"user-{run_id}",
-        assistant_message_id = f"assistant-{run_id}",
-        request_payload = {"model": "local.gguf", "messages": [], "stream": True},
+        run_id=run_id,
+        owner_subject="alice",
+        thread_id=thread_id,
+        user_message_id=f"user-{run_id}",
+        assistant_message_id=f"assistant-{run_id}",
+        request_payload={"model": "local.gguf", "messages": [], "stream": True},
     )
     token = runs_db.get_worker_token(run_id)
     assert runs_db.mark_running(run_id, token)
@@ -140,9 +140,9 @@ def test_pre_upgrade_rows_have_a_usable_lease_fallback(clock):
     conn.commit()
 
     # Not yet stale: started_at is now.
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == []
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-null"]
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == ["run-null"]
 
 
 def test_missing_table_does_not_raise(monkeypatch, clock):
@@ -169,11 +169,11 @@ def test_concurrent_migration_from_many_threads(clock):
         except BaseException as exc:  # noqa: BLE001 - the assertion is "none of these"
             errors.append(exc)
 
-    threads = [threading.Thread(target = _go) for _ in range(8)]
+    threads = [threading.Thread(target=_go) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 30)
+        t.join(timeout=30)
     assert not errors, f"concurrent migration raised: {errors}"
     assert {"progress_at", "progress_tokens"} <= _columns()
 
@@ -214,7 +214,7 @@ def test_old_build_can_still_insert_after_migration(clock):
     # will INSERT without them. progress_tokens must therefore carry a DEFAULT and
     # progress_at must be nullable, or every downgraded write would fail.
     token = _seed("run-a")
-    runs_db.finish_run("run-a", worker_token = token, status = "completed", finish_reason = "stop")
+    runs_db.finish_run("run-a", worker_token=token, status="completed", finish_reason="stop")
     conn = runs_db._connect()
     cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()]
     legacy = [c for c in cols if c not in ("progress_at", "progress_tokens")]
@@ -253,7 +253,7 @@ def test_progressing_run_is_never_reaped_however_long_it_runs(clock):
         runs_db.append_events(
             "run-slow", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
         )
-        assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+        assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == []
     assert runs_db.get_run("run-slow")["status"] == "running"
 
 
@@ -279,28 +279,28 @@ def test_clock_jumping_forward_can_reap_and_is_recorded(clock):
     token = _seed("run-fwd")
     runs_db.append_events("run-fwd", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})])
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-fwd"]
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == ["run-fwd"]
 
 
 def test_terminal_runs_are_never_reaped(clock):
     token = _seed("run-done")
-    runs_db.finish_run("run-done", worker_token = token, status = "completed", finish_reason = "stop")
+    runs_db.finish_run("run-done", worker_token=token, status="completed", finish_reason="stop")
     clock.advance_ms(10 * _LEASE_MS)
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == []
 
 
 def test_a_reaped_run_is_settled_once_not_repeatedly(clock):
     _seed("run-once")
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-once"]
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == ["run-once"]
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == []
 
 
 def test_cancelling_run_settles_as_cancelled_not_failed(clock):
     _seed("run-cancel")
     runs_db.request_cancel("run-cancel")
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
-    assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-cancel"]
+    assert runs_db.reconcile_runs(error="x", stale_after_ms=_LEASE_MS) == ["run-cancel"]
     assert runs_db.get_run("run-cancel")["status"] == "cancelled"
 
 
@@ -323,7 +323,7 @@ def test_zero_timeout_disables_the_sweep(clock):
     from core.inference.chat_generation_runs import ChatGenerationLeaseSweeper
     from types import SimpleNamespace
 
-    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()), timeout_s = 0.0)
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state=SimpleNamespace()), timeout_s=0.0)
     assert sweeper.enabled is False
 
 
@@ -341,7 +341,7 @@ def test_a_second_lifespan_restarts_the_sweeper(clock):
         start_lease_sweeper,
     )
 
-    app = SimpleNamespace(state = SimpleNamespace())
+    app = SimpleNamespace(state=SimpleNamespace())
 
     async def _drive():
         first = start_lease_sweeper(app)
@@ -425,10 +425,10 @@ def test_live_reaping_is_deferred_until_the_migration_lands(clock, monkeypatch):
     _seed()
     with _migration_blocked(monkeypatch):
         clock.advance_ms(100 * _LEASE_MS)  # far past the timeout by age alone
-        assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+        assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == []
     # Once the columns exist the sweep resumes and the genuinely stale run is settled.
     clock.advance_ms(100 * _LEASE_MS)
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+    assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == ["run-1"]
 
 
 def test_boot_reconcile_still_works_without_the_lease_columns(clock, monkeypatch):
@@ -465,7 +465,7 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
             return getattr(self._inner, name)
 
     monkeypatch.setattr(runs_db, "_connect", lambda: _Boom(real_connect()))
-    with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
+    with pytest.raises(sqlite3.OperationalError, match="some_other_column"):
         runs_db.get_progress("run-1")
 
 
@@ -478,7 +478,7 @@ def test_touch_progress_renews_the_lease_without_recording_output(clock):
     runs_db.touch_progress("run-1")
     clock.advance_ms(_LEASE_MS - 1)
     # Without the renewal the run is now nearly two lease periods old and would be swept.
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == []
     _at, tokens = runs_db.get_progress("run-1")
     assert tokens == 0, "a renewal is not streamed output"
 
@@ -491,9 +491,9 @@ def test_a_long_model_load_does_not_consume_the_prefill_budget(clock):
     clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow automatic model load
     runs_db.touch_progress("run-1")  # what _produce does once the stream is open
     clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow but legitimate prefill
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+    assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == []
     clock.advance_ms(2 * _LEASE_MS)  # now genuinely wedged
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+    assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == ["run-1"]
 
 
 def test_touch_progress_survives_a_blocked_migration(clock, monkeypatch):
@@ -517,7 +517,7 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
     the lease actually moves, not that the call is present."""
     _seed()
     sup = _supervisor()
-    monkeypatch.setattr(sup, "_PREPARE_RENEW_INTERVAL_S", 0.0, raising = False)
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_INTERVAL_S", 0.0, raising=False)
     ticks = {"n": 0}
     real_sleep = asyncio.sleep
 
@@ -540,7 +540,7 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
 
     asyncio.run(_run())
     assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+        runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == []
     ), "a preparation longer than the lease must not be reaped"
 
 
@@ -550,7 +550,7 @@ def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeyp
     _seed()
     sup = _supervisor()
     interval = runs_mod._renew_interval_seconds()
-    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 3 * interval, raising = False)
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 3 * interval, raising=False)
     real_sleep = asyncio.sleep
 
     async def _sleep(seconds):
@@ -561,7 +561,7 @@ def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeyp
     # Runs to completion on its own rather than being cancelled: the bound is the exit.
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     clock.advance_ms(10 * _LEASE_MS)
-    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
+    assert runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == ["run-1"]
 
 
 def test_a_renewal_that_cannot_be_written_does_not_fail_the_generation(clock, monkeypatch):
@@ -624,7 +624,7 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
     monkeypatch.setattr(runs_db, "touch_progress", _flaky)
     # Bounded by total time, so express the bound in the same terms the code uses.
     interval = runs_mod._renew_interval_seconds()
-    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 40 * interval, raising = False)
+    monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 40 * interval, raising=False)
     real_sleep = asyncio.sleep
 
     async def _sleep(seconds):
@@ -635,7 +635,7 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     assert calls["n"] == 40, "the loop must continue past a failed renewal"
     assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
+        runs_db.reconcile_runs(stale_after_ms=_LEASE_MS) == []
     ), "one lost stamp must not cost the run its lease"
 
 
@@ -677,8 +677,8 @@ def test_the_sweeper_survives_a_second_lifespan_on_a_new_event_loop(clock):
     and _run returns as if it had been asked to stop. Reaping is then off for the whole
     lifespan with nothing logged.
     """
-    app = SimpleNamespace(state = SimpleNamespace())
-    sweeper = runs_mod.ChatGenerationLeaseSweeper(app, interval_s = 30.0, timeout_s = 60.0)
+    app = SimpleNamespace(state=SimpleNamespace())
+    sweeper = runs_mod.ChatGenerationLeaseSweeper(app, interval_s=30.0, timeout_s=60.0)
     alive = {}
 
     async def _lifespan(label):
@@ -775,7 +775,7 @@ def test_a_lease_shorter_than_the_admission_cadence_is_clamped_and_logged(clock)
     assert runs_mod._clamped_lease_timeout(1200.0) == 1200.0
 
     sweeper = runs_mod.ChatGenerationLeaseSweeper(
-        SimpleNamespace(state = SimpleNamespace()), interval_s = 1.0, timeout_s = 1.0
+        SimpleNamespace(state=SimpleNamespace()), interval_s=1.0, timeout_s=1.0
     )
     assert sweeper._timeout == floor, "the sweeper must use the clamped value"
 
@@ -799,9 +799,9 @@ def test_a_producer_that_ignores_the_cooperative_cancel_is_force_cancelled(clock
     async def _drive():
         task = asyncio.create_task(_never_finishes())
         await started.wait()
-        supervisor = SimpleNamespace(_tasks = {"run-1": task})
+        supervisor = SimpleNamespace(_tasks={"run-1": task})
         sweeper = runs_mod.ChatGenerationLeaseSweeper(
-            SimpleNamespace(state = SimpleNamespace()), timeout_s = 60.0
+            SimpleNamespace(state=SimpleNamespace()), timeout_s=60.0
         )
         object.__setattr__(sweeper, "_FORCE_CANCEL_GRACE_S", 0.0)
         await sweeper._force_cancel_after_grace(supervisor, "run-1")
@@ -826,9 +826,9 @@ def test_force_cancel_leaves_a_producer_that_already_finished_alone(clock):
 
         task = asyncio.create_task(_quick())
         await task
-        supervisor = SimpleNamespace(_tasks = {"run-1": task})
+        supervisor = SimpleNamespace(_tasks={"run-1": task})
         sweeper = runs_mod.ChatGenerationLeaseSweeper(
-            SimpleNamespace(state = SimpleNamespace()), timeout_s = 60.0
+            SimpleNamespace(state=SimpleNamespace()), timeout_s=60.0
         )
         object.__setattr__(sweeper, "_FORCE_CANCEL_GRACE_S", 0.0)
         await sweeper._force_cancel_after_grace(supervisor, "run-1")

@@ -258,9 +258,9 @@ def cache_reads_authorized(
         # Unvalidated in the URL, so probing puts the caller's path on the wire with their
         # bearer token, for an answer that can only be no.
         return False
-    verdict = _explicit_token_reaches_repo(repo, hf_token, repo_type, offline = offline)
+    verdict = _explicit_token_reaches_repo(repo, hf_token, repo_type, offline=offline)
     if verdict is None:
-        return _resolve_unaskable(repo, repo_type, token = hf_token)
+        return _resolve_unaskable(repo, repo_type, token=hf_token)
     return verdict
 
 
@@ -278,9 +278,9 @@ def public_cache_read_authorized(
     repo = (repo_id or "").strip()
     if not repo or _is_local_path(repo):
         return False
-    verdict = _explicit_token_reaches_repo(repo, None, repo_type, offline = offline)
+    verdict = _explicit_token_reaches_repo(repo, None, repo_type, offline=offline)
     if verdict is None:
-        return _resolve_unaskable(repo, repo_type, token = None)
+        return _resolve_unaskable(repo, repo_type, token=None)
     return verdict
 
 
@@ -301,11 +301,11 @@ def cached_read_refused(
     """
     if not is_cached():
         return False
-    if cache_reads_authorized(hf_token, repo_id = repo_id, repo_type = repo_type, offline = offline):
+    if cache_reads_authorized(hf_token, repo_id=repo_id, repo_type=repo_type, offline=offline):
         return False
     return not (
         is_anonymous(hf_token)
-        and public_cache_read_authorized(repo_id = repo_id, repo_type = repo_type, offline = offline)
+        and public_cache_read_authorized(repo_id=repo_id, repo_type=repo_type, offline=offline)
     )
 
 
@@ -313,6 +313,7 @@ def _is_local_path(repo_id: str) -> bool:
     """Lazy: hub.utils.paths pulls in the path stack, this module is imported beneath it."""
     try:
         from hub.utils.paths import is_local_path
+
         return is_local_path(repo_id)
     except Exception:
         return False
@@ -320,6 +321,7 @@ def _is_local_path(repo_id: str) -> bool:
 
 def _env_hf_token() -> "Optional[str]":
     import os
+
     for key in _HF_TOKEN_ENV_KEYS:
         if key == "HF_OIDC_RESOURCE":
             # Names a token rather than holding one, so it cannot be compared to a caller's.
@@ -335,6 +337,7 @@ def _ambient_hf_token() -> "tuple[bool, Optional[str]]":
     get_token = None
     try:
         from huggingface_hub import get_token as _get_token
+
         get_token = _get_token
     except Exception:
         get_token = None
@@ -402,6 +405,7 @@ def _request_token_repo_key(repo_id: str, repo_type: Optional[str]) -> str:
 
 def _as_owner(call, *args, **kwargs):
     from utils.account_context import OWNER, is_owner_context, run_as
+
     if is_owner_context():
         return call(*args, **kwargs)
     return run_as(OWNER, call, *args, **kwargs)
@@ -457,8 +461,8 @@ def note_repo_fetched_with_a_request_token(
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
             key,
             entry,
-            keep_first_writer = True,
-            ambiguous_field = "by",
+            keep_first_writer=True,
+            ambiguous_field="by",
         )
         # Returned so the caller can take it back if the fetch it was written for turns out to
         # have moved nothing; only when the stored entry IS ours, since an earlier writer's
@@ -466,12 +470,12 @@ def note_repo_fetched_with_a_request_token(
         if isinstance(stored, dict) and stored.get(key) == entry:
             return entry
     except Exception:  # noqa: BLE001 -- a download must never fail on its own bookkeeping
-        logger.debug("could not record the credential a download used", exc_info = True)
+        logger.debug("could not record the credential a download used", exc_info=True)
         # The read side must not take this missing record for the absence an unfetched repo leaves.
         try:
             _unrecorded_fetches.add(_request_token_repo_key(repo_id, repo_type))
         except Exception:  # noqa: BLE001 -- bookkeeping about bookkeeping, still never raises
-            logger.debug("could not note the provenance write that failed", exc_info = True)
+            logger.debug("could not note the provenance write that failed", exc_info=True)
     return None
 
 
@@ -503,11 +507,11 @@ def forget_a_fetch_that_moved_nothing(
             _REQUEST_TOKEN_REPOS_SETTING_KEY,
             key,
             None,
-            delete_if_entry_equals = record,
+            delete_if_entry_equals=record,
         )
         _unrecorded_fetches.discard(key)
     except Exception:  # noqa: BLE001 -- bookkeeping, and the over-broad record is the safe side
-        logger.debug("could not take back a provenance record", exc_info = True)
+        logger.debug("could not take back a provenance record", exc_info=True)
 
 
 @contextmanager
@@ -546,6 +550,7 @@ def _provenance_record_is_missing(repo_id: Optional[str], repo_type: Optional[st
 def _recorded_request_token_repos() -> "Optional[dict]":
     try:
         from storage.studio_db import get_app_setting
+
         recorded = _as_owner(get_app_setting, _REQUEST_TOKEN_REPOS_SETTING_KEY, None)
     except Exception:  # noqa: BLE001
         return None
@@ -572,6 +577,7 @@ def _host_credential_identities() -> "Optional[dict]":
     """``{}`` when nothing was recorded, ``None`` when unreadable. Unreadable is not "empty"."""
     try:
         from storage.studio_db import get_app_setting
+
         seen = _as_owner(get_app_setting, _HOST_CREDENTIAL_IDENTITIES_SETTING_KEY, None)
     except Exception:  # noqa: BLE001
         return None
@@ -727,7 +733,7 @@ def _caller_populated_the_cache(
 
 def _resolve_unaskable(repo_id: str, repo_type: str, *, token: Optional[str]) -> bool:
     """The local fact decides, but only for a caller it is about; not on disk -> refused."""
-    if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
+    if not _caller_populated_the_cache(token, repo_id=repo_id, repo_type=repo_type):
         return False
     return _repo_present_on_disk(repo_id, repo_type)
 
@@ -752,7 +758,7 @@ def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]
     if not _cache_provenance_is_establishable(repo_id, repo_type):
         return True
     try:
-        if not _caller_populated_the_cache(token, repo_id = repo_id, repo_type = repo_type):
+        if not _caller_populated_the_cache(token, repo_id=repo_id, repo_type=repo_type):
             return False
     except Exception:  # noqa: BLE001 -- could not establish it; remember, do not discard
         return True
@@ -780,8 +786,9 @@ def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
                 return True
     except Exception:
         import logging
+
         logging.getLogger(__name__).debug(
-            "Could not check the local cache for '%s'", repo_id, exc_info = True
+            "Could not check the local cache for '%s'", repo_id, exc_info=True
         )
         if repo_type != "dataset":
             return False
@@ -789,6 +796,7 @@ def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
         return False
     try:
         from hub.utils.dataset_cache import latest_processed_dataset_cache_path
+
         return latest_processed_dataset_cache_path(repo_id) is not None
     except Exception:
         return False
@@ -797,12 +805,14 @@ def _repo_present_on_disk(repo_id: str, repo_type: str) -> bool:
 def _hub_offline() -> bool:
     try:
         from utils.utils import hf_env_offline
+
         return hf_env_offline()
     except Exception:
         # Fail open on the offline question only; authorization still needs a live probe.
         import logging
+
         logging.getLogger(__name__).debug(
-            "Could not determine Hub offline state; assuming online", exc_info = True
+            "Could not determine Hub offline state; assuming online", exc_info=True
         )
         return False
 
@@ -846,8 +856,9 @@ def _explicit_token_reaches_repo(
         except Exception:
             # The gate's own failure is a failure to ASK, not a denial.
             import logging
+
             logging.getLogger(__name__).debug(
-                "Repo access probe for '%s' raised", repo_id, exc_info = True
+                "Repo access probe for '%s' raised", repo_id, exc_info=True
             )
             allowed = None
         # AFTER the probe: `start + TTL` memoizes an expired entry when the Hub stalls.
@@ -897,9 +908,11 @@ def _probe_endpoint() -> str:
     """
     try:
         from utils.utils import hf_endpoint_url
+
         return hf_endpoint_url().rstrip("/")
     except Exception:
         from huggingface_hub import HfApi
+
         return HfApi().endpoint
 
 
@@ -930,7 +943,7 @@ def _same_probe_target(answered: str, asked: str) -> bool:
         return False
 
 
-def _probe_answer_from_exception(exc: BaseException, response = None) -> Optional[bool]:
+def _probe_answer_from_exception(exc: BaseException, response=None) -> Optional[bool]:
     """A blanket ``except -> False`` cannot tell an outage from a rejected credential."""
     if _is_probe_timeout(exc):
         return None
@@ -981,8 +994,8 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Op
             path,
             # False, not None: None falls back to the ambient login, asking the public
             # question with the operator's own credential.
-            headers = build_hf_headers(token = token if token else False),
-            timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
+            headers=build_hf_headers(token=token if token else False),
+            timeout=_REPO_ACCESS_PROBE_TIMEOUT_S,
         )
         # hf_raise_for_status passes 3xx, so a bare 307 reads as authorized. Not a denial either.
         if 300 <= (getattr(response, "status_code", 0) or 0) < 400:

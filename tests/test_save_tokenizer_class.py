@@ -20,7 +20,7 @@ PROCESSOR_DIR = os.environ.get("UNSLOTH_TEST_LOCAL_PROCESSOR")
 def _resolver():
     tokenization_auto = pytest.importorskip(
         "transformers.models.auto.tokenization_auto",
-        reason = "transformers is unavailable",
+        reason="transformers is unavailable",
     )
     resolve = getattr(tokenization_auto, "tokenizer_class_from_name", None)
     if resolve is None:
@@ -28,14 +28,14 @@ def _resolver():
     return resolve
 
 
-def _recorded_class(directory, filename_prefix = None):
+def _recorded_class(directory, filename_prefix=None):
     name = (
         f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
     )
     path = Path(directory) / name
     if not path.is_file():
         pytest.skip(f"the save wrote no {name}, so there is nothing to check")
-    with path.open("r", encoding = "utf-8") as handle:
+    with path.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
     if "tokenizer_class" not in config:
         # Not a failure: a config may omit the key so AutoTokenizer resolves by model_type.
@@ -59,7 +59,7 @@ def _assert_resolvable(recorded):
     )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def local_model():
     """A directory or hub id `AutoTokenizer` can load: only an absolute path must exist."""
     if MODEL_DIR.is_absolute() and not (MODEL_DIR / "config.json").is_file():
@@ -124,5 +124,5 @@ def test_the_filename_prefix_variant_is_covered_too(local_model, tmp_path):
         tokenizer = transformers.AutoTokenizer.from_pretrained(str(local_model))
     except Exception as error:
         pytest.skip(f"could not load a tokenizer from {local_model}: {error}")
-    tokenizer.save_pretrained(str(tmp_path), filename_prefix = "unsloth")
-    _assert_resolvable(_recorded_class(tmp_path, filename_prefix = "unsloth"))
+    tokenizer.save_pretrained(str(tmp_path), filename_prefix="unsloth")
+    _assert_resolvable(_recorded_class(tmp_path, filename_prefix="unsloth"))

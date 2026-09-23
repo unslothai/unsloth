@@ -37,10 +37,10 @@ def test_request_layer_does_not_guess_the_branch():
         {"training_type": "Full Finetuning"},
     ):
         request = _request(
-            finetune_vision_layers = False,
-            finetune_language_layers = False,
-            finetune_attention_modules = False,
-            finetune_mlp_modules = False,
+            finetune_vision_layers=False,
+            finetune_language_layers=False,
+            finetune_attention_modules=False,
+            finetune_mlp_modules=False,
             **flags,
         )
 
@@ -53,8 +53,8 @@ def test_request_layer_does_not_guess_the_branch():
 class _Trainer:
     def __init__(
         self,
-        is_vlm = False,
-        is_audio_vlm = False,
+        is_vlm=False,
+        is_audio_vlm=False,
     ):
         self.is_vlm = is_vlm
         self.is_audio_vlm = is_audio_vlm
@@ -76,79 +76,90 @@ _ALL_OFF = {
 
 def test_worker_rejects_audio_vlm_with_no_targets():
     from core.training.worker import _check_finetune_targets_after_detect
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), _config(**_ALL_OFF))
+
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_audio_vlm=True), _config(**_ALL_OFF))
 
 
 def test_worker_allows_codec_audio_with_no_targets():
     # csm / snac / whisper / bicodec / dac leave is_audio_vlm False and build adapters from
     # target_modules, so an all-false request is valid and must not be rejected.
     from core.training.worker import _check_finetune_targets_after_detect
+
     _check_finetune_targets_after_detect(_Trainer(), _config(**_ALL_OFF))
 
 
 def test_worker_rejects_vision_vlm_with_no_targets():
     from core.training.worker import _check_finetune_targets_after_detect
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_finetune_targets_after_detect(_Trainer(is_vlm = True), _config(**_ALL_OFF))
+
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_vlm=True), _config(**_ALL_OFF))
 
 
 def test_worker_rejects_audio_vlm_with_a_module_type_but_no_layer_family():
     # get_peft_regex's first guard: mlp alone is not enough, some family must be on.
     from core.training.worker import _check_finetune_targets_after_detect
+
     config = _config(**{**_ALL_OFF, "finetune_mlp_modules": True})
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_audio_vlm=True), config)
 
 
 def test_worker_allows_audio_vlm_with_a_family_and_a_module_type():
     from core.training.worker import _check_finetune_targets_after_detect
+
     config = _config(**{**_ALL_OFF, "finetune_language_layers": True, "finetune_mlp_modules": True})
-    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
+    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm=True), config)
 
 
 def test_worker_rejects_vision_family_with_no_module_type():
     # get_peft_regex's second guard: a family with neither attention nor mlp still raises,
     # so "at least one of the four" would have been too loose a rule here.
     from core.training.worker import _check_finetune_targets_after_detect
+
     config = _config(**{**_ALL_OFF, "finetune_vision_layers": True})
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_vlm=True), config)
 
 
 def test_worker_allows_vision_family_with_a_module_type():
     from core.training.worker import _check_finetune_targets_after_detect
+
     config = _config(
         **{**_ALL_OFF, "finetune_vision_layers": True, "finetune_attention_modules": True}
     )
-    _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+    _check_finetune_targets_after_detect(_Trainer(is_vlm=True), config)
 
 
 def test_worker_defaults_count_as_selected():
     # An omitted selector defaults on for the three language-side flags, so a config that
     # simply does not mention them must not be read as "nothing selected".
     from core.training.worker import _check_finetune_targets_after_detect
-    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), _config())
+
+    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm=True), _config())
 
 
 def test_worker_exempts_continued_pretraining():
     from core.training.worker import _check_finetune_targets_after_detect
-    config = _config(training_type = "Continued Pretraining", **_ALL_OFF)
-    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm = True), config)
+
+    config = _config(training_type="Continued Pretraining", **_ALL_OFF)
+    _check_finetune_targets_after_detect(_Trainer(is_audio_vlm=True), config)
 
 
 def test_worker_exempts_full_finetuning():
     from core.training.worker import _check_finetune_targets_after_detect
-    config = _config(training_type = "Full Finetuning", **_ALL_OFF)
-    _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+
+    config = _config(training_type="Full Finetuning", **_ALL_OFF)
+    _check_finetune_targets_after_detect(_Trainer(is_vlm=True), config)
 
 
 def test_worker_rejection_is_not_mistaken_for_a_cache_problem():
     # The caller funnels exceptions through the incomplete-cache fallback for a local-only
     # model, so a nothing-to-train run must not read as a corrupt download and get retried.
     from core.training.worker import _is_model_cache_artifact_error
+
     error = ValueError(
         "Nothing to train: select at least one layer family (finetune_language_layers or "
         "finetune_vision_layers) and at least one module type (finetune_attention_modules "
@@ -163,7 +174,8 @@ def test_worker_rejection_is_not_mistaken_for_a_cache_problem():
 
 def test_mlx_rejects_no_module_types():
     from core.training.worker import _check_mlx_finetune_targets
-    with pytest.raises(ValueError, match = "Nothing to train"):
+
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_mlx_finetune_targets(_config(**_ALL_OFF))
 
 
@@ -171,9 +183,10 @@ def test_mlx_rejects_text_run_with_no_module_types():
     # No is_vlm gate on this path: FastMLXModel.get_peft_model is handed the selectors for
     # text models too, so an all-false text run fails there where CUDA would ignore them.
     from core.training.worker import _check_mlx_finetune_targets
+
     config = _config(**{**_ALL_OFF, "finetune_language_layers": True})
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_mlx_finetune_targets(config)
 
 
@@ -181,24 +194,28 @@ def test_mlx_allows_empty_layer_family_when_a_module_type_is_on():
     # The caller back-fills finetune_language_layers when a module type is selected, so this
     # trains fine and must not be rejected -- the CUDA guard would reject the same config.
     from core.training.worker import _check_mlx_finetune_targets
+
     config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
     _check_mlx_finetune_targets(config)
 
 
 def test_mlx_allows_defaults():
     from core.training.worker import _check_mlx_finetune_targets
+
     _check_mlx_finetune_targets(_config())
 
 
 def test_cuda_rejects_empty_layer_family():
     # get_peft_regex's first guard, which the MLX back-fill makes unreachable there.
     from core.training.worker import _check_finetune_targets_after_detect
+
     config = _config(**{**_ALL_OFF, "finetune_attention_modules": True})
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_finetune_targets_after_detect(_Trainer(is_vlm=True), config)
 
 
 def test_cuda_text_run_is_untouched_by_either_guard():
     from core.training.worker import _check_finetune_targets_after_detect
+
     _check_finetune_targets_after_detect(_Trainer(), _config(**_ALL_OFF))

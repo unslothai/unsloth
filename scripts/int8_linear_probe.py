@@ -35,7 +35,7 @@ def main() -> int:
             print(f"\n### {label}: {cls_name} NOT in diffusers")
             continue
         try:
-            cfg = cls.load_config(base, subfolder = "transformer", token = tok)
+            cfg = cls.load_config(base, subfolder="transformer", token=tok)
             with init_empty_weights():
                 model = cls.from_config(cfg)
         except Exception as e:  # noqa: BLE001

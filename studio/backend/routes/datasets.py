@@ -33,16 +33,16 @@ from models.datasets import (
 router = APIRouter()
 
 
-@router.post("/upload", response_model = UploadDatasetResponse, deprecated = True)
+@router.post("/upload", response_model=UploadDatasetResponse, deprecated=True)
 async def upload_dataset(
     file: Optional[UploadFile] = File(None),
-    native_path_lease: Optional[str] = Form(None, alias = "nativePathLease"),
+    native_path_lease: Optional[str] = Form(None, alias="nativePathLease"),
     current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
     return await local.upload_dataset_response(file, native_path_lease)
 
 
-@router.get("/local", response_model = LocalDatasetsResponse, deprecated = True)
+@router.get("/local", response_model=LocalDatasetsResponse, deprecated=True)
 def list_local_datasets(
     current_subject: str = Depends(get_current_subject),
 ) -> LocalDatasetsResponse:
@@ -50,7 +50,7 @@ def list_local_datasets(
     return LocalDatasetsResponse.model_validate(
         {
             "datasets": [
-                item.model_dump(exclude = {"source"})
+                item.model_dump(exclude={"source"})
                 for item in result.datasets
                 if item.source == "recipe"
             ]
@@ -58,51 +58,51 @@ def list_local_datasets(
     )
 
 
-@router.get("/download-progress", deprecated = True)
+@router.get("/download-progress", deprecated=True)
 async def get_dataset_download_progress(
-    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
+    repo_id: str = Query(..., description="HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_dataset_download_progress_response(
         repo_id,
-        hf_token = hf_token,
+        hf_token=hf_token,
     )
 
 
-@router.post("/check-format", response_model = CheckFormatResponse, deprecated = True)
+@router.post("/check-format", response_model=CheckFormatResponse, deprecated=True)
 def check_format(
     request: CheckFormatRequest,
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> CheckFormatResponse:
-    hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
+    hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude={"hf_token"}))
     # Same credential as the header on a legacy route, so classified the same way: raw, it
     # makes a UI session look like an API key and costs it its own cached dataset offline.
     body_token = (
-        hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient_token)
+        hf_token_arg(request.hf_token, allow_ambient_token=allow_ambient_token)
         if request.hf_token
         else None
     )
     return formatting.check_format_response(
         hub_request,
         body_token if body_token else hf_token,
-        allow_unlabeled_tier1_fallback = True,
+        allow_unlabeled_tier1_fallback=True,
     )
 
 
 @router.post(
     "/ai-assist-mapping",
-    response_model = AiAssistMappingResponse,
-    deprecated = True,
+    response_model=AiAssistMappingResponse,
+    deprecated=True,
 )
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> AiAssistMappingResponse:
-    hub_request = HubAiAssistMappingRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
+    hub_request = HubAiAssistMappingRequest.model_validate(request.model_dump(exclude={"hf_token"}))
     return formatting.ai_assist_mapping_response(
         hub_request,
         request.hf_token or hf_token,

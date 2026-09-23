@@ -32,7 +32,7 @@ _GUARD = re.compile(r"api\.messages\[\s*locale\s*\]\s*===\s*undefined")
 
 
 def _source() -> str:
-    return DRIVER.read_text(encoding = "utf-8")
+    return DRIVER.read_text(encoding="utf-8")
 
 
 def test_the_driver_still_reads_a_catalog_by_locale():

@@ -27,14 +27,14 @@ from _playwright_robust import wait_for_health  # noqa: E402
 BASE = os.environ["BASE_URL"]
 PW = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 # Read the range from the store instead of restating it: the default is the one size at which data-ui-font-size is
 # dropped, and it has already moved once (16 -> 15), which is exactly what a pinned copy here fails on.
 _STORE = (
     Path(__file__).resolve().parents[2]
     / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
-).read_text(encoding = "utf-8")
+).read_text(encoding="utf-8")
 _RANGE = re.search(
     r"UI_FONT_SIZE_RANGE\s*=\s*\{\s*min:\s*(\d+),\s*max:\s*(\d+),\s*default:\s*(\d+)",
     _STORE,
@@ -54,8 +54,8 @@ CSS_BASE = int(_BASE.group(1))
 
 def settled_scroll_top(
     page,
-    quiet_ms = 200,
-    timeout_ms = 5_000,
+    quiet_ms=200,
+    timeout_ms=5_000,
 ):
     """The select viewport's scrollTop once it has stopped moving.
 
@@ -80,7 +80,7 @@ def settled_scroll_top(
 
 
 def step(s):
-    print(f"[font-scale] STEP {s}", flush = True)
+    print(f"[font-scale] STEP {s}", flush=True)
 
 
 def fail(m):
@@ -90,7 +90,7 @@ def fail(m):
 def near(
     a,
     b,
-    tol = 0.35,
+    tol=0.35,
 ):
     return a is not None and b is not None and abs(a - b) <= tol
 
@@ -150,23 +150,23 @@ def open_appearance(page):
     for attempt in range(10):
         page.keyboard.press("Meta+," if attempt % 2 else "Control+,")
         try:
-            dialog.first.wait_for(state = "visible", timeout = 2_000)
+            dialog.first.wait_for(state="visible", timeout=2_000)
             break
         except PWTimeout:
             continue
     if dialog.count() == 0:
         fail("settings dialog did not open after 10 attempts")
-    dialog.get_by_role("button").filter(has_text = "Appearance").first.click()
+    dialog.get_by_role("button").filter(has_text="Appearance").first.click()
     # Wait for the control the caller is about to drive, not a fixed interval.
-    page.locator("input[aria-label='UI font size']").wait_for(state = "visible", timeout = 15_000)
+    page.locator("input[aria-label='UI font size']").wait_for(state="visible", timeout=15_000)
 
 
 def main():
     wait_for_health(BASE)
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport = {"width": 1440, "height": 900})
-        page.goto(BASE, wait_until = "networkidle")
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(BASE, wait_until="networkidle")
         pw_field = page.locator("input[type='password']")
         if pw_field.count():
             pw_field.first.fill(PW)
@@ -198,7 +198,7 @@ def main():
                 fail(f"nav line-height at {size}: {base['navLine']} -> {m['navLine']}")
             if not near(m["sidebarW"], base["sidebarW"], 0.75):
                 fail(f"sidebar width moved at {size}: {base['sidebarW']} -> {m['sidebarW']}")
-            page.screenshot(path = str(ART / f"scale-{size}.png"))
+            page.screenshot(path=str(ART / f"scale-{size}.png"))
 
         step("explicit Code font size stays fixed under UI 20")
         set_input(page, "Code font size", 13)
@@ -222,19 +222,19 @@ def main():
         page.wait_for_timeout(400)
 
         step("overflowing select scrolls its Radix viewport")
-        voice = page.get_by_role("dialog").get_by_role("button").filter(has_text = "Voice").first
+        voice = page.get_by_role("dialog").get_by_role("button").filter(has_text="Voice").first
         voice.click()
         page.set_viewport_size({"width": 1440, "height": 480})
         trigger = page.locator("[aria-label='Dictation language']")
-        trigger.wait_for(state = "visible")
+        trigger.wait_for(state="visible")
         trigger.click()
 
         viewport = page.locator("[data-radix-select-viewport]")
-        viewport.wait_for(state = "visible")
+        viewport.wait_for(state="visible")
         # Wait for the overflow itself rather than a fixed sleep: the list is populated asynchronously, so measuring
         # too early reads it as short.
         try:
-            page.wait_for_function(SCROLLABLE_JS, timeout = 10_000)
+            page.wait_for_function(SCROLLABLE_JS, timeout=10_000)
         except PWTimeout:
             fail(f"select viewport not scrollable: {page.evaluate(VIEWPORT_STATE_JS)}")
 
@@ -273,8 +273,8 @@ def main():
             try:
                 page.wait_for_function(
                     "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
-                    arg = kb_top,
-                    timeout = 2_000,
+                    arg=kb_top,
+                    timeout=2_000,
                 )
                 break
             except PWTimeout:
@@ -288,15 +288,15 @@ def main():
         step("cn keeps text-ui-* next to color classes (hub tabs)")
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
-        page.goto(f"{BASE}/hub", wait_until = "domcontentloaded")
+        page.goto(f"{BASE}/hub", wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         open_appearance(page)
         small = SIZES[0]
         set_input(page, "UI font size", small)
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
-        tab = page.get_by_role("radio").filter(has_text = "Discover").first
-        tab.wait_for(state = "visible", timeout = 15000)
+        tab = page.get_by_role("radio").filter(has_text="Discover").first
+        tab.wait_for(state="visible", timeout=15000)
         tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
         # text-ui-12p5 at the smallest scale; the unscaled 12.5px means twMerge dropped the token.
         if not near(tab_font, 12.5 * small / CSS_BASE):
@@ -309,12 +309,12 @@ def main():
         # exactly that many px.
         if not near(icon_w, small):
             fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
-        page.goto(BASE, wait_until = "domcontentloaded")
+        page.goto(BASE, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
         open_appearance(page)
 
         step("default restores exactly")
-        page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
+        page.get_by_role("dialog").get_by_role("button").filter(has_text="Appearance").first.click()
         page.wait_for_timeout(500)
         set_input(page, "UI font size", DEFAULT)
         final = measure(page)
@@ -324,9 +324,9 @@ def main():
         if final["uiAttr"] is not None:
             fail(f"data-ui-font-size present at default: {final['uiAttr']}")
 
-        page.screenshot(path = str(ART / "restored-default.png"))
+        page.screenshot(path=str(ART / "restored-default.png"))
         browser.close()
-    print("[font-scale] PASS", flush = True)
+    print("[font-scale] PASS", flush=True)
 
 
 if __name__ == "__main__":

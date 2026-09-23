@@ -46,7 +46,7 @@ from _node_harness import require_node, run_harness  # noqa: E402
 WORKDIR = Path(__file__).resolve().parents[2]
 TEMP_ROOT = WORKDIR / "logs" / "heavy-thread-node"
 HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 
 
@@ -162,7 +162,7 @@ def node_script(body: str, *, sources: dict[str, str]) -> str:
 
 def run_node(body: str, sources: dict[str, str]) -> dict:
     require_node([])
-    return run_harness(TEMP_ROOT, "export const unused = 0;\n", node_script(body, sources = sources))
+    return run_harness(TEMP_ROOT, "export const unused = 0;\n", node_script(body, sources=sources))
 
 
 RECORDER_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT}
@@ -668,7 +668,7 @@ class StubLocator:
     def last(self):
         return self
 
-    def hover(self, timeout = None) -> None:
+    def hover(self, timeout=None) -> None:
         self.log.append(("hover", self.selector))
 
 
@@ -691,7 +691,7 @@ class StubPage:
     def evaluate(
         self,
         script,
-        arg = None,
+        arg=None,
     ):
         for name in ("KEYSTROKE_JS", "SCROLL_JS", "JUMP_JS", "MENU_JS", "DELETE_JS", "REOPEN_JS"):
             if script is getattr(HARNESS, name):
@@ -715,9 +715,9 @@ class StubPage:
     def wait_for_function(
         self,
         script,
-        arg = None,
-        timeout = None,
-        polling = None,
+        arg=None,
+        timeout=None,
+        polling=None,
     ):
         if "highlightedTokenCount" in script:
             self.log.append(("wait", "highlighting"))
@@ -792,7 +792,7 @@ def test_the_tool_expand_gate_is_not_satisfied_by_a_thread_of_closed_cards() -> 
 
 def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     page = (WORKDIR / "studio" / "frontend" / "smoke-heavy-thread-main.tsx").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert "restore(): number" in page
     assert "seeded.current = built.messages" in page
@@ -807,8 +807,8 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
 # the constant is checked against the run rather than trusted.
 def floor_row(
     observed,
-    engine = "chromium",
-    size = 25000,
+    engine="chromium",
+    size=25000,
 ):
     cell = {"actions": {"reopen": {"ms": 120.0, "paintWaits": observed}}}
     return {
@@ -989,7 +989,7 @@ def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
 # ── an application exception is not engine chatter ────────────────────
 
 
-def error_cell(seed_errors = 0, action_errors = 0) -> dict:
+def error_cell(seed_errors=0, action_errors=0) -> dict:
     cell = copy.deepcopy(clean_cell())
     cell["seed_console_errors"] = seed_errors
     cell["first_seed_error"] = "boom" if seed_errors else "-"
@@ -1007,14 +1007,14 @@ def test_one_console_error_during_the_actions_fails_the_run() -> None:
     """Previously this went into the same list as Gecko's two scroll-anchoring notices and passed
     under the `> 4` allowance, so a run could exit 0 with an application exception in it."""
     failures = HARNESS.harness_failures(
-        results_with(error_cell(action_errors = 1)), discriminating_report()
+        results_with(error_cell(action_errors=1)), discriminating_report()
     )
     assert any("console error" in f and "measured actions" in f for f in failures), failures
 
 
 def test_one_console_error_during_seeding_fails_the_run() -> None:
     failures = HARNESS.harness_failures(
-        results_with(error_cell(seed_errors = 1)), discriminating_report()
+        results_with(error_cell(seed_errors=1)), discriminating_report()
     )
     assert any("console error" in f and "seeding" in f for f in failures), failures
 
@@ -1060,7 +1060,7 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
 def counter_cells(
     small,
     large,
-    sizes = (25000, 300000),
+    sizes=(25000, 300000),
 ) -> dict:
     return {
         "engines": ["chromium"],
@@ -1132,7 +1132,7 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
 def timing_cells(
     small,
     large,
-    sizes = (25000, 300000),
+    sizes=(25000, 300000),
 ) -> dict:
     return {
         "engines": ["chromium"],

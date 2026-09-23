@@ -278,6 +278,7 @@ def _hf_cache_dirs() -> "tuple[str, ...]":
 
     if not _studio_db_exists():
         from utils.hf_cache_settings import get_hf_cache_paths
+
         try:
             paths = get_hf_cache_paths()
         except Exception:  # noqa: BLE001 - best effort, as every root here is
@@ -310,7 +311,7 @@ def _studio_db_path_for(identity) -> "str | None":
     return path
 
 
-def _studio_db_revision(identity = ()) -> int:
+def _studio_db_revision(identity=()) -> int:
     """The database's modification time, or 0 when there is none. Changes whenever a root that is
     stored in it does.
 
@@ -342,6 +343,7 @@ def _studio_db_exists() -> bool:
     side effect of deciding whether to ask about a path.
     """
     from storage.studio_db import studio_db_path
+
     try:
         return studio_db_path().exists()
     except Exception:  # noqa: BLE001 - an unresolvable path is no stored setting either
@@ -477,7 +479,7 @@ def _file_uri_path(text: str) -> "str | None":
     """
     if not _FILE_URI_RE.match(text):
         return None
-    path = _FILE_URI_RE.sub("", text, count = 1)
+    path = _FILE_URI_RE.sub("", text, count=1)
     for separator in ("?", "#"):
         cut = path.find(separator)
         if cut != -1:
@@ -519,7 +521,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # A `file:` URI names the same file the bare path does, so it is classified as that path.
     uri_path = _file_uri_path(text)
     if uri_path is not None:
-        return _path_needs_approval(uri_path, writing = writing)
+        return _path_needs_approval(uri_path, writing=writing)
     if not _looks_absolute(text):
         # Relative: resolves inside the session workdir. Only the credential/traversal scan applies.
         return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
@@ -857,7 +859,7 @@ def _test_command_operands(args) -> "list[str]":
 _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def _classified_terminal_commands() -> frozenset:
     """Every command this scan can reason about, path-bearing or not.
 
@@ -1216,7 +1218,7 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
-def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
+def _terminal_path_operands(tokens, text=None) -> "list[tuple[str, bool]]":
     """Absolute file operands a command list touches, as ``(path, writing)``.
 
     Only commands in the tables above contribute operands, and only tokens that look absolute are
@@ -1438,7 +1440,7 @@ def _token_is_always_quoted(
     return occurrences == quoted
 
 
-def _split_backticks(tokens, text = None) -> "list[str]":
+def _split_backticks(tokens, text=None) -> "list[str]":
     """Break a token carrying a backtick substitution into its own command.
 
     `` echo `cat /media/x` `` runs that read as a command of its own, but the outer lexer keeps the
@@ -1454,7 +1456,7 @@ def _split_backticks(tokens, text = None) -> "list[str]":
     for token in tokens:
         # SINGLE quotes only: a command substitution still runs inside double quotes, so
         # `echo "`cat /media/x`"` executes the read exactly as the unquoted form does.
-        if "`" not in token or _token_is_always_quoted(token, text, double = False):
+        if "`" not in token or _token_is_always_quoted(token, text, double=False):
             out.append(token)
             continue
         for index, piece in enumerate(token.split("`")):
@@ -1466,7 +1468,7 @@ def _split_backticks(tokens, text = None) -> "list[str]":
     return out
 
 
-def _split_attached_redirections(tokens, text = None) -> "list[str]":
+def _split_attached_redirections(tokens, text=None) -> "list[str]":
     """Break a token that carries a redirection operator inside it into its parts.
 
     ``echo CHANGED>/media/x`` lexes as one token because ``shlex`` is not given ``<``/``>`` as
@@ -2044,7 +2046,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
         if not (text and _WINDOWS_SPELLING_RE.search(text)):
             return False
     if any(
-        _path_needs_approval(path, writing = writing)
+        _path_needs_approval(path, writing=writing)
         for path, writing in _terminal_path_operands(tokens, text)
     ):
         return True
@@ -2054,7 +2056,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
     if raw is None or raw == list(tokens):
         return False
     return any(
-        _path_needs_approval(path, writing = writing)
+        _path_needs_approval(path, writing=writing)
         for path, writing in _terminal_path_operands(raw, text)
     )
 
@@ -2069,7 +2071,7 @@ _WINDOWS_SPELLING_RE = re.compile(r"(?:^|[\s'\"=])[A-Za-z]:(?![:\s])|\\\\[^\\/]|
 def _lex_keeping_backslashes(text: str) -> "list[str] | None":
     """Split *text* with the backslash left alone, so a Windows path survives. None if unparseable."""
     try:
-        lexer = shlex.shlex(text, posix = False, punctuation_chars = ";&|()")
+        lexer = shlex.shlex(text, posix=False, punctuation_chars=";&|()")
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
@@ -2370,7 +2372,7 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
         if isinstance(node, ast.AnnAssign):
             if node.value is None or not isinstance(node.target, ast.Name):
                 continue
-            node = ast.Assign(targets = [node.target], value = node.value)
+            node = ast.Assign(targets=[node.target], value=node.value)
         if not isinstance(node, ast.Assign):
             continue
         value = node.value
@@ -2501,8 +2503,8 @@ def _python_archive_ctor_names(tree) -> "set[str]":
 
 def _is_archive_ctor_call(
     node,
-    module_aliases = None,
-    local_ctors = frozenset(),
+    module_aliases=None,
+    local_ctors=frozenset(),
 ) -> bool:
     """True for `zipfile.ZipFile(...)`, `ZipFile(...)`, `tarfile.open(...)` and their aliases."""
     if not isinstance(node, ast.Call):
@@ -2526,8 +2528,8 @@ def _is_archive_ctor_call(
 
 def _python_archive_object_names(
     tree,
-    module_aliases = None,
-    local_ctors = frozenset(),
+    module_aliases=None,
+    local_ctors=frozenset(),
 ) -> "set[str]":
     """Local names holding a member-based archive, bound by assignment or by `with ... as`."""
     names: "set[str]" = set()
@@ -2569,7 +2571,7 @@ def _python_instance_reader_names(tree) -> dict:
         if isinstance(node, ast.AnnAssign) and node.value is not None:
             if not isinstance(node.target, ast.Name):
                 continue
-            node = ast.Assign(targets = [node.target], value = node.value)
+            node = ast.Assign(targets=[node.target], value=node.value)
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
             continue
         func = node.value.func
@@ -2694,8 +2696,8 @@ def _python_path_fold_aliases(tree) -> "tuple[set, set]":
 
 def _python_path_bindings(
     tree,
-    ctors = None,
-    joins = None,
+    ctors=None,
+    joins=None,
 ) -> dict:
     """Names bound to a foldable path (`p = '/media/x'`, `p := Path('/media') / 'x'`), so a read
     through the variable folds to the same path a literal would.
@@ -2803,7 +2805,7 @@ def _capped_alternates(values) -> "list[str]":
     def rank(value: str) -> int:
         if _path_needs_approval(value):
             return 0
-        return 1 if _path_needs_approval(value, writing = True) else 2
+        return 1 if _path_needs_approval(value, writing=True) else 2
 
     ranked: "list[list[str]]" = [[], [], []]
     for value in values:
@@ -2824,11 +2826,11 @@ def _sequence_elements(node, containers) -> "list":
     if isinstance(node, (ast.List, ast.Tuple)):
         return list(node.elts)
     if isinstance(node, ast.Name) and node.id in containers:
-        return [ast.Constant(value = path) for path in containers[node.id]]
+        return [ast.Constant(value=path) for path in containers[node.id]]
     return [node]
 
 
-def _sqlite_opens_read_only(node, given = None) -> bool:
+def _sqlite_opens_read_only(node, given=None) -> bool:
     """True when a sqlite connection is provably read-only: a `file:...?mode=ro` URI."""
     first = given if given is not None else (node.args[0] if node.args else None)
     if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
@@ -2849,7 +2851,7 @@ def _call_keywords(node) -> "list":
             continue
         for key, value in zip(keyword.value.keys, keyword.value.values):
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                keywords.append(ast.keyword(arg = key.value, value = value))
+                keywords.append(ast.keyword(arg=key.value, value=value))
     return keywords
 
 
@@ -3108,7 +3110,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if name in _PY_MODULE_OPEN_CTORS and receiver_name in _PY_MODULE_OPEN_RECEIVERS:
             # `io.FileIO(p)` opens the path the same way `io.open(p)` does; the mode argument is a
             # string in the same position, so the write decision is the open one.
-            add(first, _open_call_writes(node, mode_index = 1))
+            add(first, _open_call_writes(node, mode_index=1))
         elif name in ("open", "fdopen"):
             # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. As a METHOD
             # (Path(p).open('w')) the receiver is the path, so the mode moves to the first argument.
@@ -3127,14 +3129,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             path_is_receiver = is_method and not (
                 receiver in _PY_MODULE_OPEN_RECEIVERS or tail in _PY_MODULE_OPEN_RECEIVERS
             )
-            writing = _open_call_writes(node, mode_index = 0 if path_is_receiver else 1) or (
+            writing = _open_call_writes(node, mode_index=0 if path_is_receiver else 1) or (
                 receiver in ("os", "posix")
             )
             writing_default = writing
             add(func.value if path_is_receiver else first, writing)
         elif name in _PY_PATH_ARCHIVE_CTORS:
             # ZipFile(name) reads, ZipFile(name, "w") writes -- the same mode position as open().
-            writing = _open_call_writes(node, mode_index = 1)
+            writing = _open_call_writes(node, mode_index=1)
             writing_default = writing
             add(first, writing)
         elif name in _PY_PATH_SUBPROCESS_CALLS:
@@ -3275,7 +3277,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     return operands
 
 
-def _python_reaches_outside_sandbox(tree, code = None) -> bool:
+def _python_reaches_outside_sandbox(tree, code=None) -> bool:
     """True when python code reads or writes an absolute path outside the silent roots."""
     # No separator, tilde or drive colon anywhere in the source means no absolute path can be spelled in it, so the
     # two AST walks below are pure cost. Ordinary numeric / dataframe work takes this exit.
@@ -3285,7 +3287,7 @@ def _python_reaches_outside_sandbox(tree, code = None) -> bool:
         operands = _python_path_operands(tree)
     except Exception:  # noqa: BLE001 - an unexpected AST shape must not crash the classifier
         return False
-    return any(_path_needs_approval(path, writing = writing) for path, writing in operands)
+    return any(_path_needs_approval(path, writing=writing) for path, writing in operands)
 
 
 def _open_call_writes(node, *, mode_index: int) -> bool:

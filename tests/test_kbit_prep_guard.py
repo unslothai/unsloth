@@ -116,7 +116,7 @@ def trl_modules(monkeypatch):
     monkeypatch.setitem(sys.modules, "trl.models", models)
     monkeypatch.setitem(sys.modules, "trl.models.utils", utils)
     return types.SimpleNamespace(
-        trl = trl, utils = utils, models = models, trainers = trainers, calls = calls
+        trl=trl, utils=utils, models=models, trainers=trainers, calls=calls
     )
 
 

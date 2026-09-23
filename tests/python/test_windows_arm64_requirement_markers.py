@@ -81,7 +81,7 @@ def _live(rows, env):
 
 def _rows(path: Path) -> list[Requirement]:
     out = []
-    for raw in path.read_text(encoding = "utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith(("#", "-")):
             continue
@@ -119,7 +119,7 @@ def _pyproject_extras() -> dict[str, list[Requirement]]:
         import tomllib
     except ModuleNotFoundError:  # pragma: no cover - 3.10 runs use tomli
         import tomli as tomllib
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     out = {}
     for extra, lines in data["project"]["optional-dependencies"].items():
         out[extra] = [Requirement(l) for l in lines]
@@ -129,7 +129,7 @@ def _pyproject_extras() -> dict[str, list[Requirement]]:
 ALL_SOURCES: list[tuple[str, list[Requirement]]] = [(p.name, _rows(p)) for p in REQ_FILES] + [
     (f"pyproject[{k}]", v) for k, v in _pyproject_extras().items()
 ]
-per_source = pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids = [s[0] for s in ALL_SOURCES])
+per_source = pytest.mark.parametrize("label,reqs", ALL_SOURCES, ids=[s[0] for s in ALL_SOURCES])
 
 
 @per_source
@@ -258,7 +258,7 @@ def test_a_selected_row_is_installable_on_the_python_it_was_selected_for(label, 
         for req in _live(reqs, env):
             for spec, floor in PACKAGE_PYTHON_FLOORS.get(req.name.lower(), ()):
                 # Does this row admit ONLY versions that need a newer interpreter?
-                if not spec.contains(_lowest_allowed(req), prereleases = True):
+                if not spec.contains(_lowest_allowed(req), prereleases=True):
                     continue
                 assert _minor(py) >= floor, (
                     f"{label}: `{req}` is live on Python {py} {plat[2]}, but every "
@@ -301,7 +301,7 @@ WOA_SKIPPED = {IPS._canonical_dist_name(n) for n in IPS.WINDOWS_ARM64_SKIP_PACKA
 # Scoped to `studio` deliberately: it is the extra a Windows-on-ARM user installs. The other
 # 190-odd are x64 recipes, so an ARM64 marker there would assert what they never promised.
 WOA_INSTALLABLE_EXTRAS = ["studio"]
-per_extra = pytest.mark.parametrize("extra", WOA_INSTALLABLE_EXTRAS, ids = WOA_INSTALLABLE_EXTRAS)
+per_extra = pytest.mark.parametrize("extra", WOA_INSTALLABLE_EXTRAS, ids=WOA_INSTALLABLE_EXTRAS)
 
 
 @per_extra

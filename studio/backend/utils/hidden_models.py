@@ -73,7 +73,7 @@ def is_curated_stt_repo_id(value: str | None) -> bool:
 def _config_is_whisper(path: Path) -> bool:
     """True if a config.json declares a Whisper model."""
     try:
-        with open(path, "r", encoding = "utf-8") as file:
+        with open(path, "r", encoding="utf-8") as file:
             config = json.load(file)
     except Exception:
         return False

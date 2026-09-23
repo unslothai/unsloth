@@ -72,7 +72,7 @@ def test_unmapped_model_uses_auto_detection():
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, notify = notes, detect_fn = _detect_ok
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, notify=notes, detect_fn=_detect_ok
     )
 
     assert applied is True
@@ -86,7 +86,7 @@ def test_mapped_model_prefers_auto_detection():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok
+        trainer, "unsloth/Qwen3-0.6B", train_fn, detect_fn=_detect_ok
     )
 
     assert applied is True
@@ -104,8 +104,8 @@ def test_dataset_template_uses_alpaca_markers_without_detection():
         trainer,
         "unsloth/Llama-3.2-1B-Instruct",
         train_fn,
-        detect_fn = detect,
-        dataset_template = "alpaca",
+        detect_fn=detect,
+        dataset_template="alpaca",
     )
 
     expected = TEMPLATE_TO_RESPONSES_MAPPER["alpaca"]
@@ -141,7 +141,7 @@ def test_dataset_template_temporarily_replaces_tokenizer_markers():
         trainer,
         "unsloth/Llama-3.2-1B-Instruct",
         train_fn,
-        dataset_template = "alpaca",
+        dataset_template="alpaca",
     )
 
     assert applied is True
@@ -162,12 +162,12 @@ def test_dataset_template_restores_tokenizer_markers_after_failure():
     def train_fn(_trainer, **_kwargs):
         raise RuntimeError("masking failed")
 
-    with pytest.raises(RuntimeError, match = "masking failed"):
+    with pytest.raises(RuntimeError, match="masking failed"):
         apply_completion_masking(
             trainer,
             "unsloth/Llama-3.2-1B-Instruct",
             train_fn,
-            dataset_template = "alpaca",
+            dataset_template="alpaca",
         )
 
     assert trainer.processing_class._unsloth_input_part == "<MODEL_INPUT>"
@@ -181,8 +181,8 @@ def test_dataset_template_forwards_num_proc():
         _Trainer(),
         "unsloth/Llama-3.2-1B-Instruct",
         train_fn,
-        num_proc = 4,
-        dataset_template = "alpaca",
+        num_proc=4,
+        dataset_template="alpaca",
     )
 
     assert train_fn.calls[0]["num_proc"] == 4
@@ -191,12 +191,12 @@ def test_dataset_template_forwards_num_proc():
 def test_unknown_dataset_template_fails_loudly():
     train_fn = _Recorder()
 
-    with pytest.raises(ValueError, match = "Unknown completion masking template"):
+    with pytest.raises(ValueError, match="Unknown completion masking template"):
         apply_completion_masking(
             _Trainer(),
             "unsloth/Llama-3.2-1B-Instruct",
             train_fn,
-            dataset_template = "missing",
+            dataset_template="missing",
         )
 
     assert train_fn.calls == []
@@ -210,7 +210,7 @@ def test_gpt_oss_uses_auto_detection_first():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn = _detect_ok
+        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn=_detect_ok
     )
 
     assert applied is True
@@ -222,7 +222,7 @@ def test_gpt_oss_detection_failure_falls_back_to_manual_markers():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn = _detect_fail
+        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn=_detect_fail
     )
 
     assert applied is True
@@ -241,7 +241,7 @@ def test_auto_failure_falls_back_to_template_table():
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "unsloth/Qwen3-0.6B", train_fn, notify = notes, detect_fn = _detect_fail
+        trainer, "unsloth/Qwen3-0.6B", train_fn, notify=notes, detect_fn=_detect_fail
     )
 
     assert applied is True
@@ -262,8 +262,8 @@ def test_application_failure_propagates_not_fallback():
     def train_fn(trainer, **kwargs):
         raise RuntimeError("dataset map worker crashed")
 
-    with pytest.raises(RuntimeError, match = "dataset map worker crashed"):
-        apply_completion_masking(_Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok)
+    with pytest.raises(RuntimeError, match="dataset map worker crashed"):
+        apply_completion_masking(_Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn=_detect_ok)
 
 
 def test_preset_tokenizer_markers_used_directly():
@@ -277,7 +277,7 @@ def test_preset_tokenizer_markers_used_directly():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn=_detect_fail
     )
     assert applied is True
     assert train_fn.calls == [{}]  # bare call, stored parts
@@ -289,7 +289,7 @@ def test_table_miss_warns_and_disables_without_crashing():
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "some-org/not-in-any-mapper", train_fn, notify = notes, detect_fn = _detect_fail
+        trainer, "some-org/not-in-any-mapper", train_fn, notify=notes, detect_fn=_detect_fail
     )
 
     assert applied is False
@@ -303,18 +303,18 @@ def test_num_proc_forwarded_only_when_given():
     # CUDA path passes num_proc; the MLX path omits it.
     train_fn = _Recorder()
     apply_completion_masking(
-        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4, detect_fn = _detect_ok
+        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc=4, detect_fn=_detect_ok
     )
-    assert train_fn.calls == [dict(_AUTO, num_proc = 4)]
+    assert train_fn.calls == [dict(_AUTO, num_proc=4)]
 
     train_fn = _Recorder()
     apply_completion_masking(
-        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4, detect_fn = _detect_fail
+        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc=4, detect_fn=_detect_fail
     )
     assert train_fn.calls[0]["num_proc"] == 4
 
     train_fn = _Recorder()
-    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok)
+    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, detect_fn=_detect_ok)
     assert train_fn.calls == [dict(_AUTO)]
 
 
@@ -323,14 +323,14 @@ def test_manual_fallback_failure_propagates_to_caller():
     def train_fn(trainer, **kwargs):
         raise RuntimeError("boom")
 
-    with pytest.raises(RuntimeError, match = "boom"):
+    with pytest.raises(RuntimeError, match="boom"):
         apply_completion_masking(_Trainer(), "unsloth/gpt-oss-20b", train_fn)
 
 
 def test_notify_is_optional():
     train_fn = _Recorder()
     _, applied = apply_completion_masking(
-        _Trainer(), "some-org/not-in-any-mapper", train_fn, detect_fn = _detect_fail
+        _Trainer(), "some-org/not-in-any-mapper", train_fn, detect_fn=_detect_fail
     )
     assert applied is False
 
@@ -355,7 +355,7 @@ def test_renamed_gpt_oss_gets_template_markers():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "some-org/gpt-oss-20b-sft", train_fn, detect_fn = _detect_fail
+        trainer, "some-org/gpt-oss-20b-sft", train_fn, detect_fn=_detect_fail
     )
     assert applied is True
     expected = TEMPLATE_TO_RESPONSES_MAPPER["gpt-oss"]
@@ -395,7 +395,7 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_preset_markers():
     train_fn = _Recorder()
 
     _, applied = apply_completion_masking(
-        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn=_detect_fail
     )
     assert applied is True
     assert train_fn.calls == [{}]  # bare call, stored parts
@@ -418,7 +418,7 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
         return "<INS>", "<RES>"
 
     _, applied = apply_completion_masking(
-        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = detect
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn=detect
     )
     assert applied is True
     assert seen == [inner]

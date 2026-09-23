@@ -12,14 +12,14 @@ from hub.utils import hf_cache_state
 latest_snapshot_from_cache_path = hf_cache_state.latest_snapshot_from_cache_path
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _known_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
 def _model_repo(root: Path, repo_id: str) -> Path:
     repo_root = root / f"models--{repo_id.replace('/', '--')}"
-    (repo_root / "snapshots").mkdir(parents = True)
+    (repo_root / "snapshots").mkdir(parents=True)
     return repo_root
 
 
@@ -176,7 +176,7 @@ def test_snapshot_symlink_cannot_escape_cache(tmp_path):
     escaped.mkdir()
     (escaped / "config.json").write_text("{}")
     link = repo_root / "snapshots" / "linked"
-    link.symlink_to(escaped, target_is_directory = True)
+    link.symlink_to(escaped, target_is_directory=True)
     future = time.time() + 3600
     os.utime(escaped, (future, future))
 
@@ -191,10 +191,10 @@ def test_snapshots_directory_symlink_cannot_escape_cache(tmp_path):
     repo_root = _model_repo(tmp_path, "Org/Model")
     external = tmp_path / "external-snapshots"
     snapshot = external / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "config.json").write_text("{}")
     (repo_root / "snapshots").rmdir()
-    (repo_root / "snapshots").symlink_to(external, target_is_directory = True)
+    (repo_root / "snapshots").symlink_to(external, target_is_directory=True)
 
     resolved = latest_snapshot_from_cache_path(
         str(repo_root), "model", "Org/Model", ("config.json",)
@@ -225,7 +225,7 @@ def test_refs_directory_symlink_cannot_escape_cache(tmp_path):
     external_refs = tmp_path / "external-refs"
     external_refs.mkdir()
     (external_refs / "main").write_text("rev")
-    (repo_root / "refs").symlink_to(external_refs, target_is_directory = True)
+    (repo_root / "refs").symlink_to(external_refs, target_is_directory=True)
 
     resolved = latest_snapshot_from_cache_path(
         str(repo_root), "model", "Org/Model", ("config.json",)

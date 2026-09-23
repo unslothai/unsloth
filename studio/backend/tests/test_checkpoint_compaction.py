@@ -34,9 +34,9 @@ def count(messages):
 
 
 def _thread(
-    pad = 8,
-    chars = 600,
-    instruction = INSTRUCTION,
+    pad=8,
+    chars=600,
+    instruction=INSTRUCTION,
 ):
     messages = [{"role": "system", "content": "you are helpful"}]
     if instruction:
@@ -74,11 +74,11 @@ def _turn(**overrides):
 
 def _pending_turn(
     *,
-    id = "a1",
-    parentId = "u1",
-    role = "assistant",
-    content = "Done.",
-    generationStatus = "completed",
+    id="a1",
+    parentId="u1",
+    role="assistant",
+    content="Done.",
+    generationStatus="completed",
 ):
     """A stored turn carrying only a generation status, with per-test overrides."""
     return {
@@ -136,7 +136,7 @@ def test_the_epoch_accumulates_instead_of_resetting_every_turn():
     ]
     _, first = _fit(_thread() + [{"role": "user", "content": "continue"}])
 
-    fitted, truncation = _fit(messages, sticky_dropped = first["dropped_messages"])
+    fitted, truncation = _fit(messages, sticky_dropped=first["dropped_messages"])
 
     assert truncation["dropped_messages"] == first["dropped_messages"]
     assert truncation["checkpoint_started"] is False
@@ -160,9 +160,9 @@ def test_a_stale_boundary_never_compacts_a_branch_that_now_fits():
 
     from core.inference.context_window import fit_rolling_context
 
-    kwargs = dict(context_length = 32_768, max_tokens = 512, count_tokens = count, sticky_dropped = 8)
+    kwargs = dict(context_length=32_768, max_tokens=512, count_tokens=count, sticky_dropped=8)
     rolling, rolling_truncation = fit_rolling_context(messages, **kwargs)
-    fitted, truncation = fit_checkpoint_context(messages, can_reset = True, **kwargs)
+    fitted, truncation = fit_checkpoint_context(messages, can_reset=True, **kwargs)
 
     assert count(messages) < 32_768 - 512, "the branch must comfortably fit for this test"
     # Byte for byte what the rolling arm does, which is nothing at all.
@@ -172,9 +172,9 @@ def test_a_stale_boundary_never_compacts_a_branch_that_now_fits():
 
 
 def test_a_thread_that_fits_is_untouched():
-    messages = _thread(pad = 1, chars = 20)
+    messages = _thread(pad=1, chars=20)
 
-    fitted, truncation = _fit(messages, context_length = 100_000, max_tokens = 200)
+    fitted, truncation = _fit(messages, context_length=100_000, max_tokens=200)
 
     assert truncation is None
     assert fitted is messages
@@ -188,7 +188,7 @@ def test_an_irreducible_request_returns_the_original_messages():
         {"role": "user", "content": "x" * 40_000},
     ]
 
-    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    fitted, truncation = _fit(messages, context_length=4096, max_tokens=512)
 
     assert truncation["fits"] is False
     assert fitted is messages
@@ -202,7 +202,7 @@ def test_the_carried_forward_block_is_capped_and_excludes_the_giant_instruction(
     giant = {"role": "user", "content": "Please " + "consider this carefully. " * 400}
     small = {"role": "user", "content": INSTRUCTION}
 
-    items = carried_forward_items([giant, small], max_tokens = 200)
+    items = carried_forward_items([giant, small], max_tokens=200)
 
     assert items == [INSTRUCTION]
 
@@ -223,7 +223,7 @@ def test_items_are_rendered_oldest_first_and_state_the_supersession_rule():
         ),
     }
 
-    items = carried_forward_items([first, second], max_tokens = 4096)
+    items = carried_forward_items([first, second], max_tokens=4096)
     block = render_checkpoint(items)
 
     assert items == [first["content"], second["content"]]
@@ -239,7 +239,7 @@ def test_a_nudge_is_never_carried_forward():
         {"role": "user", "content": "continue"},
     ]
 
-    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]
+    assert carried_forward_items(messages, max_tokens=4096) == [INSTRUCTION]
 
 
 def test_the_blocks_own_delimiters_are_defanged_in_quoted_user_text():
@@ -253,7 +253,7 @@ def test_the_blocks_own_delimiters_are_defanged_in_quoted_user_text():
         ),
     }
 
-    block = render_checkpoint(carried_forward_items([attack], max_tokens = 4096))
+    block = render_checkpoint(carried_forward_items([attack], max_tokens=4096))
 
     assert block.count("</carried_forward>") == 1
     assert block.endswith("</carried_forward>")
@@ -262,7 +262,7 @@ def test_the_blocks_own_delimiters_are_defanged_in_quoted_user_text():
 def test_nothing_to_carry_produces_no_block_and_no_empty_wrapper():
     messages = [{"role": "user", "content": "ok"}, {"role": "assistant", "content": "sure"}]
 
-    assert carried_forward_items(messages, max_tokens = 4096) == []
+    assert carried_forward_items(messages, max_tokens=4096) == []
     assert render_checkpoint([]) == ""
 
 
@@ -345,7 +345,7 @@ def test_the_merged_block_is_re_capped_not_just_concatenated():
     items = [f"standing instruction number {n}" for n in range(checkpoint.MAX_ITEMS + 6)]
 
     recapped = checkpoint._recap(
-        items, max_tokens = checkpoint.MAX_TOKENS, max_items = checkpoint.MAX_ITEMS
+        items, max_tokens=checkpoint.MAX_TOKENS, max_items=checkpoint.MAX_ITEMS
     )
 
     assert len(recapped) == checkpoint.MAX_ITEMS
@@ -353,7 +353,7 @@ def test_the_merged_block_is_re_capped_not_just_concatenated():
     # supersession rule stays true.
     assert recapped == items[-checkpoint.MAX_ITEMS :]
     # A repeat carried once and evicted again is one item, not two.
-    assert checkpoint._recap(["same thing", "same thing"], max_tokens = 1024, max_items = 8) == [
+    assert checkpoint._recap(["same thing", "same thing"], max_tokens=1024, max_items=8) == [
         "same thing"
     ]
 
@@ -396,6 +396,7 @@ def test_a_reset_needs_both_an_archive_and_a_tool_capable_model(monkeypatch, sup
 
 def test_no_archive_means_no_reset(monkeypatch):
     from core.inference import llama_cpp
+
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: False)
 
     assert llama_cpp._can_reset_epoch("thread-1", True) is False
@@ -414,10 +415,10 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
     monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
     llama_cpp._fit_context(
         [{"role": "user", "content": "hi"}],
-        context_length = 4096,
-        max_tokens = 128,
-        count_tokens = count,
-        can_reset = False,
+        context_length=4096,
+        max_tokens=128,
+        count_tokens=count,
+        can_reset=False,
     )
 
     assert seen == {"rolling": True}
@@ -429,7 +430,7 @@ def test_a_short_instruction_is_carried_when_it_is_all_there_is():
     decides which pass finds an item, never whether the block is empty."""
     short = {"role": "user", "content": "Always answer in French."}
 
-    assert carried_forward_items([short], max_tokens = 4096) == ["Always answer in French."]
+    assert carried_forward_items([short], max_tokens=4096) == ["Always answer in French."]
 
 
 def test_a_short_remark_is_carried_alongside_a_long_instruction():
@@ -448,7 +449,7 @@ def test_a_short_remark_is_carried_alongside_a_long_instruction():
         {"role": "assistant", "content": "Understood."},
     ]
 
-    assert carried_forward_items(messages, max_tokens = 4096) == ["fix it", INSTRUCTION]
+    assert carried_forward_items(messages, max_tokens=4096) == ["fix it", INSTRUCTION]
 
 
 def test_filler_is_never_carried_even_when_the_block_would_be_empty():
@@ -462,7 +463,7 @@ def test_filler_is_never_carried_even_when_the_block_would_be_empty():
             {"role": "assistant", "content": "..."},
         ]
 
-    assert carried_forward_items(messages, max_tokens = 4096) == []
+    assert carried_forward_items(messages, max_tokens=4096) == []
 
 
 def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
@@ -477,7 +478,7 @@ def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
             {"role": "assistant", "content": "<code>" * 200},
         ]
 
-    items = carried_forward_items(messages, max_tokens = 473)
+    items = carried_forward_items(messages, max_tokens=473)
 
     assert "Create a Flappy Bird game in HTML" in items
     assert "Add music to the game" in items
@@ -503,7 +504,7 @@ def test_at_most_max_items_instructions_are_carried():
         for index in range(20)
     ]
 
-    items = carried_forward_items(messages, max_tokens = 100_000, max_items = 3)
+    items = carried_forward_items(messages, max_tokens=100_000, max_items=3)
 
     assert len(items) == 3
     assert "number 19" in items[-1]
@@ -531,7 +532,7 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
             {"role": "assistant", "content": "ok"},
         ]
 
-    items = carried_forward_items(evicted, max_tokens = 1024)
+    items = carried_forward_items(evicted, max_tokens=1024)
 
     assert sum(1 for item in items if item.startswith("Standing instruction")) == 1
     assert any(item.startswith("Second standing rule") for item in items)
@@ -604,11 +605,11 @@ def test_studios_own_memory_history_does_not_steal_the_request_from_the_context_
     from routes import inference as inference_route
 
     payload = ChatCompletionRequest(
-        model = "local",
-        messages = _memory_tool_branch(),
-        thread_id = "thread-1",
-        enable_tools = False,
-        stream = True,
+        model="local",
+        messages=_memory_tool_branch(),
+        thread_id="thread-1",
+        enable_tools=False,
+        stream=True,
     )
 
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
@@ -625,11 +626,11 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
     branch[2]["tool_calls"][0]["function"]["name"] = "get_weather"
     branch[3]["name"] = "get_weather"
     payload = ChatCompletionRequest(
-        model = "local",
-        messages = branch,
-        thread_id = "thread-1",
-        enable_tools = False,
-        stream = True,
+        model="local",
+        messages=branch,
+        thread_id="thread-1",
+        enable_tools=False,
+        stream=True,
     )
 
     assert inference_route._only_studio_tool_history(payload) is False
@@ -637,12 +638,12 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
 
     # And a client catalog alongside Unsloth's own history is still the client's request.
     with_catalog = ChatCompletionRequest(
-        model = "local",
-        messages = _memory_tool_branch(),
-        thread_id = "thread-1",
-        enable_tools = False,
-        stream = True,
-        tools = [
+        model="local",
+        messages=_memory_tool_branch(),
+        thread_id="thread-1",
+        enable_tools=False,
+        stream=True,
+        tools=[
             {
                 "type": "function",
                 "function": {"name": "get_weather", "parameters": {"type": "object"}},
@@ -661,15 +662,15 @@ def test_marked_python_history_keeps_compaction_on_the_fitted_path():
     branch[2]["tool_calls"][0]["function"]["name"] = "python"
     branch[3]["name"] = "python"
     payload = ChatCompletionRequest(
-        model = "local",
-        messages = branch,
-        thread_id = "thread-1",
-        enable_tools = False,
-        studio_tool_history = True,
-        context_overflow = "truncate_oldest",
-        context_policy = "rolling",
-        compaction_headroom_ratio = 0.0,
-        stream = True,
+        model="local",
+        messages=branch,
+        thread_id="thread-1",
+        enable_tools=False,
+        studio_tool_history=True,
+        context_overflow="truncate_oldest",
+        context_policy="rolling",
+        compaction_headroom_ratio=0.0,
+        stream=True,
     )
 
     assert inference_route._only_studio_tool_history(payload) is True
@@ -679,9 +680,9 @@ def test_marked_python_history_keeps_compaction_on_the_fitted_path():
     assert inference_route._request_compaction_headroom_ratio(payload) == 0.0
 
     empty = ChatCompletionRequest(
-        model = "local",
-        messages = [{"role": "user", "content": "hello"}],
-        studio_tool_history = True,
+        model="local",
+        messages=[{"role": "user", "content": "hello"}],
+        studio_tool_history=True,
     )
     assert inference_route._only_studio_tool_history(empty) is False
 
@@ -700,16 +701,16 @@ def test_the_count_request_declares_the_studio_tool_history_marker():
     branch[2]["tool_calls"][0]["function"]["name"] = "python"
     branch[3]["name"] = "python"
 
-    payload = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = True)
+    payload = ChatCountTokensRequest(model="local", messages=branch, studio_tool_history=True)
     assert payload.studio_tool_history is True
     assert inference_route._only_studio_tool_history(payload) is True
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
 
-    denied = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = "false")
+    denied = ChatCountTokensRequest(model="local", messages=branch, studio_tool_history="false")
     assert denied.studio_tool_history is False
     assert inference_route._only_studio_tool_history(denied) is False
 
-    unset = ChatCountTokensRequest(model = "local", messages = branch)
+    unset = ChatCountTokensRequest(model="local", messages=branch)
     assert unset.studio_tool_history is None
     assert inference_route._only_studio_tool_history(unset) is False
 
@@ -720,7 +721,7 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     changed its mind mid-conversation."""
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    fitted, truncation = _fit(messages, can_reset = False)
+    fitted, truncation = _fit(messages, can_reset=False)
 
     assert truncation["fits"] is False
     assert fitted is messages
@@ -799,11 +800,11 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     # An epoch already in force: replayed, and X is rebuilt.
     _, replayed = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 18,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=18,
     )
     assert replayed["fits"] is True
     assert replayed["carried_forward_chars"] > 0
@@ -812,11 +813,11 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     # No epoch yet: none is started, and rolling still serves the request.
     _, fresh = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 0,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=0,
     )
     assert fresh["fits"] is True
     assert fresh.get("checkpoint") is None
@@ -831,11 +832,11 @@ def test_a_healthy_archive_still_starts_an_epoch(monkeypatch):
 
     _, truncation = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 0,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=0,
     )
 
     assert truncation["checkpoint"] is True
@@ -862,7 +863,7 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
     assert routes_mod._COMPACTED_SESSION_NUDGE in rolling
 
     # The llama.cpp call site, which really does fit through `_fit_context`.
-    reset = routes_mod._apply_compaction_nudge("base.", tools, checkpoint_fitted = True)
+    reset = routes_mod._apply_compaction_nudge("base.", tools, checkpoint_fitted=True)
     assert routes_mod._CHECKPOINT_SESSION_NUDGE in reset
 
     import types
@@ -870,8 +871,8 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
     rolling_override = routes_mod._apply_compaction_nudge(
         "base.",
         tools,
-        checkpoint_fitted = True,
-        payload = types.SimpleNamespace(context_policy = "rolling"),
+        checkpoint_fitted=True,
+        payload=types.SimpleNamespace(context_policy="rolling"),
     )
     assert routes_mod._CHECKPOINT_SESSION_NUDGE not in rolling_override
 
@@ -892,7 +893,7 @@ def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
     monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
 
     assert llama_cpp._can_reset_epoch("thread-1", True) is True
-    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld=True) is False
 
 
 def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop():
@@ -972,20 +973,20 @@ def test_the_memory_tool_override_needs_a_request_that_can_actually_reset(monkey
     monkeypatch.setattr(routes_mod, "_checkpoint_needs_search", lambda *_a, **_k: True)
 
     payload = types.SimpleNamespace(
-        enabled_tools = [],
-        rag_scope = None,
-        thread_id = "t1",
-        bypass_permissions = False,
+        enabled_tools=[],
+        rag_scope=None,
+        thread_id="t1",
+        bypass_permissions=False,
     )
 
     def _names(**kwargs):
         tools = asyncio.run(
-            routes_mod._select_request_tools(payload, tools_on = False, mcp_allowed = True, **kwargs)
+            routes_mod._select_request_tools(payload, tools_on=False, mcp_allowed=True, **kwargs)
         )
         return [tool["function"]["name"] for tool in tools]
 
     assert "search_conversation" not in _names()
-    assert "search_conversation" in _names(checkpoint_fitted = True)
+    assert "search_conversation" in _names(checkpoint_fitted=True)
 
 
 def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkeypatch):
@@ -1036,7 +1037,7 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
         ]
 
     def _install(rows):
-        module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+        module = types.SimpleNamespace(list_chat_messages=lambda thread_id: rows)
         package = types.ModuleType("storage")
         package.studio_db = module
         monkeypatch.setitem(sys.modules, "storage", package)
@@ -1049,7 +1050,7 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
-    assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy="rolling") == 0
 
     # Neither reset: unchanged, and still no loop.
     _install(_rows(False))
@@ -1091,7 +1092,7 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
     branch += [{"role": "user", "content": "continue"}]
     protected = {id(pinned)}
 
-    fitted, truncation = _fit(branch, protected_message_ids = protected)
+    fitted, truncation = _fit(branch, protected_message_ids=protected)
     assert truncation["checkpoint_started"] is True
     kept_ids = {id(message) for message in fitted}
     evicted = [
@@ -1107,7 +1108,7 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
         {"role": "assistant", "content": "Carrying on."},
         {"role": "user", "content": "and now the second half"},
     ]
-    replayed, _ = _fit(later, sticky_dropped = boundary, protected_message_ids = protected)
+    replayed, _ = _fit(later, sticky_dropped=boundary, protected_message_ids=protected)
 
     back = [message for message in evicted if id(message) in {id(m) for m in replayed}]
     assert not back, (
@@ -1138,7 +1139,7 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
         final_pass.count("tools_withheld = True") == 2
     ), "both final-pass fits (preflight and respawn refit) must declare the withheld loop"
     # ...and the gate itself still refuses on that answer.
-    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld=True) is False
 
 
 def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
@@ -1189,20 +1190,20 @@ def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_aw
     messages = _thread() + [{"role": "user", "content": "continue"}]
     _, first = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 0,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=0,
     )
 
     fitted, truncation = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = False,
-        sticky_dropped = first["dropped_messages"],
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=False,
+        sticky_dropped=first["dropped_messages"],
     )
 
     assert truncation["checkpoint"] is True
@@ -1218,7 +1219,7 @@ def test_a_block_never_promises_a_tool_the_request_will_not_be_given():
     items = [INSTRUCTION]
 
     assert "search_conversation tool" in render_checkpoint(items)
-    withheld = render_checkpoint(items, searchable = False)
+    withheld = render_checkpoint(items, searchable=False)
     assert "search_conversation" not in withheld
     assert "cannot retrieve it on this turn" in withheld
     assert INSTRUCTION in withheld
@@ -1296,8 +1297,8 @@ def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, mo
 
     import routes.inference as routes_mod
 
-    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
-    payload = types.SimpleNamespace(context_overflow = requested)
+    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising=False)
+    payload = types.SimpleNamespace(context_overflow=requested)
 
     assert routes_mod._rolling_context_policy(payload) == expected
 
@@ -1317,12 +1318,12 @@ def test_a_request_can_force_rolling_when_checkpoint_is_the_process_default(monk
     monkeypatch.setattr(llama_cpp, "fit_rolling_context", _rolling)
     llama_cpp._fit_context(
         [{"role": "user", "content": "hi"}],
-        context_length = 4096,
-        max_tokens = 128,
-        count_tokens = count,
-        can_reset = True,
-        context_policy = "rolling",
-        headroom_ratio = 0.0,
+        context_length=4096,
+        max_tokens=128,
+        count_tokens=count,
+        can_reset=True,
+        context_policy="rolling",
+        headroom_ratio=0.0,
     )
 
     assert seen == {"rolling": True, "headroom": 0.0}
@@ -1338,12 +1339,12 @@ def test_request_compaction_overrides_are_optional():
     assert routes_mod._request_compaction_headroom_ratio(empty) is None
 
     payload = types.SimpleNamespace(
-        context_policy = "rolling",
-        compaction_headroom_ratio = 0.1,
+        context_policy="rolling",
+        compaction_headroom_ratio=0.1,
     )
     assert routes_mod._request_context_policy(payload) == "rolling"
     assert routes_mod._request_compaction_headroom_ratio(payload) == 0.1
-    assert routes_mod._request_context_policy(types.SimpleNamespace(context_policy = "nope")) is None
+    assert routes_mod._request_context_policy(types.SimpleNamespace(context_policy="nope")) is None
 
 
 def test_checkpoint_needs_search_follows_the_request_policy(monkeypatch):
@@ -1360,18 +1361,18 @@ def test_checkpoint_needs_search_follows_the_request_policy(monkeypatch):
     monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: False)
     assert routes_mod._checkpoint_needs_search() is False
     assert (
-        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "rolling"))
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy="rolling"))
         is False
     )
     assert (
-        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "checkpoint"))
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy="checkpoint"))
         is True
     )
 
     monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
     assert routes_mod._checkpoint_needs_search() is True
     assert (
-        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy = "rolling"))
+        routes_mod._checkpoint_needs_search(types.SimpleNamespace(context_policy="rolling"))
         is False
     )
 
@@ -1387,15 +1388,15 @@ def test_a_checkpoint_request_override_still_admits_the_memory_tool(monkeypatch)
 
     def _names(context_policy):
         payload = types.SimpleNamespace(
-            enabled_tools = [],
-            rag_scope = None,
-            thread_id = "t1",
-            bypass_permissions = False,
-            context_policy = context_policy,
+            enabled_tools=[],
+            rag_scope=None,
+            thread_id="t1",
+            bypass_permissions=False,
+            context_policy=context_policy,
         )
         tools = asyncio.run(
             routes_mod._select_request_tools(
-                payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+                payload, tools_on=False, mcp_allowed=False, checkpoint_fitted=True
             )
         )
         return [tool["function"]["name"] for tool in tools]
@@ -1421,11 +1422,11 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
     fitted, truncation = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 18,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=18,
     )
     assert truncation["fits"] is True
     assert truncation["carried_forward_chars"] > 0
@@ -1436,11 +1437,11 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     healthy, started = llama_cpp._fit_context(
         messages,
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = 0,
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=0,
     )
     assert started["checkpoint_started"] is True
     assert checkpoint._SEARCHABLE in healthy[0]["content"]
@@ -1451,7 +1452,7 @@ def _stub_studio_db(monkeypatch, messages):
     import sys
     import types
 
-    module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
+    module = types.SimpleNamespace(list_chat_messages=lambda thread_id: messages)
     package = types.ModuleType("storage")
     package.studio_db = module
     monkeypatch.setitem(sys.modules, "storage", package)
@@ -1501,7 +1502,7 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
             "parentId": "user-1",
             "role": "assistant",
             "content": [call, {"type": "text", "text": "The diagnostic passed."}],
-            "metadata": _checkpoint_metadata(4, boundary_anchor = "What happened?"),
+            "metadata": _checkpoint_metadata(4, boundary_anchor="What happened?"),
         },
         {
             "id": "user-2",
@@ -1510,14 +1511,14 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
             "content": [{"type": "text", "text": "What happened?"}],
         },
         _turn(
-            id = "assistant-retry",
-            content = "An abandoned retry on a sibling branch.",
-            metadata = _checkpoint_metadata(99),
+            id="assistant-retry",
+            content="An abandoned retry on a sibling branch.",
+            metadata=_checkpoint_metadata(99),
         ),
         _row(
-            id = "user-retry",
-            parentId = "assistant-retry",
-            content = "A sibling question the request did not select.",
+            id="user-retry",
+            parentId="assistant-retry",
+            content="A sibling question the request did not select.",
         ),
     ]
     branch = [
@@ -1553,7 +1554,7 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     from routes import inference as inference_routes
 
     def _reply(identifier, boundary):
-        return _turn(id = identifier, metadata = _checkpoint_metadata(boundary))
+        return _turn(id=identifier, metadata=_checkpoint_metadata(boundary))
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1586,11 +1587,11 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     from routes import inference as inference_routes
 
     rows = [
-        _row(id = "user-1", content = "First task."),
-        _pending_turn(id = "assistant-1", parentId = "user-1"),
-        _row(id = "user-2", parentId = "assistant-1", content = "Second task."),
-        _turn(id = "assistant-2", parentId = "user-2", metadata = _checkpoint_metadata(5)),
-        _row(id = "user-3", parentId = "assistant-2", content = "What happened?"),
+        _row(id="user-1", content="First task."),
+        _pending_turn(id="assistant-1", parentId="user-1"),
+        _row(id="user-2", parentId="assistant-1", content="Second task."),
+        _turn(id="assistant-2", parentId="user-2", metadata=_checkpoint_metadata(5)),
+        _row(id="user-3", parentId="assistant-2", content="What happened?"),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1608,17 +1609,17 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First task."},
-        _pending_turn(id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."),
+        _pending_turn(id="assistant-1", parentId="user-1", content="The common-prefix reply."),
         _row(
-            id = "user-old",
-            parentId = "assistant-1",
-            content = "The question before it was edited.",
+            id="user-old",
+            parentId="assistant-1",
+            content="The question before it was edited.",
         ),
         _turn(
-            id = "assistant-old",
-            parentId = "user-old",
-            content = "An unmatched old-branch reply.",
-            metadata = _checkpoint_metadata(12),
+            id="assistant-old",
+            parentId="user-old",
+            content="An unmatched old-branch reply.",
+            metadata=_checkpoint_metadata(12),
         ),
     ]
     branch = [
@@ -1675,7 +1676,7 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
             (0, False),
         ),
     ],
-    ids = [
+    ids=[
         "custom-cancelled-placeholder",
         "top-level-interrupted-placeholder",
         "top-level-active-placeholder",
@@ -1695,18 +1696,18 @@ def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, meta
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
         _turn(
-            id = "assistant-1",
-            content = "The epoch started here.",
-            metadata = _checkpoint_metadata(6),
+            id="assistant-1",
+            content="The epoch started here.",
+            metadata=_checkpoint_metadata(6),
         ),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "Continue."},
         _turn(
-            id = "assistant-2",
-            parentId = "user-2",
-            content = "The newest reply.",
-            metadata = metadata,
+            id="assistant-2",
+            parentId="user-2",
+            content="The newest reply.",
+            metadata=metadata,
         ),
-        _row(id = "user-3", parentId = "assistant-2", content = "Continue again."),
+        _row(id="user-3", parentId="assistant-2", content="Continue again."),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1724,7 +1725,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        _turn(id = "assistant-1", content = "The old epoch reply.", metadata = _checkpoint_metadata(6)),
+        _turn(id="assistant-1", content="The old epoch reply.", metadata=_checkpoint_metadata(6)),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "More work."},
         {
             "id": "assistant-2",
@@ -1741,10 +1742,10 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
             ],
             "metadata": {
                 "incomplete": {"reason": "cancelled"},
-                **_checkpoint_metadata(12, checkpoint_started = True),
+                **_checkpoint_metadata(12, checkpoint_started=True),
             },
         },
-        _row(id = "user-3", parentId = "assistant-2", content = "Continue after stopping."),
+        _row(id="user-3", parentId="assistant-2", content="Continue after stopping."),
     ]
     # The adapter omits an unfinished local card, but user-3 durably descends from its row.
     assert conversation_archive._as_wire([rows[3]]) == []
@@ -1804,7 +1805,7 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     for retry in range(3):
-        rows.append(_row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}."))
+        rows.append(_row(id=f"fu{retry}", parentId="a1", content=f"A retried follow-up {retry}."))
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -1818,7 +1819,7 @@ def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypat
     from core.inference import checkpoint, llama_cpp
 
     def _reply(identifier, boundary):
-        return _turn(id = identifier, parentId = "u1", metadata = _checkpoint_metadata(boundary))
+        return _turn(id=identifier, parentId="u1", metadata=_checkpoint_metadata(boundary))
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1849,8 +1850,8 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
     for status in ("cancelled", "running"):
         rows = [
             {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-            _pending_turn(id = "a-live", generationStatus = status),
-            _turn(id = "a-abandoned", parentId = "u1"),
+            _pending_turn(id="a-live", generationStatus=status),
+            _turn(id="a-abandoned", parentId="u1"),
         ]
         branch = [
             {"role": "user", "content": "Do the work."},
@@ -1874,9 +1875,9 @@ def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monke
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        _pending_turn(content = "The shared reply."),
+        _pending_turn(content="The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        _turn(parentId = "u2", content = "Continue."),
+        _turn(parentId="u2", content="Continue."),
     ]
     branch = [
         {"role": "user", "content": "Do the work."},
@@ -1903,9 +1904,9 @@ def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        _pending_turn(content = "The shared reply."),
+        _pending_turn(content="The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        _turn(parentId = "u2", content = "Abandoned reply."),
+        _turn(parentId="u2", content="Abandoned reply."),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue."},
     ]
     branch = [
@@ -1932,9 +1933,9 @@ def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(mo
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        _pending_turn(content = "Same"),
+        _pending_turn(content="Same"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Q"},
-        _turn(parentId = "u2", content = "Same"),
+        _turn(parentId="u2", content="Same"),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
     ]
     branch = [
@@ -1957,10 +1958,10 @@ def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
         _turn(
-            id = "a1",
-            parentId = "u1",
-            content = "The epoch reply.",
-            metadata = _checkpoint_metadata(6),
+            id="a1",
+            parentId="u1",
+            content="The epoch reply.",
+            metadata=_checkpoint_metadata(6),
         ),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue."},
         {
@@ -2020,9 +2021,9 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
     assert llama_cpp._sticky_compaction_boundary("t1") == 18
-    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 18
+    assert llama_cpp._sticky_compaction_boundary("t1", context_policy="checkpoint") == 18
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 0
+        llama_cpp._sticky_compaction_boundary("t1", context_policy="rolling") == 0
     ), "a request that forces rolling must not replay a reset-sized checkpoint cut"
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
@@ -2037,9 +2038,9 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
         "boundary_messages": 6,
     }
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
-    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 6
+    assert llama_cpp._sticky_compaction_boundary("t1", context_policy="rolling") == 6
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 0
+        llama_cpp._sticky_compaction_boundary("t1", context_policy="checkpoint") == 0
     ), "a checkpoint request must start a new epoch instead of reusing a rolling boundary"
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
@@ -2051,12 +2052,12 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     _, truncation = llama_cpp._fit_context(
         _thread() + [{"role": "user", "content": "continue"}],
-        context_length = 1200,
-        max_tokens = 200,
-        count_tokens = count,
-        can_reset = True,
-        sticky_dropped = switched_boundary,
-        context_policy = "checkpoint",
+        context_length=1200,
+        max_tokens=200,
+        count_tokens=count,
+        can_reset=True,
+        sticky_dropped=switched_boundary,
+        context_policy="checkpoint",
     )
     assert truncation["checkpoint_started"] is True
 
@@ -2086,10 +2087,10 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 6
+        llama_cpp._sticky_compaction_boundary("t1", can_reset=False) == 6
     ), "a fit that stays rolling must replay the boundary rolling recorded"
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+        llama_cpp._sticky_compaction_boundary("t1", can_reset=True) == 0
     ), "a fit that may reset must start a new epoch instead of reusing a rolling boundary"
 
     # A reset-sized boundary is still refused under rolling whatever the request may do,
@@ -2100,8 +2101,8 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
         "checkpoint": True,
     }
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
-    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 0
-    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset=False) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset=True) == 0
 
 
 def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
@@ -2128,13 +2129,13 @@ def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
     def _fit(sticky_is_checkpoint):
         _, truncation = llama_cpp._fit_context(
             list(messages),
-            context_length = 1800,
-            max_tokens = 100,
-            count_tokens = count,
-            can_reset = False,
-            sticky_dropped = 30,
-            context_policy = "checkpoint",
-            sticky_is_checkpoint = sticky_is_checkpoint,
+            context_length=1800,
+            max_tokens=100,
+            count_tokens=count,
+            can_reset=False,
+            sticky_dropped=30,
+            context_policy="checkpoint",
+            sticky_is_checkpoint=sticky_is_checkpoint,
         )
         return truncation or {}
 
@@ -2163,15 +2164,15 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     ]
     _stub_studio_db(monkeypatch, stored)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (6, False)
+    assert llama_cpp._sticky_compaction_state("t1", can_reset=False) == (6, False)
 
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 18,
         "checkpoint": True,
     }
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (18, True)
-    assert llama_cpp._sticky_compaction_state("t1", can_reset = True) == (18, True)
+    assert llama_cpp._sticky_compaction_state("t1", can_reset=False) == (18, True)
+    assert llama_cpp._sticky_compaction_state("t1", can_reset=True) == (18, True)
 
     # No thread, no row, no boundary: never a claim that a checkpoint recorded one.
     assert llama_cpp._sticky_compaction_state(None) == (0, False)
@@ -2206,26 +2207,26 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     _stub_studio_db(monkeypatch, stored)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.25) == 12
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.05) == 0
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.05) == 0
     ), "a boundary cut with more extra trim than this request wants must be recomputed"
     assert (
-        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
+        llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.0) == 0
     ), "no extra trim has to hand back what the 25% cut took"
 
     # And the same the other way. Phase one stops as soon as the replayed cut fits, so a
     # DEEPER setting is just as inert if the old boundary is allowed to stand: measured on
     # a 121-message transcript at context_length 1600, a stored boundary of 86 gave
     # `dropped 86` under 0.05 and under 0.25 alike.
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.5) == 0
 
     # The ratio it was cut under still replays: this refuses a CHANGE, not every row.
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.25) == 12
 
     # Rows saved before the ratio was recorded replay exactly as they did.
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.0) == 12
 
     # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
@@ -2235,7 +2236,7 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
         "checkpoint": True,
     }
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio=0.0) == 12
 
 
 def test_the_recorded_boundary_carries_the_ratio_that_cut_it():
@@ -2296,9 +2297,9 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
 
     from routes import inference as inference_routes
 
-    def _thread(truncation, reply = "the epoch reply, written out in full"):
+    def _thread(truncation, reply="the epoch reply, written out in full"):
         module = types.SimpleNamespace(
-            list_chat_messages = lambda thread_id: [
+            list_chat_messages=lambda thread_id: [
                 {"role": "user", "content": "q"},
                 {
                     "role": "assistant",
@@ -2351,7 +2352,7 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     import sys as _sys
 
     siblings = types.SimpleNamespace(
-        list_chat_messages = lambda thread_id: [
+        list_chat_messages=lambda thread_id: [
             {"role": "user", "content": "q"},
             # The abandoned sibling, which is the one that reset.
             {
@@ -2497,7 +2498,7 @@ def test_the_reachability_probe_requires_a_writable_database(monkeypatch, tmp_pa
     sqlite3.connect(str(path)).close()
 
     def _readonly_connection():
-        return sqlite3.connect(f"file:{path}?mode=ro", uri = True)
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
     monkeypatch.setattr(rag_db, "get_connection", _readonly_connection)
     assert conversation_archive.reachable() is False
@@ -2526,11 +2527,11 @@ def test_the_archive_probe_is_not_paid_by_a_conversation_that_fits():
     ]
     fitted, truncation = checkpoint.fit_checkpoint_context(
         messages,
-        context_length = 4096,
-        max_tokens = 256,
-        count_tokens = lambda candidate: 10 * len(candidate),
-        can_reset = _gate,
-        searchable = _gate,
+        context_length=4096,
+        max_tokens=256,
+        count_tokens=lambda candidate: 10 * len(candidate),
+        can_reset=_gate,
+        searchable=_gate,
     )
 
     assert truncation is None or truncation.get("fits")
@@ -2543,11 +2544,11 @@ def test_the_archive_probe_is_not_paid_by_a_conversation_that_fits():
     ]
     checkpoint.fit_checkpoint_context(
         long_thread,
-        context_length = 512,
-        max_tokens = 128,
-        count_tokens = lambda candidate: 50 * len(candidate),
-        can_reset = _gate,
-        searchable = _gate,
+        context_length=512,
+        max_tokens=128,
+        count_tokens=lambda candidate: 50 * len(candidate),
+        can_reset=_gate,
+        searchable=_gate,
     )
     assert asked["n"] >= 1
 
@@ -2589,7 +2590,7 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     branch += [{"role": "user", "content": "continue"}]
     protected = {id(pinned)}
 
-    fitted, truncation = _fit(branch, protected_message_ids = protected)
+    fitted, truncation = _fit(branch, protected_message_ids=protected)
     assert truncation["checkpoint_started"] is True
     kept_ids = {id(message) for message in fitted}
     evicted = [
@@ -2629,7 +2630,7 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
         replayed_boundary == recorded
     ), f"the persisted boundary shrank from {recorded} to {replayed_boundary} on read-back"
 
-    replayed, _ = _fit(later, sticky_dropped = replayed_boundary, protected_message_ids = protected)
+    replayed, _ = _fit(later, sticky_dropped=replayed_boundary, protected_message_ids=protected)
     live = {id(message) for message in replayed}
     back = [message for message in evicted if id(message) in live]
     assert not back, "turns the reset compacted away are back one turn later: " + ", ".join(
@@ -2646,6 +2647,7 @@ def test_the_boundary_projection_hands_the_anchor_back_unchanged():
     and replayed the stale count instead of rebasing it against its own branch.
     """
     from core.inference import llama_cpp
+
     for text in (
         '<audio-player src="data:audio/wav;base64,QUJDRA==" />',
         "here [[img:aabbccddeeff]]",
@@ -2723,7 +2725,7 @@ def test_a_block_that_arrives_in_the_system_turn_is_dropped_when_it_will_not_fit
         ]
     messages += [{"role": "user", "content": "the newest question " + "q" * 200}]
 
-    fitted, truncation = _fit(messages, context_length = 220, max_tokens = 60)
+    fitted, truncation = _fit(messages, context_length=220, max_tokens=60)
 
     assert truncation["fits"] is True, truncation
     assert [message["role"] for message in fitted] == ["system", "user"]
@@ -2764,15 +2766,15 @@ def test_the_checkpoint_check_reads_the_routes_own_message_models(monkeypatch):
             },
         }
     ]
-    module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+    module = types.SimpleNamespace(list_chat_messages=lambda thread_id: rows)
     package = types.ModuleType("storage")
     package.studio_db = module
     monkeypatch.setitem(sys.modules, "storage", package)
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
 
     models = [
-        ChatMessage(role = "user", content = "q"),
-        ChatMessage(role = "assistant", content = reply),
+        ChatMessage(role="user", content="q"),
+        ChatMessage(role="assistant", content=reply),
     ]
 
     assert inference_routes._thread_has_checkpoint("t1", models) is True
@@ -2832,7 +2834,7 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
         return row
 
     def _install(rows):
-        module = types.SimpleNamespace(list_chat_messages = lambda thread_id: rows)
+        module = types.SimpleNamespace(list_chat_messages=lambda thread_id: rows)
         package = types.ModuleType("storage")
         package.studio_db = module
         monkeypatch.setitem(sys.modules, "storage", package)
@@ -2871,7 +2873,7 @@ def test_a_restated_instruction_keeps_its_newest_position():
         {"role": "assistant", "content": "ok"},
     ]
 
-    items = carried_forward_items(messages, max_tokens = 4096)
+    items = carried_forward_items(messages, max_tokens=4096)
 
     # One copy of the repeated rule, and it is the LAST word.
     assert items.count("Use metric units") == 1
@@ -2887,7 +2889,7 @@ def test_the_plain_walk_still_keeps_one_copy_of_a_repeated_rule():
         messages.append({"role": "user", "content": INSTRUCTION})
         messages.append({"role": "assistant", "content": "ok"})
 
-    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]
+    assert carried_forward_items(messages, max_tokens=4096) == [INSTRUCTION]
 
 
 def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
@@ -2907,20 +2909,20 @@ def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
 
     only_one = _select_items(
         messages,
-        max_tokens = 4096,
-        max_items = 1,
-        min_chars = 0,
-        reserve_oldest = True,
+        max_tokens=4096,
+        max_items=1,
+        min_chars=0,
+        reserve_oldest=True,
     )
     assert only_one == ["Actually build Tetris instead"]
 
     # With room for two, the opening task is still reserved, rendered oldest first.
     both = _select_items(
         messages,
-        max_tokens = 4096,
-        max_items = 2,
-        min_chars = 0,
-        reserve_oldest = True,
+        max_tokens=4096,
+        max_items=2,
+        min_chars=0,
+        reserve_oldest=True,
     )
     assert both == ["Build a Flappy Bird game", "Actually build Tetris instead"]
 
@@ -2955,7 +2957,7 @@ def test_an_oversized_newest_turn_does_not_hand_the_budget_to_the_opening_task()
 
     # 153 = int(prompt_budget(2048, 1024) * checkpoint.MAX_FRACTION), the cap a 2048
     # context actually hands this selection. Room for one of the two, not both.
-    items = carried_forward_items(messages, max_tokens = 153)
+    items = carried_forward_items(messages, max_tokens=153)
 
     assert items == [correction], "the newest usable direction must win the tight cap"
 
@@ -2973,10 +2975,10 @@ def test_the_opening_task_still_survives_a_run_of_short_increments():
 
     items = _select_items(
         messages,
-        max_tokens = 4096,
-        max_items = 3,
-        min_chars = 0,
-        reserve_oldest = True,
+        max_tokens=4096,
+        max_items=3,
+        min_chars=0,
+        reserve_oldest=True,
     )
 
     assert "Build a Flappy Bird game" in items
@@ -3003,7 +3005,7 @@ def test_a_short_correction_survives_a_long_earlier_instruction():
         {"role": "assistant", "content": "ok"},
     ]
 
-    items = carried_forward_items(messages, max_tokens = 4096)
+    items = carried_forward_items(messages, max_tokens=4096)
 
     assert "Actually make it Tetris" in items
     assert items[-1] == "Actually make it Tetris", "the correction must read as current"
@@ -3031,7 +3033,7 @@ def test_the_opening_request_is_never_carried_without_the_turn_that_follows_it()
     """
     messages = _user_turns("Build Flappy Bird", "Actually build Tetris instead", "Add music")
 
-    items = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+    items = carried_forward_items(messages, max_tokens=4096, max_items=2)
 
     assert "Build Flappy Bird" not in items, "the abandoned request must not be carried alone"
     assert items == ["Actually build Tetris instead", "Add music"]
@@ -3049,7 +3051,7 @@ def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
         *[f"Add feature {index}" for index in range(1, 8)],
     )
 
-    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+    items = carried_forward_items(messages, max_tokens=4096, max_items=8)
 
     assert "Actually build Tetris instead" in items, "the correction must survive"
     assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
@@ -3066,7 +3068,7 @@ def test_the_opening_task_survives_a_long_run_of_increments_with_no_correction()
         *[f"increment {index}" for index in range(1, 20)],
     )
 
-    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+    items = carried_forward_items(messages, max_tokens=4096, max_items=8)
 
     assert items[0] == "Build a Flappy Bird game", "the statement of the task must survive"
     assert items[-1] == "increment 19", "and so must the newest increment"
@@ -3084,8 +3086,8 @@ def test_the_opening_pair_is_taken_whole_or_not_at_all():
         "Add feature 2",
     )
 
-    two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
-    three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
+    two = carried_forward_items(messages, max_tokens=4096, max_items=2)
+    three = carried_forward_items(messages, max_tokens=4096, max_items=3)
 
     # Two slots: the plain newest-first walk decides. Nothing wrong, only missing.
     assert two == ["Add feature 1", "Add feature 2"]
@@ -3110,7 +3112,7 @@ def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
     messages = _user_turns(opening, correction, "add music")
 
     # 45 tokens: the newest turn (10) plus either opening turn (34 or 30), never both.
-    items = carried_forward_items(messages, max_tokens = 45)
+    items = carried_forward_items(messages, max_tokens=45)
 
     assert items == [correction, "add music"]
 
@@ -3130,7 +3132,7 @@ def test_abandoning_the_reservation_does_not_reselect_the_opening_on_its_own():
     newest = "Add music and a score counter to it now."
     messages = _user_turns(opening, correction, newest)
 
-    items = carried_forward_items(messages, max_tokens = 40)
+    items = carried_forward_items(messages, max_tokens=40)
 
     assert opening not in items, "the abandoned opening must not come back through the fallback"
     assert items == [newest]
@@ -3158,12 +3160,12 @@ def test_a_successor_nobody_could_afford_does_not_empty_the_block():
             {"role": "assistant", "content": f"Section {index} noted."},
         ]
 
-    assert carried_forward_items([instruction, *sections], max_tokens = 100) == [INSTRUCTION]
+    assert carried_forward_items([instruction, *sections], max_tokens=100) == [INSTRUCTION]
 
     opening = "Build Tetris"
     unaffordable = "Actually build Flappy Bird instead " + "x " * 80
     newest = "Add music " + "y " * 100
-    items = carried_forward_items(_user_turns(opening, unaffordable, newest), max_tokens = 50)
+    items = carried_forward_items(_user_turns(opening, unaffordable, newest), max_tokens=50)
 
     assert items == [opening]
 
@@ -3184,7 +3186,7 @@ def test_a_newer_restatement_still_wins_when_the_reserved_pair_fills_the_cap():
         "Add a table",
     )
 
-    items = carried_forward_items(messages, max_items = 3)
+    items = carried_forward_items(messages, max_items=3)
 
     assert items == ["Use imperial units", "Use metric units", "Add a table"]
     assert items.index("Use imperial units") < items.index("Use metric units")
@@ -3202,10 +3204,10 @@ def test_an_opening_turn_with_nothing_after_it_is_still_reserved():
 
     items = _select_items(
         messages,
-        max_tokens = 4096,
-        max_items = 1,
-        min_chars = 0,
-        reserve_oldest = True,
+        max_tokens=4096,
+        max_items=1,
+        min_chars=0,
+        reserve_oldest=True,
     )
 
     assert items == [INSTRUCTION]
@@ -3222,7 +3224,7 @@ def test_a_nudge_is_still_excluded_without_the_length_floor():
         {"role": "assistant", "content": "sure"},
     ]
 
-    items = carried_forward_items(messages, max_tokens = 4096)
+    items = carried_forward_items(messages, max_tokens=4096)
 
     assert items == [INSTRUCTION]
 
@@ -3273,7 +3275,7 @@ def test_the_carried_opening_pair_survives_the_next_compaction():
         ]
     messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 2000}]
 
-    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    fitted, truncation = _fit(messages, context_length=4096, max_tokens=512)
     items = checkpoint._block_items(fitted[0]["content"])
 
     assert truncation["fits"] is True
@@ -3297,10 +3299,10 @@ def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
     correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
     newest = "Add music and a score counter to it now."
 
-    merged = checkpoint._recap([opening, correction, newest], max_tokens = 40, max_items = 8, carried = 2)
+    merged = checkpoint._recap([opening, correction, newest], max_tokens=40, max_items=8, carried=2)
 
     assert merged == [newest], "the abandoned opening must not outlive the correction"
-    assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
+    assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens=40)
     # Never at the cost of the newest direction: the pair is reserved BEHIND the newest
     # affordable item, so the newest is taken before the pair is priced.
     assert newest in merged
@@ -3317,10 +3319,10 @@ def test_the_merged_recap_never_empties_a_block_it_could_have_filled():
     opening = "Build Tetris"
     correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
 
-    assert checkpoint._recap([opening, correction], max_tokens = 30, max_items = 8, carried = 2) == [
+    assert checkpoint._recap([opening, correction], max_tokens=30, max_items=8, carried=2) == [
         correction
     ]
-    assert checkpoint._recap([opening, correction], max_tokens = 20, max_items = 8, carried = 2) == [
+    assert checkpoint._recap([opening, correction], max_tokens=20, max_items=8, carried=2) == [
         opening
     ]
 
@@ -3367,7 +3369,7 @@ def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
     messages += _user_turns(spec, newest)
     messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 6000}]
 
-    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    fitted, truncation = _fit(messages, context_length=4096, max_tokens=512)
     items = checkpoint._block_items(fitted[0]["content"])
 
     assert truncation["fits"] is True
@@ -3389,7 +3391,7 @@ def _restated_correction_block():
     intervening = "Dark theme"
     newest = "Add music!"
     prior = carried_forward_items(
-        _user_turns(opening, correction, intervening, correction, newest), max_tokens = 60
+        _user_turns(opening, correction, intervening, correction, newest), max_tokens=60
     )
     assert prior == [opening, intervening, correction, newest]
     return opening, correction, prior
@@ -3416,7 +3418,7 @@ def test_a_correction_restated_out_of_order_is_not_dropped_by_the_merge():
         ]
     messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 600}]
 
-    fitted, truncation = _fit(messages, context_length = 800, max_tokens = 200)
+    fitted, truncation = _fit(messages, context_length=800, max_tokens=200)
     items = checkpoint._block_items(fitted[0]["content"])
 
     assert truncation["fits"] is True
@@ -3439,7 +3441,7 @@ def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it(
     opening, correction, prior = _restated_correction_block()
     fresh = ["Add a menu", "Add a timer", "Add a pause"]
 
-    merged = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8, carried = len(prior))
+    merged = checkpoint._recap(prior + fresh, max_tokens=60, max_items=8, carried=len(prior))
 
     assert merged == ["Dark theme", correction, "Add music!", fresh[-1]]
     assert opening not in merged, "the abandoned request must not outlive its correction"
@@ -3447,7 +3449,7 @@ def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it(
     assert merged[-1] == fresh[-1]
     # The plain walk is no safe fallback: it states the abandoned task itself, so "stop
     # reserving on the merged path" would not have fixed this.
-    plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
+    plain = checkpoint._recap(prior + fresh, max_tokens=60, max_items=8)
     assert opening in plain and correction not in plain
 
 
@@ -3463,7 +3465,7 @@ def test_holding_the_block_whole_does_not_freeze_it_on_the_first_epoch():
     seen_rounds = []
     for round_index in range(1, 7):
         fresh = [f"new rule {round_index}{side} " + "w " * 20 for side in ("a", "b")]
-        block = checkpoint._recap(block + fresh, max_tokens = 200, max_items = 8, carried = len(block))
+        block = checkpoint._recap(block + fresh, max_tokens=200, max_items=8, carried=len(block))
         assert block[-1] == fresh[-1], "the newest rule is always carried"
         seen_rounds.append(sum(1 for item in block if item.startswith("standing rule")))
 
@@ -3511,7 +3513,7 @@ def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        _pending_turn(content = "A1"),
+        _pending_turn(content="A1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3581,9 +3583,9 @@ def test_a_stored_reply_is_not_justified_by_a_user_turn_of_the_same_words(monkey
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        _pending_turn(id = "a1"),
+        _pending_turn(id="a1"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue"},
-        _turn(parentId = "u2", content = "Continue", metadata = _checkpoint_metadata(30)),
+        _turn(parentId="u2", content="Continue", metadata=_checkpoint_metadata(30)),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Next"},
     ]
     branch = [
@@ -3621,12 +3623,12 @@ def test_a_completed_tool_turn_past_the_tip_is_validated_by_its_results(monkeypa
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        _pending_turn(id = "a1"),
+        _pending_turn(id="a1"),
         {
             "id": "a2",
             "parentId": "a1",
             "role": "assistant",
-            "content": [_call("call-done", result = "an abandoned tool result")],
+            "content": [_call("call-done", result="an abandoned tool result")],
             "metadata": _checkpoint_metadata(30),
         },
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
@@ -3649,7 +3651,7 @@ def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monk
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        _pending_turn(id = "a1"),
+        _pending_turn(id="a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3683,14 +3685,14 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "The first wording."},
         _turn(
-            id = "a1",
-            parentId = "u1",
-            content = "An abandoned reply.",
-            metadata = _checkpoint_metadata(44),
+            id="a1",
+            parentId="u1",
+            content="An abandoned reply.",
+            metadata=_checkpoint_metadata(44),
         ),
         # The edit: a root of its own, not a child of the branch it replaced.
         {"id": "u2", "parentId": None, "role": "user", "content": "The second wording."},
-        _pending_turn(id = "a2", parentId = "u2", content = "The live reply."),
+        _pending_turn(id="a2", parentId="u2", content="The live reply."),
     ]
     branch = [
         {"role": "user", "content": "The second wording."},
@@ -3716,7 +3718,7 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        _pending_turn(id = "a1"),
+        _pending_turn(id="a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3741,7 +3743,7 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
     assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
 
 
-def _image_turn(text, *, payload = 30000):
+def _image_turn(text, *, payload=30000):
     return {
         "role": "user",
         "content": [
@@ -3755,7 +3757,7 @@ def _image_turn(text, *, payload = 30000):
 
 
 def test_an_instruction_typed_beside_an_image_is_still_carried():
-    items = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
+    items = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens=1024)
 
     assert items == [INSTRUCTION]
 
@@ -3769,10 +3771,10 @@ def test_an_image_turn_costs_the_same_as_the_words_it_carries():
     dropping out.
     """
     cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
-    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens = cost)
+    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens=cost)
 
-    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost - 1) == []
-    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = cost) == [INSTRUCTION]
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens=cost - 1) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens=cost) == [INSTRUCTION]
     assert plain == [INSTRUCTION]
 
 
@@ -3789,7 +3791,7 @@ def test_a_text_only_turn_costs_the_same_whether_it_arrives_as_a_list_or_a_strin
     listed = {"role": "user", "content": [{"type": "text", "text": INSTRUCTION}]}
 
     assert estimate_message_tokens(listed) > cost
-    assert carried_forward_items([listed], max_tokens = cost) == [INSTRUCTION]
+    assert carried_forward_items([listed], max_tokens=cost) == [INSTRUCTION]
 
 
 def test_the_block_is_priced_with_the_estimator_the_caller_passed_in():
@@ -3808,8 +3810,8 @@ def test_the_block_is_priced_with_the_estimator_the_caller_passed_in():
     cost = estimate_message_tokens({"role": "user", "content": INSTRUCTION})
     turn = [{"role": "user", "content": INSTRUCTION}]
 
-    assert carried_forward_items(turn, max_tokens = cost) == [INSTRUCTION]
-    assert carried_forward_items(turn, max_tokens = cost, estimate_message = double) == []
+    assert carried_forward_items(turn, max_tokens=cost) == [INSTRUCTION]
+    assert carried_forward_items(turn, max_tokens=cost, estimate_message=double) == []
     assert charged
 
 
@@ -3835,7 +3837,7 @@ def test_a_thread_opened_with_a_screenshot_still_names_its_task_after_a_reset():
 def test_an_oversized_instruction_is_still_excluded_whole():
     long_instruction = "Always " + "w " * 2000
 
-    items = carried_forward_items([_image_turn(long_instruction)], max_tokens = 64)
+    items = carried_forward_items([_image_turn(long_instruction)], max_tokens=64)
 
     assert items == []
 
@@ -3845,11 +3847,11 @@ def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
     recall query and wrong here: the attachment never reaches the block, so only the
     words can earn a bullet. Pricing the whole message used to hide this by making such
     a turn unaffordable."""
-    items = carried_forward_items([_image_turn("ok")], max_tokens = 1024)
+    items = carried_forward_items([_image_turn("ok")], max_tokens=1024)
 
     assert items == []
 
 
 def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
-    assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
-    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [INSTRUCTION]
+    assert carried_forward_items([_image_turn("continue")], max_tokens=1024) == []
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens=1024) == [INSTRUCTION]

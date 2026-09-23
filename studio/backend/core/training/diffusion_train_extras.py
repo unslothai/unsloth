@@ -92,7 +92,7 @@ class LoRAEMA:
                 shadow = self._shadow.get(name)
                 if shadow is None or tuple(shadow.shape) != tuple(p.shape):
                     continue
-                shadow.copy_(p.detach().to(device = shadow.device, dtype = shadow.dtype))
+                shadow.copy_(p.detach().to(device=shadow.device, dtype=shadow.dtype))
         self.updates = 0
 
     def effective_decay(self) -> float:
@@ -112,7 +112,7 @@ class LoRAEMA:
                 shadow = self._shadow.get(name)
                 if shadow is None:
                     continue
-                shadow.mul_(decay).add_(p.detach(), alpha = 1.0 - decay)
+                shadow.mul_(decay).add_(p.detach(), alpha=1.0 - decay)
         self.updates += 1
 
     def state_dict(self) -> dict[str, Any]:
@@ -152,7 +152,7 @@ class LoRAEMA:
                 saved = (state or {}).get(name)
                 if saved is None or tuple(saved.shape) != tuple(shadow.shape):
                     continue
-                shadow.copy_(saved.to(device = shadow.device, dtype = shadow.dtype))
+                shadow.copy_(saved.to(device=shadow.device, dtype=shadow.dtype))
         self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
@@ -172,6 +172,7 @@ class LoRAEMA:
 
     def restore(self, model: Any, backup: dict[str, Any]) -> None:
         import torch
+
         with torch.no_grad():
             for name, p in model.named_parameters():
                 if name in backup:
@@ -191,7 +192,7 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
     from peft.utils import get_peft_model_state_dict
 
     ema_dir = Path(out_dir) / "ema"
-    ema_dir.mkdir(parents = True, exist_ok = True)
+    ema_dir.mkdir(parents=True, exist_ok=True)
     backup = ema.copy_to(transformer)
     try:
         layers = get_peft_model_state_dict(transformer)
@@ -237,6 +238,7 @@ def _hub_cache_roots() -> list[str]:
     roots: list[str] = []
     try:
         from utils.hf_cache_settings import active_hf_hub_cache  # noqa: PLC0415
+
         active = str(active_hf_hub_cache() or "").strip()
         if active:
             roots.append(active)
@@ -247,6 +249,7 @@ def _hub_cache_roots() -> list[str]:
             roots.append(candidate.strip())
     try:
         from huggingface_hub import constants  # noqa: PLC0415
+
         if constants.HF_HUB_CACHE and str(constants.HF_HUB_CACHE) not in roots:
             roots.append(str(constants.HF_HUB_CACHE))
     except Exception:  # noqa: BLE001 -- no hub package: whatever we collected above stands
@@ -271,6 +274,7 @@ def source_revision(ref: Any) -> str:
     not load them.
     """
     import os  # noqa: PLC0415 - keep the module import list light for the subprocess
+
     try:
         name = str(ref or "").strip()
         if not name:
@@ -298,7 +302,7 @@ def source_revision(ref: Any) -> str:
                 base = os.path.join(root, f"models--{org}--{repo}")
                 ref_file = os.path.join(base, "refs", "main")
                 if os.path.isfile(ref_file):
-                    with open(ref_file, encoding = "utf-8") as fh:
+                    with open(ref_file, encoding="utf-8") as fh:
                         sha = fh.read().strip()
                     if sha:
                         return f"rev-{sha[:16]}"
@@ -325,7 +329,7 @@ class PersistentConditioningCache:
         self.root = Path(cache_dir).expanduser()
         self.family = _sanitize(family)
         self.resolution = int(resolution)
-        self.root.mkdir(parents = True, exist_ok = True)
+        self.root.mkdir(parents=True, exist_ok=True)
 
     def latent_key(
         self,
@@ -368,7 +372,7 @@ class PersistentConditioningCache:
             "count": str(len(none_slots) + len(named)),
         }
         tmp = self.path_for(key).with_suffix(".tmp")
-        save_file(named, str(tmp), metadata = meta)
+        save_file(named, str(tmp), metadata=meta)
         tmp.replace(self.path_for(key))
 
     def get(self, key: str) -> Optional[tuple]:
@@ -378,7 +382,8 @@ class PersistentConditioningCache:
             return None
         try:
             from safetensors import safe_open
-            with safe_open(str(path), framework = "pt", device = "cpu") as f:
+
+            with safe_open(str(path), framework="pt", device="cpu") as f:
                 meta = f.metadata() or {}
                 count = int(meta.get("count", "0"))
                 none_slots = set(json.loads(meta.get("none_slots", "[]")))
@@ -454,7 +459,7 @@ class BucketBatchSampler:
         self._pos = {s: 0 for s in self._shapes}
 
     def next_batch(self, k: int) -> tuple[tuple[int, int], list[int]]:
-        shape = self._rng.choices(self._shapes, weights = self._weights, k = 1)[0]
+        shape = self._rng.choices(self._shapes, weights=self._weights, k=1)[0]
         out: list[int] = []
         while len(out) < k:
             order, pos = self._order[shape], self._pos[shape]

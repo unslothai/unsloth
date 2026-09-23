@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 VISION = REPO_ROOT / "unsloth" / "models" / "vision.py"
-SRC = VISION.read_text(encoding = "utf-8")
+SRC = VISION.read_text(encoding="utf-8")
 
 
 def _attention_dtype_expression():
@@ -83,10 +83,10 @@ def _selected(dtype, do_forced_float32, correct_dtype):
         "model_name": "",
         "resolve_model_class": lambda *args, **kwargs: None,
     }
-    module = ast.Module(body = list(PREAMBLE), type_ignores = [])
+    module = ast.Module(body=list(PREAMBLE), type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(VISION), "exec"), namespace)
-    expression = ast.Expression(body = DTYPE_EXPR)
+    expression = ast.Expression(body=DTYPE_EXPR)
     ast.fix_missing_locations(expression)
     return eval(compile(expression, str(VISION), "eval"), namespace)
 
@@ -125,12 +125,12 @@ def test_custom_datatype_load_does_not_disable_flash_attention():
     original = _utils.HAS_FLASH_ATTENTION
     _utils.HAS_FLASH_ATTENTION = True
     try:
-        config = SimpleNamespace(model_type = "falcon_h1", attention_dropout = 0)
+        config = SimpleNamespace(model_type="falcon_h1", attention_dropout=0)
         impl = _utils.resolve_attention_implementation(
             SupportsFlashAndSdpa,
             config,
-            supports_sdpa = True,
-            dtype = _selected(torch.float32, False, torch.float16),
+            supports_sdpa=True,
+            dtype=_selected(torch.float32, False, torch.float16),
         )
     finally:
         _utils.HAS_FLASH_ATTENTION = original

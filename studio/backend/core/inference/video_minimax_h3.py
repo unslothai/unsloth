@@ -108,9 +108,9 @@ def estimate_h3_diffusers_vram_gb(
     keeps the released-bfloat16 floor this shipped with."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
     base = h3_diffusers_vram_base_gb(
-        text_encoder_gb = text_encoder_gb,
-        transformer_gb = transformer_gb,
-        transformer_pinned = transformer_pinned,
+        text_encoder_gb=text_encoder_gb,
+        transformer_gb=transformer_gb,
+        transformer_pinned=transformer_pinned,
     )
     return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
 
@@ -213,13 +213,13 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
         for sub in module.modules():
             if type(sub).__name__ not in _AUTOCAST_WEIGHT_MODULE_NAMES:
                 continue
-            for name, param in list(sub.named_parameters(recurse = False)):
+            for name, param in list(sub.named_parameters(recurse=False)):
                 if param.dtype is not torch.float32:
                     continue
                 setattr(
                     sub,
                     name,
-                    torch.nn.Parameter(param.data.to(torch.float16), requires_grad = False),
+                    torch.nn.Parameter(param.data.to(torch.float16), requires_grad=False),
                 )
         report["decoder_freed"] += before - _module_bytes(module)
 
@@ -283,7 +283,7 @@ def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
     crop_h = min(source_h, math.ceil(target[1] / scale))
     left = (source_w - crop_w) // 2
     top = (source_h - crop_h) // 2
-    return image.resize(target, Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h))
+    return image.resize(target, Image.LANCZOS, box=(left, top, left + crop_w, top + crop_h))
 
 
 # Ref2VA uses a separate transformer partition selected at load time.
@@ -432,10 +432,10 @@ def decode_h3_reference_video(
                 waveform, sample_rate = _decode_audio_stream(
                     container,
                     np,
-                    trim_start_seconds = trim[0] if trim else None,
-                    trim_end_seconds = trim[1] if trim else None,
-                    timeline_start_seconds = video_timeline_start,
-                    untrimmed_duration_seconds = len(frames) / H3_FPS if trim is None else None,
+                    trim_start_seconds=trim[0] if trim else None,
+                    trim_end_seconds=trim[1] if trim else None,
+                    timeline_start_seconds=video_timeline_start,
+                    untrimmed_duration_seconds=len(frames) / H3_FPS if trim is None else None,
                 )
     return frames, waveform, sample_rate
 
@@ -467,7 +467,7 @@ def _seek_media(container: Any, stream: Any, absolute_seconds: float, *, label: 
         return False
     offset = math.floor(absolute_seconds / float(time_base) + 1e-6)
     try:
-        container.seek(offset, backward = True, any_frame = False, stream = stream)
+        container.seek(offset, backward=True, any_frame=False, stream=stream)
     except Exception as exc:  # noqa: BLE001 -- decoder-specific seek errors become input feedback
         raise ValueError(f"Could not seek to the requested reference {label} trim start.") from exc
     return True
@@ -503,7 +503,7 @@ def _decode_h3_video_without_trim(blob: bytes, av: Any) -> tuple[list, float, Op
         decoded_count = 0
         next_target = 0
         fitted_size = None
-        for source_index, frame in enumerate(container.decode(video = 0)):
+        for source_index, frame in enumerate(container.decode(video=0)):
             decoded_count = source_index + 1
             if decoded_count > max_source_frames:
                 raise ValueError(
@@ -537,7 +537,7 @@ def _decode_h3_video_trim_by_timestamp(
         stream = container.streams.video[0]
         timeline_start = _stream_start_seconds(stream)
         if timeline_start is not None and start > 0:
-            _seek_media(container, stream, timeline_start + start, label = "video")
+            _seek_media(container, stream, timeline_start + start, label="video")
 
         frames = []
         fitted_size = None
@@ -558,7 +558,7 @@ def _decode_h3_video_trim_by_timestamp(
             image, fitted_size = _fit_h3_video_frame(candidate, fitted_size)
             frames.extend([image] * (wanted - len(frames)))
 
-        for frame in container.decode(video = 0):
+        for frame in container.decode(video=0):
             timestamp = _frame_timestamp_seconds(frame)
             if timestamp is None:
                 raise _H3MediaTimestampsUnavailable
@@ -602,6 +602,7 @@ def _decode_h3_video_trim_by_ordinal(
 ) -> tuple[list, Optional[float]]:
     """Fallback for streams whose decoded frames carry no presentation timestamps."""
     import io
+
     with av.open(io.BytesIO(blob)) as container:
         if not container.streams.video:
             raise ValueError("That reference file carries no video track.")
@@ -619,7 +620,7 @@ def _decode_h3_video_trim_by_ordinal(
         decoded_count = 0
         next_target = 0
         fitted_size = None
-        for source_index, frame in enumerate(container.decode(video = 0)):
+        for source_index, frame in enumerate(container.decode(video=0)):
             decoded_count = source_index + 1
             if source_index < start_source_frame:
                 continue
@@ -662,8 +663,8 @@ def decode_h3_reference_audio(
         waveform, sample_rate = _decode_audio_stream(
             container,
             np,
-            trim_start_seconds = trim_start_seconds,
-            trim_end_seconds = trim_end_seconds,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
         )
     if waveform is None:
         raise ValueError("That reference audio decoded to no samples.")
@@ -698,7 +699,7 @@ def _decode_audio_stream(
                 av,
                 sample_rate,
                 trim,
-                timeline_start_seconds = timeline_start_seconds,
+                timeline_start_seconds=timeline_start_seconds,
             )
         except _H3MediaTimestampsUnavailable:
             start_time = getattr(stream, "start_time", None)
@@ -708,13 +709,13 @@ def _decode_audio_stream(
                     "Reference audio timestamps are unavailable and its stream cannot be reset."
                 ) from None
             try:
-                container.seek(int(start_time or 0), backward = True, any_frame = False, stream = stream)
+                container.seek(int(start_time or 0), backward=True, any_frame=False, stream=stream)
             except Exception as exc:  # noqa: BLE001 -- decoder-specific reset errors
                 raise ValueError(
                     "Reference audio timestamps are unavailable and its stream cannot be reset."
                 ) from exc
 
-    resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
+    resampler = av.AudioResampler(format="flt", layout=stream.layout.name, rate=sample_rate)
     channels = len(stream.layout.channels)
     max_samples = math.floor(H3_REF_VIDEO_MAX_SECONDS * sample_rate + 1e-6)
     start_sample = math.floor(trim[0] * sample_rate + 1e-6) if trim else 0
@@ -747,7 +748,7 @@ def _decode_audio_stream(
         return end_sample is not None and block_end >= end_sample
 
     stopped = False
-    for frame in container.decode(audio = 0):
+    for frame in container.decode(audio=0):
         for resampled in resampler.resample(frame):
             if _take(resampled):
                 stopped = True
@@ -760,7 +761,7 @@ def _decode_audio_stream(
     # Short soundtracks are kept, not refused, as in the timestamp path above.
     if not chunks:
         return None, None
-    return np.concatenate(chunks, axis = 0).astype("float32"), sample_rate
+    return np.concatenate(chunks, axis=0).astype("float32"), sample_rate
 
 
 def _decode_audio_trim_by_timestamp(
@@ -779,12 +780,12 @@ def _decode_audio_trim_by_timestamp(
     if origin is None:
         origin = _stream_start_seconds(stream)
     if origin is not None and start > 0:
-        _seek_media(container, stream, origin + start, label = "audio")
+        _seek_media(container, stream, origin + start, label="audio")
 
     channels = len(stream.layout.channels)
     target_count = int(round((end - start) * sample_rate))
-    output = np.zeros((target_count, channels), dtype = "float32")
-    resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
+    output = np.zeros((target_count, channels), dtype="float32")
+    resampler = av.AudioResampler(format="flt", layout=stream.layout.name, rate=sample_rate)
     copied_any = False
     stopped = False
 
@@ -811,7 +812,7 @@ def _decode_audio_trim_by_timestamp(
             copied_any = True
         return block_end >= end
 
-    for frame in container.decode(audio = 0):
+    for frame in container.decode(audio=0):
         for resampled in resampler.resample(frame):
             if _take(resampled):
                 stopped = True
@@ -836,7 +837,7 @@ def write_h3_reference_wav(path: Path, waveform: Any, sample_rate: int) -> None:
 
     import numpy as np
 
-    samples = np.clip(np.asarray(waveform, dtype = "float32"), -1.0, 1.0)
+    samples = np.clip(np.asarray(waveform, dtype="float32"), -1.0, 1.0)
     if samples.ndim == 1:
         samples = samples[:, None]
     with wave.open(str(path), "wb") as handle:
@@ -846,7 +847,7 @@ def write_h3_reference_wav(path: Path, waveform: Any, sample_rate: int) -> None:
         handle.writeframes((samples * 32767.0).astype("<i2").tobytes())
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class MiniMaxH3References:
     """Decoded references in model order: images, videos, then standalone audio."""
 
@@ -864,7 +865,7 @@ class MiniMaxH3References:
         return len(self.images) + len(self.videos) + len(self.audios)
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class MiniMaxH3StagedReferences:
     """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
 
@@ -885,7 +886,7 @@ def stage_h3_references(
     images: list[str] = []
     for index, image in enumerate(references.images):
         path = scratch / f"ref-image-{index:02d}.png"
-        image.save(path, format = "PNG")
+        image.save(path, format="PNG")
         images.append(str(path))
 
     videos: list[str] = []
@@ -895,7 +896,7 @@ def stage_h3_references(
         directory = scratch / f"ref-video-{index:02d}"
         directory.mkdir()
         for frame_index, frame in enumerate(frames):
-            frame.save(directory / f"{frame_index:05d}.png", format = "PNG")
+            frame.save(directory / f"{frame_index:05d}.png", format="PNG")
         videos.append(str(directory))
         if waveform is None:
             # Positional pairing cannot express "skip this one", so stop pairing here.
@@ -917,10 +918,10 @@ def stage_h3_references(
         audios.append(str(path))
 
     return MiniMaxH3StagedReferences(
-        images = tuple(images),
-        videos = tuple(videos),
-        video_audios = tuple(video_audios),
-        audios = tuple(audios),
+        images=tuple(images),
+        videos=tuple(videos),
+        video_audios=tuple(video_audios),
+        audios=tuple(audios),
     )
 
 
@@ -943,19 +944,19 @@ def h3_diffusers_references(references: MiniMaxH3References) -> list:
 
     built: list = []
     for image in references.images:
-        built.append(MiniMaxH3ImageReference(image = image))
+        built.append(MiniMaxH3ImageReference(image=image))
     for frames, waveform, sample_rate in references.videos:
         built.append(
             MiniMaxH3VideoReference(
-                frames = list(frames),
-                fps = float(H3_FPS),
-                audio = None if waveform is None else waveform_tensor(waveform),
-                sample_rate = sample_rate,
+                frames=list(frames),
+                fps=float(H3_FPS),
+                audio=None if waveform is None else waveform_tensor(waveform),
+                sample_rate=sample_rate,
             )
         )
     for waveform, sample_rate in references.audios:
         built.append(
-            MiniMaxH3AudioReference(audio = waveform_tensor(waveform), sample_rate = sample_rate)
+            MiniMaxH3AudioReference(audio=waveform_tensor(waveform), sample_rate=sample_rate)
         )
     return built
 
@@ -1066,6 +1067,7 @@ def h3_component_source(*files: str) -> str:
     wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
     try:
         from .diffusion_families import prefer_cached_legacy_source
+
         return prefer_cached_legacy_source(H3_COMPONENT_REPO, wanted)
     except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
         return H3_COMPONENT_REPO
@@ -1092,7 +1094,7 @@ def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...
     )
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class MiniMaxH3NativeRuntime:
     engine: Any
     files: Any
@@ -1115,13 +1117,13 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
     """
     import av
 
-    tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.close()
     target = Path(tmp.name)
     try:
-        with av.open(str(source)) as src, av.open(str(target), mode = "w", format = "mp4") as dst:
+        with av.open(str(source)) as src, av.open(str(target), mode="w", format="mp4") as dst:
             source_video = src.streams.video[0]
-            output_video = dst.add_stream("libx264", rate = fps)
+            output_video = dst.add_stream("libx264", rate=fps)
             output_video.width = int(source_video.codec_context.width)
             output_video.height = int(source_video.codec_context.height)
             output_video.pix_fmt = "yuv420p"
@@ -1131,10 +1133,10 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
             audio_resampler = None
             if source_audio is not None:
                 sample_rate = int(source_audio.codec_context.sample_rate or 32000)
-                output_audio = dst.add_stream("aac", rate = sample_rate)
+                output_audio = dst.add_stream("aac", rate=sample_rate)
                 output_audio.layout = "stereo"
                 audio_resampler = av.AudioResampler(
-                    format = "fltp", layout = "stereo", rate = sample_rate
+                    format="fltp", layout="stereo", rate=sample_rate
                 )
 
             selected = (source_video,) if source_audio is None else (source_video, source_audio)
@@ -1159,7 +1161,7 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
                     dst.mux(encoded)
         return target.read_bytes()
     finally:
-        target.unlink(missing_ok = True)
+        target.unlink(missing_ok=True)
 
 
 def inspect_video(path: Path) -> tuple[int, int, int, bool]:
@@ -1173,5 +1175,5 @@ def inspect_video(path: Path) -> tuple[int, int, int, bool]:
         frames = int(stream.frames or 0)
         has_audio = bool(container.streams.audio)
         if frames <= 0:
-            frames = sum(1 for _ in container.decode(video = 0))
+            frames = sum(1 for _ in container.decode(video=0))
     return width, height, frames, has_audio

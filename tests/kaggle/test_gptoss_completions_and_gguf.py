@@ -32,29 +32,29 @@ from run_gptoss_t4 import masking_failures  # noqa: E402
 def test_a_run_that_masked_nothing_is_a_failure():
     """The finding this file exists for. Every loss-based assertion in the leg
     passes in this state, so only this rule can catch it."""
-    broken = masking_failures({"label_tokens": 512, "masked_tokens": 0}, expected = True)
+    broken = masking_failures({"label_tokens": 512, "masked_tokens": 0}, expected=True)
     assert len(broken) == 1 and "NOTHING was masked" in broken[0]
 
 
 def test_a_run_that_masked_everything_is_a_failure():
-    broken = masking_failures({"label_tokens": 512, "masked_tokens": 512}, expected = True)
+    broken = masking_failures({"label_tokens": 512, "masked_tokens": 512}, expected=True)
     assert broken and "no completion left to learn from" in broken[0]
 
 
 def test_a_partly_masked_batch_passes():
-    assert masking_failures({"label_tokens": 512, "masked_tokens": 120}, expected = True) == []
+    assert masking_failures({"label_tokens": 512, "masked_tokens": 120}, expected=True) == []
 
 
 def test_missing_evidence_is_a_failure_not_a_silence():
-    assert masking_failures(None, expected = True)
-    assert masking_failures({"error": "boom"}, expected = True)
-    assert masking_failures({"label_tokens": 0, "masked_tokens": 0}, expected = True)
+    assert masking_failures(None, expected=True)
+    assert masking_failures({"error": "boom"}, expected=True)
+    assert masking_failures({"label_tokens": 0, "masked_tokens": 0}, expected=True)
 
 
 def test_the_rule_is_inert_when_completions_only_was_not_requested():
     """A leg that did not ask for masking must not go red for not having it."""
-    assert masking_failures(None, expected = False) == []
-    assert masking_failures({"label_tokens": 512, "masked_tokens": 0}, expected = False) == []
+    assert masking_failures(None, expected=False) == []
+    assert masking_failures({"label_tokens": 512, "masked_tokens": 0}, expected=False) == []
 
 
 def test_the_leg_asks_for_completions_and_for_mxfp4():
@@ -92,7 +92,7 @@ def test_the_payload_requests_q8_and_accepts_only_mxfp4():
     ONLY mxfp4 keeps it honest: a run that produced a real q8_0 would fail,
     which is right, because gpt-oss q8_0 is documented impossible.
     """
-    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding="utf-8")
     assert '"--gguf-quantization", default = "q8_0"' in src
     assert 'accept_quantizations = ("mxfp4",)' in src
     assert (
@@ -103,7 +103,7 @@ def test_the_payload_requests_q8_and_accepts_only_mxfp4():
 def test_the_dataset_shape_and_the_text_field_cannot_both_be_set():
     """Naming a text field TRL cannot find is how a prompt-completion dataset
     silently falls back to training on everything."""
-    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding="utf-8")
     assert '**({} if args.train_on_completions else {"dataset_text_field": "text"})' in src
 
 
@@ -119,7 +119,7 @@ def test_the_gptoss_export_does_not_land_in_the_artifact_volume():
     `/tmp` is the overlay: 8656.9GB total, 1102.5GB free. tempfile honours
     TMPDIR and lands there.
     """
-    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_gptoss_t4.py").read_text(encoding="utf-8")
     assert 'tempfile.mkdtemp(prefix = "gptoss_gguf_")' in src
     assert (
         'os.path.join(args.outdir, "gguf")' not in src
@@ -219,6 +219,7 @@ def test_the_deliberate_embedding_offload_is_not_a_failure():
     cannot tell an optimisation from a spill.
     """
     from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
+
     assert _placement_failures(_placement_record()) == []
 
 
@@ -229,8 +230,8 @@ def test_the_excuse_is_the_hook_flag_and_not_the_device():
     healthy case in `parameters_by_device`."""
     from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
 
-    embed = dict(_placement_record()["input_embedding"], offload_hooks_installed = False)
-    failures = _placement_failures(_placement_record(input_embedding = embed))
+    embed = dict(_placement_record()["input_embedding"], offload_hooks_installed=False)
+    failures = _placement_failures(_placement_record(input_embedding=embed))
     assert failures and "model.embed_tokens.weight" in failures[0]
 
 
@@ -240,7 +241,7 @@ def test_a_second_tensor_off_the_card_is_still_a_failure():
     from run_gptoss_t4 import _placement_failures  # noqa: PLC0415
 
     record = _placement_record(
-        off_gpu_parameters = [
+        off_gpu_parameters=[
             {"name": "model.embed_tokens.weight", "numel": 579133440, "device": "cpu"},
             {"name": "model.layers.7.mlp.down_proj.weight", "numel": 8294400, "device": "cpu"},
         ]
@@ -298,7 +299,7 @@ def test_the_text_leg_exports_once_per_leg_and_not_once_per_cycle():
     llama.cpp rather than asking a new question; the cycles already prove
     reproducibility on the step tables and the generated text.
     """
-    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding="utf-8")
     assert 'if getattr(args, "export_gguf", False) and run_index > 0:' in src
     assert '"skipped": "exported on cycle 0' in src
 
@@ -307,7 +308,7 @@ def test_skipping_every_cycle_is_still_a_failure():
     """The saving must not be able to become missing coverage. A leg that asked
     for an export and produced no file anywhere has to say so, and a per-cycle
     excuse that fires on cycle 0 too would be silent."""
-    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding="utf-8")
     assert "every cycle skipped the GGUF export" in src
     # The excuse is keyed on a cycle having really exported, not on the flag.
     assert (

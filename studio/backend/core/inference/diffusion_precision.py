@@ -142,7 +142,7 @@ def te_quant_needs_resident_weights(mode: Optional[str]) -> bool:
     return mode in _TE_TORCHAO_MODES
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def torchao_quantize_importable() -> bool:
     """Whether ``torchao.quantization.quantize_`` is really there and really torchao's.
 
@@ -354,7 +354,7 @@ def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: 
             return False
         return not any(fqn == k or fqn.startswith(k + ".") for k in keep)
 
-    quantize_(encoder, _make_quant_config(TQ_INT8), filter_fn = filter_fn)
+    quantize_(encoder, _make_quant_config(TQ_INT8), filter_fn=filter_fn)
 
 
 def _weight_has_zero_output_row(module: Any) -> bool:
@@ -367,7 +367,7 @@ def _weight_has_zero_output_row(module: Any) -> bool:
         weight = getattr(module, "weight", None)
         if weight is None or weight.ndim != 2:
             return False
-        return bool((weight.abs().amax(dim = -1) == 0).any().item())
+        return bool((weight.abs().amax(dim=-1) == 0).any().item())
     except Exception:  # noqa: BLE001 -- unreadable weight: let quantize_ decide
         return False
 
@@ -385,13 +385,13 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
 
     # require_bf16: scaled_mm asserts a bf16 weight, so skip a stray non-bf16 Linear rather than aborting the pass.
     base = make_filter_fn(
-        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
+        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16=True
     )
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         return base(module, fqn) and not _weight_has_zero_output_row(module)
 
-    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn = filter_fn)
+    quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn=filter_fn)
 
 
 def _cast_fp8(encoder: Any, target: Any) -> None:
@@ -429,12 +429,12 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
 
     apply_layerwise_casting(
         encoder,
-        storage_dtype = torch.float8_e4m3fn,
-        compute_dtype = target.dtype,
-        skip_modules_pattern = skip,
+        storage_dtype=torch.float8_e4m3fn,
+        compute_dtype=target.dtype,
+        skip_modules_pattern=skip,
         # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and
         # fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
-        skip_modules_classes = (torch.nn.Embedding,),
+        skip_modules_classes=(torch.nn.Embedding,),
     )
 
     # Module.dtype reports the first floating parameter, now fp8 STORAGE, but pipelines derive tensor dtypes from it
@@ -499,10 +499,10 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     )
 
     filter_fn = make_filter_fn(
-        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
+        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16=True
     )
     # No-op today (the prototype config has no set_inductor_config knob), but no torchao config is built bare.
-    quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn = filter_fn)
+    quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn=filter_fn)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

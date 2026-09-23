@@ -104,7 +104,7 @@ def dflash_repo_preference_key(
     single-sidecar behaviour is unchanged.
     """
     precision, sort_name = dflash_preference_key(name)
-    if weight_name is not None and _drafter_matches_weight(name, weight_name, kind = "dflash"):
-        return 0, _drafter_stem_rank(name, kind = "dflash"), precision, sort_name
+    if weight_name is not None and _drafter_matches_weight(name, weight_name, kind="dflash"):
+        return 0, _drafter_stem_rank(name, kind="dflash"), precision, sort_name
     foreign = _drafter_names_other_weight(name, weight_name, other_weight_names)
     return 2 if foreign else 1, 0, precision, sort_name

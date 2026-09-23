@@ -26,11 +26,11 @@ class _Generation(Extension):
 
     def parse(self, parser):
         next(parser.stream)
-        return parser.parse_statements(("name:endgeneration",), drop_needle = True)
+        return parser.parse_statements(("name:endgeneration",), drop_needle=True)
 
 
 _ENVIRONMENT = ImmutableSandboxedEnvironment(
-    extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do", _Generation],
+    extensions=["jinja2.ext.loopcontrols", "jinja2.ext.do", _Generation],
 )
 
 # Ask about the catalog rather than serialise it: a number reaches the prompt.
@@ -123,7 +123,7 @@ def _rebound_names(node):
 def _receiver_gaining_catalog(
     node,
     aliases,
-    guarded = False,
+    guarded=False,
 ):
     """Names `catalog.append(tools)` fills, or any receiver written under a guard."""
     if not (isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr)):
@@ -138,8 +138,8 @@ def _scan_maybe(
     body,
     aliases,
     guarded,
-    bound = frozenset(),
-    killed = frozenset(),
+    bound=frozenset(),
+    killed=frozenset(),
 ):
     """Walk a body that may not run. Keep what it learns, drop what it unbinds; the
     body's own `bound`/`killed` names escape in neither direction."""
@@ -208,7 +208,7 @@ def _scan(body, aliases, guarded):
                 if _scan(node.else_, arm, guarded):
                     return True
                 arms.append(arm)
-            _join(aliases, arms, exhaustive = bool(node.else_))
+            _join(aliases, arms, exhaustive=bool(node.else_))
         elif isinstance(node, nodes.For):
             over_catalog = _reads_catalog(node.iter, aliases)
             # `{% for m in messages if m.role == 'tool' %}`: the guard is the filter.
@@ -249,7 +249,7 @@ def template_supports_tools(template) -> bool:
     return _analyse_template(str.__str__(template))
 
 
-@lru_cache(maxsize = 128)
+@lru_cache(maxsize=128)
 def _analyse_template(template: str) -> bool:
     if "tool" not in template:
         return False

@@ -45,7 +45,7 @@ _CLEAN_WRONG_ANSWER = [sys.executable, "-c", "print('WRONG'); raise SystemExit(3
 def test_a_signal_death_is_attributed_to_the_interpreter_not_the_assertion():
     """The message must name pwsh dying, and must not read as the script being wrong."""
     with pytest.raises(PwshInterpreterCrash) as excinfo:
-        run_pwsh(_ABORT, attempts = 2, capture_output = True, text = True)
+        run_pwsh(_ABORT, attempts=2, capture_output=True, text=True)
 
     message = str(excinfo.value)
     assert "pwsh itself killed by SIGABRT on all 2 attempts" in message, message
@@ -54,14 +54,14 @@ def test_a_signal_death_is_attributed_to_the_interpreter_not_the_assertion():
 
 def test_a_clean_run_with_the_wrong_answer_still_fails_with_its_own_message():
     """The load-bearing negative. Exit 3 is a verdict, so it is returned as-is, once."""
-    proc = run_pwsh(_CLEAN_WRONG_ANSWER, attempts = 3, capture_output = True, text = True)
+    proc = run_pwsh(_CLEAN_WRONG_ANSWER, attempts=3, capture_output=True, text=True)
     assert proc.returncode == 3
     assert proc.stdout.strip() == "WRONG"
 
     # ...and `check` still raises the ordinary CalledProcessError a caller expects, so migrating a `subprocess.run(...,
     # check = True)` call site changes no failure text.
     with pytest.raises(subprocess.CalledProcessError):
-        run_pwsh(_CLEAN_WRONG_ANSWER, check = True, capture_output = True, text = True)
+        run_pwsh(_CLEAN_WRONG_ANSWER, check=True, capture_output=True, text=True)
 
 
 def test_a_clean_run_is_not_retried():
@@ -75,7 +75,7 @@ def test_a_clean_run_is_not_retried():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(subprocess, "run", counting_run)
-        run_pwsh(_CLEAN_WRONG_ANSWER, attempts = 3, capture_output = True, text = True)
+        run_pwsh(_CLEAN_WRONG_ANSWER, attempts=3, capture_output=True, text=True)
     assert len(calls) == 1, f"a normally-exiting run was retried {len(calls)} times"
 
 
@@ -95,7 +95,7 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
     os.environ[marker] = "ambient"
     try:
         hermetic = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}
-        proc = run_pwsh(dump, env = dict(hermetic), capture_output = True, text = True)
+        proc = run_pwsh(dump, env=dict(hermetic), capture_output=True, text=True)
         child = json.loads(proc.stdout)
     finally:
         os.environ.pop(marker, None)
@@ -109,18 +109,18 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
     assert marker not in child, "the ambient environment leaked past a hermetic env dict"
 
     # env = None must still mean inherit, or every call site that relies on the ambient PATH silently loses it.
-    inherited = json.loads(run_pwsh(dump, capture_output = True, text = True).stdout)
+    inherited = json.loads(run_pwsh(dump, capture_output=True, text=True).stdout)
     assert inherited["XDG_CACHE_HOME"] == child["XDG_CACHE_HOME"]
     assert inherited.get("PATH") == os.environ.get("PATH")
 
 
-@pytest.mark.skipif(PWSH is None, reason = "no PowerShell on this platform")
+@pytest.mark.skipif(PWSH is None, reason="no PowerShell on this platform")
 def test_a_real_pwsh_that_answers_correctly_is_untouched():
     """The helper must be transparent on the path every migrated call site takes."""
     proc = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'ANSWER=7'"],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0
     assert "ANSWER=7" in proc.stdout

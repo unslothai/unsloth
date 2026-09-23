@@ -52,7 +52,7 @@ class GenerationTimer:
     def start(self):
         self.started_at = time.monotonic()
 
-    def mark_prefill_end(self, device = None):
+    def mark_prefill_end(self, device=None):
         """Stamp the end of prefill; later decode steps must not move the boundary."""
         if self.started_at is None or self.prefill_ended_at is not None:
             return
@@ -110,7 +110,7 @@ def build_generation_timings(
     predicted_n,
     prompt_ms,
     predicted_ms,
-    cached_n = 0,
+    cached_n=0,
 ):
     """Map a measured prefill/decode split onto the timings shape llama-server emits.
 

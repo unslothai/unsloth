@@ -52,14 +52,15 @@ def _native_audio_security_targets_or_error(
 ) -> list[str] | None:
     try:
         from core.inference.native_audio import native_audio_security_targets
-        return native_audio_security_targets(model_name, hf_token = hf_token)
+
+        return native_audio_security_targets(model_name, hf_token=hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
             {
                 "type": "error",
                 "error": f"Failed to inspect native audio security metadata: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
         return None
@@ -75,6 +76,7 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
     try:
         _ensure_backend_on_path()
         from utils.transformers_version import recorded_local_base
+
         return recorded_local_base(model_name)
     except Exception:
         return None, True
@@ -113,6 +115,7 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 def _decode_image(image_base64: str):
     from PIL import Image
+
     image_data = base64.b64decode(image_base64)
     return Image.open(BytesIO(image_data))
 
@@ -140,7 +143,7 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 
 def _encode_share_object(obj: Any) -> bytes:
-    data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
+    data = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
         raise ValueError("Distributed object share payload is too large")
     return data
@@ -163,6 +166,7 @@ def _config_hf_token(config: dict) -> str | bool | None:
 
 def _apply_worker_hf_token_environment(config: dict) -> None:
     from hub.utils.hf_tokens import apply_token_to_child_env
+
     apply_token_to_child_env(os.environ, _config_hf_token(config))
 
 
@@ -171,9 +175,9 @@ def _build_model_config(config: dict):
 
     model_name = config["model_name"]
     mc = ModelConfig.from_identifier(
-        model_id = model_name,
-        hf_token = _config_hf_token(config),
-        gguf_variant = config.get("gguf_variant"),
+        model_id=model_name,
+        hf_token=_config_hf_token(config),
+        gguf_variant=config.get("gguf_variant"),
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
@@ -201,7 +205,7 @@ def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
 
     from utils.security.trusted_org import is_trusted_org_repo
 
-    return is_trusted_org_repo(model_name, hf_token = hf_token)
+    return is_trusted_org_repo(model_name, hf_token=hf_token)
 
 
 def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
@@ -227,7 +231,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
+        with open(adapter_cfg_path, encoding="utf-8-sig") as f:
             adapter_cfg = json.load(f)
         trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
         if isinstance(trained_in_4bit, bool):
@@ -275,7 +279,7 @@ def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
         for ssm_target in dict.fromkeys(t for t in targets if t):
-            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+            ensure_ssm_runtime(ssm_target, status_cb=_ssm_status)
         return True
     except Exception as exc:
         _send_response(
@@ -336,7 +340,7 @@ def _run_security_gates(
 
     for target in scoped_targets:
         _subdirs = consent_load_subdirs[target]
-        _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
+        _fs = evaluate_file_security(target, hf_token=hf_token, load_subdirs=_subdirs)
         if _fs.blocked:
             _send_response(
                 resp_queue,
@@ -354,13 +358,14 @@ def _run_security_gates(
     # and base are scanned as one unit, pinned by a single fingerprint.
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
+
         _rc = evaluate_remote_code_consent_for_targets(
             scoped_targets,
-            hf_token = hf_token,
-            trust_remote_code = True,
-            approved_fingerprint = approved_fingerprint,
-            subject = subject,
-            load_subdirs_by_target = consent_load_subdirs,
+            hf_token=hf_token,
+            trust_remote_code=True,
+            approved_fingerprint=approved_fingerprint,
+            subject=subject,
+            load_subdirs_by_target=consent_load_subdirs,
         )
         if _rc.blocked:
             _send_response(
@@ -415,6 +420,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
+
             if latest_tier_active_for(config["model_name"], hf_token):
                 load_in_4bit = False
                 logger.info(
@@ -424,7 +430,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
 
         trust_remote_code = config.get("trust_remote_code", False)
-        if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
+        if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token=hf_token):
             trust_remote_code = True
             logger.info(
                 "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
@@ -441,11 +447,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             targets.append(str(mc.base_model))
         if not _run_security_gates(
             targets,
-            trust_remote_code = trust_remote_code,
-            hf_token = hf_token,
-            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            resp_queue = resp_queue,
-            subject = config.get("subject"),
+            trust_remote_code=trust_remote_code,
+            hf_token=hf_token,
+            approved_fingerprint=config.get("approved_remote_code_fingerprint"),
+            resp_queue=resp_queue,
+            subject=config.get("subject"),
         ):
             return
 
@@ -492,10 +498,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
 
         heartbeat_stop = start_watchdog(
-            repo_ids = watch_repos,
-            on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
-            on_heartbeat = lambda msg: _send_response(resp_queue, {"type": "status", "message": msg}),
-            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+            repo_ids=watch_repos,
+            on_stall=lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
+            on_heartbeat=lambda msg: _send_response(resp_queue, {"type": "status", "message": msg}),
+            xet_disabled=os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
             load_kwargs = {
@@ -618,7 +624,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "type": "loaded",
                 "success": False,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
 
@@ -664,10 +670,10 @@ def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> 
     landing in that window skips TTS instead of having its shared cancel erased.
     The parent does not signal request cancellation until it receives audio_started.
     """
-    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio=True):
         return False
     cancel_event.clear()
-    if _drain_skip_generate(cmd, resp_queue, drain_event, audio = True):
+    if _drain_skip_generate(cmd, resp_queue, drain_event, audio=True):
         return False
     _send_response(
         resp_queue,
@@ -765,7 +771,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
             generator = backend.generate_with_adapter_control(
-                use_adapter = use_adapter,
+                use_adapter=use_adapter,
                 **gen_kwargs,
             )
         else:
@@ -806,14 +812,14 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         logger.info("Finished text generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Generation error: %s", exc, exc_info = True)
+        logger.error("Generation error: %s", exc, exc_info=True)
         _send_response(
             resp_queue,
             {
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
 
@@ -824,10 +830,10 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
         count = backend.count_chat_tokens(
             cmd.get("messages") or [],
             cmd.get("system_prompt") or "",
-            tools = cmd.get("tools"),
-            enable_thinking = cmd.get("enable_thinking"),
-            reasoning_effort = cmd.get("reasoning_effort"),
-            preserve_thinking = cmd.get("preserve_thinking"),
+            tools=cmd.get("tools"),
+            enable_thinking=cmd.get("enable_thinking"),
+            reasoning_effort=cmd.get("reasoning_effort"),
+            preserve_thinking=cmd.get("preserve_thinking"),
         )
     except Exception as exc:
         _send_response(
@@ -877,33 +883,34 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
             shared = obj
         else:
             import mlx.core as mx
+
             if rank == 0:
                 if obj is None:
-                    mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
+                    mx.eval(mx.distributed.all_sum(mx.array(0), group=group))
                     shared = None
                 else:
                     try:
-                        data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                        data = mx.array(_encode_share_object(obj), dtype=mx.uint8)
                     except Exception:
                         mx.eval(
                             mx.distributed.all_sum(
                                 mx.array(_SHARE_OBJECT_ERROR_SIZE),
-                                group = group,
+                                group=group,
                             )
                         )
                         raise
-                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
-                    mx.eval(mx.distributed.all_sum(data, group = group))
+                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group=group))
+                    mx.eval(mx.distributed.all_sum(data, group=group))
                     shared = obj
             else:
-                size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
+                size = int(mx.distributed.all_sum(mx.array(0), group=group).item())
                 if size == _SHARE_OBJECT_ERROR_SIZE:
                     raise RuntimeError("Failed to share distributed object")
                 if size == 0:
                     shared = None
                 else:
-                    data = mx.zeros(size, dtype = mx.uint8)
-                    data = mx.distributed.all_sum(data, group = group)
+                    data = mx.zeros(size, dtype=mx.uint8)
+                    data = mx.distributed.all_sum(data, group=group)
                     shared = _decode_share_object(data)
         _send_response(
             resp_queue,
@@ -920,7 +927,7 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": "share_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
 
@@ -931,18 +938,18 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
         wav_bytes, sample_rate = backend.generate_audio_response(
-            text = cmd["text"],
-            temperature = cmd.get("temperature", 0.6),
-            top_p = cmd.get("top_p", 0.95),
-            top_k = cmd.get("top_k", 50),
-            min_p = cmd.get("min_p", 0.0),
-            max_new_tokens = cmd.get("max_new_tokens", 2048),
-            repetition_penalty = cmd.get("repetition_penalty", 1.0),
-            use_adapter = cmd.get("use_adapter"),
-            cancel_event = cancel_event,
-            instructions = cmd.get("instructions"),
-            language = cmd.get("language"),
-            seed = cmd.get("seed"),
+            text=cmd["text"],
+            temperature=cmd.get("temperature", 0.6),
+            top_p=cmd.get("top_p", 0.95),
+            top_k=cmd.get("top_k", 50),
+            min_p=cmd.get("min_p", 0.0),
+            max_new_tokens=cmd.get("max_new_tokens", 2048),
+            repetition_penalty=cmd.get("repetition_penalty", 1.0),
+            use_adapter=cmd.get("use_adapter"),
+            cancel_event=cancel_event,
+            instructions=cmd.get("instructions"),
+            language=cmd.get("language"),
+            seed=cmd.get("seed"),
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -958,7 +965,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Audio generation error: %s", exc, exc_info = True)
+        logger.error("Audio generation error: %s", exc, exc_info=True)
         _send_response(
             resp_queue,
             {
@@ -970,7 +977,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 # orchestrator reports a cancellation as HTTP 500. Matching on the message text
                 # is what AudioGenerationCancelledError exists to avoid.
                 "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
 
@@ -983,7 +990,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         import numpy as np
 
         # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        audio_array = np.array(cmd["audio_data"], dtype=np.float32)
 
         audio_type = cmd.get("audio_type")
 
@@ -992,8 +999,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 # MLX has no ASR path; report it instead of a raw AttributeError.
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
-                audio_array = audio_array,
-                cancel_event = cancel_event,
+                audio_array=audio_array,
+                cancel_event=cancel_event,
             )
         else:
             audio_kwargs = {
@@ -1047,14 +1054,14 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         logger.info("Finished audio input generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Audio input generation error: %s", exc, exc_info = True)
+        logger.error("Audio input generation error: %s", exc, exc_info=True)
         _send_response(
             resp_queue,
             {
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
 
@@ -1092,7 +1099,7 @@ def run_inference_process(
     resp_queue: Any,
     cancel_event,
     config: dict,
-    drain_event = None,
+    drain_event=None,
 ) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
@@ -1139,8 +1146,8 @@ def run_inference_process(
                 # Lifetime flags, so only a definite no-egress answer counts: a momentary
                 # 502 or a slow proxy must not strand the worker offline.
                 _offline = hf_endpoint_unreachable(
-                    gateway_errors_offline = False,
-                    proxy_timeouts_offline = False,
+                    gateway_errors_offline=False,
+                    proxy_timeouts_offline=False,
                 )
             if _offline:
                 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -1158,8 +1165,8 @@ def run_inference_process(
         warnings.filterwarnings("ignore")
 
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-inference-worker",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name="unsloth-studio-inference-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
     # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
     # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
@@ -1169,7 +1176,7 @@ def run_inference_process(
 
     mark_log_record_continuations()
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend=config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -1187,6 +1194,7 @@ def run_inference_process(
             audio_device_forces_cpu,
             mask_accelerators_for_cpu_audio,
         )
+
         if audio_device_forces_cpu(config.get("audio_device")):
             mask_accelerators_for_cpu_audio(os.environ)
             logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
@@ -1245,7 +1253,7 @@ def run_inference_process(
                 {
                     "type": "error",
                     "error": f"MLX inference init failed: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                 },
             )
             return
@@ -1254,7 +1262,7 @@ def run_inference_process(
         logger.info("MLX inference subprocess ready, entering command loop")
         while True:
             try:
-                cmd = cmd_queue.get(timeout = 1.0)
+                cmd = cmd_queue.get(timeout=1.0)
             except _queue.Empty:
                 continue
             except (EOFError, OSError):
@@ -1363,7 +1371,7 @@ def run_inference_process(
                         "type": "gen_error" if cmd_type == "generate" else "error",
                         "request_id": cmd.get("request_id"),
                         "error": str(exc),
-                        "stack": traceback.format_exc(limit = 20),
+                        "stack": traceback.format_exc(limit=20),
                     },
                 )
         return
@@ -1372,6 +1380,7 @@ def run_inference_process(
     # order. Importable Triton is not enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
+
         gate_torch_compile_on_windows(logger)
 
     # Stub torchao on Windows ROCm before ANY transformers import. Must precede every path that pulls transformers,
@@ -1396,7 +1405,7 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8-sig")).get(
+                _json.loads(_local_adapter_cfg.read_text(encoding="utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
                 or None
@@ -1404,7 +1413,7 @@ def run_inference_process(
         except Exception:
             _lora_base = None
     if not _lora_base:
-        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        _lora_base = _remote_lora_base(model_name, hf_token=_hf_token)
     # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
     # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
     _base = _lora_base or _resolve_base_model(model_name)
@@ -1417,7 +1426,7 @@ def run_inference_process(
             {
                 "type": "error",
                 "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
         return
@@ -1433,16 +1442,16 @@ def run_inference_process(
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
-        model_name, hf_token = _hf_token
+        model_name, hf_token=_hf_token
     )
     if not _run_security_gates(
         _gate_targets,
-        trust_remote_code = _trust_remote_code,
-        hf_token = _hf_token,
-        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-        resp_queue = resp_queue,
-        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
-        subject = config.get("subject"),
+        trust_remote_code=_trust_remote_code,
+        hf_token=_hf_token,
+        approved_fingerprint=config.get("approved_remote_code_fingerprint"),
+        resp_queue=resp_queue,
+        compute_subdirs=False,  # stay transformers-free until the SSM kernels are installed
+        subject=config.get("subject"),
     ):
         return
     # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
@@ -1473,6 +1482,7 @@ def run_inference_process(
         else:
             # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages
+
             ensure_real_packages("unsloth_zoo", "unsloth")
 
             from core.inference.inference import InferenceBackend
@@ -1487,7 +1497,7 @@ def run_inference_process(
             {
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
         return
@@ -1495,7 +1505,7 @@ def run_inference_process(
     try:
         # Native audio picks its device in __init__, so the preference goes there.
         backend = (
-            InferenceBackend(device_preference = config.get("audio_device"))
+            InferenceBackend(device_preference=config.get("audio_device"))
             if _native_audio_worker
             else InferenceBackend()
         )
@@ -1516,7 +1526,7 @@ def run_inference_process(
             {
                 "type": "error",
                 "error": f"Failed to initialize inference backend: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
             },
         )
         return
@@ -1527,7 +1537,7 @@ def run_inference_process(
 
     while True:
         try:
-            cmd = cmd_queue.get(timeout = 1.0)
+            cmd = cmd_queue.get(timeout=1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):
@@ -1646,12 +1656,12 @@ def run_inference_process(
                 )
 
         except Exception as exc:
-            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info=True)
             _send_response(
                 resp_queue,
                 {
                     "type": "error",
                     "error": f"Command '{cmd_type}' failed: {exc}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                 },
             )

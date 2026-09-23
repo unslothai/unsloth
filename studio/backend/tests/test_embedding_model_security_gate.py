@@ -39,9 +39,9 @@ def _security_stub(blocked):
 
 def _plan(model, backend):
     return settings.EmbeddingModelResolveResponse(
-        embedding_model = model,
-        backend = backend,
-        download_repo = f"{model}-GGUF" if backend == "llama" else model,
+        embedding_model=model,
+        backend=backend,
+        download_repo=f"{model}-GGUF" if backend == "llama" else model,
     )
 
 
@@ -51,20 +51,20 @@ def client(monkeypatch):
     # offline and deterministic for the endpoint tests that use this fixture.
     import core.rag.embeddings as embeddings
 
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token=None: ())
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+        lambda v, gguf_repo=None, backend=None, download_pending=False, gguf_files=None: (
             saved.update(
-                model = v,
-                gguf_repo = gguf_repo,
-                backend = backend,
-                download_pending = download_pending,
-                gguf_files = gguf_files,
+                model=v,
+                gguf_repo=gguf_repo,
+                backend=backend,
+                download_pending=download_pending,
+                gguf_files=gguf_files,
             )
         ),
     )
@@ -95,14 +95,14 @@ def client(monkeypatch):
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     # Classified by caller now, so the app must be able to say which caller this is.
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
-    return TestClient(app, raise_server_exceptions = False), saved
+    return TestClient(app, raise_server_exceptions=False), saved
 
 
 def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=True))
     r = c.put(
-        "/embedding-model", json = {"embedding_model": "attacker/malicious-embed", "force": True}
+        "/embedding-model", json={"embedding_model": "attacker/malicious-embed", "force": True}
     )
     # 403, not the forceable 409, so the client does not offer "save anyway".
     assert r.status_code == 403
@@ -111,19 +111,19 @@ def test_flagged_repo_is_blocked_even_with_force(client, monkeypatch):
 
 def test_flagged_repo_is_blocked_without_force(client, monkeypatch):
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
-    r = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=True))
+    r = c.put("/embedding-model", json={"embedding_model": "attacker/malicious-embed"})
     assert r.status_code == 403
     assert "model" not in saved
 
 
 def test_uncached_selection_is_marked_pending_so_loaders_stay_offline(client, monkeypatch):
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     import utils.models as models
 
     monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: True)
-    response = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    response = c.put("/embedding-model", json={"embedding_model": "acme/embedder"})
 
     assert response.status_code == 200
     assert saved["download_pending"] is True
@@ -133,17 +133,17 @@ def test_hard_block_uses_non_forceable_status(client, monkeypatch):
     # The forceable verification path uses 409; the hard security block must be distinct
     # (403) so the frontend never routes it into the "save anyway" force flow.
     c, _saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
-    blocked = c.put("/embedding-model", json = {"embedding_model": "attacker/malicious-embed"})
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=True))
+    blocked = c.put("/embedding-model", json={"embedding_model": "attacker/malicious-embed"})
     assert blocked.status_code == 403
 
     # A verification failure (not-an-embedding-model) stays forceable at 409.
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    monkeypatch.setattr(settings, "is_embedding_model", lambda *a, **k: False, raising = False)
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
+    monkeypatch.setattr(settings, "is_embedding_model", lambda *a, **k: False, raising=False)
     import utils.models as _models
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
-    unverified = c.put("/embedding-model", json = {"embedding_model": "acme/not-an-embedder"})
+    unverified = c.put("/embedding-model", json={"embedding_model": "acme/not-an-embedder"})
     assert unverified.status_code == 409
 
 
@@ -151,14 +151,14 @@ def test_offline_cached_non_st_model_is_accepted(client, monkeypatch):
     # Offline, a cached transformers-native embedder (no modules.json) is unverifiable via HF
     # metadata, but ST can load any cached encoder, so accept it (no 409).
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     import utils.models as _models
     import utils.utils as _uu
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
     monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: True)
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/gte-modernbert"})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/gte-modernbert"})
     assert r.status_code == 200
     assert saved.get("model") == "acme/gte-modernbert"
 
@@ -167,14 +167,14 @@ def test_offline_partial_or_uncached_model_still_409(client, monkeypatch):
     # Offline but not loadable (uncached or metadata-only partial cache): keep the forceable
     # 409, since the cache-only load would fail anyway.
     c, _saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     import utils.models as _models
     import utils.utils as _uu
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
     monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: False)
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/uncached-embedder"})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/uncached-embedder"})
     assert r.status_code == 409
 
 
@@ -193,18 +193,18 @@ def test_offline_skips_remote_gguf_probe(client, monkeypatch):
     import utils.models as _models
 
     monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: True)
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/embedder"})
     assert r.status_code == 200
 
 
 def test_client_cannot_persist_an_unvalidated_gguf_repo(client, monkeypatch):
     c, saved = client
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
 
     r = c.put(
         "/embedding-model",
-        json = {
+        json={
             "embedding_model": "acme/embedder",
             "backend": "llama",
             "gguf_repo": "attacker/unrelated-llm-GGUF",
@@ -223,11 +223,11 @@ def test_security_scan_uses_the_resolved_destination_backend(client, monkeypatch
         "_resolve_embedding_model_plan",
         lambda model, token: _plan(model, "sentence-transformers"),
     )
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=True))
 
     r = c.put(
         "/embedding-model",
-        json = {"embedding_model": "attacker/flagged-st", "backend": "sentence-transformers"},
+        json={"embedding_model": "attacker/flagged-st", "backend": "sentence-transformers"},
     )
     assert r.status_code == 403
     assert "model" not in saved
@@ -242,13 +242,13 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+        lambda v, gguf_repo=None, backend=None, download_pending=False, gguf_files=None: (
             saved.update(
-                model = v,
-                gguf_repo = gguf_repo,
-                backend = backend,
-                download_pending = download_pending,
-                gguf_files = gguf_files,
+                model=v,
+                gguf_repo=gguf_repo,
+                backend=backend,
+                download_pending=download_pending,
+                gguf_files=gguf_files,
             )
         ),
     )
@@ -277,10 +277,10 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
-    c = TestClient(app, raise_server_exceptions = False)
+    c = TestClient(app, raise_server_exceptions=False)
     r = c.put(
         "/embedding-model",
-        json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
+        json={"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
     assert called["scanned"] is False  # the ST pickle scan never ran on the llama path
@@ -299,7 +299,7 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     # though the auto resolver would still say sentence-transformers.
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token=None: ())
 
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
@@ -307,13 +307,13 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+        lambda v, gguf_repo=None, backend=None, download_pending=False, gguf_files=None: (
             saved.update(
-                model = v,
-                gguf_repo = gguf_repo,
-                backend = backend,
-                download_pending = download_pending,
-                gguf_files = gguf_files,
+                model=v,
+                gguf_repo=gguf_repo,
+                backend=backend,
+                download_pending=download_pending,
+                gguf_files=gguf_files,
             )
         ),
     )
@@ -343,10 +343,10 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
-    c = TestClient(app, raise_server_exceptions = False)
+    c = TestClient(app, raise_server_exceptions=False)
     r = c.put(
         "/embedding-model",
-        json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
+        json={"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
     )
     assert r.status_code == 200
     assert called["scanned"] is False  # the ST pickle scan never ran on the llama fallback
@@ -397,13 +397,13 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+        lambda v, gguf_repo=None, backend=None, download_pending=False, gguf_files=None: (
             saved.update(
-                model = v,
-                gguf_repo = gguf_repo,
-                backend = backend,
-                download_pending = download_pending,
-                gguf_files = gguf_files,
+                model=v,
+                gguf_repo=gguf_repo,
+                backend=backend,
+                download_pending=download_pending,
+                gguf_files=gguf_files,
             )
         ),
     )
@@ -420,7 +420,7 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+        embeddings, "_st_module_subdirs", lambda name, token=None: ("0_Transformer",)
     )
     seen = {}
 
@@ -437,9 +437,9 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
-    c = TestClient(app, raise_server_exceptions = False)
+    c = TestClient(app, raise_server_exceptions=False)
     r = c.put(
-        "/embedding-model", json = {"embedding_model": "acme/embed-with-module-dir", "force": True}
+        "/embedding-model", json={"embedding_model": "acme/embed-with-module-dir", "force": True}
     )
     assert r.status_code == 200
     assert "0_Transformer" in seen["subdirs"]
@@ -447,8 +447,8 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
 
 def test_clean_repo_saves_under_force(client, monkeypatch):
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/clean-embed", "force": True})
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
+    r = c.put("/embedding-model", json={"embedding_model": "acme/clean-embed", "force": True})
     assert r.status_code == 200
     assert saved.get("model") == "acme/clean-embed"
     assert r.json() == {
@@ -465,15 +465,17 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
 
 
 def test_load_sink_refuses_flagged_model(monkeypatch):
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=True))
     import core.rag.embeddings as embeddings
+
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):
         embeddings._guard_model_security("attacker/malicious-embed")
 
 
 def test_load_sink_allows_clean_model(monkeypatch):
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     import core.rag.embeddings as embeddings
+
     embeddings._guard_model_security("acme/clean-embed")  # no raise
 
 
@@ -482,7 +484,7 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     # loader's own token to the scan, or it fails open for the repo that still loads.
     seen = {}
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: (
+    mod.security_load_subdirs = lambda name, token=None: (
         seen.setdefault("subdirs_token", token) or ()
     )
     mod.evaluate_file_security = lambda *a, **k: (
@@ -508,14 +510,14 @@ def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
         return _Decision(False)
 
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: ()
+    mod.security_load_subdirs = lambda name, token=None: ()
     mod.evaluate_file_security = _capture
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: None)
     monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+        embeddings, "_st_module_subdirs", lambda name, token=None: ("0_Transformer",)
     )
     embeddings._guard_model_security("acme/embed-with-module-dir")
     assert "0_Transformer" in seen["subdirs"]
@@ -572,7 +574,7 @@ def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
 
 def _erroring_plan(model, backend, error):
     return settings.EmbeddingModelResolveResponse(
-        embedding_model = model, backend = backend, error = error
+        embedding_model=model, backend=backend, error=error
     )
 
 
@@ -580,7 +582,7 @@ def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, mon
     """The PUT raised on plan.error only for llama destinations, so a repo passing
     the tag gate with no loadable checkpoint was persisted anyway."""
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     import utils.models as models
 
     monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: True)
@@ -592,7 +594,7 @@ def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, mon
         ),
     )
 
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/gguf-only"})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/gguf-only"})
     # 409, so the client can still offer "save anyway" as it does for a GGUF error.
     assert r.status_code == 409
     assert "No sentence-transformers weights found." in r.json()["detail"]
@@ -603,14 +605,14 @@ def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
     """Save anyway over a failed plan recorded no marker, so both loaders took
     their uncached path and fetched invisibly at the first index."""
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     monkeypatch.setattr(
         settings,
         "_resolve_embedding_model_plan",
         lambda model, token: _erroring_plan(model, "sentence-transformers", "cannot resolve"),
     )
 
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder", "force": True})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/embedder", "force": True})
 
     assert r.status_code == 200
     assert saved["model"] == "acme/embedder"
@@ -628,14 +630,14 @@ def test_unload_is_offered_while_another_model_is_still_resident(client, monkeyp
     import core.rag.embeddings as embeddings
 
     # A is resident; B is what Settings now names.
-    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: model_name is None)
+    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name=None: model_name is None)
 
     body = c.get("/embedding-model").json()
     assert body["loaded"] is False
     assert body["backend_loaded"] is True
 
     # Nothing resident at all: neither is claimed.
-    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: False)
+    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name=None: False)
     body = c.get("/embedding-model").json()
     assert body["loaded"] is False
     assert body["backend_loaded"] is False
@@ -652,7 +654,7 @@ def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch
     c, saved = client
     seen = {}
 
-    def _subdirs(name, token = None):
+    def _subdirs(name, token=None):
         seen["subdirs"] = name
         return ()
 
@@ -675,13 +677,13 @@ def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch
         settings,
         "_resolve_embedding_model_plan",
         lambda model, token: settings.EmbeddingModelResolveResponse(
-            embedding_model = model,
-            backend = "sentence-transformers",
-            download_repo = "sentence-transformers/all-MiniLM-L6-v2",
+            embedding_model=model,
+            backend="sentence-transformers",
+            download_repo="sentence-transformers/all-MiniLM-L6-v2",
         ),
     )
 
-    r = c.put("/embedding-model", json = {"embedding_model": "all-MiniLM-L6-v2"})
+    r = c.put("/embedding-model", json={"embedding_model": "all-MiniLM-L6-v2"})
     assert r.status_code == 200
     # The setting keeps what the user picked...
     assert saved["model"] == "all-MiniLM-L6-v2"
@@ -702,7 +704,7 @@ def test_a_llama_download_repo_is_not_used_as_the_scan_target(client, monkeypatc
         return _Decision(False)
 
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: ()
+    mod.security_load_subdirs = lambda name, token=None: ()
     mod.evaluate_file_security = _scan
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import utils.models as models
@@ -713,11 +715,11 @@ def test_a_llama_download_repo_is_not_used_as_the_scan_target(client, monkeypatc
         settings,
         "_resolve_embedding_model_plan",
         lambda model, token: settings.EmbeddingModelResolveResponse(
-            embedding_model = model, backend = "llama", download_repo = f"{model}-GGUF"
+            embedding_model=model, backend="llama", download_repo=f"{model}-GGUF"
         ),
     )
 
-    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder"})
+    r = c.put("/embedding-model", json={"embedding_model": "acme/embedder"})
     assert r.status_code == 200
     # The llama path does not scan the ST repo at all, so nothing was scanned.
     assert "scanned" not in seen
@@ -731,7 +733,7 @@ def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch)
     from hub.utils import hf_tokens
 
     c, saved = client
-    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked=False))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     import utils.models as _models
     import utils.utils as _uu
@@ -746,7 +748,7 @@ def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch)
 
     r = c.put(
         "/embedding-model",
-        json = {"embedding_model": "acme/private-embedder", "hf_token": "hf_dummy"},
+        json={"embedding_model": "acme/private-embedder", "hf_token": "hf_dummy"},
     )
 
     assert r.status_code == 409

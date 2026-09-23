@@ -43,14 +43,14 @@ class HeterogeneousConfig:
     def __init__(
         self,
         per_layer_head_dims,
-        model_type = "gemma4",
+        model_type="gemma4",
         **kwargs,
     ):
         self.model_type = model_type
         self.attention_dropout = 0
         self.per_layer_attributes = {"head_dim"}
         self.per_layer_config = tuple(
-            SimpleNamespace(head_dim = dim, attention_dropout = 0) for dim in per_layer_head_dims
+            SimpleNamespace(head_dim=dim, attention_dropout=0) for dim in per_layer_head_dims
         )
         self._global_head_dim = per_layer_head_dims[0] if per_layer_head_dims else None
         for key, value in kwargs.items():
@@ -90,7 +90,7 @@ def test_a_global_read_that_raises_is_treated_as_no_answer():
 
 def test_a_field_that_is_not_per_layer_still_reads_normally():
     """The guard must not turn every read into the default."""
-    config = HeterogeneousConfig([128], num_attention_heads = 8)
+    config = HeterogeneousConfig([128], num_attention_heads=8)
     assert _utils._config_get(config, "num_attention_heads", None) == 8
     assert _utils._config_get(config, "model_type", None) == "gemma4"
 
@@ -146,7 +146,7 @@ def test_resolving_the_attention_implementation_no_longer_raises():
         _supports_sdpa = True
 
     config = HeterogeneousConfig([128, 128])
-    impl = _utils.resolve_attention_implementation(Supports, config, supports_sdpa = True)
+    impl = _utils.resolve_attention_implementation(Supports, config, supports_sdpa=True)
     assert isinstance(impl, str) and impl
 
 
@@ -201,7 +201,7 @@ def test_a_serialized_per_layer_config_is_read_from_a_namespace():
 def test_configs_without_per_layer_values_are_unaffected(per_layer):
     """transformers 4.57.6 has no per-layer concept at all, and a homogeneous
     5.x config has an empty one. Neither may change behaviour."""
-    config = SimpleNamespace(model_type = "llama", attention_dropout = 0, head_dim = 128)
+    config = SimpleNamespace(model_type="llama", attention_dropout=0, head_dim=128)
     if per_layer is not None:
         config.per_layer_config = per_layer
     assert _utils._get_per_layer_values(config, "head_dim") == []

@@ -77,7 +77,7 @@ def retrieve_web_chunks(
     try:
         conn = rag_db.get_connection()
     except Exception:
-        logger.warning("research.web_rank_failed", exc_info = True)
+        logger.warning("research.web_rank_failed", exc_info=True)
         return "", []
     scope = f"research_scrape_{uuid.uuid4().hex}"
     doc_ids: list[str] = []
@@ -88,25 +88,25 @@ def retrieve_web_chunks(
                 continue
             source = str(page.get("title") or page.get("url") or "web").strip() or "web"
             chunks = chunk_pages(
-                [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = max_tokens,
-                overlap = overlap,
-                count = count,
+                [Page(text=text, page_number=None, char_count=len(text))],
+                max_tokens=max_tokens,
+                overlap=overlap,
+                count=count,
             )
             if not chunks:
                 continue
             # The identity must come from the encode that produced these vectors: a concurrent ST failure
             # swaps the process embedder, and reading it after the fact labels the page with the wrong space.
             vectors, identity = embeddings.encode_with_identity(
-                [chunk.text for chunk in chunks], model_name = model, normalize = True
+                [chunk.text for chunk in chunks], model_name=model, normalize=True
             )
             doc_id = store.create_document(
                 conn,
-                scope = scope,
-                filename = source,
-                sha256 = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(),
-                status = "ready",
-                embedding_model = identity,
+                scope=scope,
+                filename=source,
+                sha256=hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(),
+                status="ready",
+                embedding_model=identity,
             )
             doc_ids.append(doc_id)
             store.add_chunks(conn, scope, doc_id, chunks, vectors)
@@ -114,7 +114,7 @@ def retrieve_web_chunks(
         if not doc_ids:
             return "", []
         hits = retrieval.retrieve_hybrid(
-            conn, scope, query, k = top_n, model_name = model, mode = "hybrid"
+            conn, scope, query, k=top_n, model_name=model, mode="hybrid"
         )
         hits = retrieval.filter_min_score(hits, min_score)
         if not hits:
@@ -123,7 +123,7 @@ def retrieve_web_chunks(
         hits = _fit_to_budget(hits, rows, char_budget)
         return tool._format(rows, hits)
     except Exception:
-        logger.warning("research.web_rank_failed", exc_info = True)
+        logger.warning("research.web_rank_failed", exc_info=True)
         return "", []
     finally:
         for doc_id in doc_ids:

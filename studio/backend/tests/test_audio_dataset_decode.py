@@ -19,13 +19,13 @@ pytest.importorskip("librosa")
 datasets = pytest.importorskip("datasets")
 
 
-def _wav_bytes(samples = 1600, sampling_rate = 16000):
+def _wav_bytes(samples=1600, sampling_rate=16000):
     buf = io.BytesIO()
     sf.write(
         buf,
-        np.linspace(-0.5, 0.5, samples, dtype = "float32"),
+        np.linspace(-0.5, 0.5, samples, dtype="float32"),
         sampling_rate,
-        format = "WAV",
+        format="WAV",
     )
     return buf.getvalue()
 
@@ -49,8 +49,8 @@ def test_a_broken_torchcodec_makes_datasets_refuse_the_column(broken_torchcodec)
     from datasets import Audio, Dataset
 
     ds = Dataset.from_dict({"audio": [{"path": "a.wav", "bytes": _wav_bytes()}]})
-    ds = ds.cast_column("audio", Audio(sampling_rate = 24000))
-    with pytest.raises(ImportError, match = "torchcodec"):
+    ds = ds.cast_column("audio", Audio(sampling_rate=24000))
+    with pytest.raises(ImportError, match="torchcodec"):
         ds[0]["audio"]
 
 
@@ -59,26 +59,26 @@ def test_the_soundfile_decoder_resamples_to_the_cast_rate(broken_torchcodec):
 
     assert audio_decode.ensure_audio_decoding() is True
     ds = Dataset.from_dict({"audio": [{"path": "a.wav", "bytes": _wav_bytes()}]})
-    ds = ds.cast_column("audio", Audio(sampling_rate = 24000))
+    ds = ds.cast_column("audio", Audio(sampling_rate=24000))
     decoded = ds[0]["audio"]
 
     assert decoded["sampling_rate"] == 24000
     # 1600 samples at 16 kHz is 0.1 s, so 24 kHz gives 2400 back.
-    assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
+    assert len(decoded["array"]) == pytest.approx(2400, abs=4)
     assert decoded["path"] == "a.wav"
 
 
-def _m4a_bytes(seconds = 1.0, sampling_rate = 22050):
+def _m4a_bytes(seconds=1.0, sampling_rate=22050):
     """An AAC file in an MP4 container: what torchcodec decoded and libsndfile cannot."""
     av = pytest.importorskip("av")
     t = np.arange(int(seconds * sampling_rate)) / sampling_rate
     tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype("float32")
     buf = io.BytesIO()
     try:
-        with av.open(buf, "w", format = "mp4") as container:
-            stream = container.add_stream("aac", rate = sampling_rate)
+        with av.open(buf, "w", format="mp4") as container:
+            stream = container.add_stream("aac", rate=sampling_rate)
             stream.layout = "mono"
-            frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+            frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format="flt", layout="mono")
             frame.sample_rate = sampling_rate
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -100,7 +100,7 @@ def test_an_m4a_row_decodes_through_pyav_when_torchcodec_is_broken(broken_torchc
         sf.read(io.BytesIO(raw))
     assert audio_decode.ensure_audio_decoding() is True
     ds = Dataset.from_dict({"audio": [{"path": "tone.m4a", "bytes": raw}]})
-    ds = ds.cast_column("audio", Audio(sampling_rate = 16000))
+    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
     decoded = ds[0]["audio"]
 
     assert decoded["sampling_rate"] == 16000
@@ -113,21 +113,21 @@ def test_an_m4a_row_decodes_through_pyav_when_torchcodec_is_broken(broken_torchc
     assert decoded["path"] == "tone.m4a"
 
 
-def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
+def _two_stream_m4a_bytes(rate=22050, freqs=(440, 880)):
     """One MP4 holding two AAC tracks, a tone per stream; the second is the one a stream_index must reach."""
     av = pytest.importorskip("av")
     t = np.arange(rate) / rate
     buf = io.BytesIO()
     try:
-        with av.open(buf, "w", format = "mp4") as container:
+        with av.open(buf, "w", format="mp4") as container:
             streams = []
             for hz in freqs:
-                stream = container.add_stream("aac", rate = rate)
+                stream = container.add_stream("aac", rate=rate)
                 stream.layout = "mono"
                 streams.append(stream)
             for stream, hz in zip(streams, freqs):
                 tone = (0.5 * np.sin(2 * np.pi * hz * t)).astype("float32")
-                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format="flt", layout="mono")
                 frame.sample_rate = rate
                 for packet in stream.encode(frame):
                     container.mux(packet)
@@ -139,7 +139,7 @@ def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
 
 
 def _dominant_hz(array, rate):
-    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype = "float64")))
+    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype="float64")))
     return float(np.fft.rfftfreq(len(array), 1.0 / rate)[int(np.argmax(spectrum))])
 
 
@@ -151,11 +151,11 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
     assert audio_decode.ensure_audio_decoding() is True
     rows = {"audio": [{"path": "two.m4a", "bytes": raw}]}
     first = Dataset.from_dict(rows).cast_column("audio", Audio())[0]["audio"]
-    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index = 1))[0]["audio"]
+    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index=1))[0]["audio"]
     assert abs(_dominant_hz(first["array"], first["sampling_rate"]) - 440) < 20
     assert abs(_dominant_hz(second["array"], second["sampling_rate"]) - 880) < 20
-    with pytest.raises(Exception, match = "stream"):
-        audio_decode._read_mono(io.BytesIO(raw), stream_index = 5)
+    with pytest.raises(Exception, match="stream"):
+        audio_decode._read_mono(io.BytesIO(raw), stream_index=5)
 
 
 def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec, tmp_path):
@@ -194,12 +194,12 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
             "default",
             str(path),
         ],
-        check = True,
+        check=True,
     )
     assert audio_decode.ensure_audio_decoding() is True
     array, rate = audio_decode._read_mono(str(path))
     assert abs(_dominant_hz(array, rate) - 880) < 20
-    array, rate = audio_decode._read_mono(str(path), stream_index = 0)
+    array, rate = audio_decode._read_mono(str(path), stream_index=0)
     assert abs(_dominant_hz(array, rate) - 440) < 20
 
 
@@ -209,10 +209,10 @@ def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec
     from datasets import Audio, Dataset
 
     assert audio_decode.ensure_audio_decoding() is True
-    stereo = np.stack([np.linspace(-0.5, 0.5, 1600, dtype = "float32")] * 2)
+    stereo = np.stack([np.linspace(-0.5, 0.5, 1600, dtype="float32")] * 2)
     assert stereo.shape == (2, 1600)
     ds = Dataset.from_dict({"audio": [{"array": stereo, "sampling_rate": 16000, "path": "s.wav"}]})
-    decoded = ds.cast_column("audio", Audio(sampling_rate = 16000))[0]["audio"]
+    decoded = ds.cast_column("audio", Audio(sampling_rate=16000))[0]["audio"]
     assert len(decoded["array"]) == 1600 and decoded["sampling_rate"] == 16000
 
 
@@ -235,7 +235,7 @@ def test_an_undecodable_row_names_both_decoders(broken_torchcodec):
     audio_decode.ensure_audio_decoding()
     ds = Dataset.from_dict({"audio": [{"path": "junk.bin", "bytes": b"not audio at all"}]})
     ds = ds.cast_column("audio", Audio())
-    with pytest.raises(RuntimeError, match = "soundfile .* PyAV"):
+    with pytest.raises(RuntimeError, match="soundfile .* PyAV"):
         ds[0]["audio"]
 
 
@@ -243,7 +243,7 @@ def test_a_stereo_source_is_averaged_to_mono(broken_torchcodec):
     from datasets import Audio, Dataset
 
     buf = io.BytesIO()
-    sf.write(buf, np.zeros((800, 2), dtype = "float32"), 16000, format = "WAV")
+    sf.write(buf, np.zeros((800, 2), dtype="float32"), 16000, format="WAV")
     audio_decode.ensure_audio_decoding()
     ds = Dataset.from_dict({"audio": [{"path": "s.wav", "bytes": buf.getvalue()}]})
     ds = ds.cast_column("audio", Audio())
@@ -292,7 +292,7 @@ def test_a_stereo_source_keeps_its_frames(broken_torchcodec):
     from datasets import Audio, Dataset
 
     buf = io.BytesIO()
-    sf.write(buf, np.zeros((800, 2), dtype = "float32"), 16000, format = "WAV")
+    sf.write(buf, np.zeros((800, 2), dtype="float32"), 16000, format="WAV")
     audio_decode.ensure_audio_decoding()
     ds = Dataset.from_dict({"audio": [{"path": "s.wav", "bytes": buf.getvalue()}]})
     ds = ds.cast_column("audio", Audio())
@@ -331,7 +331,7 @@ def test_the_audio_trainer_paths_install_the_decoder():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert "ensure_audio_decoding()" in source
     # Guarded so a text-only run never pays for the probe.
@@ -353,24 +353,24 @@ def test_a_concurrent_first_install_captures_the_original_encode_once(
     from utils.datasets import audio_decode
 
     original = Audio.encode_example
-    monkeypatch.setattr(audio_decode, "_installed", False, raising = False)
-    monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None, raising = False)
+    monkeypatch.setattr(audio_decode, "_installed", False, raising=False)
+    monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None, raising=False)
 
     start = threading.Barrier(4)
     errors: list[BaseException] = []
 
     def install():
         try:
-            start.wait(timeout = 10)
+            start.wait(timeout=10)
             audio_decode.ensure_audio_decoding()
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target = install) for _ in range(4)]
+    threads = [threading.Thread(target=install) for _ in range(4)]
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout = 30)
+        thread.join(timeout=30)
 
     assert not errors, errors[:2]
     assert audio_decode._ORIGINAL_ENCODE is original

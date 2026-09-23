@@ -71,7 +71,7 @@ class _FakeDtype:
 
 
 class _FakeGenerator:
-    def __init__(self, device = None) -> None:
+    def __init__(self, device=None) -> None:
         self.device = device
 
     def seed(self) -> int:
@@ -93,10 +93,10 @@ class _FakePipe:
         self.moved_to = device
         return self
 
-    def enable_model_cpu_offload(self, device = None) -> None:
+    def enable_model_cpu_offload(self, device=None) -> None:
         pass
 
-    def enable_sequential_cpu_offload(self, device = None) -> None:
+    def enable_sequential_cpu_offload(self, device=None) -> None:
         pass
 
     def enable_vae_tiling(self) -> None:
@@ -109,15 +109,15 @@ class _FakePipe:
     def __call__(
         self,
         *,
-        prompt = None,
-        negative_prompt = None,
-        callback_on_step_end = None,
-        guidance_scale = None,
-        true_cfg_scale = None,
+        prompt=None,
+        negative_prompt=None,
+        callback_on_step_end=None,
+        guidance_scale=None,
+        true_cfg_scale=None,
         **kwargs,
     ):
         n = kwargs.get("num_images_per_prompt", 1)
-        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+        return types.SimpleNamespace(images=[_FakeImage() for _ in range(n)])
 
 
 class _FakePipeline:
@@ -143,7 +143,7 @@ def _stub_package(name: str) -> types.ModuleType:
     """
     module = types.ModuleType(name)
     module.__path__ = []  # empty: submodules are registered by hand, never found on disk
-    module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = True)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
     return module
 
 
@@ -166,8 +166,8 @@ def stub_runtime(monkeypatch):
     torch.float16 = _FakeDtype("float16")
     torch.float32 = _FakeDtype("float32")
     torch.Generator = _FakeGenerator
-    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    torch.backends = types.SimpleNamespace(mps = None)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=None)
     torch.inference_mode = lambda: contextlib.nullcontext()
     # torch.nn.functional: imported by diffusion_eager_patches. Empty -- the patch installers
     # only probe it (hasattr F, "rms_norm") and no patched forward runs under the fake pipe.
@@ -177,7 +177,7 @@ def stub_runtime(monkeypatch):
     torch.nn = torch_nn
 
     diffusers = _stub_package("diffusers")
-    diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
+    diffusers.GGUFQuantizationConfig = lambda compute_dtype=None: ("quant", compute_dtype)
     diffusers.ZImagePipeline = _FakePipeline
     diffusers.ZImageTransformer2DModel = _FakeTransformer
     # diffusers.loaders.single_file_model: the GGUF prefix-strip shim looks the transformer class
@@ -249,12 +249,12 @@ def _load(backend, tmp_path, monkeypatch, torch, **kwargs):
     # Drive the loader down the CUDA (dense-quant capable) path under the stub.
     monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
     return backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", **kwargs
+        str(tmp_path), gguf_filename="m.gguf", family_override="z-image", **kwargs
     )
 
 
 def _generate(backend):
-    return backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 2, guidance = 1.0, seed = 7)
+    return backend.generate(prompt="a sloth", width=512, height=512, steps=2, guidance=1.0, seed=7)
 
 
 # ── backend: generate() reports the committed load state ──────────────────────
@@ -270,7 +270,7 @@ def test_a_declined_quant_request_is_not_reported_as_engaged(
     # has to ask for that build, the same way the routes and backend suites do.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
-    status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = "fp8")
+    status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant="fp8")
 
     assert status["transformer_quant"] is None
     assert backend._state.transformer_quant is None
@@ -302,19 +302,19 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
     def _from_pretrained(cls, base, **kwargs):
         return object()
 
-    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising=False)
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
         diffusion_module,
         "select_transformer_quant_scheme",
-        lambda target, mode, family = None: engaged,
+        lambda target, mode, family=None: engaged,
     )
     monkeypatch.setattr(diffusion_module, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
         diffusion_module, "quantize_transformer", lambda pipe, target, *, mode, **kw: engaged
     )
 
-    status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = requested)
+    status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant=requested)
 
     assert status["transformer_quant"] == engaged
     assert backend._state.transformer_quant == engaged
@@ -353,6 +353,7 @@ class _EngagedBackend:
 
     def validate_load_request(self, model_path, **kwargs):
         from core.inference.diffusion_families import detect_family
+
         return detect_family(model_path, kwargs.get("family_override"))
 
     def preflight_base_access(self, model_path, fam, **kwargs):
@@ -393,10 +394,10 @@ class _EngagedBackend:
     def generate(
         self,
         *,
-        seed = None,
-        batch_size = 1,
-        prompts = None,
-        seeds = None,
+        seed=None,
+        batch_size=1,
+        prompts=None,
+        seeds=None,
         **kwargs,
     ):
         if not self.loaded:
@@ -450,10 +451,10 @@ def engaged_client(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery, "save", _save)
 
     app = FastAPI()
-    app.include_router(studio_router, prefix = "/api/inference")
+    app.include_router(studio_router, prefix="/api/inference")
     # The OpenAI-compatible images route lives on the other router, mounted at /v1 in
     # production. Both persistence paths reach the same gallery, so both are exercised here.
-    app.include_router(openai_router, prefix = "/v1")
+    app.include_router(openai_router, prefix="/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app), backend, saved
@@ -463,7 +464,7 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
     client, backend, saved = engaged_client
     load = client.post(
         "/api/inference/images/load",
-        json = {
+        json={
             "model_path": "unsloth/Z-Image-Turbo-GGUF",
             "gguf_filename": "z-image-Q4_K_M.gguf",
             "transformer_quant": _EngagedBackend.requested,
@@ -473,7 +474,7 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
     # The request really did ask for the other scheme.
     assert backend.last_load_kwargs["transformer_quant"] == _EngagedBackend.requested
 
-    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    gen = client.post("/api/inference/images/generate", json={"prompt": "a sloth", "seed": 7})
     assert gen.status_code == 200, gen.text
 
     assert len(saved) == 1
@@ -511,7 +512,7 @@ def test_the_openai_route_persists_the_same_build(engaged_client):
     client, backend, saved = engaged_client
     load = client.post(
         "/api/inference/images/load",
-        json = {
+        json={
             "model_path": "unsloth/Z-Image-Turbo-GGUF",
             "gguf_filename": "z-image-Q4_K_M.gguf",
             "transformer_quant": _EngagedBackend.requested,
@@ -521,7 +522,7 @@ def test_the_openai_route_persists_the_same_build(engaged_client):
 
     generated = client.post(
         "/v1/images/generations",
-        json = {"prompt": "a sloth", "n": 1, "response_format": "url"},
+        json={"prompt": "a sloth", "n": 1, "response_format": "url"},
     )
     assert generated.status_code == 200, generated.text
 
@@ -539,6 +540,7 @@ def test_the_stub_runtime_does_not_outlive_its_own_test(stub_runtime):
     but not those, and every later test in the process would then run against module bodies
     bound to a fake torch. The fixture has to evict them."""
     import core.inference.diffusion_eager_patches  # noqa: F401 — imported under the stubs
+
     assert sys.modules["torch"] is stub_runtime
     # The eviction itself is asserted by the sibling test below, which runs after teardown.
 
@@ -630,7 +632,7 @@ def test_a_png_with_the_build_keys_round_trips_them(tmp_gallery):
     # green and the wire silently short -- which is the popover going blank.
     from models.inference import GalleryListResponse
 
-    wire = GalleryListResponse(images = listed).model_dump()["images"][0]
+    wire = GalleryListResponse(images=listed).model_dump()["images"][0]
     for key in ("model_kind", "gguf_filename", "transformer_quant"):
         assert wire.get(key) == meta[key], (
             f"GalleryImage no longer serializes {key!r}: the record has {meta[key]!r}, the wire "
@@ -649,7 +651,7 @@ def test_a_png_with_the_build_keys_round_trips_them(tmp_gallery):
 
 
 def test_the_recipe_popover_renders_the_build_fields():
-    src = (_FRONTEND / "features" / "images" / "images-page.tsx").read_text(encoding = "utf-8")
+    src = (_FRONTEND / "features" / "images" / "images-page.tsx").read_text(encoding="utf-8")
     popover = src[src.index("function RecipePopover(") :]
     popover = popover[: popover.index("\ntype Busy")]
     assert '<RecipeRow label="Quant" value={image.transformer_quant} />' in popover

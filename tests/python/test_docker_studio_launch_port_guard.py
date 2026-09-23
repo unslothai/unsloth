@@ -20,15 +20,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "docker" / "studio_launch.sh"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
 
 def _run(port: str) -> subprocess.CompletedProcess:
     # check-only: past the settings checks the launcher writes /etc/profile.d,
     # /root/.jupyter and /workspace, which on a root test host it really would
-    env = dict(os.environ, JUPYTER_PORT = port, UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "1")
+    env = dict(os.environ, JUPYTER_PORT=port, UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY="1")
     return subprocess.run(
-        ["bash", str(LAUNCH)], capture_output = True, text = True, env = env, timeout = 120
+        ["bash", str(LAUNCH)], capture_output=True, text=True, env=env, timeout=120
     )
 
 
@@ -59,14 +59,14 @@ def test_other_ports_and_values_jupyter_rejects_itself_pass_the_guard(port: str)
 
 @pytest.mark.skipif(
     getattr(os, "geteuid", lambda: -1)() == 0,
-    reason = "as root the launcher would write to /etc and /root",
+    reason="as root the launcher would write to /etc and /root",
 )
 def test_check_only_set_to_zero_does_not_stop_the_launcher():
     """`=0` must mean off: the launcher goes on past the guard. On a non-root test host
     the next step, writing /etc/profile.d, fails, which is the proof that it went on."""
-    env = dict(os.environ, JUPYTER_PORT = "8899", UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "0")
+    env = dict(os.environ, JUPYTER_PORT="8899", UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY="0")
     res = subprocess.run(
-        ["bash", str(LAUNCH)], capture_output = True, text = True, env = env, timeout = 120
+        ["bash", str(LAUNCH)], capture_output=True, text=True, env=env, timeout=120
     )
     assert res.returncode != 0, "check-only=0 exited 0 before touching anything"
     assert "/etc/profile.d/unsloth_env.sh" in res.stderr, res.stderr
@@ -75,7 +75,7 @@ def test_check_only_set_to_zero_does_not_stop_the_launcher():
 def test_the_check_only_exit_comes_after_the_guard():
     """The guard is the point; check-only must not skip it, and nothing before the
     check-only exit may touch the host."""
-    body = LAUNCH.read_text(encoding = "utf-8")
+    body = LAUNCH.read_text(encoding="utf-8")
     guard = body.index("jupyter_port_digits == UNSLOTH_STUDIO_PORT")
     check = body.index("UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-")
     assert guard < check

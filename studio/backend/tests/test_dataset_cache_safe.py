@@ -36,7 +36,7 @@ def _isolate_hub_symlink_state(monkeypatch):
     """Keep _disable_hf_symlinks_for_process from leaking into other tests."""
     from huggingface_hub import constants, file_download
 
-    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising=False)
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
 
 
@@ -51,19 +51,19 @@ def test_windows_symlink_privilege_failure_retries_with_regular_files(monkeypatc
 
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
 
     from huggingface_hub import constants
     from huggingface_hub import file_download
 
-    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising=False)
     monkeypatch.setattr(
         file_download,
         "_are_symlinks_supported_in_dir",
         {"dataset-cache": True},
     )
 
-    assert cache_safe.load_dataset_cache_safe("Org/Data", split = "train") == {"loaded": True}
+    assert cache_safe.load_dataset_cache_safe("Org/Data", split="train") == {"loaded": True}
     assert len(calls) == 2
     assert os.environ["HF_HUB_DISABLE_SYMLINKS"] == "1"
     assert constants.HF_HUB_DISABLE_SYMLINKS is True
@@ -76,7 +76,7 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
     from huggingface_hub import constants
     from huggingface_hub import file_download
 
-    monkeypatch.delattr(constants, "HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delattr(constants, "HF_HUB_DISABLE_SYMLINKS", raising=False)
     monkeypatch.setattr(
         file_download,
         "_are_symlinks_supported_in_dir",
@@ -92,7 +92,7 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
 
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
 
     assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
     assert len(calls) == 2
@@ -106,7 +106,7 @@ def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
     from huggingface_hub import file_download
 
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
 
     cache_safe._disable_hf_symlinks_for_process()
 
@@ -118,7 +118,7 @@ def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
 
 def test_symlink_disable_survives_an_unimportable_hub(monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
 
     cache_safe._disable_hf_symlinks_for_process()
 
@@ -134,11 +134,11 @@ def test_success_does_not_change_windows_symlink_policy(monkeypatch):
 
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
 
     from huggingface_hub import constants
 
-    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising=False)
 
     assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
     assert len(calls) == 1
@@ -183,7 +183,7 @@ def test_repeated_symlink_failure_falls_back_to_studio_cache(monkeypatch, tmp_pa
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
     monkeypatch.setattr(cache_safe, "studio_datasets_cache", lambda: fallback)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
     _isolate_hub_symlink_state(monkeypatch)
 
     assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
@@ -208,10 +208,10 @@ def test_unrelated_error_on_symlink_retry_is_raised(monkeypatch):
 
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
-    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising=False)
     _isolate_hub_symlink_state(monkeypatch)
 
-    with pytest.raises(UnrelatedError, match = "unrelated"):
+    with pytest.raises(UnrelatedError, match="unrelated"):
         cache_safe.load_dataset_cache_safe("Org/Data")
     assert len(calls) == 2
 
@@ -236,6 +236,6 @@ def test_unrelated_os_errors_are_not_retried(monkeypatch, is_windows, winerror):
     _install_fake_datasets(monkeypatch, load_dataset)
     monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: is_windows)
 
-    with pytest.raises(UnrelatedError, match = "unrelated"):
+    with pytest.raises(UnrelatedError, match="unrelated"):
         cache_safe.load_dataset_cache_safe("Org/Data")
     assert len(calls) == 1

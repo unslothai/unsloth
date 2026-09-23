@@ -32,21 +32,21 @@ def _interrupt(monkeypatch, text, error, channel, final_reason):
         # Only the report call is interrupted; the steps before it have to land, and their
         # unparseable bodies make each one take its single seed action.
         if b"untrusted_synthesis_audit_json" in request.content:
-            return httpx.Response(200, stream = Stream())
-        return httpx.Response(200, content = b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n')
+            return httpx.Response(200, stream=Stream())
+        return httpx.Response(200, content=b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n')
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
         worker.httpx,
         "AsyncClient",
-        lambda **kwargs: original(transport = httpx.MockTransport(respond), **kwargs),
+        lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs),
     )
     monkeypatch.setattr(
         worker.auth_storage, "create_api_key", lambda **kwargs: ("fixture", {"id": 1})
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
 
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     run = _claimed_run(supervisor)
     asyncio.run(supervisor._process(run))
     return research_db.get_run(run["id"])
@@ -90,7 +90,7 @@ def test_unidentified_report_is_not_exposed(research_home, monkeypatch, text):
 
 
 def test_a_returned_report_is_kept_before_the_checks_that_could_lose_it(research_home, monkeypatch):
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     claimed = _claimed_run(supervisor)
 
     async def gone(run_id):
@@ -134,8 +134,8 @@ def test_control_flow_interruptions_do_not_publish_partial_report(
 
 
 def test_failed_finish_does_not_promote_raw_progress(research_home):
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     run = _claimed_run(supervisor)
-    research_db.set_report_progress(run["id"], RAW, worker_id = supervisor.worker_id)
+    research_db.set_report_progress(run["id"], RAW, worker_id=supervisor.worker_id)
     assert research_db.finish(run["id"], supervisor.worker_id, "failed", "failed") == "failed"
     assert research_db.get_run(run["id"])["report"] is None

@@ -35,7 +35,7 @@ def _stub_gguf_accel(monkeypatch):
     in isolation. Returns a dict of how many times it was called."""
     called = {"compiled_dequant": 0}
 
-    def _install(logger = None):
+    def _install(logger=None):
         called["compiled_dequant"] += 1
         return True
 
@@ -45,22 +45,22 @@ def _stub_gguf_accel(monkeypatch):
 
 def _target(
     *,
-    device = "cuda",
-    dtype = "bfloat16",
-    compile_ok = True,
+    device="cuda",
+    dtype="bfloat16",
+    compile_ok=True,
 ):
     return types.SimpleNamespace(
-        device = device,
-        dtype = dtype,
-        supports_default_torch_compile = compile_ok,
+        device=device,
+        dtype=dtype,
+        supports_default_torch_compile=compile_ok,
     )
 
 
-def _family(*, compile_ok = True):
-    return types.SimpleNamespace(supports_torch_compile = compile_ok)
+def _family(*, compile_ok=True):
+    return types.SimpleNamespace(supports_torch_compile=compile_ok)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _compile_runtime_independent_of_the_host(monkeypatch):
     """Keep these tests off the HOST's toolchain, which is what "hermetic" above claims.
 
@@ -82,11 +82,11 @@ def _stub_torch(monkeypatch):
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
     torch.channels_last = "channels_last"
     torch.backends = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
-        cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
+        cuda=types.SimpleNamespace(matmul=types.SimpleNamespace(allow_tf32=False)),
+        cudnn=types.SimpleNamespace(allow_tf32=False, benchmark=False),
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
-    torch.cuda = types.SimpleNamespace(is_available = lambda: False)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
     torch.compile = lambda fn, **kwargs: fn
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -106,15 +106,15 @@ def test_normalize_speed_mode():
 
 def test_resolve_speed_mode_gguf_auto_default():
     # Unset (None) -> default for GGUF (near-lossless), off for dense.
-    assert resolve_speed_mode(None, is_gguf = True) == SPEED_DEFAULT
-    assert resolve_speed_mode(None, is_gguf = False) == SPEED_OFF
+    assert resolve_speed_mode(None, is_gguf=True) == SPEED_DEFAULT
+    assert resolve_speed_mode(None, is_gguf=False) == SPEED_OFF
     # An explicit value is honored verbatim, including an explicit opt-out to off.
-    assert resolve_speed_mode("off", is_gguf = True) == SPEED_OFF
-    assert resolve_speed_mode("max", is_gguf = True) == SPEED_MAX
-    assert resolve_speed_mode("max", is_gguf = False) == SPEED_MAX
+    assert resolve_speed_mode("off", is_gguf=True) == SPEED_OFF
+    assert resolve_speed_mode("max", is_gguf=True) == SPEED_MAX
+    assert resolve_speed_mode("max", is_gguf=False) == SPEED_MAX
     # The video backend passes a dense default of `default` (clips amortise the compile); it must not affect GGUF or explicit values.
-    assert resolve_speed_mode(None, is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_DEFAULT
-    assert resolve_speed_mode("off", is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_OFF
+    assert resolve_speed_mode(None, is_gguf=False, dense_default=SPEED_DEFAULT) == SPEED_DEFAULT
+    assert resolve_speed_mode("off", is_gguf=False, dense_default=SPEED_DEFAULT) == SPEED_OFF
 
 
 # ── compile gating ────────────────────────────────────────────────────────────
@@ -123,15 +123,15 @@ def test_resolve_speed_mode_gguf_auto_default():
 def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
     _stub_torch(monkeypatch)
     # The happy path: bf16, CUDA, compile-friendly family.
-    assert compile_eligible(_target(), is_gguf = False, family = _family()) is True
+    assert compile_eligible(_target(), is_gguf=False, family=_family()) is True
     # GGUF is compile-eligible too (measured ~2.3x, PSNR ~37 dB vs eager).
-    assert compile_eligible(_target(), is_gguf = True, family = _family()) is True
+    assert compile_eligible(_target(), is_gguf=True, family=_family()) is True
     # fp16 (non-bf16) is excluded.
-    assert compile_eligible(_target(dtype = "float16"), is_gguf = False, family = _family()) is False
+    assert compile_eligible(_target(dtype="float16"), is_gguf=False, family=_family()) is False
     # A family flagged not compile-friendly is excluded.
-    assert compile_eligible(_target(), is_gguf = False, family = _family(compile_ok = False)) is False
+    assert compile_eligible(_target(), is_gguf=False, family=_family(compile_ok=False)) is False
     # No compile support (e.g. XPU/MPS) is excluded.
-    assert compile_eligible(_target(compile_ok = False), is_gguf = False, family = _family()) is False
+    assert compile_eligible(_target(compile_ok=False), is_gguf=False, family=_family()) is False
 
 
 # ── backend-flag snapshot / restore (TF32 / cudnn.benchmark leak guard) ────────
@@ -161,8 +161,8 @@ def test_snapshot_partial_when_some_backends_missing(monkeypatch):
     # A build without cuda.matmul (CPU/MPS) must still snapshot + restore the flags it does have.
     torch = types.ModuleType("torch")
     torch.backends = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(),  # no .matmul
-        cudnn = types.SimpleNamespace(benchmark = True),  # no .allow_tf32
+        cuda=types.SimpleNamespace(),  # no .matmul
+        cudnn=types.SimpleNamespace(benchmark=True),  # no .allow_tf32
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     snap = snapshot_backend_flags()
@@ -199,11 +199,11 @@ class _Pipe:
     def __init__(
         self,
         *,
-        with_compile = False,
-        with_fuse = False,
-        with_second_dit = False,
+        with_compile=False,
+        with_fuse=False,
+        with_second_dit=False,
     ) -> None:
-        self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
+        self.vae = types.SimpleNamespace(mem_format=None, to=self._vae_to)
         self.transformer = types.SimpleNamespace()
         if with_compile:
             self.transformer.compile_repeated_blocks = self._compile
@@ -234,9 +234,9 @@ class _Pipe:
 
 def test_speed_off_applies_nothing(monkeypatch):
     torch = _stub_torch(monkeypatch)
-    pipe = _Pipe(with_compile = True, with_fuse = True)
+    pipe = _Pipe(with_compile=True, with_fuse=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_OFF
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_OFF
     )
     assert applied == {
         "channels_last": False,
@@ -258,9 +258,9 @@ def test_speed_compiles_both_dits_for_dual_dit_family(monkeypatch):
     # A dual-DiT family runs BOTH DiTs each step, so the regional block compile must engage on both or one runs eager while status claims compiled.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
-    pipe = _Pipe(with_compile = True, with_second_dit = True)
+    pipe = _Pipe(with_compile=True, with_second_dit=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert pipe.compiled is True and pipe.second_compiled is True
@@ -270,9 +270,9 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     # A DENSE model has no GGUF dequant to compile, so `default` falls back to the regional block compile with no GGUF accelerators.
     torch = _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
     assert applied["compiled"] is True and pipe.compiled is True
@@ -289,14 +289,14 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
 def test_offload_active_drops_fullgraph(monkeypatch):
     # Offload installs a torch.compiler.disable'd onload hook, so fullgraph=True crashes at the first denoise step (as an active step cache does): it must drop to False.
     _stub_torch(monkeypatch)
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
         pipe,
         _target(),
-        is_gguf = False,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
-        offload_active = True,
+        is_gguf=False,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
+        offload_active=True,
     )
     assert applied["compiled"] is True
     assert pipe.compile_kwargs["fullgraph"] is False
@@ -306,9 +306,9 @@ def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
     # GGUF `default` is the LIGHT path: compile ONLY the dequant op chain, NOT the regional block compile.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=True, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["channels_last"] is True
     assert applied["compiled_dequant"] is True
@@ -321,9 +321,9 @@ def test_speed_eager_gguf_installs_no_accelerator(monkeypatch):
     # eager = lossless-but-no-compile: only the process-wide lossless levers and the eager monkey-patches engage.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_EAGER
+        pipe, _target(), is_gguf=True, family=_family(), speed_mode=SPEED_EAGER
     )
     assert applied["compiled_dequant"] is False and applied["compiled"] is False
     assert pipe.compiled is False
@@ -334,9 +334,9 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
     # GGUF `max` is the FULL regional block compile (which fuses the dequant inline), so the standalone compiled dequant is OFF.
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
-    pipe = _Pipe(with_compile = True, with_fuse = True)
+    pipe = _Pipe(with_compile=True, with_fuse=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+        pipe, _target(), is_gguf=True, family=_family(), speed_mode=SPEED_MAX
     )
     assert applied["compiled"] is True and pipe.compiled is True
     assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
@@ -346,22 +346,22 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
 
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
         pipe,
-        _target(device = "mps", compile_ok = False),
-        is_gguf = True,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
+        _target(device="mps", compile_ok=False),
+        is_gguf=True,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
     )
     assert applied["cudnn_benchmark"] is False  # not CUDA -> no autotune flip
 
 
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     torch = _stub_torch(monkeypatch)
-    pipe = _Pipe(with_compile = True, with_fuse = True)
+    pipe = _Pipe(with_compile=True, with_fuse=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_MAX
     )
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is True and pipe.fused is True
@@ -389,10 +389,10 @@ class _SomeOtherUNet(UNet2DConditionModel):
 
 
 class _UNetPipe:
-    def __init__(self, unet = None):
+    def __init__(self, unet=None):
         self.mem_format = None
         self.fused = False
-        self.vae = types.SimpleNamespace(to = self._vae_to, decode = lambda z: z)
+        self.vae = types.SimpleNamespace(to=self._vae_to, decode=lambda z: z)
         self.unet = UNet2DConditionModel() if unet is None else unet
 
     def _vae_to(self, *, memory_format):
@@ -408,7 +408,7 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _UNetPipe()
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert pipe.unet.compile_kwargs == {"fullgraph": True, "dynamic": False}
@@ -419,9 +419,9 @@ def test_unet_whole_compile_default_tier(monkeypatch):
 def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
     # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only, and the VAE decode stays eager.
     _stub_torch(monkeypatch)
-    pipe = _Pipe(with_compile = True, with_fuse = True)
+    pipe = _Pipe(with_compile=True, with_fuse=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
@@ -435,10 +435,10 @@ def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
     applied = apply_speed_optims(
         pipe,
         _target(),
-        is_gguf = False,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
-        offload_active = True,
+        is_gguf=False,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
+        offload_active=True,
     )
     assert applied["compiled"] is True
     assert pipe.unet.compile_kwargs == {"fullgraph": False, "dynamic": False}
@@ -448,7 +448,7 @@ def test_unet_whole_compile_max_tier_mode(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _UNetPipe()
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_MAX
     )
     assert applied["compiled"] is True
     assert pipe.unet.compile_kwargs == {
@@ -461,9 +461,9 @@ def test_unet_whole_compile_max_tier_mode(monkeypatch):
 def test_unet_whole_compile_gated_by_class_name(monkeypatch):
     # An unlisted U-Net class (unmeasured architecture) stays eager rather than paying an unvalidated whole-module compile.
     _stub_torch(monkeypatch)
-    pipe = _UNetPipe(unet = _SomeOtherUNet())
+    pipe = _UNetPipe(unet=_SomeOtherUNet())
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is False
     assert pipe.unet.compile_kwargs is None
@@ -477,9 +477,9 @@ def test_unet_whole_compile_failure_degrades_to_eager(monkeypatch):
             raise RuntimeError("no dynamo on this build")
 
     _Boom.__name__ = "UNet2DConditionModel"
-    pipe = _UNetPipe(unet = _Boom())
+    pipe = _UNetPipe(unet=_Boom())
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is False  # best-effort: load proceeds eager
 
@@ -489,10 +489,10 @@ def test_speed_max_tf32_only_on_cuda(monkeypatch):
     pipe = _Pipe()
     applied = apply_speed_optims(
         pipe,
-        _target(device = "mps", compile_ok = False),
-        is_gguf = True,
-        family = _family(),
-        speed_mode = SPEED_MAX,
+        _target(device="mps", compile_ok=False),
+        is_gguf=True,
+        family=_family(),
+        speed_mode=SPEED_MAX,
     )
     assert applied["tf32"] is False  # not CUDA -> no TF32
 
@@ -500,9 +500,9 @@ def test_speed_max_tf32_only_on_cuda(monkeypatch):
 def test_apply_tolerates_missing_optims(monkeypatch):
     _stub_torch(monkeypatch)
     # A bare pipe (no vae.to, no compile, no fuse) must not crash.
-    bare = types.SimpleNamespace(vae = None, transformer = types.SimpleNamespace())
+    bare = types.SimpleNamespace(vae=None, transformer=types.SimpleNamespace())
     applied = apply_speed_optims(
-        bare, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+        bare, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_MAX
     )
     assert applied["channels_last"] is False and applied["fused_qkv"] is False
 
@@ -513,8 +513,8 @@ def test_apply_tolerates_missing_optims(monkeypatch):
 def _stub_torch_fp16_accum(
     monkeypatch,
     *,
-    consumer = True,
-    with_flag = True,
+    consumer=True,
+    with_flag=True,
 ):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
@@ -523,13 +523,13 @@ def _stub_torch_fp16_accum(
     if with_flag:
         matmul_attrs["allow_fp16_accumulation"] = False
     torch.backends = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(**matmul_attrs)),
-        cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
+        cuda=types.SimpleNamespace(matmul=types.SimpleNamespace(**matmul_attrs)),
+        cudnn=types.SimpleNamespace(allow_tf32=False, benchmark=False),
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     import core.inference.diffusion_transformer_quant as tq
 
-    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: consumer)
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device=None: consumer)
     return torch
 
 
@@ -544,38 +544,38 @@ def test_snapshot_captures_fp16_accum_when_present(monkeypatch):
 
 
 def test_snapshot_skips_fp16_accum_on_older_torch(monkeypatch):
-    _stub_torch_fp16_accum(monkeypatch, with_flag = False)
+    _stub_torch_fp16_accum(monkeypatch, with_flag=False)
     snap = snapshot_backend_flags()
     assert "matmul_fp16_accum" not in snap
     restore_backend_flags(snap)  # nothing to restore, no error
 
 
 def test_fp16_accum_engages_on_consumer_cuda(monkeypatch):
-    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+        _Pipe(), _target(), is_gguf=True, family=_family(), speed_mode="default"
     )
     assert applied["fp16_accum"] is True
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
 
 
 def test_fp16_accum_skipped_on_datacenter(monkeypatch):
-    torch = _stub_torch_fp16_accum(monkeypatch, consumer = False)
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer=False)
     _stub_gguf_accel(monkeypatch)
     applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+        _Pipe(), _target(), is_gguf=True, family=_family(), speed_mode="default"
     )
     assert applied["fp16_accum"] is False
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
 
 
 def test_fp16_accum_respects_kill_switch(monkeypatch):
-    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", "1")
     applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+        _Pipe(), _target(), is_gguf=True, family=_family(), speed_mode="default"
     )
     assert applied["fp16_accum"] is False
 
@@ -583,41 +583,41 @@ def test_fp16_accum_respects_kill_switch(monkeypatch):
 @pytest.mark.parametrize("value", ["TRUE", "Yes", "On", " true "])
 def test_fp16_accum_kill_switch_is_case_insensitive(monkeypatch, value):
     # The escape hatch must honor the common boolean spellings, so UNSLOTH_DISABLE_FP16_ACCUM=TRUE is not ignored.
-    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", value)
     applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+        _Pipe(), _target(), is_gguf=True, family=_family(), speed_mode="default"
     )
     assert applied["fp16_accum"] is False
 
 
 def test_fp16_accum_respects_family_deny_list(monkeypatch):
-    _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     monkeypatch.setattr(ds_mod, "_FP16_ACCUM_DENY", frozenset({"fragile-family"}))
-    fam = types.SimpleNamespace(supports_torch_compile = True, name = "fragile-family")
-    applied = apply_speed_optims(_Pipe(), _target(), is_gguf = True, family = fam, speed_mode = "default")
+    fam = types.SimpleNamespace(supports_torch_compile=True, name="fragile-family")
+    applied = apply_speed_optims(_Pipe(), _target(), is_gguf=True, family=fam, speed_mode="default")
     assert applied["fp16_accum"] is False
 
 
 def test_fp16_accum_skipped_when_flag_missing(monkeypatch):
-    _stub_torch_fp16_accum(monkeypatch, consumer = True, with_flag = False)
+    _stub_torch_fp16_accum(monkeypatch, consumer=True, with_flag=False)
     _stub_gguf_accel(monkeypatch)
     applied = apply_speed_optims(
-        _Pipe(), _target(), is_gguf = True, family = _family(), speed_mode = "default"
+        _Pipe(), _target(), is_gguf=True, family=_family(), speed_mode="default"
     )
     assert applied["fp16_accum"] is False
 
 
 def test_fp16_accum_not_touched_off_cuda(monkeypatch):
-    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer=True)
     applied = apply_speed_optims(
         _Pipe(),
-        _target(device = "mps"),
-        is_gguf = False,
-        family = _family(),
-        speed_mode = "eager",
+        _target(device="mps"),
+        is_gguf=False,
+        family=_family(),
+        speed_mode="eager",
     )
     assert applied["fp16_accum"] is False
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
@@ -625,15 +625,15 @@ def test_fp16_accum_not_touched_off_cuda(monkeypatch):
 
 def test_fp16_accum_denied_on_fp16_dtype_below_max(monkeypatch):
     # fp16 compute is where the accumulator width changes results (measured same-seed drift, mean 2-5%), so the quality-neutral tiers refuse it.
-    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     for mode in ("eager", "default"):
         applied = apply_speed_optims(
             _Pipe(),
-            _target(dtype = "float16"),
-            is_gguf = True,
-            family = _family(),
-            speed_mode = mode,
+            _target(dtype="float16"),
+            is_gguf=True,
+            family=_family(),
+            speed_mode=mode,
         )
         assert applied["fp16_accum"] is False
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
@@ -641,14 +641,14 @@ def test_fp16_accum_denied_on_fp16_dtype_below_max(monkeypatch):
 
 def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
     # max already trades exactness for speed, so the 2x fp16 accumulate joins that tier for fp16 pipelines.
-    torch = _stub_torch_fp16_accum(monkeypatch, consumer = True)
+    torch = _stub_torch_fp16_accum(monkeypatch, consumer=True)
     _stub_gguf_accel(monkeypatch)
     applied = apply_speed_optims(
-        _Pipe(with_compile = True, with_fuse = True),
-        _target(dtype = "float16"),
-        is_gguf = True,
-        family = _family(),
-        speed_mode = "MAX",
+        _Pipe(with_compile=True, with_fuse=True),
+        _target(dtype="float16"),
+        is_gguf=True,
+        family=_family(),
+        speed_mode="MAX",
     )
     assert applied["fp16_accum"] is True
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
@@ -661,13 +661,13 @@ def _stub_inductor_config(
     monkeypatch,
     torch,
     *,
-    emulate = False,
+    emulate=False,
 ):
     """Attach a fake ``_inductor.config`` to the stubbed torch module (diffusion_speed
     resolves it as attributes off the imported torch, never via sys.modules -- so the
     real torch._inductor lingering in sys.modules cannot leak into stubbed tests)."""
-    cfg = types.SimpleNamespace(emulate_precision_casts = emulate)
-    torch._inductor = types.SimpleNamespace(config = cfg)
+    cfg = types.SimpleNamespace(emulate_precision_casts=emulate)
+    torch._inductor = types.SimpleNamespace(config=cfg)
     return cfg
 
 
@@ -676,10 +676,10 @@ def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
     # over a denoise. emulate_precision_casts restores eager's rounding at zero measured cost, so the regional compile sets it.
     torch = _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
-    pipe = _Pipe(with_compile = True)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate=False)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert cfg.emulate_precision_casts is True
@@ -688,7 +688,7 @@ def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
 def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     # The flag is process-global, so unload must restore the pre-load value like the TF32 / cudnn.benchmark globals.
     torch = _stub_torch(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate=False)
     snap = snapshot_backend_flags()
     assert snap["inductor_emulate_precision_casts"] is False
     cfg.emulate_precision_casts = True
@@ -702,9 +702,9 @@ def test_missing_inductor_config_is_tolerated(monkeypatch):
     _stub_gguf_accel(monkeypatch)
     snap = snapshot_backend_flags()
     assert "inductor_emulate_precision_casts" not in snap
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
 
@@ -720,11 +720,11 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
     monkeypatch.setattr(
         dc_mod,
         "_compile_hooked_block_inners",
-        lambda transformer, logger = None: armed.append(transformer) or 1,
+        lambda transformer, logger=None: armed.append(transformer) or 1,
     )
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert armed == [pipe.transformer]
@@ -737,11 +737,13 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
 
 def _clear_runtime_cache():
     from core.inference.diffusion_speed import torch_compile_runtime_available
+
     torch_compile_runtime_available.cache_clear()
 
 
 def _set_crt_headers(monkeypatch, reachable: bool):
     from core import _msvc_env
+
     monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: reachable)
 
 
@@ -759,18 +761,18 @@ def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch, platform)
         monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
         _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
     # The positive control. Without it the two `is False` lines below prove nothing.
-    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
+    assert ds_mod.compile_eligible(_target(), is_gguf=False, family=_family()) is True
 
     _clear_runtime_cache()
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "1")
     assert ds_mod.torch_compile_runtime_available() is False
-    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+    assert ds_mod.compile_eligible(_target(), is_gguf=False, family=_family()) is False
     _clear_runtime_cache()
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "0")
     assert ds_mod.torch_compile_runtime_available() is True
-    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
+    assert ds_mod.compile_eligible(_target(), is_gguf=False, family=_family()) is True
     _clear_runtime_cache()
 
 
@@ -779,12 +781,12 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
     it fails at the first forward, mid-generation. Decide it here instead."""
     from core.inference import diffusion_speed as ds_mod
 
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
     monkeypatch.setattr(ds_mod.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "triton", None)  # `import triton` -> ImportError
     _clear_runtime_cache()
     assert ds_mod.torch_compile_runtime_available() is False
-    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+    assert ds_mod.compile_eligible(_target(), is_gguf=False, family=_family()) is False
 
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
     _set_crt_headers(monkeypatch, True)
@@ -796,7 +798,7 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
 def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
     from core.inference import diffusion_speed as ds_mod
 
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
     monkeypatch.setattr(ds_mod.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
 
@@ -815,7 +817,7 @@ def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
 
     _stub_torch(monkeypatch)
     called = _stub_gguf_accel(monkeypatch)
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
     monkeypatch.setattr(ds_mod.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
 
@@ -824,9 +826,9 @@ def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
     applied = apply_speed_optims(
         object(),
         _target(),
-        is_gguf = True,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
+        is_gguf=True,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
     )
     assert called["compiled_dequant"] == 0
     assert not applied.get("compiled_dequant")
@@ -836,9 +838,9 @@ def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
     applied = apply_speed_optims(
         object(),
         _target(),
-        is_gguf = True,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
+        is_gguf=True,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
     )
     assert called["compiled_dequant"] == 1
     assert applied.get("compiled_dequant") is True
@@ -849,7 +851,7 @@ def test_linux_and_mac_are_not_asked_about_triton(monkeypatch):
     """Only Windows ships without it, and a probe import on a healthy Linux box is pure cost."""
     from core.inference import diffusion_speed as ds_mod
 
-    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising=False)
     monkeypatch.setitem(sys.modules, "triton", None)
     for platform_name in ("linux", "darwin"):
         monkeypatch.setattr(ds_mod.sys, "platform", platform_name)
@@ -868,18 +870,18 @@ _TORCHAO_FLAGS = (
 
 def _stub_full_inductor_config(torch):
     cfg = types.SimpleNamespace(
-        emulate_precision_casts = False,
-        triton = types.SimpleNamespace(unique_kernel_names = False),
+        emulate_precision_casts=False,
+        triton=types.SimpleNamespace(unique_kernel_names=False),
         **{name: False for name in _TORCHAO_FLAGS},
     )
-    torch._inductor = types.SimpleNamespace(config = cfg)
+    torch._inductor = types.SimpleNamespace(config=cfg)
     return cfg
 
 
 def _stub_matmul_precision(
     torch,
     calls: list,
-    initial = "highest",
+    initial="highest",
 ):
     cell = {"v": initial}
 
@@ -916,7 +918,7 @@ def test_snapshot_restores_torchao_inductor_flags(monkeypatch):
 def test_snapshot_restores_float32_matmul_precision(monkeypatch):
     torch = _stub_torch(monkeypatch)
     calls: list = []
-    cell = _stub_matmul_precision(torch, calls, initial = "highest")
+    cell = _stub_matmul_precision(torch, calls, initial="highest")
     snap = snapshot_backend_flags()
     assert snap["matmul_precision"] == "highest"
     cell["v"] = "high"
@@ -927,7 +929,7 @@ def test_snapshot_restores_float32_matmul_precision(monkeypatch):
 def test_matmul_precision_is_restored_before_tf32(monkeypatch):
     torch = _stub_torch(monkeypatch)
     calls: list = []
-    _stub_matmul_precision(torch, calls, initial = "highest")
+    _stub_matmul_precision(torch, calls, initial="highest")
 
     class _Matmul:
         def __init__(self):
@@ -952,7 +954,7 @@ def test_matmul_precision_is_restored_before_tf32(monkeypatch):
 
 def test_snapshot_skips_inductor_flags_a_build_lacks(monkeypatch):
     torch = _stub_torch(monkeypatch)
-    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate=False)
     snap = snapshot_backend_flags()
     assert snap["inductor_emulate_precision_casts"] is False
     for name in _TORCHAO_FLAGS:
@@ -970,7 +972,7 @@ def test_video_snapshot_precedes_transformer_quant():
     from pathlib import Path
 
     path = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -997,8 +999,8 @@ def test_video_snapshot_precedes_transformer_quant():
 def _stub_cuda_graph(
     monkeypatch,
     *,
-    eligible = True,
-    reason = "ok",
+    eligible=True,
+    reason="ok",
 ):
     """Replace ``core.inference.diffusion_cuda_graph`` with a recorder that captures nothing.
 
@@ -1014,14 +1016,14 @@ def _stub_cuda_graph(
         calls["eligible"].append(kwargs)
         return eligible, reason
 
-    def _install_cuda_graphs(pipe, *, logger = None):
+    def _install_cuda_graphs(pipe, *, logger=None):
         calls["installs"] += 1
         return ("h",)
 
     stub.graph_eligible = _graph_eligible
     stub.install_cuda_graphs = _install_cuda_graphs
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_cuda_graph", stub)
-    monkeypatch.setattr(inference_pkg, "diffusion_cuda_graph", stub, raising = False)
+    monkeypatch.setattr(inference_pkg, "diffusion_cuda_graph", stub, raising=False)
     return calls
 
 
@@ -1030,8 +1032,8 @@ def test_cuda_graph_engages_on_compile_tiers(monkeypatch, mode):
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
-    pipe = _Pipe(with_compile = True)
-    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
+    pipe = _Pipe(with_compile=True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf=False, family=_family(), speed_mode=mode)
     assert applied["cuda_graph"] is True
     assert calls["installs"] == 1
     assert pipe._unsloth_cuda_graph_reason == "ok"
@@ -1042,8 +1044,8 @@ def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
-    pipe = _Pipe(with_compile = True)
-    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = mode)
+    pipe = _Pipe(with_compile=True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf=False, family=_family(), speed_mode=mode)
     assert applied["cuda_graph"] is False
     assert calls["installs"] == 0 and calls["eligible"] == []
 
@@ -1051,10 +1053,10 @@ def test_cuda_graph_skipped_below_the_compile_tiers(monkeypatch, mode):
 def test_cuda_graph_refusal_stashes_the_reason(monkeypatch):
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
-    calls = _stub_cuda_graph(monkeypatch, eligible = False, reason = "cpu offload active")
-    pipe = _Pipe(with_compile = True)
+    calls = _stub_cuda_graph(monkeypatch, eligible=False, reason="cpu offload active")
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["cuda_graph"] is False
     assert calls["installs"] == 0
@@ -1066,20 +1068,20 @@ def test_cuda_graph_default_is_forwarded_as_family_default(monkeypatch):
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
     apply_speed_optims(
-        _Pipe(with_compile = True),
+        _Pipe(with_compile=True),
         _target(),
-        is_gguf = False,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
-        cuda_graph_default = False,
+        is_gguf=False,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
+        cuda_graph_default=False,
     )
     assert calls["eligible"][0]["family_default"] is False
     apply_speed_optims(
-        _Pipe(with_compile = True),
+        _Pipe(with_compile=True),
         _target(),
-        is_gguf = False,
-        family = _family(),
-        speed_mode = SPEED_DEFAULT,
+        is_gguf=False,
+        family=_family(),
+        speed_mode=SPEED_DEFAULT,
     )
     assert calls["eligible"][1]["family_default"] is True
 
@@ -1088,16 +1090,16 @@ def test_cuda_graph_cache_engaged_overrides_cache_active_for_the_graph_arm(monke
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
-    common = dict(is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    common = dict(is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT)
     apply_speed_optims(
-        _Pipe(with_compile = True), _target(), cache_active = True, cache_engaged = False, **common
+        _Pipe(with_compile=True), _target(), cache_active=True, cache_engaged=False, **common
     )
     assert calls["eligible"][0]["cache_active"] is False
     apply_speed_optims(
-        _Pipe(with_compile = True), _target(), cache_active = False, cache_engaged = True, **common
+        _Pipe(with_compile=True), _target(), cache_active=False, cache_engaged=True, **common
     )
     assert calls["eligible"][1]["cache_active"] is True
-    apply_speed_optims(_Pipe(with_compile = True), _target(), cache_active = True, **common)
+    apply_speed_optims(_Pipe(with_compile=True), _target(), cache_active=True, **common)
     assert calls["eligible"][2]["cache_active"] is True
 
 
@@ -1106,14 +1108,14 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     _stub_gguf_accel(monkeypatch)
     calls = _stub_cuda_graph(monkeypatch)
 
-    def _boom(pipe, *, logger = None):
+    def _boom(pipe, *, logger=None):
         calls["installs"] += 1
         raise RuntimeError("CUDA out of memory during capture")
 
     sys.modules["core.inference.diffusion_cuda_graph"].install_cuda_graphs = _boom
-    pipe = _Pipe(with_compile = True)
+    pipe = _Pipe(with_compile=True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf=False, family=_family(), speed_mode=SPEED_DEFAULT
     )
     assert applied["cuda_graph"] is False and calls["installs"] == 1
     assert applied["compiled"] is True  # the rest of the tier still engaged

@@ -35,7 +35,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -60,8 +60,8 @@ def client_for(account):
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[get_current_credential] = lambda: (account.username, None)
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(providers.router, prefix = "/providers")
-    app.include_router(mcp_servers.router, prefix = "/mcp")
+    app.include_router(providers.router, prefix="/providers")
+    app.include_router(mcp_servers.router, prefix="/mcp")
     return TestClient(app)
 
 
@@ -69,7 +69,7 @@ def client_for(account):
 def test_provider_object_routes_and_saved_keys_are_private(account, other):
     with client_for(account) as client:
         created = client.post(
-            "/providers/", json = {"provider_type": "openai", "display_name": "Private provider"}
+            "/providers/", json={"provider_type": "openai", "display_name": "Private provider"}
         )
         assert created.status_code == 201, created.text
         provider_id = created.json()["id"]
@@ -77,19 +77,19 @@ def test_provider_object_routes_and_saved_keys_are_private(account, other):
     with client_for(other) as client:
         assert client.get("/providers/").json() == []
         assert (
-            client.put(f"/providers/{provider_id}", json = {"display_name": "stolen"}).status_code
+            client.put(f"/providers/{provider_id}", json={"display_name": "stolen"}).status_code
             == 404
         )
         assert client.delete(f"/providers/{provider_id}").status_code == 404
         assert (
             client.put(
-                f"/providers/{provider_id}/api-key/migrate", json = {"encrypted_api_key": "ignored"}
+                f"/providers/{provider_id}/api-key/migrate", json={"encrypted_api_key": "ignored"}
             ).status_code
             == 404
         )
         for path in ["/providers/test", "/providers/models"]:
             response = client.post(
-                path, json = {"provider_type": "openai", "provider_id": provider_id}
+                path, json={"provider_type": "openai", "provider_id": provider_id}
             )
             assert response.status_code == 404, response.text
     assert run_as(other, credential_secrets.get_provider_api_key, provider_id) is None
@@ -105,7 +105,7 @@ def test_mcp_server_ids_are_scoped_before_session_or_tool_access(account, other,
     with client_for(account) as client:
         created = client.post(
             "/mcp/",
-            json = {
+            json={
                 "display_name": "Private MCP",
                 "url": "https://8.8.8.8/mcp",
                 "headers": {"Authorization": "Bearer private"},
@@ -117,7 +117,7 @@ def test_mcp_server_ids_are_scoped_before_session_or_tool_access(account, other,
     monkeypatch.setattr(mcp_servers, "list_tools_async", lambda **kwargs: calls.append(kwargs))
     with client_for(other) as client:
         assert client.get("/mcp/").json() == []
-        assert client.put(f"/mcp/{server_id}", json = {"display_name": "stolen"}).status_code == 404
+        assert client.put(f"/mcp/{server_id}", json={"display_name": "stolen"}).status_code == 404
         assert client.delete(f"/mcp/{server_id}").status_code == 404
         assert client.post(f"/mcp/{server_id}/refresh").status_code == 404
     assert calls == []
@@ -162,9 +162,9 @@ def test_remote_code_approvals_are_account_owned_and_survive_renames(tmp_path):
         approvals.record,
         "alice",
         "org/private",
-        commit_sha = "abc",
-        fingerprint = "safe",
-        max_severity = None,
+        commit_sha="abc",
+        fingerprint="safe",
+        max_severity=None,
     )
     assert run_as(ALICE, approvals.lookup, "alice", "org/private") is not None
     assert run_as(BOB, approvals.lookup, "alice", "org/private") is None

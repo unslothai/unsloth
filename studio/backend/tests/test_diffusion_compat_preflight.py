@@ -36,16 +36,16 @@ KLEIN_9B_BASE = "black-forest-labs/FLUX.2-klein-9B"
 KLEIN_4B_GGUF = "unsloth/FLUX.2-klein-4B-GGUF"
 KLEIN_4B_FILE = "flux-2-klein-4b-Q4_K_M.gguf"
 
-FLUX2_FAMILY = types.SimpleNamespace(name = "flux.2-klein", single_file_is_pipeline = False)
+FLUX2_FAMILY = types.SimpleNamespace(name="flux.2-klein", single_file_is_pipeline=False)
 
 
 def _gguf_header(
     inner_dim: int,
     tmp_path,
     *,
-    name = "double_stream_modulation_img.lin.weight",
-    siblings = 4,
-    probe_last = False,
+    name="double_stream_modulation_img.lin.weight",
+    siblings=4,
+    probe_last=False,
 ):
     """A real GGUF header (magic + kv + tensor table, no tensor DATA) for a FLUX.2 of this size.
 
@@ -65,7 +65,7 @@ def _gguf_header(
             [6 * inner_dim, inner_dim],
             np.dtype(np.float16),
             6 * inner_dim * inner_dim * 2,
-            raw_dtype = GGMLQuantizationType.F16,
+            raw_dtype=GGMLQuantizationType.F16,
         )
 
     if not probe_last:
@@ -77,7 +77,7 @@ def _gguf_header(
             [64, 64],
             np.dtype(np.float16),
             64 * 64 * 2,
-            raw_dtype = GGMLQuantizationType.F16,
+            raw_dtype=GGMLQuantizationType.F16,
         )
     if probe_last:
         _probe()
@@ -94,12 +94,12 @@ class _FakeResponse:
     def __init__(
         self,
         status_code,
-        body = b"",
+        body=b"",
     ):
         self.status_code = status_code
         self._body = body
 
-    def iter_content(self, chunk_size = 1):
+    def iter_content(self, chunk_size=1):
         for i in range(0, len(self._body), chunk_size):
             yield self._body[i : i + chunk_size]
 
@@ -114,7 +114,7 @@ def _stub_range_reads(
     monkeypatch,
     bodies,
     *,
-    status = 206,
+    status=206,
 ):
     """Serve ``{filename: header_bytes}`` over the stubbed Hub session; returns the request log.
 
@@ -126,9 +126,9 @@ def _stub_range_reads(
         def get(
             self,
             url,
-            headers = None,
-            timeout = None,
-            stream = False,
+            headers=None,
+            timeout=None,
+            stream=False,
         ):
             requests.append((url, (headers or {}).get("Range", "")))
             body = next((b for name, b in bodies.items() if url.endswith(name)), None)
@@ -146,7 +146,7 @@ def _stub_range_reads(
     return requests
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_probe_cache():
     # The memo is process-global by design; a leak between tests would hide a missing probe.
     diffusion_compat._reset_inner_dim_cache()
@@ -181,7 +181,7 @@ def test_a_plain_reader_cannot_read_the_same_prefix(tmp_path):
 @pytest.mark.parametrize(
     "header",
     [b"", b"not a gguf at all", b"GGUF" + b"\x00" * 64],
-    ids = ["empty", "garbage", "truncated"],
+    ids=["empty", "garbage", "truncated"],
 )
 def test_an_unreadable_header_yields_no_opinion(header):
     assert gguf_flux2_inner_dim_from_header(header) is None
@@ -189,18 +189,18 @@ def test_an_unreadable_header_yields_no_opinion(header):
 
 def test_a_header_without_the_probe_tensor_yields_no_opinion(tmp_path):
     # A non-FLUX.2 checkpoint parses fine and simply has nothing to say.
-    header = _gguf_header(3072, tmp_path, name = "blk.0.attn.weight")
+    header = _gguf_header(3072, tmp_path, name="blk.0.attn.weight")
     assert gguf_flux2_inner_dim_from_header(header) is None
 
 
-@pytest.mark.parametrize("probe_last", [False, True], ids = ["probe-first", "probe-last"])
+@pytest.mark.parametrize("probe_last", [False, True], ids=["probe-first", "probe-last"])
 def test_no_truncation_of_a_valid_header_can_invent_a_dim(probe_last, tmp_path):
     # The sharp edge. The table is read field by field, so a cut BETWEEN a tensor's name and its
     # dims used to leave the name matching and the shape zero-filled -- "inner_dim 0", which is a
     # wrong answer rather than a missing one, and refuses a perfectly valid pick. A 206 body a few
     # bytes short, or a partially written On Device file, lands exactly there. Every prefix of a
     # real header must read as the real dim or as nothing at all.
-    header = _gguf_header(4096, tmp_path, probe_last = probe_last)
+    header = _gguf_header(4096, tmp_path, probe_last=probe_last)
     assert gguf_flux2_inner_dim_from_header(header) == 4096
 
     verdicts = {gguf_flux2_inner_dim_from_header(header[:cut]) for cut in range(1, len(header))}
@@ -213,7 +213,7 @@ def test_a_header_declaring_a_huge_checkpoint_is_cheap(tmp_path):
     # Windows and turns the preflight into a permanent no-op there. 1200 tensors declaring ~37 GiB.
     import time
 
-    header = _gguf_header(4096, tmp_path, siblings = 1200)
+    header = _gguf_header(4096, tmp_path, siblings=1200)
     started = time.monotonic()
     assert gguf_flux2_inner_dim_from_header(header) == 4096
     assert time.monotonic() - started < 5.0
@@ -271,7 +271,7 @@ def test_an_offline_host_fails_open(monkeypatch):
         raise OSError("no route to host")
 
     monkeypatch.setattr(
-        "huggingface_hub.utils.get_session", lambda: types.SimpleNamespace(get = _boom)
+        "huggingface_hub.utils.get_session", lambda: types.SimpleNamespace(get=_boom)
     )
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
 
@@ -300,9 +300,9 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
         status_code = 206
 
         def __init__(self):
-            self.raw = types.SimpleNamespace(shutdown = interrupted.set)
+            self.raw = types.SimpleNamespace(shutdown=interrupted.set)
 
-        def iter_content(self, chunk_size = 1):
+        def iter_content(self, chunk_size=1):
             if not interrupted.wait(10):
                 raise AssertionError("the header read was never interrupted")
             raise OSError("Connection broken: IncompleteRead(12 bytes read)")
@@ -319,16 +319,16 @@ def test_a_trickling_server_cannot_hold_the_picker_open(monkeypatch):
     monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(
         "huggingface_hub.utils.get_session",
-        lambda: types.SimpleNamespace(get = lambda *a, **k: _Trickle()),
+        lambda: types.SimpleNamespace(get=lambda *a, **k: _Trickle()),
     )
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
 
     out: list[bytes] = []
     reader = threading.Thread(
-        target = lambda: out.append(
+        target=lambda: out.append(
             diffusion_compat._read_gguf_header(KLEIN_4B_GGUF, KLEIN_4B_FILE, None)
         ),
-        daemon = True,
+        daemon=True,
     )
     reader.start()
     reader.join(8)
@@ -354,7 +354,7 @@ def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monke
         # close(), and close() does not end a read already inside iter_content.
         raw = None
 
-        def iter_content(self, chunk_size = 1):
+        def iter_content(self, chunk_size=1):
             still_reading.set()
             time.sleep(30)
             yield b"never arrives"
@@ -371,7 +371,7 @@ def test_an_old_urllib3_with_no_shutdown_still_cannot_hold_the_picker_open(monke
     monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(
         "huggingface_hub.utils.get_session",
-        lambda: types.SimpleNamespace(get = lambda *a, **k: _Unwakeable()),
+        lambda: types.SimpleNamespace(get=lambda *a, **k: _Unwakeable()),
     )
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
 
@@ -392,7 +392,7 @@ def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_pa
     body_reads: list[int] = []
 
     class _WholeFile(_FakeResponse):
-        def iter_content(self, chunk_size = 1):
+        def iter_content(self, chunk_size=1):
             body_reads.append(chunk_size)
             yield b""
 
@@ -400,9 +400,9 @@ def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_pa
         def get(
             self,
             url,
-            headers = None,
-            timeout = None,
-            stream = False,
+            headers=None,
+            timeout=None,
+            stream=False,
         ):
             return _WholeFile(200, _gguf_header(3072, tmp_path))
 
@@ -421,7 +421,7 @@ def test_a_server_that_ignores_the_range_header_is_abandoned(monkeypatch, tmp_pa
 @pytest.mark.parametrize(
     "base",
     ["someone/a-base-we-do-not-ship", "/models/my-local-flux2"],
-    ids = ["unknown-repo", "local-path"],
+    ids=["unknown-repo", "local-path"],
 )
 def test_a_base_outside_the_size_table_costs_no_request_at_all(base, monkeypatch, tmp_path):
     # Nothing to compare the header against, so the check must notice BEFORE a round trip.
@@ -457,7 +457,7 @@ def test_a_non_flux2_family_costs_no_request_at_all(monkeypatch, tmp_path):
 
     assert (
         diffusion_compat.flux2_pick_mismatch(
-            types.SimpleNamespace(name = "z-image"),
+            types.SimpleNamespace(name="z-image"),
             "unsloth/Z-Image-Turbo-GGUF",
             "z.gguf",
             KLEIN_9B_BASE,
@@ -533,7 +533,7 @@ def test_a_remembered_hub_failure_does_not_outlive_the_download(monkeypatch, tmp
 
     # The download lands the blob in the cache, which is what try_to_load_from_cache reports.
     staged = tmp_path / "blobs" / KLEIN_4B_FILE
-    staged.parent.mkdir(parents = True, exist_ok = True)
+    staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(_gguf_header(4096, tmp_path))
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: str(staged))
 
@@ -570,7 +570,7 @@ def test_a_checkpoint_swapped_in_place_is_read_again(monkeypatch, tmp_path):
     # Rewritten in place. os.stat resolution is coarse enough that a same-size overwrite inside
     # one tick could tie, so the two headers differ in length as well -- which is also what a real
     # 4B-for-9B swap looks like.
-    target.write_bytes(_gguf_header(4096, tmp_path, siblings = 9))
+    target.write_bytes(_gguf_header(4096, tmp_path, siblings=9))
 
     assert (
         diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 4096
@@ -588,9 +588,9 @@ def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, 
         def get(
             self,
             url,
-            headers = None,
-            timeout = None,
-            stream = False,
+            headers=None,
+            timeout=None,
+            stream=False,
         ):
             token = (headers or {}).get("authorization", "")
             requests.append((url, token))
@@ -650,10 +650,10 @@ def test_a_local_header_past_the_prefix_cap_falls_back_to_the_full_reader(monkey
     writer = GGUFWriter(str(path), "flux")
     # Tiny weights, enormous NAMES: the table has to exceed the cap while the file stays small.
     writer.add_tensor(
-        "double_stream_modulation_img.lin.weight", np.zeros((48, 8), dtype = np.float16)
+        "double_stream_modulation_img.lin.weight", np.zeros((48, 8), dtype=np.float16)
     )
     for i in range(1200):
-        writer.add_tensor(f"blk.{i}.{'x' * 220}.weight", np.zeros((8, 8), dtype = np.float16))
+        writer.add_tensor(f"blk.{i}.{'x' * 220}.weight", np.zeros((8, 8), dtype=np.float16))
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
@@ -686,7 +686,7 @@ def test_the_download_plan_reports_the_mismatch_instead_of_raising(monkeypatch, 
         "core.inference.diffusion._assert_base_repo_accessible", lambda *a, **k: None
     )
 
-    plan = DiffusionBackend().download_plan(KLEIN_4B_GGUF, gguf_filename = KLEIN_4B_FILE)
+    plan = DiffusionBackend().download_plan(KLEIN_4B_GGUF, gguf_filename=KLEIN_4B_FILE)
 
     assert KLEIN_9B_BASE in (plan["incompatible_reason"] or "")
     # And it survives the envelope the route returns, or the picker never sees it.
@@ -699,7 +699,8 @@ def test_a_planner_that_omits_the_field_still_answers():
     # The native and video planners share this envelope and have no base pairing to check, so the
     # response model must default the field rather than 500 on its absence.
     from models.inference import DiffusionDownloadPlanResponse
-    assert DiffusionDownloadPlanResponse(entries = [], total_bytes = 0).incompatible_reason is None
+
+    assert DiffusionDownloadPlanResponse(entries=[], total_bytes=0).incompatible_reason is None
 
 
 def test_a_compatible_plan_reports_nothing(monkeypatch, tmp_path):
@@ -717,7 +718,7 @@ def test_a_compatible_plan_reports_nothing(monkeypatch, tmp_path):
         "core.inference.diffusion._assert_base_repo_accessible", lambda *a, **k: None
     )
 
-    plan = DiffusionBackend().download_plan(KLEIN_4B_GGUF, gguf_filename = KLEIN_4B_FILE)
+    plan = DiffusionBackend().download_plan(KLEIN_4B_GGUF, gguf_filename=KLEIN_4B_FILE)
 
     assert plan["incompatible_reason"] is None
 
@@ -732,12 +733,12 @@ def test_the_pre_eviction_preflight_refuses_the_mismatch(monkeypatch, tmp_path):
         "core.inference.diffusion._assert_base_repo_accessible", lambda *a, **k: None
     )
 
-    with pytest.raises(ValueError, match = "klein"):
+    with pytest.raises(ValueError, match="klein"):
         DiffusionBackend().preflight_base_access(
             KLEIN_4B_GGUF,
             FLUX2_FAMILY,
-            gguf_filename = KLEIN_4B_FILE,
-            model_kind = "gguf",
+            gguf_filename=KLEIN_4B_FILE,
+            model_kind="gguf",
         )
 
 
@@ -777,13 +778,13 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
     resident = object()
     backend._state = resident
     backend._load_token = 7
-    backend._loading = _LoadingState(repo_id = KLEIN_4B_GGUF, base_repo = "")
+    backend._loading = _LoadingState(repo_id=KLEIN_4B_GGUF, base_repo="")
 
     backend._run_load(
-        repo_id = KLEIN_4B_GGUF,
-        gguf_filename = KLEIN_4B_FILE,
-        model_kind = "gguf",
-        _load_token = 7,
+        repo_id=KLEIN_4B_GGUF,
+        gguf_filename=KLEIN_4B_FILE,
+        model_kind="gguf",
+        _load_token=7,
     )
 
     # _run_load swallows into load_progress rather than raising; the refusal lands there.
@@ -804,7 +805,7 @@ def test_the_native_encoder_follows_the_header_over_the_filename():
 
     by_name = sd_cpp_text_encoders_for(fam, "unsloth/FLUX.2-klein-4B-GGUF", "my-checkpoint.gguf")
     by_header = sd_cpp_text_encoders_for(
-        fam, "unsloth/FLUX.2-klein-4B-GGUF", "my-checkpoint.gguf", inner_dim = 4096
+        fam, "unsloth/FLUX.2-klein-4B-GGUF", "my-checkpoint.gguf", inner_dim=4096
     )
 
     assert by_name == fam.sd_cpp_text_encoders  # today's answer: the 4B encoder
@@ -817,7 +818,7 @@ def test_the_header_also_overrides_a_misleading_9b_filename():
     assert fam is not None
 
     picked = sd_cpp_text_encoders_for(
-        fam, "unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q4_K_M.gguf", inner_dim = 3072
+        fam, "unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q4_K_M.gguf", inner_dim=3072
     )
 
     assert picked == fam.sd_cpp_text_encoders  # the file really is 4B
@@ -831,7 +832,7 @@ def test_an_unmapped_or_absent_inner_dim_keeps_the_filename_rule():
     for inner_dim in (None, 1234):
         assert (
             sd_cpp_text_encoders_for(
-                fam, "unsloth/FLUX.2-klein-9B-GGUF", "klein-9b.gguf", inner_dim = inner_dim
+                fam, "unsloth/FLUX.2-klein-9B-GGUF", "klein-9b.gguf", inner_dim=inner_dim
             )
             == nine_b
         )
@@ -859,16 +860,16 @@ def test_a_stalled_response_header_cannot_hold_the_picker_open(monkeypatch):
     monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(
         "huggingface_hub.utils.get_session",
-        lambda: types.SimpleNamespace(get = _never_returns),
+        lambda: types.SimpleNamespace(get=_never_returns),
     )
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
 
     out: list[bytes] = []
     caller = threading.Thread(
-        target = lambda: out.append(
+        target=lambda: out.append(
             diffusion_compat._read_gguf_header(KLEIN_4B_GGUF, KLEIN_4B_FILE, None)
         ),
-        daemon = True,
+        daemon=True,
     )
     caller.start()
     caller.join(8)
@@ -904,7 +905,7 @@ def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp
     )
     assert (
         diffusion_compat.flux2_inner_dim_for_pick(
-            KLEIN_4B_GGUF, "renamed-4b.gguf", allow_network = False
+            KLEIN_4B_GGUF, "renamed-4b.gguf", allow_network=False
         )
         == 4096
     )
@@ -917,11 +918,11 @@ def _cached_snapshot(
     tmp_path,
     sha,
     body,
-    filename = KLEIN_4B_FILE,
+    filename=KLEIN_4B_FILE,
 ):
     """A file where huggingface_hub puts it: ``models--org--repo/snapshots/<sha>/<file>``."""
     path = tmp_path / f"models--{KLEIN_4B_GGUF.replace('/', '--')}" / "snapshots" / sha / filename
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     return path
 
@@ -930,7 +931,7 @@ def _stub_revision(monkeypatch, sha):
     def _meta(*_args, **_kwargs):
         if sha is None:
             raise OSError("offline")
-        return types.SimpleNamespace(commit_hash = sha, etag = sha)
+        return types.SimpleNamespace(commit_hash=sha, etag=sha)
 
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _meta)
 
@@ -1062,7 +1063,7 @@ def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
 
 def test_an_unreadable_speech_header_fails_open(monkeypatch):
     """Fail-open throughout: refusing a pick that works is worse than the download this saves."""
-    _stub_range_reads(monkeypatch, {}, status = 200)
+    _stub_range_reads(monkeypatch, {}, status=200)
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE) is None
     diffusion_compat.assert_pick_is_not_speech(CSM_REPO, CSM_FILE)
@@ -1096,9 +1097,9 @@ def test_a_failed_probe_is_not_reused_for_a_retry_with_a_working_token(monkeypat
         def get(
             self,
             url,
-            headers = None,
-            timeout = None,
-            stream = False,
+            headers=None,
+            timeout=None,
+            stream=False,
         ):
             header_map = headers or {}
             requests.append(header_map.get("authorization") or header_map.get("Authorization"))
@@ -1138,7 +1139,7 @@ def test_a_checkpoint_that_lands_after_a_miss_is_probed_again(monkeypatch, tmp_p
 def _cache_entry(tmp_path, revision, arch):
     """A GGUF sitting in an HF cache snapshot dir, so ``_snapshot_revision`` can read its commit."""
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / revision
-    snapshot.mkdir(parents = True, exist_ok = True)
+    snapshot.mkdir(parents=True, exist_ok=True)
     path = snapshot / CSM_FILE
     path.write_bytes(_arch_header(arch))
     return str(path)
@@ -1208,7 +1209,7 @@ def test_a_pick_that_names_the_checkpoint_outright_is_probed_like_the_loader_ope
     filesystem path off the Hub and fails open. Either way the csm checkpoint survives the gate,
     the resident pipeline is evicted, and the file reaches the media loader."""
     direct = tmp_path / "wan-models" / CSM_FILE
-    direct.parent.mkdir(parents = True)
+    direct.parent.mkdir(parents=True)
     direct.write_bytes(_arch_header("llama-csm"))
 
     # Offline, so a probe that found no local path has nothing left to fall back on and must let
@@ -1269,8 +1270,8 @@ def test_the_video_and_sd_cpp_helpers_delegate_to_the_one_verdict(monkeypatch):
         lambda *a, **k: seen.append(a),
     )
 
-    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
-    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network = False)
+    video._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network=False)
+    sd_cpp_backend._assert_pick_is_not_speech(CSM_REPO, CSM_FILE, "tok", allow_network=False)
 
     # The cache-only flag rides through: an offline promise must not drop at the delegation edge.
     assert seen == [(CSM_REPO, CSM_FILE, "tok", False), (CSM_REPO, CSM_FILE, "tok", False)]
@@ -1281,7 +1282,7 @@ def test_a_media_gguf_republished_as_speech_is_refused(monkeypatch, tmp_path):
     hands csm bytes to a media loader after the download and the teardown. So the revalidation
     cannot be the cheap side of an asymmetry the way the size pairing's is."""
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     cached = snapshot / CSM_FILE
     # On disk this is still the runnable denoiser the row was offering.
     cached.write_bytes(_arch_header("flux"))
@@ -1314,7 +1315,7 @@ def test_a_cache_only_load_never_range_reads_an_uncached_pick(monkeypatch):
     requests = _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: None)
 
-    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network=False) is None
     assert requests == []
 
     # And nothing was memoised, so the next caller that CAN wait still gets a real answer.
@@ -1329,7 +1330,7 @@ def test_a_cache_only_load_still_reads_a_checkpoint_already_on_disk(monkeypatch,
     requests = _stub_range_reads(monkeypatch, {})
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(on_device))
 
-    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is not None
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network=False) is not None
     assert requests == []
 
 
@@ -1337,7 +1338,7 @@ def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatc
     """A cached copy read WITHOUT its revision check is half an answer; memoising it would let
     the network-allowed caller behind it read that back and never revalidate."""
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "oldsha"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     cached = snapshot / CSM_FILE
     cached.write_bytes(_arch_header("flux"))
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
@@ -1349,7 +1350,7 @@ def test_a_cache_only_probe_does_not_memoise_a_skipped_revision_check(monkeypatc
     _stub_range_reads(monkeypatch, {CSM_FILE: _arch_header("llama-csm")})
 
     # Offline: reads the stale local bytes, asks no revision, allows the pick.
-    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network = False) is None
+    assert diffusion_compat.speech_pick_refusal(CSM_REPO, CSM_FILE, allow_network=False) is None
     assert heads == []
 
     # The next caller that can reach the Hub must still catch the republish.
@@ -1383,7 +1384,7 @@ def test_a_snapshot_backed_verdict_keeps_its_entry_across_the_window(monkeypatch
     """A cached entry needs no TTL: its key carries the file identity and the revision check asks
     the Hub. Expiring it too would spend a range read per pick for nothing."""
     snapshot = tmp_path / "models--someone--mixed-media-GGUF" / "snapshots" / "samesha"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     cached = snapshot / CSM_FILE
     cached.write_bytes(_arch_header("llama-csm"))
     monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *a, **k: str(cached))
@@ -1471,9 +1472,9 @@ class _HttpxLikeClient:
     def get(
         self,
         url,
-        params = None,
-        headers = None,
-        timeout = None,
+        params=None,
+        headers=None,
+        timeout=None,
         **kwargs,
     ):
         if "stream" in kwargs:
@@ -1484,9 +1485,9 @@ class _HttpxLikeClient:
         self,
         method,
         url,
-        headers = None,
-        timeout = None,
-        follow_redirects = False,
+        headers=None,
+        timeout=None,
+        follow_redirects=False,
     ):
         self.calls.append((method, (headers or {}).get("Range", "")))
         assert follow_redirects, "the Hub answers a resolve URL with a 302 to the CDN"
@@ -1507,7 +1508,7 @@ class _HttpxLikeStream:
     def status_code(self):
         return 206
 
-    def iter_bytes(self, chunk_size = 65536):
+    def iter_bytes(self, chunk_size=65536):
         for start in range(0, len(self.body), chunk_size):
             yield self.body[start : start + chunk_size]
 
@@ -1696,7 +1697,7 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
     # A subprocess because this pytest session has already imported yaml, and a meta_path
     # blocker cannot un-import it.
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, f"stderr: {result.stderr}"
 

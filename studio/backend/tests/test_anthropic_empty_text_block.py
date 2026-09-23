@@ -17,7 +17,7 @@ def _drive(coro):
 def _capture(
     monkeypatch,
     messages,
-    caching = False,
+    caching=False,
 ) -> dict:
     captured: dict = {}
 
@@ -25,29 +25,29 @@ def _capture(
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "anthropic",
-            base_url = "https://api.anthropic.com/v1",
-            api_key = "sk-ant-test",
+            provider_type="anthropic",
+            base_url="https://api.anthropic.com/v1",
+            api_key="sk-ant-test",
         )
         async for _ in client._stream_anthropic(
-            messages = messages,
-            model = "claude-opus-4-7",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 32,
-            enable_prompt_caching = caching,
+            messages=messages,
+            model="claude-opus-4-7",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=32,
+            enable_prompt_caching=caching,
         ):
             pass
         await client.close()
@@ -171,7 +171,7 @@ def test_dropping_the_last_message_moves_the_cache_breakpoint(monkeypatch):
             {"role": "user", "content": "keep me"},
             {"role": "user", "content": [{"type": "text", "text": ""}]},
         ],
-        caching = True,
+        caching=True,
     )
     messages = captured["body"]["messages"]
     assert len(messages) == 1
@@ -193,7 +193,7 @@ def test_cached_image_only_turn_marks_the_image(monkeypatch):
                 ],
             }
         ],
-        caching = True,
+        caching=True,
     )
     parts = captured["body"]["messages"][0]["content"]
     assert [p["type"] for p in parts] == ["image"], parts

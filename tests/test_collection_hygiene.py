@@ -57,7 +57,7 @@ def test_saving_scripts_opt_in_before_running_at_import():
     """
     ungated = []
     for path in sorted(SAVING_DIR.rglob("test_*.py")):
-        source = path.read_text(encoding = "utf-8")
+        source = path.read_text(encoding="utf-8")
         if _has_test_items(ast.parse(source)):
             continue
         if "require_opt_in(" not in source:
@@ -82,9 +82,9 @@ def test_raw_text_does_not_leave_its_datasets_mock_in_sys_modules():
     )
     result = subprocess.run(
         [sys.executable, "-c", child],
-        capture_output = True,
-        text = True,
-        check = False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert (
         "DATASETS_OK" in result.stdout

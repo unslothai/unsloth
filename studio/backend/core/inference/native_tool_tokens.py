@@ -139,14 +139,14 @@ def _decode_without_special_spacing(tokenizer, token_ids, *, skip_special_tokens
     try:
         return tokenizer.decode(
             token_ids,
-            skip_special_tokens = skip_special_tokens,
-            spaces_between_special_tokens = False,
+            skip_special_tokens=skip_special_tokens,
+            spaces_between_special_tokens=False,
         )
     except TypeError as exc:
         # Lightweight tokenizers lack the option and do not add that spacing themselves.
         if "spaces_between_special_tokens" not in str(exc):
             raise
-        return tokenizer.decode(token_ids, skip_special_tokens = skip_special_tokens)
+        return tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
 
 def _token_is_preserved(token, preserved_tokens) -> bool:
@@ -158,7 +158,7 @@ def _token_is_preserved(token, preserved_tokens) -> bool:
     return any(token in marker or marker in token for marker in preserved_tokens)
 
 
-def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int], frozenset[int]]:
+def _special_token_sets(tokenizer, preserved_tokens=()) -> tuple[frozenset[int], frozenset[int]]:
     """``(all_special_ids, native_tool_ids)``, both empty when the tokenizer exposes no ids,
     which leaves the caller on fail-closed ``skip_special_tokens=True``."""
     try:
@@ -179,7 +179,7 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
             continue
         try:
             decoded = _decode_without_special_spacing(
-                tokenizer, [token_id], skip_special_tokens = False
+                tokenizer, [token_id], skip_special_tokens=False
             )
         except Exception:  # noqa: BLE001 -- absence means this id stays suppressed
             decoded = None
@@ -190,19 +190,19 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
 
 def _decode_with_token_sets(tokenizer, token_ids, special_ids, tool_ids) -> str:
     if not special_ids:
-        return _decode_without_special_spacing(tokenizer, token_ids, skip_special_tokens = True)
+        return _decode_without_special_spacing(tokenizer, token_ids, skip_special_tokens=True)
     filtered = [
         int(token_id)
         for token_id in token_ids
         if int(token_id) not in special_ids or int(token_id) in tool_ids
     ]
-    return _decode_without_special_spacing(tokenizer, filtered, skip_special_tokens = False)
+    return _decode_without_special_spacing(tokenizer, filtered, skip_special_tokens=False)
 
 
 def decode_with_native_tool_tokens(
     tokenizer,
     token_ids,
-    preserved_tokens = (),
+    preserved_tokens=(),
 ) -> str:
     """Decode ids while retaining only recognized native tool special tokens."""
     return _decode_with_token_sets(
@@ -220,7 +220,7 @@ def stop_token_text(tokenizer, token_id) -> "str | None":
     for lookup in (
         lambda: tokenizer.convert_ids_to_tokens(int(token_id)),
         lambda: _decode_without_special_spacing(
-            tokenizer, [int(token_id)], skip_special_tokens = False
+            tokenizer, [int(token_id)], skip_special_tokens=False
         ),
     ):
         try:
@@ -235,13 +235,13 @@ def stop_token_text(tokenizer, token_id) -> "str | None":
 def decoder_preserves_token(
     tokenizer,
     token: str,
-    preserved_tokens = (),
+    preserved_tokens=(),
 ) -> bool:
     """Whether a ``NativeToolTokenDecoder`` over ``tokenizer`` would really keep ``token``."""
     if tokenizer is None:
         return False
     try:
-        return NativeToolTokenDecoder(tokenizer, preserved_tokens = preserved_tokens).preserves(token)
+        return NativeToolTokenDecoder(tokenizer, preserved_tokens=preserved_tokens).preserves(token)
     except Exception:  # noqa: BLE001 -- an unusable tokenizer keeps the fail-closed answer
         return False
 
@@ -253,7 +253,7 @@ class NativeToolTokenDecoder:
         self,
         tokenizer,
         *,
-        preserved_tokens = (),
+        preserved_tokens=(),
     ):
         self._tokenizer = tokenizer
         self._special_ids, self._tool_ids = _special_token_sets(tokenizer, preserved_tokens)
@@ -270,7 +270,7 @@ class NativeToolTokenDecoder:
             for lookup in (
                 lambda: self._tokenizer.convert_ids_to_tokens(token_id),
                 lambda: _decode_without_special_spacing(
-                    self._tokenizer, [token_id], skip_special_tokens = False
+                    self._tokenizer, [token_id], skip_special_tokens=False
                 ),
             ):
                 try:

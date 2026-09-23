@@ -90,6 +90,7 @@ def _torchao_helpers() -> Optional[tuple]:
     """
     try:
         from core._torchao_stub import is_stubbed
+
         if is_stubbed("torchao"):
             return None
     except Exception:  # noqa: BLE001 - no stub module to ask means nothing is stubbed
@@ -107,6 +108,7 @@ def _torchao_helpers() -> Optional[tuple]:
 def _torchao_version() -> Optional[str]:
     try:
         import torchao
+
         return getattr(torchao, "__version__", None)
     except Exception:  # noqa: BLE001
         return None
@@ -225,7 +227,7 @@ def save_prequant_safetensors(path: str, *, fmt: str, state_dict: Any, metadata:
     # refuses the file. The break only shows up on someone else's machine, so pass it through.
     header = dict(torchao_metadata or {})
     header[UNSLOTH_FORMAT_KEY] = str(fmt)
-    header[UNSLOTH_METADATA_KEY] = json.dumps(metadata or {}, default = str)
+    header[UNSLOTH_METADATA_KEY] = json.dumps(metadata or {}, default=str)
     if roots:
         flat = dict(flat)
         for key in roots:
@@ -233,7 +235,7 @@ def save_prequant_safetensors(path: str, *, fmt: str, state_dict: Any, metadata:
             # larger allocation is exactly the shape that arrives as one.
             flat[f"{UNSLOTH_ROOT_PREFIX}{key}"] = state_dict[key].contiguous()
         header[UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in roots])
-    save_file(flat, path, metadata = header)
+    save_file(flat, path, metadata=header)
 
 
 def read_prequant_header(path: str) -> Optional[dict]:
@@ -245,7 +247,8 @@ def read_prequant_header(path: str) -> Optional[dict]:
     """
     try:
         from safetensors import safe_open
-        with safe_open(path, framework = "pt") as handle:
+
+        with safe_open(path, framework="pt") as handle:
             raw = handle.metadata() or {}
     except Exception:  # noqa: BLE001 - unreadable or not safetensors at all
         return None
@@ -350,7 +353,7 @@ def _header_without_unconstructible_fields(
         print(
             f"note: {path} carries {', '.join(sorted(set(dropped)))} from a newer torchao; "
             f"the field is inert here and was ignored",
-            flush = True,
+            flush=True,
         )
     return header
 
@@ -374,7 +377,7 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     from safetensors import safe_open
 
     _, unflatten = helpers
-    with safe_open(path, framework = "pt", device = device) as handle:
+    with safe_open(path, framework="pt", device=device) as handle:
         raw = dict(handle.metadata() or {})
         tensors = {key: handle.get_tensor(key) for key in handle.keys()}
 
@@ -396,7 +399,7 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
 
     # A newer torchao can record a field an older one's constructor does not take, which is how a
     # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.
-    raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
+    raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path=path)
 
     # torchao reads its OWN keys out of the same header; ours are namespaced and simply ignored. The second element
     # is what it could NOT account for: a subclass missing one of its parts (a truncated or hand-edited file) is
@@ -441,7 +444,7 @@ def scheme_is_flattenable(quant_config: Any, *, features: int = 512) -> Optional
         import torch
         from torchao.quantization import quantize_
 
-        probe = torch.nn.Linear(features, features, bias = False)
+        probe = torch.nn.Linear(features, features, bias=False)
         quantize_(probe, quant_config)
     except Exception:  # noqa: BLE001 - an unprobeable config is not evidence of anything
         return None

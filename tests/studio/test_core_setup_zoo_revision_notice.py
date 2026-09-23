@@ -38,12 +38,12 @@ _MISSING = [tool for tool in ("bash", "timeout") if shutil.which(tool) is None]
 
 pytestmark = pytest.mark.skipif(
     bool(_MISSING),
-    reason = f"needs {' and '.join(_MISSING)} to execute the extracted block",
+    reason=f"needs {' and '.join(_MISSING)} to execute the extracted block",
 )
 
 
 def _clone_step() -> dict:
-    steps = yaml.safe_load(_ACTION.read_text(encoding = "utf-8"))["runs"]["steps"]
+    steps = yaml.safe_load(_ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
     for step in steps:
         if "run" in step and "unsloth-zoo" in step["run"]:
             return step
@@ -103,7 +103,7 @@ def _run_notice(
         "fi\n"
         # rev-parse, standing in for the clone this test does not make.
         "echo 0000000000000000000000000000000000000000\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     git.chmod(0o755)
 
@@ -113,7 +113,7 @@ def _run_notice(
         'RUNNER_TEMP="$1"\n'
         + textwrap.dedent(_revision_notice_block())
         + "\necho NOTICE_BLOCK_SURVIVED\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     # The stub directory first so its git wins, then the caller's real PATH rather than a
     # hardcoded pair of directories. Hardcoding meant the skip above and the run below could
@@ -125,16 +125,16 @@ def _run_notice(
     }
     return subprocess.run(
         ["bash", str(script), str(tmp_path)],
-        capture_output = True,
-        text = True,
-        timeout = 60,
-        env = env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
     )
 
 
 def test_a_failing_remote_lookup_does_not_end_the_step(tmp_path):
     """The regression this file exists for: a blip on the lookup must be survivable."""
-    proc = _run_notice(tmp_path, git_exit = 128, git_stdout = "")
+    proc = _run_notice(tmp_path, git_exit=128, git_stdout="")
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, (
         "a failing git ls-remote ended the step. Under `set -euxo pipefail` the pipeline's "
@@ -150,7 +150,7 @@ def test_a_failing_remote_lookup_does_not_end_the_step(tmp_path):
 
 def test_a_lookup_that_answers_nothing_also_stays_quiet(tmp_path):
     """Exit 0 with empty output, which a proxy returning a 200 and no body would give."""
-    proc = _run_notice(tmp_path, git_exit = 0, git_stdout = "")
+    proc = _run_notice(tmp_path, git_exit=0, git_stdout="")
     assert proc.returncode == 0, (proc.stdout + proc.stderr)[-2000:]
     assert "::warning" not in proc.stdout + proc.stderr
 
@@ -159,8 +159,8 @@ def test_a_revision_behind_main_is_reported(tmp_path):
     """Not vacuous: the case the notice was added for must still produce the warning."""
     proc = _run_notice(
         tmp_path,
-        git_exit = 0,
-        git_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n",
+        git_exit=0,
+        git_stdout="1111111111111111111111111111111111111111\trefs/heads/main\n",
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined[-2000:]
@@ -171,7 +171,7 @@ def test_a_revision_behind_main_is_reported(tmp_path):
 def test_the_matching_revision_is_not_reported_as_stale(tmp_path):
     """The other direction, so the warning cannot degrade into always firing."""
     same = "0000000000000000000000000000000000000000"
-    proc = _run_notice(tmp_path, git_exit = 0, git_stdout = f"{same}\trefs/heads/main\n")
+    proc = _run_notice(tmp_path, git_exit=0, git_stdout=f"{same}\trefs/heads/main\n")
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined[-2000:]
     assert (
@@ -187,7 +187,7 @@ def test_the_lookup_absorbs_its_failure_inside_the_substitution():
     caught by pipefail first in some shells. Pin the shape that is actually correct.
     """
     block = _revision_notice_block()
-    lookup = re.search(r'head="\$\((.*?)\)"', block, flags = re.S)
+    lookup = re.search(r'head="\$\((.*?)\)"', block, flags=re.S)
     assert lookup, f"the resolved-revision lookup changed shape:\n{block}"
     assert "|| true" in lookup.group(1), (
         "the lookup must absorb its own failure inside the command substitution, not "
@@ -203,7 +203,7 @@ def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
     """
     bound = _lookup_timeout_seconds()
     began = time.monotonic()
-    proc = _run_notice(tmp_path, git_exit = 0, git_stdout = "", git_sleep = bound * 6)
+    proc = _run_notice(tmp_path, git_exit=0, git_stdout="", git_sleep=bound * 6)
     elapsed = time.monotonic() - began
 
     combined = proc.stdout + proc.stderr
@@ -225,8 +225,8 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
     message has to hold for all three rather than assert one."""
     proc = _run_notice(
         tmp_path,
-        git_exit = 0,
-        git_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n",
+        git_exit=0,
+        git_stdout="1111111111111111111111111111111111111111\trefs/heads/main\n",
     )
     combined = proc.stdout + proc.stderr
     warning = next((line for line in combined.splitlines() if "::warning" in line), None)
@@ -256,7 +256,7 @@ def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
     lists the actions it `uses:`; this is the other direction, the ones its TESTS read.
     """
     workflow = yaml.safe_load(
-        (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(encoding = "utf-8")
+        (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(encoding="utf-8")
     )
     triggers = workflow.get(True) or workflow.get("on") or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []

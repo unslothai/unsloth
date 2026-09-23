@@ -32,39 +32,39 @@ from types import SimpleNamespace
 
 def _shared_setup_1(monitor):
     monitor_id = monitor.start(
-        endpoint = "/v1/responses",
-        method = "POST",
-        model = "m",
-        prompt = "hi",
+        endpoint="/v1/responses",
+        method="POST",
+        model="m",
+        prompt="hi",
     )
-    payload = ResponsesRequest(input = "hi", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True)
+    messages = [ChatMessage(role="user", content="hi")]
     return messages, monitor_id, payload
 
 
 def _shared_setup_3(api_monitor, tool):
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, tools=[tool])
+    messages = [ChatMessage(role="user", content="hi")]
     monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+        endpoint="/v1/responses", method="POST", model="org/M-GGUF", prompt="hi"
     )
     return messages, monitor_id, payload
 
 
 def _shared_setup_4():
-    messages = [ChatMessage(role = "user", content = "hi")]
+    messages = [ChatMessage(role="user", content="hi")]
     request = SimpleNamespace(
-        state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/responses"),
-        method = "POST",
+        state=SimpleNamespace(),
+        url=SimpleNamespace(path="/v1/responses"),
+        method="POST",
     )
     return messages, request
 
 
 def _shared_setup_5(payload):
-    messages = [ChatMessage(role = "user", content = "hi")]
+    messages = [ChatMessage(role="user", content="hi")]
 
-    chat_req = _build_chat_request(payload, messages, stream = False)
+    chat_req = _build_chat_request(payload, messages, stream=False)
 
     assert _extract_response_format(chat_req) is None
 
@@ -152,8 +152,8 @@ def _codex_apply_patch_tool():
 class TestResponsesRequestTools:
     def test_flat_function_tool_accepted(self):
         req = ResponsesRequest(
-            input = "hi",
-            tools = [
+            input="hi",
+            tools=[
                 {
                     "type": "function",
                     "name": "get_weather",
@@ -174,18 +174,18 @@ class TestResponsesRequestTools:
 
     def test_tool_choice_string_values(self):
         for choice in ("auto", "required", "none"):
-            req = ResponsesRequest(input = "hi", tool_choice = choice)
+            req = ResponsesRequest(input="hi", tool_choice=choice)
             assert req.tool_choice == choice
 
     def test_tool_choice_forcing_object(self):
         req = ResponsesRequest(
-            input = "hi",
-            tool_choice = {"type": "function", "name": "get_weather"},
+            input="hi",
+            tool_choice={"type": "function", "name": "get_weather"},
         )
         assert req.tool_choice == {"type": "function", "name": "get_weather"}
 
     def test_parallel_tool_calls(self):
-        req = ResponsesRequest(input = "hi", parallel_tool_calls = True)
+        req = ResponsesRequest(input="hi", parallel_tool_calls=True)
         assert req.parallel_tool_calls is True
 
     def test_builtin_tool_type_passes_validation(self):
@@ -193,23 +193,23 @@ class TestResponsesRequestTools:
         must not raise at validation so SDKs that default to them don't
         fail on Unsloth; they're filtered out during translation."""
         req = ResponsesRequest(
-            input = "hi",
-            tools = [{"type": "web_search_preview"}],
+            input="hi",
+            tools=[{"type": "web_search_preview"}],
         )
         assert req.tools == [{"type": "web_search_preview"}]
 
     def test_function_tool_model_direct(self):
         tool = ResponsesFunctionTool(
-            type = "function",
-            name = "send_email",
-            parameters = {"type": "object", "properties": {}},
+            type="function",
+            name="send_email",
+            parameters={"type": "object", "properties": {}},
         )
         assert tool.name == "send_email"
         assert tool.description is None
 
     def test_function_tool_rejects_other_type(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionTool(type = "web_search", name = "x")
+            ResponsesFunctionTool(type="web_search", name="x")
 
 
 # =====================================================================
@@ -220,7 +220,7 @@ class TestResponsesRequestTools:
 class TestResponsesMultiTurnInput:
     def test_function_call_input_item(self):
         req = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Weather in Paris?"},
                 {
                     "type": "function_call",
@@ -245,19 +245,19 @@ class TestResponsesMultiTurnInput:
 
     def test_function_call_output_missing_call_id_rejected(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionCallOutputInputItem(type = "function_call_output", output = "x")
+            ResponsesFunctionCallOutputInputItem(type="function_call_output", output="x")
 
     def test_function_call_output_accepts_content_array(self):
         item = ResponsesFunctionCallOutputInputItem(
-            type = "function_call_output",
-            call_id = "call_1",
-            output = [{"type": "output_text", "text": "done"}],
+            type="function_call_output",
+            call_id="call_1",
+            output=[{"type": "output_text", "text": "done"}],
         )
         assert isinstance(item.output, list)
 
     def test_custom_tool_call_items(self):
         req = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "custom_tool_call",
                     "call_id": "call_patch",
@@ -439,11 +439,11 @@ class TestToolChoiceTranslation:
 
 class TestBuildChatRequest:
     def test_seed_reaches_the_llama_passthrough_policy(self):
-        payload = ResponsesRequest(input = "hi", seed = 3407)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", seed=3407)
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = True)
-        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+        chat_req = _build_chat_request(payload, messages, stream=True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx=4096)
 
         assert chat_req.seed == 3407
         assert body["seed"] == 3407
@@ -451,27 +451,27 @@ class TestBuildChatRequest:
 
     def test_parallel_tool_calls_false_is_preserved_for_passthrough_caps(self):
         payload = ResponsesRequest(
-            input = "hi",
-            tools = [
+            input="hi",
+            tools=[
                 {
                     "type": "function",
                     "name": "lookup",
                     "parameters": {"type": "object"},
                 }
             ],
-            parallel_tool_calls = False,
+            parallel_tool_calls=False,
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = True)
+        chat_req = _build_chat_request(payload, messages, stream=True)
 
         assert chat_req.parallel_tool_calls is False
 
     def test_text_format_json_schema_becomes_response_format(self):
         schema = {"type": "object", "properties": {"name": {"type": "string"}}}
         payload = ResponsesRequest(
-            input = "hi",
-            text = {
+            input="hi",
+            text={
                 "format": {
                     "type": "json_schema",
                     "name": "Person",
@@ -480,9 +480,9 @@ class TestBuildChatRequest:
                 }
             },
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert _extract_response_format(chat_req) == {
             "type": "json_schema",
@@ -490,87 +490,87 @@ class TestBuildChatRequest:
         }
 
     def test_text_format_json_object_becomes_response_format(self):
-        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", text={"format": {"type": "json_object"}})
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert _extract_response_format(chat_req) == {"type": "json_object"}
 
     def test_text_format_text_carries_no_response_format(self):
         # Codex and the Agents SDK send this on ordinary requests; constraining
         # them would route every call onto the schema path.
-        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
+        payload = ResponsesRequest(input="hi", text={"format": {"type": "text"}})
         _shared_setup_5(payload)
 
     def test_text_verbosity_only_carries_no_response_format(self):
-        payload = ResponsesRequest(input = "hi", text = {"verbosity": "low"})
+        payload = ResponsesRequest(input="hi", text={"verbosity": "low"})
         _shared_setup_5(payload)
 
     def test_text_format_json_schema_without_schema_is_ignored(self):
-        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_schema"}})
+        payload = ResponsesRequest(input="hi", text={"format": {"type": "json_schema"}})
         _shared_setup_5(payload)
 
     def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
         payload = ResponsesRequest(
-            input = "hi",
-            chat_template_kwargs = {"enable_thinking": True},
+            input="hi",
+            chat_template_kwargs={"enable_thinking": True},
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.enable_thinking is True
 
     def test_chat_template_kwargs_enable_thinking_false_is_lifted(self):
         payload = ResponsesRequest(
-            input = "hi",
-            chat_template_kwargs = {"enable_thinking": False},
+            input="hi",
+            chat_template_kwargs={"enable_thinking": False},
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.enable_thinking is False
 
     def test_chat_template_kwargs_enable_thinking_requires_json_boolean(self):
         payload = ResponsesRequest(
-            input = "hi",
-            chat_template_kwargs = {"enable_thinking": "false"},
+            input="hi",
+            chat_template_kwargs={"enable_thinking": "false"},
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.enable_thinking is None
 
     def test_reasoning_effort_high_enables_local_thinking(self):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "high"})
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.reasoning_effort == "high"
         assert chat_req.enable_thinking is True
 
     def test_reasoning_effort_none_disables_local_thinking(self):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "none"})
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.reasoning_effort == "none"
         assert chat_req.enable_thinking is False
 
     def test_explicit_enable_thinking_false_disables_reasoning_effort(self):
         payload = ResponsesRequest(
-            input = "hi",
-            reasoning = {"effort": "high"},
-            chat_template_kwargs = {"enable_thinking": False},
+            input="hi",
+            reasoning={"effort": "high"},
+            chat_template_kwargs={"enable_thinking": False},
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
-        chat_req = _build_chat_request(payload, messages, stream = False)
+        chat_req = _build_chat_request(payload, messages, stream=False)
 
         assert chat_req.reasoning_effort == "none"
         assert chat_req.enable_thinking is False
@@ -584,7 +584,7 @@ class TestBuildChatRequest:
 class TestNormaliseResponsesInputWithTools:
     def test_function_call_output_maps_to_tool_role(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Weather?"},
                 {
                     "type": "function_call",
@@ -615,7 +615,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_custom_tool_call_round_trip_maps_to_local_function(self):
         patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "custom_tool_call",
                     "call_id": "call_patch",
@@ -628,7 +628,7 @@ class TestNormaliseResponsesInputWithTools:
                     "output": "Done!",
                 },
             ],
-            tools = [_codex_apply_patch_tool()],
+            tools=[_codex_apply_patch_tool()],
         )
 
         messages = _normalise_responses_input(payload)
@@ -645,7 +645,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_unrelated_custom_tool_replay_stays_ignored(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "custom_tool_call",
                     "call_id": "call_code",
@@ -658,7 +658,7 @@ class TestNormaliseResponsesInputWithTools:
                     "output": "hidden output",
                 },
             ],
-            tools = [
+            tools=[
                 {
                     "type": "custom",
                     "name": "code_exec",
@@ -681,8 +681,8 @@ class TestNormaliseResponsesInputWithTools:
         system message at the top.
         """
         payload = ResponsesRequest(
-            instructions = "Base instructions.",
-            input = [
+            instructions="Base instructions.",
+            input=[
                 {"role": "developer", "content": "Developer override."},
                 {"role": "user", "content": "Hi"},
             ],
@@ -701,7 +701,7 @@ class TestNormaliseResponsesInputWithTools:
         produce a single leading system message, not a mid-conversation
         system that strict templates reject."""
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi!"},
                 {"role": "developer", "content": "Updated rules."},
@@ -715,13 +715,13 @@ class TestNormaliseResponsesInputWithTools:
             assert m.role != "system", "no trailing system message permitted"
 
     def test_no_system_output_when_no_system_input(self):
-        payload = ResponsesRequest(input = "Hi")
+        payload = ResponsesRequest(input="Hi")
         msgs = _normalise_responses_input(payload)
         assert all(m.role != "system" for m in msgs)
 
     def test_multiple_system_messages_in_input_are_merged(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "system", "content": "A"},
                 {"role": "system", "content": "B"},
                 {"role": "user", "content": "Hi"},
@@ -733,7 +733,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_text_output_flattens_to_tool_text(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -747,7 +747,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_image_output_becomes_multimodal_tool_content(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -765,7 +765,7 @@ class TestNormaliseResponsesInputWithTools:
         msgs = _normalise_responses_input(payload)
         assert msgs[0].role == "tool"
         assert msgs[0].tool_call_id == "call_1"
-        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+        assert msgs[0].model_dump(exclude_none=True)["content"] == [
             {"type": "text", "text": "see image"},
             {
                 "type": "image_url",
@@ -776,8 +776,8 @@ class TestNormaliseResponsesInputWithTools:
             },
         ]
 
-        chat_req = _build_chat_request(payload, msgs, stream = False)
-        assert chat_req.model_dump(exclude_none = True)["messages"][0]["content"] == [
+        chat_req = _build_chat_request(payload, msgs, stream=False)
+        assert chat_req.model_dump(exclude_none=True)["messages"][0]["content"] == [
             {"type": "text", "text": "see image"},
             {
                 "type": "image_url",
@@ -790,7 +790,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_image_output_allows_original_detail(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -805,7 +805,7 @@ class TestNormaliseResponsesInputWithTools:
             ],
         )
         msgs = _normalise_responses_input(payload)
-        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+        assert msgs[0].model_dump(exclude_none=True)["content"] == [
             {
                 "type": "image_url",
                 "image_url": {
@@ -817,7 +817,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_file_id_image_output_rejected_clearly(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -835,7 +835,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_file_output_rejected_clearly(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -857,7 +857,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_content_array_malformed_image_output_rejected_clearly(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -873,7 +873,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_input_file_message_part_rejected_clearly(self):
         # Same shape function_call_output already refuses; dropped here, it answered 200.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -894,7 +894,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_file_id_image_message_part_rejected_clearly(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -912,7 +912,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_unmodelled_message_part_is_named_not_dropped(self):
         # Matches _reject_unsupported_content_parts on /chat/completions.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -930,7 +930,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_image_message_part_without_any_source_rejected_clearly(self):
         # Nothing to serve, and the tool-result path already says so in these words.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -948,7 +948,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_image_message_part_with_unknown_detail_rejected_clearly(self):
         # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -970,7 +970,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
         # file_id means instead of a url, not as well as: with a url, serve it.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -997,7 +997,7 @@ class TestNormaliseResponsesInputWithTools:
             else {"type": "input_text", "text": "hi"}
         )
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": role,
                     "content": [text_part, {"type": "input_file", "filename": "r.pdf"}],
@@ -1014,7 +1014,7 @@ class TestNormaliseResponsesInputWithTools:
         # Clients round-trip prior assistant output verbatim, so only attachments are
         # refused on a replay turn.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "assistant",
                     "content": [
@@ -1033,7 +1033,7 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_string_content_never_hides_an_attachment(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "system", "content": "be brief"},
                 {"role": "assistant", "content": "earlier"},
                 {"role": "user", "content": "hello"},
@@ -1049,7 +1049,7 @@ class TestNormaliseResponsesInputWithTools:
     def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
         # Clients branch on error.code / error.param.
         payload = ResponsesRequest(
-            input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
+            input=[{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
         )
         with pytest.raises(HTTPException) as exc:
             _normalise_responses_input(payload)
@@ -1100,12 +1100,12 @@ def _matrix_id(case):
 class TestResponsesMessagePartMatrix:
     """One expected answer per (part shape, role, position). No server, no GPU."""
 
-    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
-    @pytest.mark.parametrize("alone", [True, False], ids = ["alone", "with_text"])
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
+    @pytest.mark.parametrize("alone", [True, False], ids=["alone", "with_text"])
     def test_user_turn(self, case, alone):
         part, refused, needle = case
         content = [part] if alone else [{"type": "input_text", "text": "hi"}, part]
-        payload = ResponsesRequest(input = [{"role": "user", "content": content}])
+        payload = ResponsesRequest(input=[{"role": "user", "content": content}])
         if refused:
             with pytest.raises(HTTPException) as exc:
                 _normalise_responses_input(payload)
@@ -1114,14 +1114,14 @@ class TestResponsesMessagePartMatrix:
         else:
             assert _normalise_responses_input(payload)
 
-    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids=_matrix_id)
     @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
     def test_attachments_refused_on_every_role(self, case, role):
         # These roles flatten to text, so only a text-ish part survives; everything else,
         # servable image included, is caller content the flatten would drop.
         part, refused, needle = case
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": role, "content": [{"type": "input_text", "text": "hi"}, part]},
                 {"role": "user", "content": "go on"},
             ],
@@ -1153,7 +1153,7 @@ class TestResponsesMessagePartMatrix:
             else {"type": "input_text", "text": "hi"}
         )
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": role,
                     "content": [
@@ -1178,7 +1178,7 @@ class TestResponsesMessagePartMatrix:
             {"type": "computer_screenshot", "image_url": "https://example.com/a.png"},
             {"type": "input_brand_new", "value": 1},
         ],
-        ids = ["input_audio", "computer_screenshot", "future"],
+        ids=["input_audio", "computer_screenshot", "future"],
     )
     def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
         # Anything the flatten does not keep is caller content that vanishes.
@@ -1188,7 +1188,7 @@ class TestResponsesMessagePartMatrix:
             else {"type": "input_text", "text": "hi"}
         )
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": role, "content": [text_part, part]},
                 {"role": "user", "content": "go on"},
             ],
@@ -1208,12 +1208,12 @@ class TestResponsesMessagePartMatrix:
             {"type": "input_text", "text": 123},
             {"type": "output_text"},
         ],
-        ids = ["no_text", "null_text", "int_text", "output_no_text"],
+        ids=["no_text", "null_text", "int_text", "output_no_text"],
     )
     def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
         # A known type name on an untyped part: waved through, then dropped by the flatten.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": role, "content": [part]},
                 {"role": "user", "content": "go on"},
             ],
@@ -1227,7 +1227,7 @@ class TestResponsesMessagePartMatrix:
     def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
         # Servable text beside it, so the request succeeded and only the broken part went.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "system",
                     "content": [{"type": "input_text", "text": "keep"}, {"type": "input_text"}],
@@ -1244,7 +1244,7 @@ class TestResponsesMessagePartMatrix:
     def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
         # Only the model's own output on a replay turn; elsewhere someone wrote it.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": role,
                     "content": [
@@ -1264,7 +1264,7 @@ class TestResponsesMessagePartMatrix:
     def test_assistant_output_metadata_survives_the_flatten(self, part_type):
         # Clients round-trip these, and the prompt needs nothing from them.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "assistant",
                     "content": [
@@ -1283,7 +1283,7 @@ class TestResponsesMessagePartMatrix:
 
     def test_a_servable_image_still_passes_on_a_user_turn(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -1298,8 +1298,8 @@ class TestResponsesMessagePartMatrix:
 
     def test_instructions_still_merge_when_a_turn_is_servable(self):
         payload = ResponsesRequest(
-            instructions = "be brief",
-            input = [
+            instructions="be brief",
+            input=[
                 {"role": "developer", "content": [{"type": "input_text", "text": "and kind"}]},
                 {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
             ],
@@ -1313,7 +1313,7 @@ class TestResponsesMessagePartMatrix:
     def test_top_level_item_types_are_untouched_by_the_refusal(self):
         # The refusal walks message items only.
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"type": "reasoning", "summary": [], "id": "rs_1"},
                 {
                     "type": "function_call",
@@ -1330,7 +1330,7 @@ class TestResponsesMessagePartMatrix:
 
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -1342,11 +1342,11 @@ class TestResponsesMessagePartMatrix:
         assert msgs[0].role == "tool"
         assert msgs[0].tool_call_id == "call_1"
         assert msgs[0].content == "(no output)"
-        ChatMessage(**msgs[0].model_dump(exclude_none = True))
+        ChatMessage(**msgs[0].model_dump(exclude_none=True))
 
     def test_whitespace_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -1359,7 +1359,7 @@ class TestResponsesMessagePartMatrix:
 
     def test_empty_content_array_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -1372,7 +1372,7 @@ class TestResponsesMessagePartMatrix:
 
     def test_image_content_array_tool_output_is_serialised(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -1395,7 +1395,7 @@ class TestResponsesMessagePartMatrix:
 
     def test_image_payload_outside_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
@@ -1536,19 +1536,19 @@ class TestResponsesNonStreamingAdapter:
     def _run_with_message(
         monkeypatch,
         message,
-        payload = None,
-        llama_backend = None,
-        finish_reason = None,
+        payload=None,
+        llama_backend=None,
+        finish_reason=None,
     ):
         import routes.inference as inf_mod
 
         async def fake_chat_completions(
             chat_req,
             request,
-            current_subject = None,
+            current_subject=None,
         ):
             return JSONResponse(
-                content = {
+                content={
                     "model": "test-model",
                     "choices": [{"message": message, "finish_reason": finish_reason}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
@@ -1558,8 +1558,8 @@ class TestResponsesNonStreamingAdapter:
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
         if llama_backend is not None:
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: llama_backend)
-        payload = payload or ResponsesRequest(input = "hi")
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = payload or ResponsesRequest(input="hi")
+        messages = [ChatMessage(role="user", content="hi")]
 
         async def run():
             response = await _responses_non_streaming(
@@ -1583,7 +1583,7 @@ class TestResponsesNonStreamingAdapter:
                     }
                 ],
             },
-            finish_reason = "length",
+            finish_reason="length",
         )
 
         assert body["status"] == "incomplete"
@@ -1598,7 +1598,7 @@ class TestResponsesNonStreamingAdapter:
         body = self._run_with_message(
             monkeypatch,
             {"content": "a whole answer"},
-            finish_reason = "stop",
+            finish_reason="stop",
         )
 
         assert body["status"] == "completed"
@@ -1608,7 +1608,7 @@ class TestResponsesNonStreamingAdapter:
         body = self._run_with_message(
             monkeypatch,
             {"content": "filtered partial output"},
-            finish_reason = "content_filter",
+            finish_reason="content_filter",
         )
 
         assert body["status"] == "incomplete"
@@ -1616,11 +1616,11 @@ class TestResponsesNonStreamingAdapter:
         assert [item["status"] for item in body["output"]] == ["incomplete"]
 
     def test_think_block_becomes_reasoning_item_before_message(self, monkeypatch):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>33"},
-            payload = payload,
+            payload=payload,
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
@@ -1633,8 +1633,8 @@ class TestResponsesNonStreamingAdapter:
     def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
         payload = ResponsesRequest(
-            input = "edit the file",
-            tools = [_codex_apply_patch_tool()],
+            input="edit the file",
+            tools=[_codex_apply_patch_tool()],
         )
         body = self._run_with_message(
             monkeypatch,
@@ -1651,7 +1651,7 @@ class TestResponsesNonStreamingAdapter:
                     }
                 ],
             },
-            payload = payload,
+            payload=payload,
         )
 
         assert len(body["output"]) == 1
@@ -1661,7 +1661,7 @@ class TestResponsesNonStreamingAdapter:
     def test_unclosed_think_block_extracts_as_reasoning(self):
         reasoning, visible = _extract_responses_reasoning(
             "<think>partial plan",
-            parse_think_markers = True,
+            parse_think_markers=True,
         )
 
         assert reasoning == "partial plan"
@@ -1674,21 +1674,21 @@ class TestResponsesNonStreamingAdapter:
         async def fake_chat_completions(
             chat_req,
             request,
-            current_subject = None,
+            current_subject=None,
         ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
-                content = {
+                content={
                     "model": "test-model",
                     "choices": [{"message": {"content": "<think>plan</think>answer"}}],
                     "usage": {"prompt_tokens": 2, "completion_tokens": 3},
                 }
             )
 
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "high"})
         messages, request = _shared_setup_4()
 
         async def run():
@@ -1712,7 +1712,7 @@ class TestResponsesNonStreamingAdapter:
         monitor,
         timings,
         *,
-        observations = None,
+        observations=None,
     ):
         """Drive the wrapper over an in-process chat completion: its own monitor row is
         suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
@@ -1729,41 +1729,41 @@ class TestResponsesNonStreamingAdapter:
         async def fake_chat_completions(
             chat_req,
             request,
-            current_subject = None,
+            current_subject=None,
         ):
             assert request.state.skip_api_monitor is True
             # monitor_id is None here: this call's own row is the suppressed one.
             if observations is not None:
                 observations["perf_callback"] = inf_mod._monitor_perf_callback(None, 4096)
-            inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            inf_mod._monitor_usage(None, usage, 4096, timings=timings)
             if observations is not None:
                 observations["live_entries"] = monitor.snapshot()
             return inf_mod._model_json_response(
                 ChatCompletion(
-                    model = "test-model",
-                    choices = [
+                    model="test-model",
+                    choices=[
                         CompletionChoice(
-                            index = 0,
-                            message = CompletionMessage(content = "answer"),
-                            finish_reason = "stop",
+                            index=0,
+                            message=CompletionMessage(content="answer"),
+                            finish_reason="stop",
                         )
                     ],
-                    usage = CompletionUsage(**usage),
+                    usage=CompletionUsage(**usage),
                 )
             )
 
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
         request = SimpleNamespace(
-            state = SimpleNamespace(),
-            url = SimpleNamespace(path = "/v1/responses"),
-            method = "POST",
+            state=SimpleNamespace(),
+            url=SimpleNamespace(path="/v1/responses"),
+            method="POST",
         )
 
         async def run():
             response = await _responses_non_streaming(
-                ResponsesRequest(input = "hi"),
-                [ChatMessage(role = "user", content = "hi")],
+                ResponsesRequest(input="hi"),
+                [ChatMessage(role="user", content="hi")],
                 request,
             )
             return json.loads(response.body.decode())
@@ -1777,10 +1777,10 @@ class TestResponsesNonStreamingAdapter:
 
         # Asserted, not assumed: pydantic drops undeclared fields, so a body lookup finds nothing.
         assert "timings" not in json.loads(
-            ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
+            ChatCompletion(choices=[], timings={"predicted_ms": 1000.0}).model_dump_json()
         )
 
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         body = self._run_in_process_completion(
             monkeypatch,
             monitor,
@@ -1795,7 +1795,7 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         observations = {}
 
         self._run_in_process_completion(
@@ -1806,7 +1806,7 @@ class TestResponsesNonStreamingAdapter:
                 "predicted_ms": 1000.0,
                 "predicted_per_second": 50.0,
             },
-            observations = observations,
+            observations=observations,
         )
 
         assert observations["perf_callback"] is not None
@@ -1818,14 +1818,14 @@ class TestResponsesNonStreamingAdapter:
         assert entry["ttft_ms"] is None
 
     def test_disabled_monitor_does_not_install_responses_perf_callback(self, monkeypatch):
-        monitor = ApiMonitor(max_entries = 3, enabled = False)
+        monitor = ApiMonitor(max_entries=3, enabled=False)
         observations = {}
 
         self._run_in_process_completion(
             monkeypatch,
             monitor,
             {"prompt_per_second": 90.0, "predicted_per_second": 50.0},
-            observations = observations,
+            observations=observations,
         )
 
         assert observations["perf_callback"] is None
@@ -1834,7 +1834,7 @@ class TestResponsesNonStreamingAdapter:
 
     def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
         """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         self._run_in_process_completion(
             monkeypatch,
             monitor,
@@ -1852,11 +1852,11 @@ class TestResponsesNonStreamingAdapter:
         async def fake_chat_completions(
             chat_req,
             request,
-            current_subject = None,
+            current_subject=None,
         ):
             assert request.state.skip_api_monitor is True
             return JSONResponse(
-                content = {
+                content={
                     "model": "test-model",
                     "choices": [
                         {
@@ -1879,12 +1879,12 @@ class TestResponsesNonStreamingAdapter:
                 }
             )
 
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
         payload = ResponsesRequest(
-            input = "hi",
-            tools = [{"type": "function", "name": "lookup"}],
+            input="hi",
+            tools=[{"type": "function", "name": "lookup"}],
         )
         messages, request = _shared_setup_4()
 
@@ -1906,15 +1906,15 @@ class TestResponsesNonStreamingAdapter:
         async def fake_chat_completions(
             chat_req,
             request,
-            current_subject = None,
+            current_subject=None,
         ):
             assert request.state.skip_api_monitor is True
             raise asyncio.CancelledError()
 
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
-        payload = ResponsesRequest(input = "hi")
+        payload = ResponsesRequest(input="hi")
         messages, request = _shared_setup_4()
 
         async def run():
@@ -1935,15 +1935,15 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
 
     def test_non_reasoning_gguf_keeps_literal_think_tags_visible(self, monkeypatch):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "show <think>x</think> tags"},
-            payload = payload,
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = False,
+            payload=payload,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=False,
             ),
         )
 
@@ -1954,10 +1954,10 @@ class TestResponsesNonStreamingAdapter:
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>answer"},
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = True,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=True,
             ),
         )
 
@@ -1966,15 +1966,15 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "Use <think>hi</think> in your prompt."},
-            payload = payload,
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = True,
+            payload=payload,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=True,
             ),
         )
 
@@ -1982,18 +1982,18 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
 
     def test_effort_dial_gguf_still_parses_think_tags_when_disabled(self, monkeypatch):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>answer"},
-            payload = payload,
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = True,
+            payload=payload,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=True,
                 # gpt-oss offers no "none" level, so it stays on low effort and the markup is real.
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
+                _request_reasoning_kwargs=(
+                    lambda enable_thinking, reasoning_effort=None, preserve_thinking=None: (
                         {"reasoning_effort": "low"}
                     )
                 ),
@@ -2023,12 +2023,12 @@ class TestResponsesNonStreamingAdapter:
 
         assert backend._request_reasoning_kwargs(False, "none", None) == {"reasoning_effort": 0.0}
 
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "Use <think>hi</think> in your prompt."},
-            payload = payload,
-            llama_backend = backend,
+            payload=payload,
+            llama_backend=backend,
         )
 
         assert [item["type"] for item in body["output"]] == ["message"]
@@ -2040,11 +2040,11 @@ class TestResponsesNonStreamingAdapter:
         body = self._run_with_message(
             monkeypatch,
             {"content": "Use <think>hi</think> in your prompt."},
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = True,
-                reasoning_default = False,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=True,
+                reasoning_default=False,
             ),
         )
 
@@ -2056,11 +2056,11 @@ class TestResponsesNonStreamingAdapter:
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>answer"},
-            llama_backend = SimpleNamespace(
-                is_loaded = True,
-                reasoning_always_on = False,
-                supports_reasoning = True,
-                reasoning_default = True,
+            llama_backend=SimpleNamespace(
+                is_loaded=True,
+                reasoning_always_on=False,
+                supports_reasoning=True,
+                reasoning_default=True,
             ),
         )
 
@@ -2091,11 +2091,11 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"][0]["text"] == "33"
 
     def test_reasoning_only_stays_out_of_visible_message_text(self, monkeypatch):
-        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        payload = ResponsesRequest(input="hi", reasoning={"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
             {"content": "<think>plan</think>"},
-            payload = payload,
+            payload=payload,
         )
 
         assert [item["type"] for item in body["output"]] == ["reasoning"]
@@ -2123,13 +2123,13 @@ class TestResponsesStreamAdapter:
         self,
         payload,
         messages,
-        monitor_id = None,
+        monitor_id=None,
     ):
         """Drive _responses_stream to completion and return the SSE lines it wrote."""
 
         async def run():
             response = await _responses_stream(
-                payload, messages, self._Request(), monitor_id = monitor_id
+                payload, messages, self._Request(), monitor_id=monitor_id
             )
             return await self._collect(response)
 
@@ -2158,8 +2158,8 @@ class TestResponsesStreamAdapter:
         monkeypatch,
         chunks,
         *,
-        supports_reasoning = True,
-        reasoning_always_on = False,
+        supports_reasoning=True,
+        reasoning_always_on=False,
     ):
         import routes.inference as inf_mod
 
@@ -2168,8 +2168,8 @@ class TestResponsesStreamAdapter:
             content += "data: [DONE]\n\n"
             return httpx.Response(
                 200,
-                content = content.encode(),
-                headers = {"content-type": "text/event-stream"},
+                content=content.encode(),
+                headers={"content-type": "text/event-stream"},
             )
 
         transport = httpx.MockTransport(handler)
@@ -2177,8 +2177,8 @@ class TestResponsesStreamAdapter:
 
         def _client(*args, **kwargs):
             return real_async_client(
-                transport = transport,
-                timeout = kwargs.get("timeout", 600),
+                transport=transport,
+                timeout=kwargs.get("timeout", 600),
             )
 
         monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
@@ -2186,14 +2186,14 @@ class TestResponsesStreamAdapter:
             inf_mod,
             "get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                is_vision = False,
-                context_length = 4096,
-                base_url = "http://llama.test",
-                supports_reasoning = supports_reasoning,
-                reasoning_always_on = reasoning_always_on,
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                is_loaded=True,
+                is_vision=False,
+                context_length=4096,
+                base_url="http://llama.test",
+                supports_reasoning=supports_reasoning,
+                reasoning_always_on=reasoning_always_on,
+                _request_reasoning_kwargs=(
+                    lambda enable_thinking=None, reasoning_effort=None, preserve_thinking=None: None
                 ),
             ),
         )
@@ -2203,8 +2203,8 @@ class TestResponsesStreamAdapter:
             monkeypatch,
             [{"choices": [{"delta": {"content": "33"}}]}],
         )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         async def run():
             response = await _responses_stream(payload, messages, self._Request())
@@ -2237,8 +2237,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True, reasoning={"effort": "high"})
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
@@ -2259,7 +2259,7 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
@@ -2284,7 +2284,7 @@ class TestResponsesStreamAdapter:
             {"choices": [], "timings": {"prompt_ms": 9000.0, "predicted_ms": 1000.0}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
@@ -2319,7 +2319,7 @@ class TestResponsesStreamAdapter:
             }
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
 
@@ -2334,21 +2334,21 @@ class TestResponsesStreamAdapter:
         import routes.inference as inf_mod
 
         self._install_stream_mock(monkeypatch, [])
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
+            endpoint="/v1/responses",
+            method="POST",
+            model="m",
+            prompt="hi",
         )
 
         async def fake_send(*_args, **_kwargs):
             return None
 
         monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         self._stream_lines(payload, messages, monitor_id)
 
@@ -2361,31 +2361,31 @@ class TestResponsesStreamAdapter:
             import routes.inference as inf_mod
 
             async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
+                return httpx.Response(200, content=b"")
 
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 await asyncio.sleep(3600)
 
             self._install_stream_mock(monkeypatch, [])
-            monitor = ApiMonitor(max_entries = 3)
+            monitor = ApiMonitor(max_entries=3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
             monitor_id = monitor.start(
-                endpoint = "/v1/responses",
-                method = "POST",
-                model = "m",
-                prompt = "hi",
+                endpoint="/v1/responses",
+                method="POST",
+                model="m",
+                prompt="hi",
             )
-            payload = ResponsesRequest(input = "hi", stream = True)
-            messages = [ChatMessage(role = "user", content = "hi")]
+            payload = ResponsesRequest(input="hi", stream=True)
+            messages = [ChatMessage(role="user", content="hi")]
 
             response = await _responses_stream(
                 payload,
                 messages,
                 self._Request(),
-                monitor_id = monitor_id,
+                monitor_id=monitor_id,
             )
             iterator = response.body_iterator
             first = ""
@@ -2419,7 +2419,7 @@ class TestResponsesStreamAdapter:
             def feed(
                 self,
                 _content,
-                _reasoning_content = None,
+                _reasoning_content=None,
             ):
                 return "", ""
 
@@ -2427,7 +2427,7 @@ class TestResponsesStreamAdapter:
                 return "", "tail"
 
         self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<tai"}}]}])
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
@@ -2449,7 +2449,7 @@ class TestResponsesStreamAdapter:
             def feed(
                 self,
                 _content,
-                _reasoning_content = None,
+                _reasoning_content=None,
             ):
                 return "", ""
 
@@ -2457,7 +2457,7 @@ class TestResponsesStreamAdapter:
                 return "plan", ""
 
         self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<think>"}}]}])
-        monitor = ApiMonitor(max_entries = 3)
+        monitor = ApiMonitor(max_entries=3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
         messages, monitor_id, payload = _shared_setup_1(monitor)
@@ -2477,8 +2477,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
@@ -2497,9 +2497,9 @@ class TestResponsesStreamAdapter:
             {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
-        self._install_stream_mock(monkeypatch, chunks, supports_reasoning = False)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        self._install_stream_mock(monkeypatch, chunks, supports_reasoning=False)
+        payload = ResponsesRequest(input="hi", stream=True, reasoning={"effort": "high"})
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert reasoning_deltas == []
@@ -2516,8 +2516,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True, reasoning={"effort": "high"})
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
@@ -2533,8 +2533,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True, reasoning={"effort": "high"})
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
@@ -2550,8 +2550,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
@@ -2580,8 +2580,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
@@ -2613,8 +2613,8 @@ class TestResponsesStreamAdapter:
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True)
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines = self._stream_lines(payload, messages)
 
@@ -2629,7 +2629,7 @@ class TestResponsesStreamAdapter:
 
     def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
-        arguments = json.dumps({"input": patch}, ensure_ascii = False)
+        arguments = json.dumps({"input": patch}, ensure_ascii=False)
         split = len(arguments) // 2
         chunks = [
             {
@@ -2668,14 +2668,14 @@ class TestResponsesStreamAdapter:
         ]
         self._install_stream_mock(monkeypatch, chunks)
         payload = ResponsesRequest(
-            input = "edit",
-            stream = True,
-            tools = [_codex_apply_patch_tool()],
+            input="edit",
+            stream=True,
+            tools=[_codex_apply_patch_tool()],
         )
 
         async def run():
             response = await _responses_stream(
-                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+                payload, [ChatMessage(role="user", content="edit")], self._Request()
             )
             return await self._collect(response)
 
@@ -2719,14 +2719,14 @@ class TestResponsesStreamAdapter:
         ]
         self._install_stream_mock(monkeypatch, chunks)
         payload = ResponsesRequest(
-            input = "edit",
-            stream = True,
-            tools = [{"type": "function", "name": "apply_patch"}],
+            input="edit",
+            stream=True,
+            tools=[{"type": "function", "name": "apply_patch"}],
         )
 
         async def run():
             response = await _responses_stream(
-                payload, [ChatMessage(role = "user", content = "edit")], self._Request()
+                payload, [ChatMessage(role="user", content="edit")], self._Request()
             )
             return await self._collect(response)
 
@@ -2747,15 +2747,15 @@ class TestResponsesStreamAdapter:
             {"input": "hi", "stream": True, "model": "org/M-GGUF", "studio_tool_history": True}
         )
         chat_req = _build_chat_request(
-            payload, [ChatMessage(role = "user", content = "hi")], stream = True
+            payload, [ChatMessage(role="user", content="hi")], stream=True
         )
         assert chat_req.studio_tool_history is True
 
         # Absent stays absent: a plain client must not be read as Studio's.
         plain = _build_chat_request(
             ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
-            [ChatMessage(role = "user", content = "hi")],
-            stream = False,
+            [ChatMessage(role="user", content="hi")],
+            stream=False,
         )
         assert not plain.studio_tool_history
 
@@ -2772,8 +2772,8 @@ class TestResponsesStreamAdapter:
             content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
             return httpx.Response(
                 200,
-                content = content.encode(),
-                headers = {"content-type": "text/event-stream"},
+                content=content.encode(),
+                headers={"content-type": "text/event-stream"},
             )
 
         transport = httpx.MockTransport(handler)
@@ -2781,31 +2781,31 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(
             inf_mod.httpx,
             "AsyncClient",
-            lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+            lambda *a, **kw: real_async_client(transport=transport, timeout=kw.get("timeout", 600)),
         )
         monkeypatch.setattr(
             inf_mod,
             "get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                is_vision = False,
-                context_length = 4096,
-                base_url = "http://llama.test",
-                supports_tools = False,
-                supports_tool_passthrough = False,
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                is_loaded=True,
+                is_vision=False,
+                context_length=4096,
+                base_url="http://llama.test",
+                supports_tools=False,
+                supports_tool_passthrough=False,
+                _request_reasoning_kwargs=(
+                    lambda enable_thinking=None, reasoning_effort=None, preserve_thinking=None: None
                 ),
             ),
         )
 
-        payload = ResponsesRequest(input = "and now?", stream = True, model = "org/M-GGUF")
+        payload = ResponsesRequest(input="and now?", stream=True, model="org/M-GGUF")
         messages = [
-            ChatMessage(role = "user", content = "what did we say about seeds?"),
+            ChatMessage(role="user", content="what did we say about seeds?"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_1",
                         "type": "function",
@@ -2817,12 +2817,12 @@ class TestResponsesStreamAdapter:
                 ],
             ),
             ChatMessage(
-                role = "tool",
-                tool_call_id = "call_1",
-                name = "search_conversation",
-                content = "we said 3407",
+                role="tool",
+                tool_call_id="call_1",
+                name="search_conversation",
+                content="we said 3407",
             ),
-            ChatMessage(role = "user", content = "and now?"),
+            ChatMessage(role="user", content="and now?"),
         ]
 
         async def run():
@@ -2872,8 +2872,8 @@ class TestResponsesStreamAdapter:
             content += "data: [DONE]\n\n"
             return httpx.Response(
                 200,
-                content = content.encode(),
-                headers = {"content-type": "text/event-stream"},
+                content=content.encode(),
+                headers={"content-type": "text/event-stream"},
             )
 
         transport = httpx.MockTransport(handler)
@@ -2881,8 +2881,8 @@ class TestResponsesStreamAdapter:
 
         def _client(*args, **kwargs):
             return real_async_client(
-                transport = transport,
-                timeout = kwargs.get("timeout", 600),
+                transport=transport,
+                timeout=kwargs.get("timeout", 600),
             )
 
         monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
@@ -2890,22 +2890,22 @@ class TestResponsesStreamAdapter:
             inf_mod,
             "get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                is_vision = False,
-                context_length = 4096,
-                base_url = "http://llama.test",
+                is_loaded=True,
+                is_vision=False,
+                context_length=4096,
+                base_url="http://llama.test",
                 # Non-reasoning template: the real backend returns None here.
-                _request_reasoning_kwargs = (
-                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                _request_reasoning_kwargs=(
+                    lambda enable_thinking=None, reasoning_effort=None, preserve_thinking=None: None
                 ),
             ),
         )
 
         payload = ResponsesRequest(
-            input = "hi",
-            stream = True,
-            parallel_tool_calls = False,
-            tools = [
+            input="hi",
+            stream=True,
+            parallel_tool_calls=False,
+            tools=[
                 {
                     "type": "function",
                     "name": "first",
@@ -2918,7 +2918,7 @@ class TestResponsesStreamAdapter:
                 },
             ],
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
         lines = self._stream_lines(payload, messages)
 
@@ -2941,7 +2941,7 @@ class TestResponsesStreamAdapter:
 
 class TestResponsesOutputFunctionCall:
     def test_reasoning_output_item_serialises_full_reasoning_content(self):
-        item = ResponsesOutputReasoning(content = [{"type": "reasoning_text", "text": "plan"}])
+        item = ResponsesOutputReasoning(content=[{"type": "reasoning_text", "text": "plan"}])
         d = item.model_dump()
         assert d["type"] == "reasoning"
         assert d["id"].startswith("rs_")
@@ -2951,9 +2951,9 @@ class TestResponsesOutputFunctionCall:
 
     def test_direct_construction(self):
         fc = ResponsesOutputFunctionCall(
-            call_id = "call_1",
-            name = "get_weather",
-            arguments = '{"city":"Paris"}',
+            call_id="call_1",
+            name="get_weather",
+            arguments='{"city":"Paris"}',
         )
         d = fc.model_dump()
         assert d["type"] == "function_call"
@@ -2963,9 +2963,9 @@ class TestResponsesOutputFunctionCall:
 
     def test_custom_tool_call_construction(self):
         call = ResponsesOutputCustomToolCall(
-            call_id = "call_patch",
-            name = "apply_patch",
-            input = "*** Begin Patch\n*** End Patch",
+            call_id="call_patch",
+            name="apply_patch",
+            input="*** Begin Patch\n*** End Patch",
         ).model_dump()
 
         assert call["type"] == "custom_tool_call"
@@ -2974,15 +2974,15 @@ class TestResponsesOutputFunctionCall:
 
     def test_response_with_tool_call_output(self):
         resp = ResponsesResponse(
-            model = "test",
-            output = [
+            model="test",
+            output=[
                 ResponsesOutputFunctionCall(
-                    call_id = "call_1",
-                    name = "get_weather",
-                    arguments = "{}",
+                    call_id="call_1",
+                    name="get_weather",
+                    arguments="{}",
                 )
             ],
-            usage = ResponsesUsage(input_tokens = 1, output_tokens = 1, total_tokens = 2),
+            usage=ResponsesUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
         d = json.loads(resp.model_dump_json())
         assert d["output"][0]["type"] == "function_call"
@@ -2990,15 +2990,15 @@ class TestResponsesOutputFunctionCall:
 
     def test_response_with_mixed_output(self):
         resp = ResponsesResponse(
-            model = "test",
-            output = [
+            model="test",
+            output=[
                 ResponsesOutputMessage(
-                    content = [ResponsesOutputTextContent(text = "Calling...")],
+                    content=[ResponsesOutputTextContent(text="Calling...")],
                 ),
                 ResponsesOutputFunctionCall(
-                    call_id = "call_1",
-                    name = "get_weather",
-                    arguments = '{"city":"Paris"}',
+                    call_id="call_1",
+                    name="get_weather",
+                    arguments='{"city":"Paris"}',
                 ),
             ],
         )
@@ -3019,7 +3019,7 @@ class TestCodexStyleRequestShapes:
         """Codex replays prior assistant turns with `output_text` content;
         this used to 422 on every turn after the first."""
         req = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "message",
@@ -3046,7 +3046,7 @@ class TestCodexStyleRequestShapes:
         """`reasoning` items replayed from prior o-series turns must not
         fail validation — Codex keeps them in multi-turn."""
         req = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "reasoning",
@@ -3062,7 +3062,7 @@ class TestCodexStyleRequestShapes:
 
     def test_emitted_reasoning_item_replay_is_dropped_for_local_chat(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "reasoning",
@@ -3084,7 +3084,7 @@ class TestCodexStyleRequestShapes:
         """Unknown content-part types (e.g. future input_audio) validate as
         ResponsesUnknownContentPart so the request doesn't 422."""
         req = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "user",
                     "content": [
@@ -3102,8 +3102,8 @@ class TestCodexStyleRequestShapes:
         """End-to-end: developer + user + assistant(output_text) +
         function_call + function_call_output + reasoning in one request."""
         payload = ResponsesRequest(
-            instructions = "Base instructions.",
-            input = [
+            instructions="Base instructions.",
+            input=[
                 {
                     "type": "message",
                     "role": "developer",
@@ -3166,7 +3166,7 @@ class TestCodexStyleRequestShapes:
         don't forward a single-part array that would force legacy chat
         templates into multimodal handling."""
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": "ok", "annotations": []}],
@@ -3186,7 +3186,7 @@ class TestTranslatedMessagesValidate:
 
     def test_round_trip_multi_turn(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {"role": "user", "content": "Weather in Paris?"},
                 {
                     "type": "function_call",
@@ -3206,11 +3206,11 @@ class TestTranslatedMessagesValidate:
         for m in msgs:
             # Building a fresh ChatMessage from the dump round-trips the
             # role-shape validator — the passthrough's key invariant.
-            ChatMessage(**m.model_dump(exclude_none = True))
+            ChatMessage(**m.model_dump(exclude_none=True))
 
     def test_empty_tool_output_round_trips_through_chat_message_validator(self):
         payload = ResponsesRequest(
-            input = [
+            input=[
                 {
                     "type": "function_call_output",
                     "call_id": "call_empty",
@@ -3220,7 +3220,7 @@ class TestTranslatedMessagesValidate:
         )
         msgs = _normalise_responses_input(payload)
         for m in msgs:
-            ChatMessage(**m.model_dump(exclude_none = True))
+            ChatMessage(**m.model_dump(exclude_none=True))
 
 
 # reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
@@ -3236,7 +3236,7 @@ class TestReasoningPrefilledExtractor:
                 True,
                 "plan",
                 "answer",
-                id = "prefilled_single_feed_splits_lone_close",
+                id="prefilled_single_feed_splits_lone_close",
             ),
             # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
             pytest.param(
@@ -3245,10 +3245,10 @@ class TestReasoningPrefilledExtractor:
                 True,
                 "still thinking with no close",
                 "",
-                id = "prefilled_never_closed_is_all_reasoning",
+                id="prefilled_never_closed_is_all_reasoning",
             ),
             # T5: nothing generated.
-            pytest.param("", True, True, "", "", id = "prefilled_empty_generation"),
+            pytest.param("", True, True, "", "", id="prefilled_empty_generation"),
             # T6: Qwen commonly emits </think>\n\n before the answer.
             pytest.param(
                 "plan</think>\n\nanswer",
@@ -3256,11 +3256,11 @@ class TestReasoningPrefilledExtractor:
                 True,
                 "plan",
                 "\n\nanswer",
-                id = "prefilled_whitespace_after_close_is_visible",
+                id="prefilled_whitespace_after_close_is_visible",
             ),
             # T8: model closed immediately (empty reasoning) then answered.
             pytest.param(
-                "</think>hi", True, True, "", "hi", id = "prefilled_close_at_start_empty_reasoning"
+                "</think>hi", True, True, "", "hi", id="prefilled_close_at_start_empty_reasoning"
             ),
             # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
             pytest.param(
@@ -3269,7 +3269,7 @@ class TestReasoningPrefilledExtractor:
                 False,
                 "",
                 "reasoningans",
-                id = "not_prefilled_lone_close_preserves_current_behavior",
+                id="not_prefilled_lone_close_preserves_current_behavior",
             ),
             # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
             pytest.param(
@@ -3278,7 +3278,7 @@ class TestReasoningPrefilledExtractor:
                 False,
                 "r",
                 "v",
-                id = "not_prefilled_full_pair_still_splits",
+                id="not_prefilled_full_pair_still_splits",
             ),
             # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
             pytest.param(
@@ -3287,7 +3287,7 @@ class TestReasoningPrefilledExtractor:
                 False,
                 "",
                 "just an answer",
-                id = "prefilled_ignored_when_markers_not_parsed",
+                id="prefilled_ignored_when_markers_not_parsed",
             ),
         ],
     )
@@ -3295,14 +3295,14 @@ class TestReasoningPrefilledExtractor:
         self, text, parse_think_markers, reasoning_prefilled, expected, expected_visible
     ):
         reasoning, visible = _extract_responses_reasoning(
-            text, parse_think_markers = parse_think_markers, reasoning_prefilled = reasoning_prefilled
+            text, parse_think_markers=parse_think_markers, reasoning_prefilled=reasoning_prefilled
         )
         assert reasoning == expected
         assert visible == expected_visible
 
     def test_prefilled_close_split_across_feeds(self):
         # T3: </think> straddles two feed() calls; holdback resolves it.
-        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        ex = _ResponsesReasoningExtractor(parse_think_markers=True, reasoning_prefilled=True)
         r1, v1 = ex.feed("plan</th")
         r2, v2 = ex.feed("ink>ans")
         fr, fv = ex.finish()
@@ -3311,7 +3311,7 @@ class TestReasoningPrefilledExtractor:
 
     def test_prefilled_close_split_one_char_per_feed(self):
         # T4: every char in its own feed still splits correctly.
-        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        ex = _ResponsesReasoningExtractor(parse_think_markers=True, reasoning_prefilled=True)
         reasoning, visible = "", ""
         for ch in "plan</think>x":
             r, v = ex.feed(ch)
@@ -3326,8 +3326,8 @@ class TestReasoningPrefilledExtractor:
         # not leaked into the drawer (covers enable_thinking_effort full-tag output).
         reasoning, visible = _extract_responses_reasoning(
             "a<think>b</think>c",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
+            parse_think_markers=True,
+            reasoning_prefilled=True,
         )
         assert reasoning == "ab"
         assert visible == "c"
@@ -3363,8 +3363,8 @@ class TestResponsesStreamHealing:
         TestResponsesStreamAdapter._install_stream_mock(
             monkeypatch, [{"choices": [{"delta": {"content": content}}]}]
         )
-        payload = ResponsesRequest(input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        payload = ResponsesRequest(input="hi", stream=True, tools=[self._TOOL], **payload_kwargs)
+        messages = [ChatMessage(role="user", content="hi")]
 
         async def run():
             response = await _responses_stream(
@@ -3415,7 +3415,7 @@ class TestResponsesStreamHealing:
         assert "<tool_call>" not in text
 
     def test_tool_choice_none_streams_raw_text(self, monkeypatch):
-        events = self._run_stream(monkeypatch, self._XML, tool_choice = "none")
+        events = self._run_stream(monkeypatch, self._XML, tool_choice="none")
         assert not any(
             payload["item"]["type"] == "function_call"
             for name, payload in events
@@ -3485,12 +3485,12 @@ class TestResponsesStreamHealing:
             ],
         )
         payload = ResponsesRequest(
-            input = "hi",
-            stream = True,
-            tools = [self._TOOL],
-            parallel_tool_calls = False,
+            input="hi",
+            stream=True,
+            tools=[self._TOOL],
+            parallel_tool_calls=False,
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages = [ChatMessage(role="user", content="hi")]
 
         async def run():
             response = await _responses_stream(
@@ -3623,8 +3623,8 @@ def test_a_truncated_responses_stream_ends_on_response_incomplete(
         monkeypatch,
         [{"choices": [{"delta": {"content": "half an ans"}, "finish_reason": finish_reason}]}],
     )
-    payload = ResponsesRequest(input = "hi", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True)
+    messages = [ChatMessage(role="user", content="hi")]
 
     async def run():
         response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
@@ -3679,8 +3679,8 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
         monkeypatch,
         [{"choices": [{"delta": {"content": "a whole answer"}, "finish_reason": "stop"}]}],
     )
-    payload = ResponsesRequest(input = "hi", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True)
+    messages = [ChatMessage(role="user", content="hi")]
 
     async def run():
         response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
@@ -3710,8 +3710,8 @@ _OVERFLOW_BODY = json.dumps(
 
 def _failed_stream_error(
     monkeypatch,
-    handler = None,
-    chunks = (),
+    handler=None,
+    chunks=(),
 ):
     import routes.inference as inf_mod
 
@@ -3721,10 +3721,10 @@ def _failed_stream_error(
         monkeypatch.setattr(
             inf_mod.httpx,
             "AsyncClient",
-            lambda *args, **kwargs: real_async_client(transport = httpx.MockTransport(handler)),
+            lambda *args, **kwargs: real_async_client(transport=httpx.MockTransport(handler)),
         )
-    payload = ResponsesRequest(input = "hi", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True)
+    messages = [ChatMessage(role="user", content="hi")]
 
     async def run():
         response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
@@ -3743,7 +3743,7 @@ def _failed_stream_error(
 )
 def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, status, body, code):
     error = _failed_stream_error(
-        monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
+        monkeypatch, handler=lambda request: httpx.Response(status, content=body.encode())
     )
     assert error["code"] == code
 
@@ -3759,15 +3759,15 @@ def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, sta
     ],
 )
 def test_in_band_upstream_error_fails_the_stream_with_a_string_code(monkeypatch, message, code):
-    error = _failed_stream_error(monkeypatch, chunks = [{"error": {"code": 500, "message": message}}])
+    error = _failed_stream_error(monkeypatch, chunks=[{"error": {"code": 500, "message": message}}])
     assert error["code"] == code
 
 
 def test_unreachable_upstream_fails_the_stream_with_server_error(monkeypatch):
     def refuse(request):
-        raise httpx.ConnectError("connection refused", request = request)
+        raise httpx.ConnectError("connection refused", request=request)
 
-    assert _failed_stream_error(monkeypatch, handler = refuse)["code"] == "server_error"
+    assert _failed_stream_error(monkeypatch, handler=refuse)["code"] == "server_error"
 
 
 def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatch):
@@ -3782,21 +3782,21 @@ def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatc
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            base_url = base_url,
-            context_length = 4096,
-            effective_parallel_slots = 1,
-            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            is_loaded=True,
+            is_vision=False,
+            base_url=base_url,
+            context_length=4096,
+            effective_parallel_slots=1,
+            _request_reasoning_kwargs=lambda *_args, **_kwargs: None,
         ),
     )
     monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
-    payload = ResponsesRequest(input = "hi", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True)
+    messages = [ChatMessage(role="user", content="hi")]
 
     async def run():
         queue = get_llama_admission_queue(base_url)
-        blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+        blocker = queue.reserve(capacity=1, config=LlamaAdmissionConfig()).lease_nowait()
         try:
             response = await _responses_stream(
                 payload, messages, TestResponsesStreamAdapter._Request()

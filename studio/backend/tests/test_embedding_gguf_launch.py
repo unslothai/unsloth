@@ -117,26 +117,26 @@ class TestIsEmbeddingGguf:
 
     @pytest.mark.parametrize("pooling_type", [POOLING_MEAN, POOLING_CLS, POOLING_LAST])
     def test_true_for_every_sequence_pooling_mode(self, tmp_path, backend, pooling_type):
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = pooling_type))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type=pooling_type))
         assert backend._pooling_type == pooling_type
         assert backend.is_embedding_gguf is True
 
     def test_pooling_before_architecture_is_detected(self, tmp_path, backend):
         backend._read_gguf_metadata(
-            _make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS, pooling_first = True)
+            _make_gguf(tmp_path, "bert", pooling_type=POOLING_CLS, pooling_first=True)
         )
         assert backend._pooling_type == POOLING_CLS
         assert backend.is_embedding_gguf is True
 
     def test_false_when_the_header_pools_nothing(self, tmp_path, backend):
         # Pooling NONE returns per-token vectors, which /v1/embeddings cannot shape.
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_NONE))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type=POOLING_NONE))
         assert backend._pooling_type == POOLING_NONE
         assert backend.is_embedding_gguf is False
 
     def test_false_for_a_reranker(self, tmp_path, backend):
         # send_embedding would read n_embd_out floats from a RANK head's n_cls_out buffer.
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "qwen3", pooling_type = POOLING_RANK))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "qwen3", pooling_type=POOLING_RANK))
         assert backend._pooling_type == POOLING_RANK
         assert backend.is_embedding_gguf is False
 
@@ -154,22 +154,22 @@ class TestIsEmbeddingGguf:
     def test_true_for_embedding_name_hint_without_pooling_type(self, tmp_path, backend):
         backend._model_identifier = "unsloth/Qwen3-Embedding-4B"
         backend._read_gguf_metadata(
-            _make_gguf(tmp_path, "qwen3", filename = "Qwen3-Embedding-4B-Q4_K_M.gguf")
+            _make_gguf(tmp_path, "qwen3", filename="Qwen3-Embedding-4B-Q4_K_M.gguf")
         )
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is True
 
     def test_resets_between_parses(self, tmp_path, backend):
         backend._read_gguf_metadata(
-            _make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS, filename = "embed.gguf")
+            _make_gguf(tmp_path, "bert", pooling_type=POOLING_CLS, filename="embed.gguf")
         )
         assert backend.is_embedding_gguf is True
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "llama", filename = "chat.gguf"))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "llama", filename="chat.gguf"))
         assert backend.is_embedding_gguf is False
 
     def test_false_after_unload(self, tmp_path, backend):
         # A stale pooling type would report an unloaded backend as an embedding server.
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type=POOLING_CLS))
         assert backend.is_embedding_gguf is True
         backend.unload_model()
         assert backend._pooling_type is None
@@ -177,7 +177,7 @@ class TestIsEmbeddingGguf:
 
     def test_probe_reads_the_arch_prefixed_key_only(self, tmp_path, backend):
         # A pooling_type under the wrong arch prefix is another model's key.
-        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS))
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type=POOLING_CLS))
         assert backend.is_embedding_gguf is True
         buf = io.BytesIO()
         buf.write(struct.pack("<I", 0x46554747))
@@ -249,6 +249,7 @@ def test_user_extra_args_still_cannot_pass_the_flag(flag):
     # The denylist keeps a user-supplied --embedding off the chat server; the
     # header probe is the only thing allowed to turn it on.
     from core.inference.llama_server_args import is_managed_flag, validate_extra_args
+
     assert is_managed_flag(flag) is True
-    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+    with pytest.raises(ValueError, match="managed by Unsloth Studio"):
         validate_extra_args([flag])

@@ -24,8 +24,8 @@ from unsloth.models._custom_dtype import (
 )
 
 
-LOADER = pathlib.Path(__import__("unsloth.models.loader", fromlist = ["x"]).__file__).read_text(
-    encoding = "utf-8"
+LOADER = pathlib.Path(__import__("unsloth.models.loader", fromlist=["x"]).__file__).read_text(
+    encoding="utf-8"
 )
 
 
@@ -90,7 +90,7 @@ def test_shipped_dtype_fields_match_the_old_eval(value):
     ],
 )
 def test_hostile_dtype_field_rejected(payload):
-    with pytest.raises(ValueError, match = "unsupported dtype"):
+    with pytest.raises(ValueError, match="unsupported dtype"):
         resolve_dtype(payload)
 
 
@@ -103,7 +103,7 @@ def test_table_covers_only_dtypes():
 
 
 def test_a_value_we_set_is_trusted(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising=False)
     value = _shipped_values()[0]
     register_custom_dtype(value)
     got, trusted = trusted_custom_dtype()
@@ -129,7 +129,7 @@ def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
 
 
 def test_unset_is_empty(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising=False)
     assert trusted_custom_dtype() == ("", False)
 
 
@@ -137,8 +137,8 @@ def test_unset_is_empty(monkeypatch):
 
 
 def test_vision_does_not_eval_the_dtype_fields():
-    source = pathlib.Path(__import__("unsloth.models.vision", fromlist = ["x"]).__file__).read_text(
-        encoding = "utf-8"
+    source = pathlib.Path(__import__("unsloth.models.vision", fromlist=["x"]).__file__).read_text(
+        encoding="utf-8"
     )
     assert "eval(_dtype)" not in source
     assert "eval(_bnb_compute_dtype)" not in source

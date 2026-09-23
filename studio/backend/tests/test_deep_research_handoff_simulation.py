@@ -69,7 +69,7 @@ def research_home(tmp_path, monkeypatch):
 _DONE = "data: [DONE]"
 
 
-def _sse(delta = None, finish = None) -> str:
+def _sse(delta=None, finish=None) -> str:
     choice: dict = {"index": 0, "delta": delta or {}}
     if finish is not None:
         choice["finish_reason"] = finish
@@ -77,7 +77,7 @@ def _sse(delta = None, finish = None) -> str:
 
 
 def _says(text: str) -> list[str]:
-    return [_sse({"content": text}), _sse(finish = "stop"), _DONE]
+    return [_sse({"content": text}), _sse(finish="stop"), _DONE]
 
 
 def _calls_research(question: str, preamble: str = "") -> list[str]:
@@ -97,7 +97,7 @@ def _calls_research(question: str, preamble: str = "") -> list[str]:
                 ]
             }
         ),
-        _sse(finish = "tool_calls"),
+        _sse(finish="tool_calls"),
         _DONE,
     ]
     return lines
@@ -125,8 +125,8 @@ def _run_turn(
     *,
     tools,
     monkeypatch,
-    permission_mode = "off",
-    verdict = None,
+    permission_mode="off",
+    verdict=None,
 ):
     def _execute(name, arguments, **kwargs):
         return execute_tool(name, arguments) if name == "deep_research" else f"RESULT<{name}>"
@@ -142,22 +142,22 @@ def _run_turn(
         out = []
         agen = stream_with_studio_tools(
             model,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": RAW_MESSAGE}],
-                session_id = "s1",
-                thread_id = "thread-1",
-                tool_choice = None,
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": RAW_MESSAGE}],
+                session_id="s1",
+                thread_id="thread-1",
+                tool_choice=None,
             ),
-            policy = ToolLoopPolicy(
-                tools = tools,
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = permission_mode,
-                confirm_calls = permission_mode == "ask",
-                bypass_permissions = False,
-                rag_scope = None,
+            policy=ToolLoopPolicy(
+                tools=tools,
+                max_calls=25,
+                timeout=300,
+                permission_mode=permission_mode,
+                confirm_calls=permission_mode == "ask",
+                bypass_permissions=False,
+                rag_scope=None,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)
@@ -166,7 +166,7 @@ def _run_turn(
     return asyncio.run(_collect())
 
 
-def _tool_events(lines, tool_name = "deep_research") -> list[dict]:
+def _tool_events(lines, tool_name="deep_research") -> list[dict]:
     """Every event the client reads the handoff off, in the order it is published."""
     events = []
     for line in lines:
@@ -200,7 +200,7 @@ def _visible(lines) -> str:
 
 def test_the_loop_publishes_the_question_and_a_result_that_says_it_ran(research_home, monkeypatch):
     model = ScriptedModel([_calls_research(REFINED), _says("Looking into it.")])
-    lines = _run_turn(model, tools = [DEEP_RESEARCH_TOOL], monkeypatch = monkeypatch)
+    lines = _run_turn(model, tools=[DEEP_RESEARCH_TOOL], monkeypatch=monkeypatch)
 
     started, ended = _tool_events(lines)
     assert started["type"] == "tool_start"
@@ -218,10 +218,10 @@ def test_a_denied_call_is_closed_by_the_same_event_and_says_it_did_not_run(
     model = ScriptedModel([_calls_research(REFINED), _says("Alright.")])
     lines = _run_turn(
         model,
-        tools = [DEEP_RESEARCH_TOOL],
-        monkeypatch = monkeypatch,
-        permission_mode = "ask",
-        verdict = "deny",
+        tools=[DEEP_RESEARCH_TOOL],
+        monkeypatch=monkeypatch,
+        permission_mode="ask",
+        verdict="deny",
     )
 
     started, ended = _tool_events(lines)
@@ -237,10 +237,10 @@ def test_an_approved_call_runs_like_any_other(research_home, monkeypatch):
     model = ScriptedModel([_calls_research(REFINED), _says("Looking into it.")])
     lines = _run_turn(
         model,
-        tools = [DEEP_RESEARCH_TOOL],
-        monkeypatch = monkeypatch,
-        permission_mode = "ask",
-        verdict = "allow",
+        tools=[DEEP_RESEARCH_TOOL],
+        monkeypatch=monkeypatch,
+        permission_mode="ask",
+        verdict="allow",
     )
 
     started, ended = _tool_events(lines)
@@ -262,22 +262,22 @@ def test_a_spent_call_budget_closes_the_card_without_running_it(research_home, m
         out = []
         async for line in stream_with_studio_tools(
             model,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": RAW_MESSAGE}],
-                session_id = "s1",
-                thread_id = "thread-1",
-                tool_choice = None,
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": RAW_MESSAGE}],
+                session_id="s1",
+                thread_id="thread-1",
+                tool_choice=None,
             ),
-            policy = ToolLoopPolicy(
-                tools = [DEEP_RESEARCH_TOOL],
-                max_calls = 0,
-                timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
-                bypass_permissions = False,
-                rag_scope = None,
+            policy=ToolLoopPolicy(
+                tools=[DEEP_RESEARCH_TOOL],
+                max_calls=0,
+                timeout=300,
+                permission_mode="off",
+                confirm_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         ):
             out.append(line)
         return out
@@ -290,7 +290,7 @@ def test_the_tool_is_only_offered_to_the_model_when_it_is_in_the_catalog(
     research_home, monkeypatch
 ):
     model = ScriptedModel([_says("Hello.")])
-    _run_turn(model, tools = [DEEP_RESEARCH_TOOL], monkeypatch = monkeypatch)
+    _run_turn(model, tools=[DEEP_RESEARCH_TOOL], monkeypatch=monkeypatch)
     offered = [tool["function"]["name"] for tool in model.requests[0]["tools"]]
 
     assert offered == ["deep_research"]
@@ -304,12 +304,12 @@ def test_the_handed_off_question_is_what_actually_gets_researched(research_home,
     from core import research_runs as worker
 
     research_db.create_run(
-        run_id = "run-1",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = {
+        run_id="run-1",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -323,7 +323,7 @@ def test_the_handed_off_question_is_what_actually_gets_researched(research_home,
             },
         },
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     prompts: list[str] = []
 
     async def fake_stream_completion(run, messages, **kwargs):
@@ -343,12 +343,12 @@ def test_planning_waits_for_plan_approval_before_research(research_home, monkeyp
     from core import research_runs as worker
 
     research_db.create_run(
-        run_id = "run-1",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = {
+        run_id="run-1",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -361,7 +361,7 @@ def test_planning_waits_for_plan_approval_before_research(research_home, monkeyp
             },
         },
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
 
     async def fake_stream_completion(run, messages, **kwargs):
         plan = {"title": "Plan", "steps": [{"title": "Step", "query": "q"}]}
@@ -386,12 +386,12 @@ def test_a_run_from_an_old_install_researches_its_user_message(research_home, mo
     from core import research_runs as worker
 
     research_db.create_run(
-        run_id = "run-1",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = {
+        run_id="run-1",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -404,7 +404,7 @@ def test_a_run_from_an_old_install_researches_its_user_message(research_home, mo
             },
         },
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     prompts: list[str] = []
 
     async def fake_stream_completion(run, messages, **kwargs):
@@ -422,12 +422,12 @@ def test_a_run_from_an_old_install_researches_its_user_message(research_home, mo
 def test_a_run_left_awaiting_approval_by_an_old_install_still_runs(research_home):
     """Upgrading mid-run must not strand it: the approval endpoint still moves it along."""
     research_db.create_run(
-        run_id = "run-1",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = {
+        run_id="run-1",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -455,12 +455,12 @@ def test_the_tool_is_offered_only_when_research_is_armed(armed):
     from routes.inference import _select_request_tools
 
     payload = ChatCompletionRequest(
-        model = "local-model",
-        messages = [{"role": "user", "content": RAW_MESSAGE}],
-        enabled_tools = [],
-        deep_research_armed = armed,
+        model="local-model",
+        messages=[{"role": "user", "content": RAW_MESSAGE}],
+        enabled_tools=[],
+        deep_research_armed=armed,
     )
-    tools = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    tools = asyncio.run(_select_request_tools(payload, tools_on=True, mcp_allowed=False))
     names = [tool["function"]["name"] for tool in tools]
 
     assert ("deep_research" in names) is armed
@@ -477,18 +477,18 @@ def test_an_unarmed_request_is_byte_identical_to_before():
 
     def _names(**extra):
         payload = ChatCompletionRequest(
-            model = "local-model",
-            messages = [{"role": "user", "content": "hello"}],
+            model="local-model",
+            messages=[{"role": "user", "content": "hello"}],
             **extra,
         )
-        tools = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+        tools = asyncio.run(_select_request_tools(payload, tools_on=True, mcp_allowed=False))
         return [tool["function"]["name"] for tool in tools]
 
     unarmed = _names()
     assert "deep_research" not in unarmed
     assert unarmed
     # Appended, and nothing else moves: same catalog, in the same order, plus the one tool.
-    assert _names(deep_research_armed = True) == [*unarmed, "deep_research"]
+    assert _names(deep_research_armed=True) == [*unarmed, "deep_research"]
 
 
 def test_a_client_that_never_heard_of_the_field_still_validates():
@@ -496,7 +496,7 @@ def test_a_client_that_never_heard_of_the_field_still_validates():
     from models.inference import ChatCompletionRequest
 
     payload = ChatCompletionRequest(
-        model = "local-model", messages = [{"role": "user", "content": "hi"}]
+        model="local-model", messages=[{"role": "user", "content": "hi"}]
     )
     assert payload.deep_research_armed is None
 

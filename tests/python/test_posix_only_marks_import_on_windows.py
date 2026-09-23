@@ -491,7 +491,7 @@ def test_no_test_module_calls_os_geteuid_unguarded_at_import():
     checked = 0
     for path in sorted(TESTS.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue  # not ours to parse; the lint job owns syntax
         checked += 1

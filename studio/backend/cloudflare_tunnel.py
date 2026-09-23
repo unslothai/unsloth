@@ -82,6 +82,7 @@ def _lifetime_kwargs() -> dict:
     best-effort so this module still loads standalone (storage_roots-style)."""
     try:
         from utils.process_lifetime import child_popen_kwargs
+
         return child_popen_kwargs()
     except Exception:
         return {}
@@ -92,6 +93,7 @@ def _adopt_pid(pid: int) -> None:
     PDEATHSIG). Best-effort, like _lifetime_kwargs above."""
     try:
         from utils.process_lifetime import adopt_pid
+
         adopt_pid(pid)
     except Exception:
         pass
@@ -100,6 +102,7 @@ def _adopt_pid(pid: int) -> None:
 def _forget_pid(pid: int) -> None:
     try:
         from utils.process_lifetime import forget_pid
+
         forget_pid(pid)
     except Exception:
         pass
@@ -196,15 +199,15 @@ def _download(
         # link both arrive as a bare OSError. Identity, so a close mid-unwind stays local.
         transfer_exc: Optional[BaseException] = None
         try:
-            dest.parent.mkdir(parents = True, exist_ok = True)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
-                prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
+                prefix=dest.name + ".tmp-", dir=dest.parent, delete=False
             ) as handle:
                 tmp_path = Path(handle.name)
                 # GitHub's CDN 403s the default Python-urllib User-Agent.
-                req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+                req = urllib.request.Request(url, headers={"User-Agent": "unsloth-studio"})
                 try:
-                    response = urllib.request.urlopen(req, timeout = remaining)
+                    response = urllib.request.urlopen(req, timeout=remaining)
                 except Exception as exc:
                     transfer_exc = exc
                     raise
@@ -227,7 +230,7 @@ def _download(
             last_error = exc
             if tmp_path is not None:
                 try:
-                    tmp_path.unlink(missing_ok = True)
+                    tmp_path.unlink(missing_ok=True)
                 except Exception:
                     pass
             reason = getattr(exc, "reason", None)
@@ -266,6 +269,7 @@ def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
     """Extract just the `cloudflared` member from a darwin .tgz to dest. Rejects absolute paths and
     `..` traversal so a hostile archive cannot write outside dest. Best-effort -> bool."""
     import tarfile
+
     try:
         with tarfile.open(tgz_path, "r:gz") as tar:
             member = None
@@ -300,13 +304,13 @@ def ensure_cloudflared() -> Optional[str]:
     name, is_tgz = asset
     url = f"{_RELEASE_BASE}/{name}"
     try:
-        cached.parent.mkdir(parents = True, exist_ok = True)
+        cached.parent.mkdir(parents=True, exist_ok=True)
         if is_tgz:
             tgz = cached.with_suffix(".tgz")
             if not _download(url, tgz) or not _extract_tgz_member(tgz, cached):
-                tgz.unlink(missing_ok = True)
+                tgz.unlink(missing_ok=True)
                 return None
-            tgz.unlink(missing_ok = True)
+            tgz.unlink(missing_ok=True)
         elif not _download(url, cached):
             return None
         if sys.platform != "win32":
@@ -329,10 +333,10 @@ def _wait_for_dns(host: str, deadline: float) -> None:
         answered = False
         try:
             req = urllib.request.Request(
-                _DOH_URL.format(host = host),
-                headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
+                _DOH_URL.format(host=host),
+                headers={"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
             )
-            with urllib.request.urlopen(req, timeout = 5) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 answered = bool(json.loads(response.read(65536)).get("Answer"))
             errors = 0
         except Exception:
@@ -353,7 +357,7 @@ def _edge_addresses() -> list:
 
     addresses = []
     try:
-        resolved = socket.getaddrinfo(_EDGE_HOST, 443, type = socket.SOCK_STREAM)
+        resolved = socket.getaddrinfo(_EDGE_HOST, 443, type=socket.SOCK_STREAM)
     except Exception:
         return addresses
     for info in resolved:
@@ -382,10 +386,10 @@ def _probe_edge(
         "User-Agent: unsloth-studio\r\nConnection: close\r\n\r\n"
     ).encode()
     try:
-        with socket.create_connection((address, 443), timeout = timeout) as raw:
-            with ssl.create_default_context().wrap_socket(raw, server_hostname = host) as tls:
+        with socket.create_connection((address, 443), timeout=timeout) as raw:
+            with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as tls:
                 tls.sendall(request)
-                response = http.client.HTTPResponse(tls, method = "GET")
+                response = http.client.HTTPResponse(tls, method="GET")
                 response.begin()
                 body = response.read(4096)
     except Exception:
@@ -442,8 +446,8 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
         # Drain cloudflared's output: capture the first trycloudflare URL and the first edge-connection
         # registration, and keep draining so it never blocks on a full pipe.
         try:
-            req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
-            with urllib.request.urlopen(req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
+            req = urllib.request.Request(probe_url, headers={"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout=_PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
                 body = response.read(4096)
             if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
                 return True
@@ -464,6 +468,7 @@ def _process_exited(proc: subprocess.Popen) -> bool:
 
 def _origin_url(host: str, port: int) -> str:
     from utils.host_policy import published_url_host
+
     return f"http://{published_url_host(host)}:{port}"
 
 
@@ -495,7 +500,7 @@ class CloudflareTunnel:
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
         self._runtime_active = False
-        self._tail: deque = deque(maxlen = _OUTPUT_TAIL_LINES)
+        self._tail: deque = deque(maxlen=_OUTPUT_TAIL_LINES)
 
     def output_tail(self) -> str:
         return "\n".join(self._tail)
@@ -521,13 +526,13 @@ class CloudflareTunnel:
                 proc = _spawn_child(
                     lambda: subprocess.Popen(
                         cmd,
-                        stdout = subprocess.PIPE,
-                        stderr = subprocess.STDOUT,
-                        stdin = subprocess.DEVNULL,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        bufsize = 1,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        bufsize=1,
                         **_windows_hidden_kwargs(),
                         **_lifetime_kwargs(),
                     )
@@ -540,7 +545,7 @@ class CloudflareTunnel:
             _adopt_pid(proc.pid)
             self._proc = proc
         threading.Thread(
-            target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
+            target=self._reader, args=(proc,), name="cloudflared-reader", daemon=True
         ).start()
 
     def _reader(self, proc: subprocess.Popen) -> None:
@@ -599,11 +604,11 @@ class CloudflareTunnel:
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout = 5)
+                    proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     try:
-                        proc.wait(timeout = 5)
+                        proc.wait(timeout=5)
                     except Exception:
                         pass
         except Exception:
@@ -904,8 +909,8 @@ def start_studio_tunnel(
                 tunnel = CloudflareTunnel(
                     port,
                     binary,
-                    protocol = protocol,
-                    origin_host = origin_host,
+                    protocol=protocol,
+                    origin_host=origin_host,
                 )
                 prior, _active_tunnel = _active_tunnel, tunnel
             if prior is not None and prior.stop() is False:

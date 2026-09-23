@@ -32,7 +32,7 @@ from routes.inference import (
 from state.tool_policy import reset_tool_policy, set_tool_policy, set_tool_policy_default
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset():
     reset_tool_policy()
     yield
@@ -40,7 +40,7 @@ def _reset():
 
 
 def _payload(value):
-    return SimpleNamespace(enable_tools = value)
+    return SimpleNamespace(enable_tools=value)
 
 
 class TestEffectiveEnableTools:
@@ -92,24 +92,25 @@ class TestLauncherDefault:
 
     def test_force_disabled_context_beats_default(self):
         from state.tool_policy import tools_force_disabled
+
         set_tool_policy_default(True)
         with tools_force_disabled():
             assert _effective_enable_tools(_payload(None)) is False
 
 
-def _msg(role = "user", tool_calls = None):
-    return SimpleNamespace(role = role, tool_calls = tool_calls, content = "hi")
+def _msg(role="user", tool_calls=None):
+    return SimpleNamespace(role=role, tool_calls=tool_calls, content="hi")
 
 
 def _req(**kw):
     fields = dict(
-        enable_tools = None,
-        mcp_enabled = None,
-        tool_choice = None,
-        tools = None,
-        response_format = None,
-        messages = [_msg()],
-        model_extra = {},
+        enable_tools=None,
+        mcp_enabled=None,
+        tool_choice=None,
+        tools=None,
+        response_format=None,
+        messages=[_msg()],
+        model_extra={},
     )
     fields.update(kw)
     return SimpleNamespace(**fields)
@@ -131,25 +132,25 @@ class TestRequestStatesToolIntent:
         assert _request_states_tool_intent(_req()) is False
 
     def test_tool_choice_none_is_a_withdrawal(self):
-        assert _request_states_tool_intent(_req(tool_choice = "none")) is True
+        assert _request_states_tool_intent(_req(tool_choice="none")) is True
 
     def test_client_catalog_is_intent(self):
-        assert _request_states_tool_intent(_req(tools = [{"function": {"name": "f"}}])) is True
+        assert _request_states_tool_intent(_req(tools=[{"function": {"name": "f"}}])) is True
 
     def test_tool_result_history_is_intent(self):
-        assert _request_states_tool_intent(_req(messages = [_msg(role = "tool")])) is True
-        assert _request_states_tool_intent(_req(messages = [_msg(tool_calls = [{}])])) is True
+        assert _request_states_tool_intent(_req(messages=[_msg(role="tool")])) is True
+        assert _request_states_tool_intent(_req(messages=[_msg(tool_calls=[{}])])) is True
 
     def test_response_format_is_a_contract(self):
         # The tool loop would break structured output; the GGUF passthrough
         # already exempts these requests from the policy.
-        payload = _req(response_format = {"type": "json_object"})
+        payload = _req(response_format={"type": "json_object"})
         assert _request_states_tool_intent(payload) is True
 
     def test_empty_tools_reads_as_omitted(self):
         # bool(payload.tools) is the GGUF router's own reading in
         # _takes_tool_passthrough; both paths treat [] like an absent catalog.
-        assert _request_states_tool_intent(_req(tools = [])) is False
+        assert _request_states_tool_intent(_req(tools=[])) is False
 
 
 class TestLauncherDefaultOnly:
@@ -157,7 +158,7 @@ class TestLauncherDefaultOnly:
         set_tool_policy_default(True)
         assert _tools_on_by_launcher_default_only(_req()) is True
 
-    @pytest.mark.parametrize("payload", [_req(enable_tools = True), _req(mcp_enabled = True)])
+    @pytest.mark.parametrize("payload", [_req(enable_tools=True), _req(mcp_enabled=True)])
     def test_false_when_the_request_asked(self, payload):
         set_tool_policy_default(True)
         assert _tools_on_by_launcher_default_only(payload) is False
@@ -180,31 +181,31 @@ class TestSafetensorsGateHonorsStatedIntent:
 
     def test_tool_choice_none_is_honored(self):
         set_tool_policy_default(True)
-        assert _sf_tools_on(_req(tool_choice = "none")) is False
+        assert _sf_tools_on(_req(tool_choice="none")) is False
 
     def test_client_catalog_keeps_the_passthrough(self):
         set_tool_policy_default(True)
-        assert _sf_tools_on(_req(tools = [{"function": {"name": "f"}}])) is False
+        assert _sf_tools_on(_req(tools=[{"function": {"name": "f"}}])) is False
 
     def test_tool_result_history_keeps_the_passthrough(self):
         set_tool_policy_default(True)
-        assert _sf_tools_on(_req(messages = [_msg(role = "tool")])) is False
+        assert _sf_tools_on(_req(messages=[_msg(role="tool")])) is False
 
     def test_response_format_keeps_structured_output(self):
         set_tool_policy_default(True)
-        payload = _req(response_format = {"type": "json_object"})
+        payload = _req(response_format={"type": "json_object"})
         assert _sf_tools_on(payload) is False
 
     def test_explicit_ask_still_claims_a_catalog(self):
         set_tool_policy_default(True)
-        payload = _req(enable_tools = True, tools = [{"function": {"name": "f"}}])
+        payload = _req(enable_tools=True, tools=[{"function": {"name": "f"}}])
         assert _sf_tools_on(payload) is True
 
     def test_cli_enable_tools_is_unchanged(self):
         # Pre-existing --enable-tools behavior on this path is untouched.
         set_tool_policy_default(True)
         set_tool_policy(True)
-        assert _sf_tools_on(_req(tools = [{"function": {"name": "f"}}])) is True
+        assert _sf_tools_on(_req(tools=[{"function": {"name": "f"}}])) is True
 
     def test_cli_disable_tools_still_wins(self):
         set_tool_policy_default(True)

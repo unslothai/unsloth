@@ -57,7 +57,7 @@ def _import_time_calls(body):
 
 @pytest.mark.parametrize("relative", _ENTRYPOINTS)
 def test_entrypoint_activates_native_tls_at_module_level(relative):
-    tree = ast.parse((_BACKEND / relative).read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / relative).read_text(encoding="utf-8"))
     assert "activate_native_tls" in _import_time_calls(
         tree.body
     ), f"{relative} spawns a fresh interpreter but never calls activate_native_tls()"
@@ -86,7 +86,7 @@ def test_prebuilt_core_gate_matches_the_generated_source():
     """
     from utils.native_tls import inline_gate_source
 
-    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")
+    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding="utf-8")
     gate = [ast.dump(node) for node in ast.parse(inline_gate_source()).body]
     body = [ast.dump(node) for node in ast.parse(source).body]
     assert any(body[i : i + len(gate)] == gate for i in range(len(body) - len(gate) + 1)), (
@@ -106,7 +106,7 @@ def test_backend_serves_no_tls_in_process():
     for path in _BACKEND.rglob("*.py"):
         if "tests" in path.parts:
             continue
-        text = path.read_text(encoding = "utf-8", errors = "ignore")
+        text = path.read_text(encoding="utf-8", errors="ignore")
         if any(marker in text for marker in server_side):
             offenders.append(str(path.relative_to(_BACKEND)))
     assert not offenders, (
@@ -117,6 +117,6 @@ def test_backend_serves_no_tls_in_process():
 
 def test_prebuilt_installer_core_injects_at_import():
     """The llama.cpp / whisper.cpp installers are vendored standalone: no backend import."""
-    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")
+    source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding="utf-8")
     assert "UNSLOTH_STUDIO_NATIVE_TLS" in source
     assert "inject_into_ssl" in _import_time_calls(ast.parse(source).body)

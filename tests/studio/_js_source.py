@@ -225,7 +225,7 @@ def expand_bindings(
     source: str,
     expression: str,
     *,
-    stop = (),
+    stop=(),
     limit: int = 8,
 ) -> str:
     """`expression` with every local `const NAME = ...` it names inlined, transitively.
@@ -279,7 +279,7 @@ def boolean_table(expression: str, names) -> dict:
         names
     ), f"{expression!r} reads names this contract does not cover: {sorted(reads - set(names))}"
     table = {}
-    for combination in itertools.product((False, True), repeat = len(names)):
+    for combination in itertools.product((False, True), repeat=len(names)):
         table[combination] = bool(
             eval(python, {"__builtins__": {}}, dict(zip(names, combination)))  # noqa: S307
         )

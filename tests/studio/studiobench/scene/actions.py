@@ -142,7 +142,7 @@ def _settle_keystrokes(ctx: ActionContext, inst: Any) -> None:
         ctx.page.wait_for_timeout(KEYSTROKE_SETTLE_POLL_MS)
 
 
-@register_action(name = "keystroke", default_budget_ms = 6000)
+@register_action(name="keystroke", default_budget_ms=6000)
 def keystroke(ctx: ActionContext) -> ActionResult:
     """Type with REAL key events and measure keystroke-to-paint from the page side.
 
@@ -170,7 +170,7 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     started = time.monotonic()
     # A real inter-character delay: delay=0 sends the burst in one CDP message, which the renderer
     # coalesces into a single input event and a single paint.
-    ctx.page.keyboard.type("a" * count, delay = 60)
+    ctx.page.keyboard.type("a" * count, delay=60)
     _settle_keystrokes(ctx, inst)
     got = inst.collect(count)
     elapsed_ms = (time.monotonic() - started) * 1000
@@ -201,17 +201,17 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     )
     ok = grew is not None and grew >= count and covered
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = expect,
-        timings = {
+        ran=True,
+        expect_ok=ok,
+        expect=expect,
+        timings={
             "p50_ms": got.get("p50_ms"),
             "p95_ms": got.get("p95_ms"),
             "max_ms": got.get("max_ms"),
             "first_ms": got.get("first_ms"),
             "total_ms": round(elapsed_ms, 1),
         },
-        reason = None
+        reason=None
         if ok
         else (
             f"typed {count} characters but the composer value grew by {grew}"
@@ -308,9 +308,9 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
     # straight back to the bottom, so travel is the only thing separating a real scroll from none.
     ok = commanded > 0 and travelled >= 0.9 * commanded
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "commanded_px": commanded,
             "travelled_px": travelled,
             "travel_fraction": round(travelled / commanded, 3) if commanded else None,
@@ -318,25 +318,25 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
             "bottom": raw["bottom"],
             "phase": label,
         },
-        timings = {
+        timings={
             "gesture_ms": raw["gestureMs"],
             "per_step_ms": round(raw["gestureMs"] / max(1, steps), 2),
         },
-        reason = None
+        reason=None
         if ok
         else f"the gesture commanded {commanded}px and the viewport moved {travelled}px, so the "
         f"autoscroll snapped it back and nothing was scrolled",
     )
 
 
-@register_action(name = "scroll_during_generation", default_budget_ms = 8000)
+@register_action(name="scroll_during_generation", default_budget_ms=8000)
 def scroll_during_generation(ctx: ActionContext) -> ActionResult:
     if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
         return not_run("nothing was generating, so this is not a scroll during generation")
     return _scroll(ctx, "during_generation")
 
 
-@register_action(name = "scroll_after", default_budget_ms = 8000)
+@register_action(name="scroll_after", default_budget_ms=8000)
 def scroll_after(ctx: ActionContext) -> ActionResult:
     return _scroll(ctx, "after")
 
@@ -515,7 +515,7 @@ async ([timeoutMs, quietFrames]) => {
 """
 
 
-@register_action(name = "reasoning_toggle", default_budget_ms = 12000)
+@register_action(name="reasoning_toggle", default_budget_ms=12000)
 def reasoning_toggle(ctx: ActionContext) -> ActionResult:
     raw = _ev(ctx, REASONING_JS, [SETTLE_TIMEOUT_MS, SETTLE_QUIET_FRAMES])
     err = _failed(raw)
@@ -547,9 +547,9 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
         timings["close_ms"] = raw["closeMs"]
 
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             # SCOPED TO WHAT IS MOUNTED: `reasoningTriggers()` is a querySelectorAll, so on a windowed mount
             # its COST stops being a function of thread length and becomes one of window size. The assertion
             # stays self-consistent either way, so this timing needs the pane count beside it.
@@ -572,8 +572,8 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
             "open_state_reached_ms": raw.get("openStateReachedMs"),
             "quiet_frames_required": raw.get("quietFramesRequired"),
         },
-        timings = timings,
-        reason = None if ok else "; ".join(failures),
+        timings=timings,
+        reason=None if ok else "; ".join(failures),
     )
 
 
@@ -624,7 +624,7 @@ async (timeoutMs) => {
 """
 
 
-@register_action(name = "reasoning_toggle_one", default_budget_ms = 12000)
+@register_action(name="reasoning_toggle_one", default_budget_ms=12000)
 def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
     raw = _ev(ctx, REASONING_ONE_JS, SETTLE_TIMEOUT_MS)
     err = _failed(raw)
@@ -639,9 +639,9 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
         and raw["afterClose"] == 0
     )
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             # SCOPED TO WHAT IS MOUNTED: `reasoningTriggers()` is a querySelectorAll, so on a windowed mount
             # its COST becomes a function of window size rather than thread length, and this timing is not
             # comparable across arms without the pane count beside it.
@@ -657,8 +657,8 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
             # newest reply differs in size.
             "highlight_spans_added": raw["spansAdded"],
         },
-        timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
-        reason = None
+        timings={"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
+        reason=None
         if ok
         else f"{raw['openCount']} panes were open after opening one and "
         f"{raw['afterClose']} were still open after collapsing",
@@ -837,7 +837,7 @@ def _reclaim_pending_turn(
     )
 
 
-@register_action(name = "stop_generation", default_budget_ms = 8000)
+@register_action(name="stop_generation", default_budget_ms=8000)
 def stop_generation(ctx: ActionContext) -> ActionResult:
     """Press stop mid-stream and time until the run is really over.
 
@@ -960,9 +960,9 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
         ctx.page.wait_for_timeout(200)
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "chars_before": chars_before,
             "chars_after": chars_after,
             "still_running": not ok,
@@ -979,8 +979,8 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
                 None if chars_after is None or chars_before is None else chars_after - chars_before
             ),
         },
-        timings = {"stop_ms": None if stopped_ms is None else round(stopped_ms, 1)},
-        reason = None
+        timings={"stop_ms": None if stopped_ms is None else round(stopped_ms, 1)},
+        reason=None
         if ok
         else f"the run was still going {SETTLE_TIMEOUT_MS}ms after stop was pressed",
     )
@@ -989,7 +989,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
 # ── 6. settings ─────────────────────────────────────────────────────
 
 
-@register_action(name = "settings", default_budget_ms = 12000)
+@register_action(name="settings", default_budget_ms=12000)
 def settings(ctx: ActionContext) -> ActionResult:
     """Open the Settings dialog, scroll its body, close it.
 
@@ -1003,7 +1003,7 @@ def settings(ctx: ActionContext) -> ActionResult:
         trigger.click()
     else:
         ctx.page.evaluate("() => window.history.pushState({}, '', '/settings')")
-        ctx.page.goto(ctx.args.get("base_url", "") + "/settings", wait_until = "domcontentloaded")
+        ctx.page.goto(ctx.args.get("base_url", "") + "/settings", wait_until="domcontentloaded")
     opened_ms = None
     deadline = started + SETTLE_TIMEOUT_MS / 1000
     while time.monotonic() < deadline:
@@ -1054,26 +1054,26 @@ def settings(ctx: ActionContext) -> ActionResult:
     )
     ok = closed_ms is not None and scroll_ok
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "opened": True,
             "closed": closed_ms is not None,
             "scroll": scrolled if isinstance(scrolled, dict) else None,
         },
-        timings = {
+        timings={
             "open_ms": round(opened_ms, 1),
             "close_ms": None if closed_ms is None else round(closed_ms, 1),
             "scroll_ms": (scrolled or {}).get("ms"),
         },
-        reason = None if ok else "the dialog did not close, or its body did not scroll",
+        reason=None if ok else "the dialog did not close, or its body did not scroll",
     )
 
 
 # ── 7. model change ─────────────────────────────────────────────────
 
 
-@register_action(name = "model_change", default_budget_ms = 10000)
+@register_action(name="model_change", default_budget_ms=10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row marked with data-model-picker-option."""
     trigger = ctx.page.query_selector("button.unsloth-model-selector-trigger")
@@ -1083,7 +1083,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
     started = time.monotonic()
     # Click the LABEL, not the trigger's right edge: a `span[data-eject-hit]` sits there and ejects
     # the model instead of opening the picker.
-    trigger.click(position = {"x": 8, "y": 8})
+    trigger.click(position={"x": 8, "y": 8})
     opened_ms = None
     deadline = started + SETTLE_TIMEOUT_MS / 1000
     while time.monotonic() < deadline:
@@ -1114,9 +1114,9 @@ def model_change(ctx: ActionContext) -> ActionResult:
     closed = not _ev(ctx, "() => Boolean(window.__sb.dom.modelMenu())")
     ok = picked is not None and closed
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "options_offered": len(options or []),
             "picked": picked,
             "label_before": before,
@@ -1124,15 +1124,15 @@ def model_change(ctx: ActionContext) -> ActionResult:
             "menu_closed": closed,
             "selector_confidence": "high: data-model-picker-option identifies selectable rows",
         },
-        timings = {"open_ms": round(opened_ms, 1), "select_ms": round(select_ms, 1)},
-        reason = None if ok else "no option could be selected, or the menu stayed open",
+        timings={"open_ms": round(opened_ms, 1), "select_ms": round(select_ms, 1)},
+        reason=None if ok else "no option could be selected, or the menu stayed open",
     )
 
 
 # ── 8. composer lengths, then send ──────────────────────────────────
 
 
-@register_action(name = "composer_fill", default_budget_ms = 10000)
+@register_action(name="composer_fill", default_budget_ms=10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
     """Short, medium and very long text into the composer, timing each paint.
 
@@ -1186,18 +1186,18 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
         ctx.page.fill(selector, "")
     ok = all(observed.get(f"length_{n}") == n for n in lengths)
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {**observed, "sent": sent, "lengths_requested": list(lengths)},
-        timings = timings,
-        reason = None if ok else "the composer did not hold every length it was given",
+        ran=True,
+        expect_ok=ok,
+        expect={**observed, "sent": sent, "lengths_requested": list(lengths)},
+        timings=timings,
+        reason=None if ok else "the composer did not hold every length it was given",
     )
 
 
 # ── 9. copy markdown ────────────────────────────────────────────────
 
 
-@register_action(name = "copy_markdown", default_budget_ms = 6000)
+@register_action(name="copy_markdown", default_budget_ms=6000)
 def copy_markdown(ctx: ActionContext) -> ActionResult:
     """The message action bar's Copy, which copies `getCopyText()` for the whole message.
 
@@ -1254,18 +1254,18 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     chars = len(clip) if isinstance(clip, str) else None
     ok = chars is not None and chars > 0
     return ActionResult(
-        ran = True,
-        expect_ok = ok if reason is None else False,
-        expect = {"clipboard_chars": chars, "clipboard_readable": reason is None},
-        timings = {"copy_ms": round(elapsed, 1)},
-        reason = reason or (None if ok else "the clipboard was empty after Copy"),
+        ran=True,
+        expect_ok=ok if reason is None else False,
+        expect={"clipboard_chars": chars, "clipboard_readable": reason is None},
+        timings={"copy_ms": round(elapsed, 1)},
+        reason=reason or (None if ok else "the clipboard was empty after Copy"),
     )
 
 
 # ── 10, 11. selection ───────────────────────────────────────────────
 
 
-@register_action(name = "select_text", default_budget_ms = 6000)
+@register_action(name="select_text", default_budget_ms=6000)
 def select_text(ctx: ActionContext) -> ActionResult:
     """Select a range inside the last assistant message. Selection over a large thread forces the
     engine to walk and paint selection geometry across whatever is mounted."""
@@ -1307,20 +1307,20 @@ def select_text(ctx: ActionContext) -> ActionResult:
     # two counts are not the same quantity.
     ok = raw["chars"] > 0
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "selected_chars": raw["chars"],
             "visible_chars": visible,
             "coverage": round(raw["chars"] / visible, 3) if visible else None,
             "message_chars_including_collapsed": raw["messageChars"],
         },
-        timings = {"select_ms": raw["ms"]},
-        reason = None if ok else "the selection was empty",
+        timings={"select_ms": raw["ms"]},
+        reason=None if ok else "the selection was empty",
     )
 
 
-@register_action(name = "select_all_copy", default_budget_ms = 10000)
+@register_action(name="select_all_copy", default_budget_ms=10000)
 def select_all_copy(ctx: ActionContext) -> ActionResult:
     """Ctrl+A then Ctrl+C over the WHOLE thread. The heaviest selection there is, and a real
     keyboard path so the app's own key handlers run."""
@@ -1434,9 +1434,9 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     mounted = _ev(ctx, "() => window.__sb.dom.messageCount()")
     ok = raw["chars"] > 0
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "selected_chars": raw["chars"],
             # WHAT ACTUALLY REACHED THE CLIPBOARD, the user-facing quantity the truncation alarm is scored
             # on: a windowed mount cannot SELECT what is not in the DOM but can still COPY it from the store.
@@ -1456,7 +1456,7 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
                 else None
             ),
         },
-        timings = {
+        timings={
             "select_all_ms": raw["selectMs"],
             "copy_ms": round(copy_ms, 1),
             "total_ms": round((time.monotonic() - started) * 1000, 1),
@@ -1464,18 +1464,18 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         # `expect_ok` stays `chars > 0`: within one run the selection and every DOM-derived reference
         # shrink together, and an absolute floor would need per-rung, per-platform calibration.
         # `clipboard_chars` comes first as the user-visible number, `selected_chars` as the mechanism.
-        counts = {
+        counts={
             "clipboard_chars": clipboard_chars,
             "selected_chars": raw["chars"],
         },
-        reason = None if ok else "select-all selected nothing",
+        reason=None if ok else "select-all selected nothing",
     )
 
 
 # ── 12. image upload ────────────────────────────────────────────────
 
 
-@register_action(name = "send_turn", default_budget_ms = 10000)
+@register_action(name="send_turn", default_budget_ms=10000)
 def send_turn(ctx: ActionContext) -> ActionResult:
     """Send another prompt mid-film and let the next reply stream in.
 
@@ -1517,8 +1517,8 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     pacer.load(
         unit["reasoning"],
         unit["content"],
-        cadence = ctx.args.get("cadence", "field"),
-        tag = tag,
+        cadence=ctx.args.get("cadence", "field"),
+        tag=tag,
     )
 
     selector = 'textarea[aria-label="Message input"]'
@@ -1551,9 +1551,9 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         and after > before
     )
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "messages_before": before,
             "messages_after": after,
             # What was MOUNTED either side, kept beside the thread totals: identical on the shipped build,
@@ -1568,8 +1568,8 @@ def send_turn(ctx: ActionContext) -> ActionResult:
             "pacer_tag": tag,
             "unit_kind": unit.get("kind"),
         },
-        timings = {"to_first_token_ms": None if first_ms is None else round(first_ms, 1)},
-        reason = None if ok else "the send did not start a new streaming reply",
+        timings={"to_first_token_ms": None if first_ms is None else round(first_ms, 1)},
+        reason=None if ok else "the send did not start a new streaming reply",
     )
 
 
@@ -1639,7 +1639,7 @@ _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
 )
 
 
-@register_action(name = "image_upload", default_budget_ms = 12000)
+@register_action(name="image_upload", default_budget_ms=12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
 
@@ -1659,7 +1659,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     # here is bounded by what is left of the slot.
     locator = ctx.page.locator('button[aria-label="Tools and attachments"]:visible').first
     try:
-        plus = locator.element_handle(timeout = 2000)
+        plus = locator.element_handle(timeout=2000)
     except Exception:  # noqa: BLE001
         plus = None
     if plus is None:
@@ -1678,12 +1678,12 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
-        plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
+        plus.click(timeout=max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
         return not_run(f"the attachments button could not be clicked: {type(exc).__name__}")
     ctx.page.wait_for_timeout(200)
     try:
-        with ctx.page.expect_file_chooser(timeout = 6000) as fc:
+        with ctx.page.expect_file_chooser(timeout=6000) as fc:
             ctx.page.evaluate("""() => {
                 const item = window.__sb.dom.menuItemByText("Add photos");
                 if (item) item.click();
@@ -1715,15 +1715,15 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         else:
             reason = "no attachment appeared in the composer after the file was set"
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "attachments_before": before,
             "attachments_after": after,
             "attachment_containers": containers,
         },
-        timings = {"upload_ms": round(elapsed, 1)},
-        reason = reason,
+        timings={"upload_ms": round(elapsed, 1)},
+        reason=reason,
     )
 
 
@@ -1751,7 +1751,7 @@ _REOPEN_READY_FLOOR_S = 10.0
 _REOPEN_READY_CEILING_S = 60.0
 
 
-@register_action(name = "thread_reopen", default_budget_ms = 30000)
+@register_action(name="thread_reopen", default_budget_ms=30000)
 def thread_reopen(ctx: ActionContext) -> ActionResult:
     """Leave the thread and come back.
 
@@ -1795,7 +1795,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         ctx,
         'button[aria-label="New chat"]',
         f"{ctx.args['base_url']}/chat?new=studiobench",
-        allow_navigate = False,
+        allow_navigate=False,
     )
     if not leave.ok:
         ctx.log(
@@ -1859,10 +1859,10 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         ready = wait_for_thread_ready(
             ctx.page,
             before,
-            marker = marker,
-            mode = mode,
-            timeout_s = timeout_s,
-            log = ctx.log,
+            marker=marker,
+            mode=mode,
+            timeout_s=timeout_s,
+            log=ctx.log,
         )
         reopen_ms = (time.monotonic() - click_back_at) * 1000
         readiness = ready.as_dict()
@@ -1882,9 +1882,9 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     spans = _ev(ctx, "() => document.querySelectorAll('pre span').length")
     ok = reopen_ms is not None and after == before
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "messages_before": before,
             "messages_after": after,
             "mounted_before": mounted_before,
@@ -1903,11 +1903,11 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             # and an arm that publishes a total it has not built.
             "reopen_readiness": readiness,
         },
-        timings = {
+        timings={
             "close_ms": round(closed_ms, 1),
             "reopen_ms": None if reopen_ms is None else round(reopen_ms, 1),
         },
-        reason = None
+        reason=None
         if ok
         else (
             f"the thread came back with {after} of {before} messages"
@@ -2078,8 +2078,8 @@ def _click_or_navigate(
     if handle is not None:
         try:
             attempt_at = time.monotonic()
-            handle.click(timeout = 2000)
-            return Transition(ok = True, path = "click", started_at = attempt_at)
+            handle.click(timeout=2000)
+            return Transition(ok=True, path="click", started_at=attempt_at)
         except Exception as exc:  # noqa: BLE001
             click_error = f"{selector} was not clickable: {type(exc).__name__}"
         # THE CENTRE IS COVERED, BUT THE CONTROL IS NOT. Playwright clicks the centre and refuses when
@@ -2093,10 +2093,10 @@ def _click_or_navigate(
                 attempt_at = time.monotonic()
                 ctx.page.mouse.click(point[0], point[1])
                 return Transition(
-                    ok = True,
-                    path = "click",
-                    reason = "clicked off-centre",
-                    started_at = attempt_at,
+                    ok=True,
+                    path="click",
+                    reason="clicked off-centre",
+                    started_at=attempt_at,
                 )
             except Exception as exc:  # noqa: BLE001
                 click_error += f"; the off-centre click also failed: {type(exc).__name__}"
@@ -2108,23 +2108,23 @@ def _click_or_navigate(
         )
     if not allow_navigate:
         return Transition(
-            ok = False,
-            path = "failed",
-            reason = (
+            ok=False,
+            path="failed",
+            reason=(
                 f"{click_error}, and the caller does not accept a page navigation as a substitute, "
                 "so none was performed and the page was left where it was"
             ),
         )
     try:
         attempt_at = time.monotonic()
-        ctx.page.goto(url, wait_until = "domcontentloaded", timeout = 60_000)
-        return Transition(ok = True, path = "navigate", reason = click_error, started_at = attempt_at)
+        ctx.page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        return Transition(ok=True, path="navigate", reason=click_error, started_at=attempt_at)
     except Exception as exc:  # noqa: BLE001
         ctx.log(f"    navigation to {url} failed: {type(exc).__name__}: {exc}")
         return Transition(
-            ok = False,
-            path = "failed",
-            reason = f"{click_error}, and the navigation failed too: {type(exc).__name__}",
+            ok=False,
+            path="failed",
+            reason=f"{click_error}, and the navigation failed too: {type(exc).__name__}",
         )
 
 
@@ -2222,7 +2222,7 @@ def _wait_for_the_reply_to_land(ctx: ActionContext) -> bool:
     return False
 
 
-@register_action(name = "message_menu", default_budget_ms = 12000)
+@register_action(name="message_menu", default_budget_ms=12000)
 def message_menu(ctx: ActionContext) -> ActionResult:
     # TWO WAITS, COVERING DIFFERENT THINGS: this one waits for the STREAM to stop, bounded by a
     # fraction of the slot, while `waitForButtonMs` waits for the BAR TO MOUNT a few hundred ms
@@ -2252,9 +2252,9 @@ def message_menu(ctx: ActionContext) -> ActionResult:
     # a menu that never rendered its items.
     ok = raw["openMs"] is not None and raw["closeMs"] is not None and raw["items"] > 0
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "items_while_open": raw["items"],
             # Radix puts the body on the modal layer while the menu is up, which is the fan-out under
             # suspicion, so this proves the open really took that path.
@@ -2264,7 +2264,7 @@ def message_menu(ctx: ActionContext) -> ActionResult:
             # this slot too early.
             "action_bar_wait_ms": waited_ms,
         },
-        timings = {
+        timings={
             "open_ms": raw["openMs"],
             "close_ms": raw["closeMs"],
             "open_close_ms": (
@@ -2273,7 +2273,7 @@ def message_menu(ctx: ActionContext) -> ActionResult:
                 else round(raw["openMs"] + raw["closeMs"], 1)
             ),
         },
-        reason = None
+        reason=None
         if ok
         else f"opened={raw['openMs'] is not None} closed={raw['closeMs'] is not None} "
         f"items={raw['items']}",
@@ -2332,7 +2332,7 @@ async (opts) => {
 """
 
 
-@register_action(name = "delete_message", default_budget_ms = 15000)
+@register_action(name="delete_message", default_budget_ms=15000)
 def delete_message(ctx: ActionContext) -> ActionResult:
     raw = _ev(
         ctx,
@@ -2348,9 +2348,9 @@ def delete_message(ctx: ActionContext) -> ActionResult:
     # is a different bug, or on a windowed mount a node the virtualizer recycled.
     ok = raw["ms"] is not None and raw["after"] < raw["before"]
     return ActionResult(
-        ran = True,
-        expect_ok = ok,
-        expect = {
+        ran=True,
+        expect_ok=ok,
+        expect={
             "messages_before": raw["before"],
             "messages_after": raw["after"],
             "dropped": raw["before"] - raw["after"],
@@ -2358,6 +2358,6 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "mounted_after": raw.get("mountedAfter"),
             "action_bar_wait_ms": raw.get("waitedMs"),
         },
-        timings = {"delete_ms": raw["ms"]},
-        reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",
+        timings={"delete_ms": raw["ms"]},
+        reason=None if ok else f"the message count went {raw['before']} -> {raw['after']}",
     )

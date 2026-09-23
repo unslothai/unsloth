@@ -29,7 +29,7 @@ from unsloth.models._utils import patch_gradient_accumulation_fix
 
 pytestmark = pytest.mark.skipif(
     not hasattr(utils, "apply_pending_eager_fallbacks"),
-    reason = "unsloth_zoo without the deferred compile-mode switch",
+    reason="unsloth_zoo without the deferred compile-mode switch",
 )
 
 

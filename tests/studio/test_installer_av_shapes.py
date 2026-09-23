@@ -227,7 +227,7 @@ none of them, which is why none could be submitted to a vendor or proven fixed.
 
 
 def _text(name: str) -> str:
-    return (REPO / name).read_text(encoding = "utf-8")
+    return (REPO / name).read_text(encoding="utf-8")
 
 
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
@@ -240,7 +240,7 @@ def _code_lines(name: str):
     *does* use this, so the printed remediation text does not read as an execution.
     """
     in_here_string = False
-    for number, line in enumerate(_text(name).splitlines(), start = 1):
+    for number, line in enumerate(_text(name).splitlines(), start=1):
         stripped = line.strip()
         if in_here_string:
             # PowerShell wants the terminator in column 0, and install.ps1 has
@@ -291,7 +291,7 @@ def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
         return
     pinned = min(
         (m.start() for m in re.finditer(r"_(setup_install_uv_pinned|uv_install_pinned)\b", text)),
-        default = None,
+        default=None,
     )
     fallback = text.index("astral.sh/uv/install.sh")
     assert pinned is not None, f"{name} has no pinned uv path"
@@ -351,7 +351,7 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     lines = text.splitlines()
 
     # 1. Same line. The cheapest check and the one with the clearest message.
-    for number, line in enumerate(lines, start = 1):
+    for number, line in enumerate(lines, start=1):
         if _HIDDEN.search(line):
             assert not _BYPASS.search(
                 line
@@ -361,7 +361,7 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     #    whatever they are near. This is what catches a new one arriving somewhere the other two
     #    layers do not model.
     found = [
-        (number, line.strip()) for number, line in enumerate(lines, start = 1) if _BYPASS.search(line)
+        (number, line.strip()) for number, line in enumerate(lines, start=1) if _BYPASS.search(line)
     ]
     allowed = KNOWN_BYPASS_SITES.get(name, 0)
     assert len(found) <= allowed, (
@@ -714,7 +714,7 @@ def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
     """
     workflow = REPO / ".github" / "workflows" / "windows-no-compiler-ci.yml"
     assert workflow.is_file(), "the runtime guard lane is gone; the text check is alone again"
-    body = workflow.read_text(encoding = "utf-8")
+    body = workflow.read_text(encoding="utf-8")
     assert "Positive control" in body, "the lane no longer proves its own detector works"
     assert (
         "Add-Type -TypeDefinition" in body
@@ -722,7 +722,7 @@ def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
 
     watcher = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
     assert watcher.is_file()
-    watcher_body = watcher.read_text(encoding = "utf-8")
+    watcher_body = watcher.read_text(encoding="utf-8")
     for image in ("csc.exe", "vbc.exe", "cvtres.exe"):
         assert image in watcher_body, f"the watcher no longer looks for {image}"
     # 4688 is what sees a compiler spawned at any depth; the temp sweep is what
@@ -761,7 +761,7 @@ def _run_pwsh(script: Path, *, timeout: int):
     command = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
     env = pwsh_env()
     for attempt in range(2):
-        result = subprocess.run(command, capture_output = True, text = True, timeout = timeout, env = env)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=env)
         crashed = result.returncode < 0 and any(
             marker in result.stderr for marker in _PWSH_HOST_FAULT
         )
@@ -790,7 +790,7 @@ function New-FakeEvent {
 """
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 @pytest.mark.parametrize(
     ("image", "command_line", "expected"),
     [
@@ -799,7 +799,7 @@ function New-FakeEvent {
         (r"C:\Windows\System32\cmd.exe", r"cmd.exe /c copy a.txt C:\csc.exe.log", 0),
         (r"C:\Users\r\csc.exe.helper.exe", "whatever", 0),
     ],
-    ids = ["a-real-compile", "a-command-line-mentioning-one", "a-path-argument", "a-similar-name"],
+    ids=["a-real-compile", "a-command-line-mentioning-one", "a-path-argument", "a-similar-name"],
 )
 def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
     tmp_path, image: str, command_line: str, expected: int
@@ -821,9 +821,9 @@ def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
                 'Write-Output "HITS:$($hits.Count)"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    result = _run_pwsh(script, timeout = 120)
+    result = _run_pwsh(script, timeout=120)
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
 
@@ -832,7 +832,7 @@ _CSC = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 _CVTRES = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\cvtres.exe"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 @pytest.mark.parametrize(
     ("image", "parent", "expected"),
     [
@@ -840,7 +840,7 @@ _CVTRES = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\cvtres.exe"
         (_CVTRES, r"C:\Program Files\PowerShell\7\pwsh.exe", 1),
         (_CVTRES, _CSC, 0),
     ],
-    ids = [
+    ids=[
         "a-compile-the-shell-started",
         "a-resource-step-with-no-compiler-parent",
         "a-resource-step-the-compiler-started",
@@ -874,14 +874,14 @@ def test_a_compiler_started_by_a_compiler_is_one_compile_not_two(
                 'Write-Output "HITS:$($hits.Count)"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    result = _run_pwsh(script, timeout = 120)
+    result = _run_pwsh(script, timeout=120)
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_a_record_with_no_parent_field_is_still_scored(tmp_path) -> None:
     """The whole chain is reported when the schema does not carry ParentProcessName. An
     absent field reads as empty, and empty must not be mistaken for a compiler parent, or a
@@ -910,9 +910,9 @@ def test_a_record_with_no_parent_field_is_still_scored(tmp_path) -> None:
                 'Write-Output "HITS:$($hits.Count)"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    result = _run_pwsh(script, timeout = 120)
+    result = _run_pwsh(script, timeout=120)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "HITS:1" in result.stdout, result.stdout
 
@@ -957,9 +957,9 @@ def _run_watch(
                 'Write-Output "COUNT:$($seen.TempLibraries.Count)"',
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    result = _run_pwsh(script, timeout = 300)
+    result = _run_pwsh(script, timeout=300)
     assert result.returncode == 0, result.stderr + result.stdout
     libraries = [
         line[len("LIB:") :] for line in result.stdout.splitlines() if line.startswith("LIB:")
@@ -967,7 +967,7 @@ def _run_watch(
     return result.stdout, libraries
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> None:
     """The failure this replaces: the positive control compiled a type, 4688 recorded
 
@@ -1013,13 +1013,13 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
         # The whole point: gone before the action returns, exactly as CodeDom leaves it.
         "Remove-Item -LiteralPath $dir -Recurse -Force"
     )
-    stdout, libraries = _run_watch(tmp_path, action, setup = setup)
+    stdout, libraries = _run_watch(tmp_path, action, setup=setup)
     assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
     assert any(lib.endswith("vpmyd5eq.cmdline") for lib in libraries), libraries
     assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
     """The listing half must keep working; the watcher is added to it, not swapped for it.
 
@@ -1039,7 +1039,7 @@ def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path)
     assert any(lib.endswith("leftover.cmdline") for lib in libraries), libraries
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_an_unpacked_archive_is_not_scored_as_a_compile(tmp_path) -> None:
     """What actually ran on every red run of this job.
 
@@ -1064,7 +1064,7 @@ def test_an_unpacked_archive_is_not_scored_as_a_compile(tmp_path) -> None:
     assert not libraries, f"an unpacked release archive was scored as a compile: {stdout}"
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_a_compile_beside_an_unpacked_archive_is_still_caught(tmp_path) -> None:
     """The narrowing is per-directory, so unpacking an archive cannot cover a real compile."""
     action = (
@@ -1082,7 +1082,7 @@ def test_a_compile_beside_an_unpacked_archive_is_still_caught(tmp_path) -> None:
     assert not any(lib.endswith("ggml.dll") for lib in libraries), libraries
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
 def test_an_action_that_compiles_nothing_reports_nothing(tmp_path) -> None:
     """Otherwise the real measurement, which requires neither detector to fire, can never pass.
 
@@ -1105,7 +1105,7 @@ def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
     and pass. The positive control runs in an earlier step and says nothing about whether
     the log was still readable during the measurement.
     """
-    body = _WATCHER.read_text(encoding = "utf-8")
+    body = _WATCHER.read_text(encoding="utf-8")
     assert (
         "-MaxEvents 1" in body
     ), "the watcher no longer distinguishes an empty result from an unreadable log"
@@ -1121,7 +1121,7 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
     one step earlier. $prior is meant to subtract exactly that, and did not, so the filter
     itself has to hold to the precision it was given rather than to the hashtable's.
     """
-    body = _WATCHER.read_text(encoding = "utf-8")
+    body = _WATCHER.read_text(encoding="utf-8")
     assert "StartTime = $Since.AddSeconds(-1)" in body
     assert "EndTime   = $Until.AddSeconds(1)" in body
     assert "$_.TimeCreated -ge $Since -and $_.TimeCreated -le $Until" in body, (
@@ -1213,7 +1213,7 @@ def test_no_shipped_script_names_a_detection(name: str, token: str) -> None:
     path = REPO / name
     if not path.is_file():
         pytest.skip(f"{name} is not present")
-    found = _banned_pattern(token).search(path.read_text(encoding = "utf-8"))
+    found = _banned_pattern(token).search(path.read_text(encoding="utf-8"))
     assert not found, (
         f"{name} contains {token!r}. Vendor names, detection families and analyst vocabulary "
         f"belong in tests/studio/test_installer_av_shapes.py, not in a file that is itself handed to "
@@ -1263,7 +1263,7 @@ def test_every_script_that_dropped_its_explanation_points_at_the_record(name: st
     path = REPO / name
     if not path.is_file():
         pytest.skip(f"{name} is not present")
-    text = path.read_text(encoding = "utf-8")
+    text = path.read_text(encoding="utf-8")
     hints = ("Add-Type", "RemoteSigned", "ClearIconCache", "Sha256", "SHA-256")
     if not any(hint in text for hint in hints):
         pytest.skip(f"{name} carries none of the documented shapes")
@@ -1318,7 +1318,7 @@ def test_the_setup_bat_probe_parses() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "probe.ps1"
-        path.write_text(probe, encoding = "utf-8")
+        path.write_text(probe, encoding="utf-8")
         result = _run_pwsh_parse(pwsh, path)
     assert (
         result.returncode == 0
@@ -1337,10 +1337,10 @@ def _run_pwsh_parse(pwsh: str, path: Path):
     )
     return run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = {**os.environ, "UNSLOTH_TARGET": str(path)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "UNSLOTH_TARGET": str(path)},
     )
 
 
@@ -1402,7 +1402,7 @@ def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
     is worse than saying nothing: the justification for deleting a native call becomes unverifiable.
     Referring to a PR number is fine and stays true; referring to a path is a claim about this tree.
     """
-    text = (REPO / name).read_text(encoding = "utf-8")
+    text = (REPO / name).read_text(encoding="utf-8")
     cited = set()
     for line in _comment_lines(text, name):
         cited.update(_REPO_PATH_IN_PROSE.findall(line))

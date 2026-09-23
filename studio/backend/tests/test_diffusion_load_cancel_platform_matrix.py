@@ -88,34 +88,34 @@ def cell(request, monkeypatch, fake_runtime):  # noqa: F811
     if os_key == "wsl":
         monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     else:
-        monkeypatch.delenv("WSL_DISTRO_NAME", raising = False)
+        monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
 
     backend = DiffusionBackend()
     dtype = getattr(sys.modules["torch"], dtype_name)
-    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda ordinal = None: (device, dtype))
+    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda ordinal=None: (device, dtype))
     backend._cell = (os_key, vendor, device)
     return backend
 
 
-@pytest.mark.parametrize("cell", CELLS, indirect = True, ids = [f"{o}-{v}" for o, v in CELLS])
+@pytest.mark.parametrize("cell", CELLS, indirect=True, ids=[f"{o}-{v}" for o, v in CELLS])
 def test_an_eject_cancels_the_load_that_was_already_in_flight(cell, tmp_path):
     backend = cell
     (tmp_path / "model.gguf").write_bytes(b"weights")
     token = backend._load_token
     backend.unload()
     # The worker carries the epoch it was given; the eject bumped it, so the worker is cancelled.
-    with pytest.raises(RuntimeError, match = "cancelled"):
+    with pytest.raises(RuntimeError, match="cancelled"):
         backend.load_pipeline(
             str(tmp_path),
-            gguf_filename = "model.gguf",
-            base_repo = "base/repo",
-            family_override = "z-image",
-            _load_token = token,
+            gguf_filename="model.gguf",
+            base_repo="base/repo",
+            family_override="z-image",
+            _load_token=token,
         )
     assert backend._unload_waiters == 0 and backend._teardown_waiters == 0
 
 
-@pytest.mark.parametrize("cell", CELLS, indirect = True, ids = [f"{o}-{v}" for o, v in CELLS])
+@pytest.mark.parametrize("cell", CELLS, indirect=True, ids=[f"{o}-{v}" for o, v in CELLS])
 def test_a_load_arriving_during_an_eject_queues_and_then_runs(cell, tmp_path, monkeypatch):
     backend = cell
     (tmp_path / "model.gguf").write_bytes(b"weights")
@@ -140,18 +140,18 @@ def test_a_load_arriving_during_an_eject_queues_and_then_runs(cell, tmp_path, mo
         try:
             backend.begin_load(
                 str(tmp_path),
-                gguf_filename = "model.gguf",
-                base_repo = "base/repo",
-                family_override = "z-image",
+                gguf_filename="model.gguf",
+                base_repo="base/repo",
+                family_override="z-image",
             )
             outcome["load"] = "accepted"
         except BaseException as exc:  # noqa: BLE001
             outcome["load"] = repr(exc)
 
-    holder = threading.Thread(target = hold_pipeline_lock, daemon = True)
+    holder = threading.Thread(target=hold_pipeline_lock, daemon=True)
     holder.start()
     assert held.wait(5)
-    ejector = threading.Thread(target = eject, daemon = True)
+    ejector = threading.Thread(target=eject, daemon=True)
     ejector.start()
     for _ in range(500):
         if backend._unload_waiters:
@@ -159,7 +159,7 @@ def test_a_load_arriving_during_an_eject_queues_and_then_runs(cell, tmp_path, mo
         threading.Event().wait(0.01)
     assert backend._unload_waiters == 1, "the eject never raised its fence"
 
-    waiter = threading.Thread(target = replacement, daemon = True)
+    waiter = threading.Thread(target=replacement, daemon=True)
     waiter.start()
     waiter.join(0.5)
     assert waiter.is_alive() and "load" not in outcome, f"{backend._cell}: the load should queue"

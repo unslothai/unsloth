@@ -36,7 +36,7 @@ def strip_current_date_prompt_lines(text: str) -> str:
         return text
     return "".join(
         line
-        for line in text.splitlines(keepends = True)
+        for line in text.splitlines(keepends=True)
         if not CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line.rstrip("\r\n"))
     ).strip()
 
@@ -57,6 +57,7 @@ def get_current_date_prompt_enabled() -> bool:
     """Read the persisted preference, defaulting to enabled when it is missing or unreadable."""
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(CURRENT_DATE_PROMPT_SETTING_KEY, None)
     except Exception:
         stored = None
@@ -96,7 +97,7 @@ def _request_local_date(request: Any, now: datetime | None = None) -> date:
         return instant.astimezone().date()
     if abs(offset_minutes) > MAX_TIMEZONE_OFFSET_MINUTES:
         return instant.astimezone().date()
-    browser_zone = timezone(timedelta(minutes = -offset_minutes))
+    browser_zone = timezone(timedelta(minutes=-offset_minutes))
     return instant.astimezone(browser_zone).date()
 
 

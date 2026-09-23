@@ -219,7 +219,7 @@ def _installed_names():
                 # is the stricter of the two answers
                 raise RuntimeError("base site-packages not found")
             found = set()
-            for dist in distributions(path = scope):
+            for dist in distributions(path=scope):
                 try:
                     n = _norm_name(dist.metadata["Name"] or "")
                 except Exception:
@@ -333,7 +333,7 @@ def _canon(token):
     _barch = _sdist_name(token.rsplit("/", 1)[-1])
     if _barch:
         return _barch
-    name = re.split(r"[<>=!~\[\s;@]", token, maxsplit = 1)[0].strip()
+    name = re.split(r"[<>=!~\[\s;@]", token, maxsplit=1)[0].strip()
     return _norm_name(name)
 
 
@@ -353,6 +353,7 @@ def _local_project_name(token):
     if os.path.isfile(_pyproject):
         try:
             import tomllib
+
             with open(_pyproject, "rb") as f:
                 _name = (tomllib.load(f).get("project") or {}).get("name")
             if _name:
@@ -366,7 +367,7 @@ def _local_project_name(token):
 
             _cp = configparser.ConfigParser()
             _cp.read(_setup_cfg)
-            _name = _cp.get("metadata", "name", fallback = None)
+            _name = _cp.get("metadata", "name", fallback=None)
             if _name:
                 return _norm_name(_name)
         except Exception:
@@ -385,6 +386,7 @@ def _marker_is_false(token):
     is missing or the token does not parse, nothing is vetoed."""
     try:
         from packaging.requirements import Requirement
+
         req = Requirement(token)
     except Exception:
         return False
@@ -491,7 +493,7 @@ def _rewrite_include(line, stripped, src_dir, depth):
         return None, True, None, [flag + " " + raw_target]
     abs_target = target if os.path.isabs(target) else os.path.join(src_dir, target)
     if depth < 8:
-        f_path, f_rec, f_drp = _filter_requirements_file(abs_target, _depth = depth + 1)
+        f_path, f_rec, f_drp = _filter_requirements_file(abs_target, _depth=depth + 1)
         # a -c include is a constraint, not an install request: no marker
         if flag in _CONSTRAINT_FILE_FLAGS:
             f_rec = None
@@ -557,7 +559,7 @@ def _resolve_read_path(path):
     return os.path.join(_WORKING_DIR, path)
 
 
-def _filter_requirements_file(path, _depth = 0):
+def _filter_requirements_file(path, _depth=0):
     """Strip protected packages out of a `-r` file, recursing into nested includes.
     Returns (path_to_use, recorded_transformers_version, dropped_specs)."""
     read_path = _resolve_read_path(path)
@@ -565,7 +567,7 @@ def _filter_requirements_file(path, _depth = 0):
         # utf-8-sig, not utf-8: a BOM would otherwise leave "\ufefftransformers==X" on
         # line 1, matching no handler, so a file whose ONLY protected pin is first
         # forwards unchanged. Both real tools strip it and honour the line.
-        with open(read_path, encoding = "utf-8-sig") as f:
+        with open(read_path, encoding="utf-8-sig") as f:
             lines = f.readlines()
     except OSError:
         # forward what the caller passed, not the resolved path: uv resolves it
@@ -644,8 +646,8 @@ def _filter_requirements_file(path, _depth = 0):
     if not changed:
         return path, None, []
     try:
-        fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-req-", suffix = ".txt")
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        fd, tmp = tempfile.mkstemp(prefix="unsloth-nb-req-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(out)
     except OSError as exc:
         # fail CLOSED: forwarding the original hands pip the specs we must filter
@@ -680,7 +682,7 @@ def _protected_constraints_file():
         # scoped, NOT a bare distributions(): see _base_site_packages. An activated
         # sidecar sits ahead of the venv on PYTHONPATH and would otherwise be pinned
         # here in place of the baked version.
-        dists = list(distributions(path = scope))
+        dists = list(distributions(path=scope))
     except Exception as exc:
         raise SystemExit(
             f"[unsloth-nb] could not enumerate installed packages ({exc}); refusing to "
@@ -701,8 +703,8 @@ def _protected_constraints_file():
     if not pins:
         return None
     try:
-        fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-protected-", suffix = ".txt")
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        fd, tmp = tempfile.mkstemp(prefix="unsloth-nb-protected-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(pins[name] for name in sorted(pins)) + "\n")
     except OSError as exc:
         raise SystemExit(
@@ -741,8 +743,8 @@ def _selfcheck_value_flags():
     try:
         out = subprocess.run(
             [os.path.join(os.path.dirname(REAL["pip"]), "python"), "-c", probe],
-            capture_output = True,
-            text = True,
+            capture_output=True,
+            text=True,
         )
         if out.returncode != 0 or not out.stdout.strip():
             raise OSError(out.stderr.strip()[:200] or "no output")
@@ -753,7 +755,7 @@ def _selfcheck_value_flags():
         print(
             f"[unsloth-nb] could not introspect pip's option table ({exc}); refusing to "
             "certify the value-flag list from --help alone, which cannot see aliases.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -764,7 +766,7 @@ def _selfcheck_value_flags():
         [REAL["uv"], "pip", "install", "--help"],
     ):
         try:
-            out = subprocess.run(cmd, capture_output = True, text = True).stdout
+            out = subprocess.run(cmd, capture_output=True, text=True).stdout
         except OSError:
             continue
         seen_uv = True
@@ -779,7 +781,7 @@ def _selfcheck_value_flags():
         if gap:
             missing.setdefault("uv", []).extend(sorted(gap))
     if not seen_uv:
-        print("[unsloth-nb] could not run uv to check its flags", file = sys.stderr)
+        print("[unsloth-nb] could not run uv to check its flags", file=sys.stderr)
         sys.exit(1)
 
     # uv globals that are accepted but documented nowhere: verify each still takes a
@@ -788,19 +790,19 @@ def _selfcheck_value_flags():
         if flag == "--python-preference":
             r = subprocess.run(
                 [REAL["uv"], flag, "system", "pip", "install", "--help"],
-                capture_output = True,
-                text = True,
+                capture_output=True,
+                text=True,
             )
             if r.returncode != 0:
                 print(
                     f"[unsloth-nb] uv no longer accepts `{flag} <value>`; the entry in "
                     "_ALIAS_VALUE_FLAGS is stale and may now swallow an install target.",
-                    file = sys.stderr,
+                    file=sys.stderr,
                 )
                 sys.exit(1)
 
     if missing:
-        print(f"[unsloth-nb] value flags missing from _VALUE_FLAGS: {missing}", file = sys.stderr)
+        print(f"[unsloth-nb] value flags missing from _VALUE_FLAGS: {missing}", file=sys.stderr)
         sys.exit(1)
     print("[unsloth-nb] value-flag selfcheck OK")
     sys.exit(0)
@@ -876,7 +878,7 @@ def _uninstall_file(path, dropped):
     dropped.extend(drp)
     if filtered == path:
         return filtered
-    with open(filtered, encoding = "utf-8") as f:
+    with open(filtered, encoding="utf-8") as f:
         if any(ln.strip() and not ln.strip().startswith("#") for ln in f):
             return filtered
     return None
@@ -1316,7 +1318,7 @@ def main():
         try:
             parent = os.path.dirname(MARKER)
             if parent:  # "" for a bare relative MARKER, and makedirs("") raises
-                os.makedirs(parent, exist_ok = True)
+                os.makedirs(parent, exist_ok=True)
             with open(MARKER, "w") as f:
                 f.write(recorded)
         except OSError as exc:
@@ -1330,7 +1332,7 @@ def main():
                 f"[unsloth-nb] WARNING: could not record the requested "
                 f"transformers=={recorded} at {MARKER} ({exc}); the sidecar will NOT "
                 f"activate and the model cells will use the baked transformers.",
-                file = sys.stderr,
+                file=sys.stderr,
             )
         else:
             print(

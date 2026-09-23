@@ -33,7 +33,7 @@ _PASS_STATE_DEFAULTS = {
 }
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _realpath(path: str) -> str:
     """A module __file__ never changes once imported, so the scan below can resolve each
     distinct path once instead of syscalling over all of sys.modules twice per test."""
@@ -83,7 +83,7 @@ def _reset_pass_state(test_module) -> None:
             results.clear()
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def reset_install_pass_state(request):
     """Start and end every test with the state a fresh dependency pass would have.
 

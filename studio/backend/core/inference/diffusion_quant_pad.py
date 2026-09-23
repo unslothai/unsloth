@@ -153,7 +153,7 @@ class PadToMinM(nn.Module):
             # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
             # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
             # ms padded from M = 10 against 1.48 ms unpadded at M = 17, on a 2.4 s render).
-            flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim = 0)
+            flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim=0)
             out = self.inner(flat)[:m]
         else:
             out = self.inner(flat)
@@ -186,8 +186,8 @@ class PadToMinM(nn.Module):
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
         if destination is None:
             # Top-level call (``wrapper.state_dict()``): let the inner module build the mapping.
-            return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
-        self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
+            return self.inner.state_dict(prefix=prefix, keep_vars=keep_vars)
+        self.inner.state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
         return destination
 
     def _load_from_state_dict(
@@ -234,10 +234,10 @@ def padding_is_bitwise_exact(
     weight = getattr(module, "weight", None)
     device = getattr(weight, "device", "cpu")
     dtype = getattr(weight, "dtype", torch.bfloat16)
-    x = torch.randn(m, module.in_features, device = device, dtype = dtype)
+    x = torch.randn(m, module.in_features, device=device, dtype=dtype)
     with torch.no_grad():
         reference = module(x)
-        padded = PadToMinM(module, pad_to = pad_to)(x)
+        padded = PadToMinM(module, pad_to=pad_to)(x)
     return bool(torch.equal(reference, padded))
 
 
@@ -279,7 +279,7 @@ def wrap_small_m_linears(
                 f"kept row's scale is computed from that row alone; under a calibrated or "
                 f"per-tensor activation scale it would silently change every output."
             )
-        setattr(parent, leaf, PadToMinM(module, min_m = min_m, pad_to = pad_to))
+        setattr(parent, leaf, PadToMinM(module, min_m=min_m, pad_to=pad_to))
         done.append(fqn)
     return tuple(done)
 

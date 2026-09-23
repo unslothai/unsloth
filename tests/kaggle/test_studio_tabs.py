@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PAYLOAD = ROOT / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"
-SRC = PAYLOAD.read_text(encoding = "utf-8")
+SRC = PAYLOAD.read_text(encoding="utf-8")
 ROUTES = ROOT / "studio" / "backend" / "routes"
 MAIN = ROOT / "studio" / "backend" / "main.py"
 
@@ -60,14 +60,14 @@ def _body(name: str = "assert_tabs") -> str:
 
 def _mounted_prefixes() -> set[str]:
     return set(
-        re.findall(r'include_router\([^)]*prefix\s*=\s*"([^"]+)"', MAIN.read_text(encoding = "utf-8"))
+        re.findall(r'include_router\([^)]*prefix\s*=\s*"([^"]+)"', MAIN.read_text(encoding="utf-8"))
     )
 
 
 def _declared_get_paths() -> set[str]:
     paths: set[str] = set()
     for path in ROUTES.rglob("*.py"):
-        paths.update(re.findall(r'@\w*router\.get\(\s*"([^"]+)"', path.read_text(encoding = "utf-8")))
+        paths.update(re.findall(r'@\w*router\.get\(\s*"([^"]+)"', path.read_text(encoding="utf-8")))
     return paths
 
 

@@ -19,15 +19,15 @@ import utils.native_path_leases as leases
 SECRET = b"d" * 32
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _lease_secret(monkeypatch):
     monkeypatch.setenv(
         leases.LEASE_SECRET_ENV,
         base64.urlsafe_b64encode(SECRET).decode("ascii").rstrip("="),
     )
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
     yield
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
 
 
 def _b64(raw: bytes) -> str:
@@ -37,8 +37,8 @@ def _b64(raw: bytes) -> str:
 def _sign(
     path: Path,
     *,
-    operation = "dataset-import",
-    path_kind = "dataset",
+    operation="dataset-import",
+    path_kind="dataset",
 ) -> str:
     stat = path.stat()
     now_ms = int(time.time() * 1000)
@@ -68,7 +68,7 @@ def _sign(
 
 def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
     source = tmp_path / "train.jsonl"
-    source.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    source.write_text('{"text":"hello"}\n', encoding="utf-8")
     upload_root = tmp_path / "uploads"
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
 
@@ -83,7 +83,7 @@ def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
 
 def test_async_dataset_drop_offloads_native_copy(monkeypatch, tmp_path):
     source = tmp_path / "train.jsonl"
-    source.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    source.write_text('{"text":"hello"}\n', encoding="utf-8")
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
     offloaded = []
 
@@ -107,12 +107,12 @@ def test_dataset_drop_rejects_grants_for_other_purposes(
     monkeypatch, tmp_path, operation, path_kind
 ):
     source = tmp_path / "train.csv"
-    source.write_text("text\nhello\n", encoding = "utf-8")
+    source.write_text("text\nhello\n", encoding="utf-8")
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
 
     with pytest.raises(HTTPException) as excinfo:
         local._native_upload_dataset_response(
-            _sign(source, operation = operation, path_kind = path_kind)
+            _sign(source, operation=operation, path_kind=path_kind)
         )
 
     assert excinfo.value.status_code == 400

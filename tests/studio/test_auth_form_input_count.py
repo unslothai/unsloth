@@ -51,7 +51,7 @@ def _conditional_extent(src: str) -> tuple[int, int]:
 def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     """The guard must read from window.__UNSLOTH_BOOTSTRAP__, matching the backend's
     bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     assert "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);" in src, (
         "hasBootstrapPassword constant missing or its derivation drifted; "
         "this is the gate that hides the Current password input on first boot"
@@ -61,7 +61,7 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
 def test_exactly_one_hasBootstrapPassword_conditional_exists():
     """Only one `!hasBootstrapPassword` JSX check is allowed; a second would split
     rendering into branches and likely hide or duplicate the New / Confirm inputs."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     count = src.count("!hasBootstrapPassword")
     assert count == 1, (
         f"expected exactly one !hasBootstrapPassword usage, found {count}; "
@@ -72,7 +72,7 @@ def test_exactly_one_hasBootstrapPassword_conditional_exists():
 def test_current_password_input_is_inside_the_hasBootstrapPassword_conditional():
     """`id="current-password"` must sit inside `{!hasBootstrapPassword && (...)}`,
     else it renders on first boot too, regressing the pre-#5490 UX that PR #5545 restores."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     s, e = _conditional_extent(src)
     idx = src.find('id="current-password"')
     assert idx != -1, "the Current password input was removed entirely"
@@ -86,7 +86,7 @@ def test_current_password_input_is_inside_the_hasBootstrapPassword_conditional()
 def test_new_password_input_is_outside_the_hasBootstrapPassword_conditional():
     """`id="new-password"` must sit outside `{!hasBootstrapPassword && (...)}`,
     else it disappears on admin-forced resets, regressing PR #5490."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     s, e = _conditional_extent(src)
     idx = src.find('id="new-password"')
     assert idx != -1, "the New password input was removed entirely"
@@ -99,7 +99,7 @@ def test_new_password_input_is_outside_the_hasBootstrapPassword_conditional():
 
 def test_confirm_password_input_is_outside_the_hasBootstrapPassword_conditional():
     """Same as New password, for `id="confirm-password"`."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     s, e = _conditional_extent(src)
     idx = src.find('id="confirm-password"')
     assert idx != -1, "the Confirm password input was removed entirely"
@@ -114,7 +114,7 @@ def test_change_password_jsx_declares_exactly_three_password_inputs():
     """The change-password JSX block (`{!isLoginMode && (...)}`) must declare exactly
     current/new/confirm; a fourth would break the 2-input first-boot contract (the
     conditional only hides Current)."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     start = src.find("{!isLoginMode && (")
     assert start != -1, (
         "the change-password JSX subtree marker {!isLoginMode && (...)} "
@@ -147,7 +147,7 @@ def test_change_password_jsx_declares_exactly_three_password_inputs():
 def test_login_jsx_declares_exactly_one_password_input():
     """The login JSX block (`isLoginMode && (...)`) must declare exactly one password
     input (the bootstrap password pasted from the CLI); a second breaks the per-mode matrix."""
-    src = AUTH_FORM.read_text(encoding = "utf-8")
+    src = AUTH_FORM.read_text(encoding="utf-8")
     start = src.find("{isLoginMode && (")
     assert start != -1, "the login JSX subtree marker is missing"
     depth = 1
@@ -290,8 +290,8 @@ def _inactive_returns_null(body: str) -> bool:
 
 
 def test_auth_flow_routes_do_not_mount_global_settings():
-    root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding = "utf-8")
-    mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
+    root = (FRONTEND / "app/routes/__root.tsx").read_text(encoding="utf-8")
+    mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding="utf-8")
     assert "<SettingsDialogMount active={active && ready} />" in root
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
     # The mount must render nothing whenever inactive, which is what keeps the auth routes
@@ -307,7 +307,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
 
 
@@ -319,9 +319,9 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     try:
         probe = subprocess.run(
             ["node", "--experimental-strip-types", "--version"],
-            capture_output = True,
-            text = True,
-            timeout = 120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     except subprocess.TimeoutExpired:
         pytest.skip("node did not answer --version in time on this runner")
@@ -329,7 +329,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         pytest.skip("node --experimental-strip-types not available")
 
     source = (
-        AUTH_API.read_text(encoding = "utf-8")
+        AUTH_API.read_text(encoding="utf-8")
         .replace('from "@/lib/api-base"', 'from "./stubs.mjs"')
         .replace('from "./session"', 'from "./stubs.mjs"')
         .replace('from "@/lib/account-transition"', 'from "./stubs.mjs"')
@@ -412,11 +412,11 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     """)
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "--input-type=module"],
-        input = script,
-        cwd = tmp_path,
-        capture_output = True,
-        text = True,
+        input=script,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
         # The same cold-start allowance as the probe above, plus the work itself.
-        timeout = 180,
+        timeout=180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

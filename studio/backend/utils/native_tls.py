@@ -116,11 +116,11 @@ def vendor_dir() -> str:
 def inline_gate_source() -> str:
     """The gate as executable source, for a child that cannot import this module. The child must bind ``_TRUSTSTORE_VENDOR`` to the vendor directory first."""
     return _INLINE_GATE.format(
-        env = _NATIVE_TLS_ENV,
-        owner_env = _DESKTOP_OWNER_KIND_ENV,
-        truthy = _TRUTHY,
-        falsey = _FALSEY,
-        platforms = _DEFAULT_ON_PLATFORMS,
+        env=_NATIVE_TLS_ENV,
+        owner_env=_DESKTOP_OWNER_KIND_ENV,
+        truthy=_TRUTHY,
+        falsey=_FALSEY,
+        platforms=_DEFAULT_ON_PLATFORMS,
     )
 
 
@@ -148,6 +148,7 @@ def activate_native_tls() -> bool:
         sys.path.append(_VENDOR_DIR)
     try:
         import truststore
+
         truststore.inject_into_ssl()
     except Exception as exc:  # noqa: BLE001
         # Warn, no traceback: a silent certifi fallback is what this exists to prevent.

@@ -37,7 +37,7 @@ def matrix_parameters():
     for case in OBJECT_ROUTES:
         if case.key in FACTORIES:
             for actor in ACTORS:
-                yield pytest.param(case, actor, id = f"{case.key}[{actor}]")
+                yield pytest.param(case, actor, id=f"{case.key}[{actor}]")
 
 
 def test_object_route_factory_completeness(capsys):
@@ -88,14 +88,14 @@ def test_object_route_account_matrix(case, actor, request):
         policy.invalidate_account_cache()
 
     app = FastAPI()
-    app.include_router(case.router, prefix = "/matrix")
-    with TestClient(app, raise_server_exceptions = False) as client:
+    app.include_router(case.router, prefix="/matrix")
+    with TestClient(app, raise_server_exceptions=False) as client:
         response = client.request(
             case.method,
             "/matrix" + format_path(case.path, params),
-            headers = headers,
-            params = factory.query,
-            json = factory.body,
+            headers=headers,
+            params=factory.query,
+            json=factory.body,
         )
     assert response.status_code in factory.expected(actor), (
         case.key,
@@ -115,21 +115,21 @@ def test_object_route_account_matrix(case, actor, request):
 
 
 @pytest.mark.parametrize(
-    "case", [case for case in OBJECT_ROUTES if case.key in FACTORIES], ids = lambda case: case.key
+    "case", [case for case in OBJECT_ROUTES if case.key in FACTORIES], ids=lambda case: case.key
 )
 def test_owner_can_still_use_own_resource(case, accounts):
     initialize_workspaces(accounts)
     factory = FACTORIES[case.key]
     params = seed_resource(factory, accounts["unsloth"])
     app = FastAPI()
-    app.include_router(case.router, prefix = "/matrix")
-    with TestClient(app, raise_server_exceptions = False) as client:
+    app.include_router(case.router, prefix="/matrix")
+    with TestClient(app, raise_server_exceptions=False) as client:
         response = client.request(
             case.method,
             "/matrix" + format_path(case.path, params),
-            headers = bearer("unsloth"),
-            params = factory.query,
-            json = factory.body,
+            headers=bearer("unsloth"),
+            params=factory.query,
+            json=factory.body,
         )
     assert response.status_code in (factory.self_expected or (factory.success,)), response.text
 
@@ -159,11 +159,11 @@ def test_inventory_contains_hidden_routes_and_no_duplicate_method_paths():
 def test_nested_router_prefixes_are_collected():
     nested, parent = APIRouter(), APIRouter()
 
-    @nested.get("/{item_id}", include_in_schema = False)
+    @nested.get("/{item_id}", include_in_schema=False)
     def get_item(item_id: str):
         return item_id
 
-    parent.include_router(nested, prefix = "/items")
+    parent.include_router(nested, prefix="/items")
     assert [path for path, _ in walk_router(parent)] == ["/items/{item_id}"]
 
 

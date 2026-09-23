@@ -18,18 +18,20 @@ import pytest
 # --- Conditional framework imports ---
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
-needs_torch = pytest.mark.skipif(not HAS_TORCH, reason = "PyTorch not installed")
-needs_mlx = pytest.mark.skipif(not HAS_MLX, reason = "MLX not installed")
+needs_torch = pytest.mark.skipif(not HAS_TORCH, reason="PyTorch not installed")
+needs_mlx = pytest.mark.skipif(not HAS_MLX, reason="MLX not installed")
 
 from utils.hardware import (
     get_device,
@@ -86,8 +88,8 @@ class TestGetDevice:
     @needs_torch
     def test_returns_cuda_when_cuda_available(self):
         with (
-            patch("utils.hardware.hardware._has_torch", return_value = True),
-            patch("torch.cuda.is_available", return_value = True),
+            patch("utils.hardware.hardware._has_torch", return_value=True),
+            patch("torch.cuda.is_available", return_value=True),
         ):
             assert _reset_and_detect() == DeviceType.CUDA
 
@@ -96,10 +98,10 @@ class TestGetDevice:
         # is_available() True but the device-0 name probe raises: startup must
         # still resolve CUDA rather than crash.
         with (
-            patch("utils.hardware.hardware._has_torch", return_value = True),
-            patch("torch.cuda.is_available", return_value = True),
-            patch("torch.cuda.device_count", return_value = 1),
-            patch("torch.cuda.get_device_properties", side_effect = RuntimeError("probe")),
+            patch("utils.hardware.hardware._has_torch", return_value=True),
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.device_count", return_value=1),
+            patch("torch.cuda.get_device_properties", side_effect=RuntimeError("probe")),
         ):
             assert _reset_and_detect() == DeviceType.CUDA
         assert "<unavailable>" in capsys.readouterr().out
@@ -107,18 +109,18 @@ class TestGetDevice:
     @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
         with (
-            patch("utils.hardware.hardware._has_torch", return_value = False),
-            patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
-            patch("utils.hardware.hardware._has_mlx", return_value = True),
-            patch("utils.hardware.hardware._has_usable_mlx_stack", return_value = True),
+            patch("utils.hardware.hardware._has_torch", return_value=False),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value=True),
+            patch("utils.hardware.hardware._has_mlx", return_value=True),
+            patch("utils.hardware.hardware._has_usable_mlx_stack", return_value=True),
         ):
             assert _reset_and_detect() == DeviceType.MLX
 
     def test_returns_cpu_when_nothing_available(self):
         with (
-            patch("utils.hardware.hardware._has_torch", return_value = False),
-            patch("utils.hardware.hardware.is_apple_silicon", return_value = False),
-            patch("utils.hardware.hardware._has_mlx", return_value = False),
+            patch("utils.hardware.hardware._has_torch", return_value=False),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value=False),
+            patch("utils.hardware.hardware._has_mlx", return_value=False),
         ):
             assert _reset_and_detect() == DeviceType.CPU
 
@@ -133,9 +135,9 @@ class TestIsAppleSilicon:
     @pytest.mark.parametrize(
         "system, machine, expected",
         [
-            pytest.param("Darwin", "arm64", True, id = "true_on_darwin_arm64"),
-            pytest.param("Linux", "x86_64", False, id = "false_on_linux_x86"),
-            pytest.param("Darwin", "x86_64", False, id = "false_on_darwin_x86"),
+            pytest.param("Darwin", "arm64", True, id="true_on_darwin_arm64"),
+            pytest.param("Linux", "x86_64", False, id="false_on_linux_x86"),
+            pytest.param("Darwin", "x86_64", False, id="false_on_darwin_x86"),
         ],
     )
     def test_is_apple_silicon_cases(self, system, machine, expected):
@@ -157,7 +159,7 @@ class TestClearGpuCache:
     @needs_torch
     def test_calls_cuda_cache_when_cuda(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch("torch.cuda.empty_cache") as mock_empty,
             patch("torch.cuda.ipc_collect") as mock_ipc,
         ):
@@ -168,11 +170,11 @@ class TestClearGpuCache:
     @needs_mlx
     def test_mlx_does_not_raise(self):
         """MLX cache clear is a no-op — should just succeed."""
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX):
             clear_gpu_cache()
 
     def test_noop_on_cpu(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             clear_gpu_cache()
 
     @needs_torch
@@ -180,8 +182,8 @@ class TestClearGpuCache:
         """An Apple Silicon host with a broken MLX stack reports CPU, but diffusion and video
         still run on Metal, so the MPS allocator has to be released on that path too."""
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
-            patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value=True),
             patch("torch.mps.empty_cache") as mock_empty,
         ):
             clear_gpu_cache()
@@ -190,8 +192,8 @@ class TestClearGpuCache:
     @needs_torch
     def test_does_not_clear_mps_on_a_non_apple_cpu_host(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
-            patch("utils.hardware.hardware.is_apple_silicon", return_value = False),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value=False),
             patch("torch.mps.empty_cache") as mock_empty,
         ):
             clear_gpu_cache()
@@ -216,12 +218,13 @@ class TestGetGpuMemoryInfo:
         # _backend_label swaps "cuda" for "rocm" on AMD hosts; elsewhere it
         # equals get_device().value.
         from utils.hardware.hardware import _backend_label
+
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
 
     # --- When a GPU IS available ---
 
-    @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
+    @pytest.mark.skipif(_actual_device() == "cpu", reason="No GPU available on this machine")
     def test_gpu_available_fields(self):
         result = get_gpu_memory_info()
         assert result["available"] is True
@@ -237,8 +240,8 @@ class TestGetGpuMemoryInfo:
         *,
         available_gb,
         recommended_gb,
-        used_gb = 1.2,
-        legacy_mlx = False,
+        used_gb=1.2,
+        legacy_mlx=False,
     ):
         props = {
             "device_name": "Apple M2",
@@ -257,17 +260,17 @@ class TestGetGpuMemoryInfo:
 
         with (
             patch.dict(sys.modules, {"mlx": fake_pkg, "mlx.core": fake_core}),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX),
             patch(
                 "psutil.virtual_memory",
-                return_value = types.SimpleNamespace(
-                    total = 16 * (1024**3),
-                    available = int(available_gb * (1024**3)),
+                return_value=types.SimpleNamespace(
+                    total=16 * (1024**3),
+                    available=int(available_gb * (1024**3)),
                 ),
             ),
             patch(
                 "utils.hardware.hardware._read_apple_gpu_stats",
-                return_value = {"vram_used_bytes": int(used_gb * (1024**3))},
+                return_value={"vram_used_bytes": int(used_gb * (1024**3))},
             ),
         ):
             yield
@@ -277,14 +280,14 @@ class TestGetGpuMemoryInfo:
             return get_gpu_memory_info()
 
     def test_mlx_free_is_what_a_new_allocation_can_get(self):
-        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 11)
+        result = self._mlx_memory_info(available_gb=6, recommended_gb=11)
 
         assert result["available"] is True
         assert abs(result["total_gb"] - 16.0) < 0.01
         assert abs(result["free_gb"] - 6.0) < 0.01
 
     def test_mlx_free_is_bounded_by_the_metal_working_set(self):
-        result = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+        result = self._mlx_memory_info(available_gb=15, recommended_gb=11)
 
         assert abs(result["free_gb"] - 11.0) < 0.01
 
@@ -293,8 +296,8 @@ class TestGetGpuMemoryInfo:
         used_gb is whole-device and only the active subset, so charging one
         against the other would let another app's GPU work pick the training
         method."""
-        busy = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 8)
-        idle = self._mlx_memory_info(available_gb = 6, recommended_gb = 11, used_gb = 0.4)
+        busy = self._mlx_memory_info(available_gb=6, recommended_gb=11, used_gb=8)
+        idle = self._mlx_memory_info(available_gb=6, recommended_gb=11, used_gb=0.4)
 
         assert abs(busy["free_gb"] - idle["free_gb"]) < 0.01
         assert abs(busy["free_gb"] - 6.0) < 0.01
@@ -303,15 +306,15 @@ class TestGetGpuMemoryInfo:
         """The stack gate accepts mlx >= 0.22.0, and mlx below 0.30 spells this
         mx.metal.device_info(). Reading only mx.device_info() left the cap
         unapplied on an M1 running mlx 0.29.3, which the gate calls usable."""
-        legacy = self._mlx_memory_info(available_gb = 15, recommended_gb = 11, legacy_mlx = True)
-        current = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
+        legacy = self._mlx_memory_info(available_gb=15, recommended_gb=11, legacy_mlx=True)
+        current = self._mlx_memory_info(available_gb=15, recommended_gb=11)
 
         assert abs(legacy["free_gb"] - 11.0) < 0.01
         assert abs(legacy["free_gb"] - current["free_gb"]) < 0.01
         assert legacy["device_name"] == current["device_name"]
 
     def test_mlx_free_survives_a_missing_working_set_size(self):
-        result = self._mlx_memory_info(available_gb = 6, recommended_gb = 0)
+        result = self._mlx_memory_info(available_gb=6, recommended_gb=0)
 
         assert abs(result["free_gb"] - 6.0) < 0.01
 
@@ -322,7 +325,7 @@ class TestGetGpuMemoryInfo:
         above reject, so this probe has to carry free itself."""
         from utils.hardware.hardware import get_visible_gpu_utilization
 
-        with self._mlx_machine(available_gb = 6, recommended_gb = 11):
+        with self._mlx_machine(available_gb=6, recommended_gb=11):
             summary_free = get_gpu_memory_info()["free_gb"]
             device = get_visible_gpu_utilization()["devices"][0]
 
@@ -339,20 +342,20 @@ class TestGetGpuMemoryInfo:
         mock_props.name = "NVIDIA Test GPU"
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("torch.cuda.current_device", return_value = 0),
-            patch("torch.cuda.get_device_properties", return_value = mock_props),
-            patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
-            patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
+            patch("torch.cuda.current_device", return_value=0),
+            patch("torch.cuda.get_device_properties", return_value=mock_props),
+            patch("torch.cuda.memory_allocated", return_value=4 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value=6 * (1024**3)),
             # Driver truth from a context-free SMI/sysfs probe: another process
             # and torch's cache leave only 9 of 16 GiB free.
             patch(
                 "utils.hardware.hardware._context_free_cuda_memory_info",
-                return_value = 9 * (1024**3),
+                return_value=9 * (1024**3),
             ),
             patch(
                 "utils.hardware.hardware.trusted_mem_get_info",
-                side_effect = AssertionError("native telemetry must avoid mem_get_info"),
+                side_effect=AssertionError("native telemetry must avoid mem_get_info"),
             ),
         ):
             result = get_gpu_memory_info()
@@ -375,13 +378,13 @@ class TestGetGpuMemoryInfo:
             raise RuntimeError("driver unavailable")
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("torch.cuda.current_device", return_value = 0),
-            patch("torch.cuda.get_device_properties", return_value = mock_props),
-            patch("torch.cuda.memory_allocated", return_value = 4 * (1024**3)),
-            patch("torch.cuda.memory_reserved", return_value = 6 * (1024**3)),
-            patch("utils.hardware.hardware._context_free_cuda_memory_info", return_value = None),
-            patch("utils.hardware.hardware.trusted_mem_get_info", side_effect = _boom),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
+            patch("torch.cuda.current_device", return_value=0),
+            patch("torch.cuda.get_device_properties", return_value=mock_props),
+            patch("torch.cuda.memory_allocated", return_value=4 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value=6 * (1024**3)),
+            patch("utils.hardware.hardware._context_free_cuda_memory_info", return_value=None),
+            patch("utils.hardware.hardware.trusted_mem_get_info", side_effect=_boom),
         ):
             result = get_gpu_memory_info()
 
@@ -396,20 +399,20 @@ class TestGetGpuMemoryInfo:
         mock_props.name = "AMD Radeon 8060S Graphics"
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch("utils.hardware.hardware.IS_ROCM", True),
-            patch("torch.cuda.current_device", return_value = 0),
-            patch("torch.cuda.get_device_properties", return_value = mock_props),
-            patch("torch.cuda.memory_allocated", return_value = 1 * (1024**3)),
-            patch("torch.cuda.memory_reserved", return_value = 2 * (1024**3)),
-            patch("utils.hardware.hardware._rocm_props_total_is_carve_out", return_value = True),
+            patch("torch.cuda.current_device", return_value=0),
+            patch("torch.cuda.get_device_properties", return_value=mock_props),
+            patch("torch.cuda.memory_allocated", return_value=1 * (1024**3)),
+            patch("torch.cuda.memory_reserved", return_value=2 * (1024**3)),
+            patch("utils.hardware.hardware._rocm_props_total_is_carve_out", return_value=True),
             patch(
                 "utils.hardware.hardware._context_free_cuda_memory_info",
-                side_effect = AssertionError("an APU needs hipMemGetInfo's GTT total"),
+                side_effect=AssertionError("an APU needs hipMemGetInfo's GTT total"),
             ),
             patch(
                 "utils.hardware.hardware.trusted_mem_get_info",
-                return_value = (98 * (1024**3), 100 * (1024**3)),
+                return_value=(98 * (1024**3), 100 * (1024**3)),
             ),
         ):
             result = get_gpu_memory_info()
@@ -421,16 +424,16 @@ class TestGetGpuMemoryInfo:
 
     def _xpu_torch(self, mem_get_info):
         """A torch stub exposing only what the XPU branch touches."""
-        props = types.SimpleNamespace(total_memory = 16 * (1024**3), name = "Intel Arc A770")
+        props = types.SimpleNamespace(total_memory=16 * (1024**3), name="Intel Arc A770")
         xpu = types.SimpleNamespace(
-            current_device = lambda: 0,
-            get_device_properties = lambda _o: props,
-            memory_allocated = lambda _o: 2 * (1024**3),
-            memory_reserved = lambda _o: 3 * (1024**3),
+            current_device=lambda: 0,
+            get_device_properties=lambda _o: props,
+            memory_allocated=lambda _o: 2 * (1024**3),
+            memory_reserved=lambda _o: 3 * (1024**3),
         )
         if mem_get_info is not None:
             xpu.mem_get_info = mem_get_info
-        return types.SimpleNamespace(xpu = xpu)
+        return types.SimpleNamespace(xpu=xpu)
 
     def _xpu_result(self, monkeypatch, mem_get_info):
         monkeypatch.setitem(sys.modules, "torch", self._xpu_torch(mem_get_info))
@@ -469,7 +472,7 @@ class TestGetGpuMemoryInfo:
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
 
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.MLX),
             patch.dict("sys.modules", {"psutil": mock_psutil}),
         ):
             result = get_gpu_memory_info()
@@ -482,7 +485,7 @@ class TestGetGpuMemoryInfo:
     # --- CPU-only path ---
 
     def test_cpu_path_returns_unavailable(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+        with patch("utils.hardware.hardware.get_device", return_value=DeviceType.CPU):
             result = get_gpu_memory_info()
         assert result["available"] is False
         assert result["backend"] == "cpu"
@@ -492,10 +495,10 @@ class TestGetGpuMemoryInfo:
     @needs_torch
     def test_cuda_error_returns_unavailable(self):
         with (
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "torch.cuda.current_device",
-                side_effect = RuntimeError("CUDA init failed"),
+                side_effect=RuntimeError("CUDA init failed"),
             ),
         ):
             result = get_gpu_memory_info()
@@ -521,7 +524,7 @@ class TestLogGpuMemory:
             "free_gb": 14.0,
         }
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
             log_gpu_memory("unit-test")
 
         captured = capfd.readouterr()
@@ -532,7 +535,7 @@ class TestLogGpuMemory:
     def test_logs_cpu_fallback_when_no_gpu(self, capfd):
         fake_info = {"available": False, "backend": "cpu"}
 
-        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value=fake_info):
             log_gpu_memory("cpu-test")
 
         captured = capfd.readouterr()
@@ -568,10 +571,10 @@ class TestCudaDeviceOrder:
                 "-c",
                 "import os, utils.hardware.hardware; print(os.environ.get('CUDA_DEVICE_ORDER'))",
             ],
-            env = env,
-            capture_output = True,
-            text = True,
-            check = True,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return out.stdout.strip().splitlines()[-1]
 
@@ -592,16 +595,16 @@ class TestPrintCudaDeviceList:
     @needs_torch
     def test_lists_all_devices_when_multi_gpu(self, capsys):
         props = [
-            MagicMock(name = "p0"),
-            MagicMock(name = "p1"),
+            MagicMock(name="p0"),
+            MagicMock(name="p1"),
         ]
         props[0].name = "NVIDIA GeForce RTX 5090"
         props[1].name = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
         with (
-            patch("torch.cuda.device_count", return_value = 2),
-            patch("torch.cuda.get_device_properties", side_effect = lambda i: props[i]),
+            patch("torch.cuda.device_count", return_value=2),
+            patch("torch.cuda.get_device_properties", side_effect=lambda i: props[i]),
         ):
-            _hw_module._print_cuda_device_list(is_rocm = False)
+            _hw_module._print_cuda_device_list(is_rocm=False)
         out = capsys.readouterr().out
         assert "[0] NVIDIA GeForce RTX 5090" in out
         assert "[1] NVIDIA RTX PRO 6000 Blackwell Workstation Edition" in out
@@ -609,14 +612,14 @@ class TestPrintCudaDeviceList:
 
     @needs_torch
     def test_silent_on_single_gpu(self, capsys):
-        with patch("torch.cuda.device_count", return_value = 1):
-            _hw_module._print_cuda_device_list(is_rocm = False)
+        with patch("torch.cuda.device_count", return_value=1):
+            _hw_module._print_cuda_device_list(is_rocm=False)
         assert capsys.readouterr().out == ""
 
     @needs_torch
     def test_never_raises_on_probe_failure(self, capsys):
-        with patch("torch.cuda.device_count", side_effect = RuntimeError("no cuda")):
-            _hw_module._print_cuda_device_list(is_rocm = False)
+        with patch("torch.cuda.device_count", side_effect=RuntimeError("no cuda")):
+            _hw_module._print_cuda_device_list(is_rocm=False)
         assert capsys.readouterr().out == ""
 
     @needs_torch
@@ -626,10 +629,10 @@ class TestPrintCudaDeviceList:
         props[0].name = "AMD Instinct MI300X"
         props[1].name = "AMD Instinct MI300X"
         with (
-            patch("torch.cuda.device_count", return_value = 2),
-            patch("torch.cuda.get_device_properties", side_effect = lambda i: props[i]),
+            patch("torch.cuda.device_count", return_value=2),
+            patch("torch.cuda.get_device_properties", side_effect=lambda i: props[i]),
         ):
-            _hw_module._print_cuda_device_list(is_rocm = True)
+            _hw_module._print_cuda_device_list(is_rocm=True)
         out = capsys.readouterr().out
         assert "ROCm devices (2):" in out
         assert "CUDA_DEVICE_ORDER" not in out
@@ -680,7 +683,7 @@ class TestFormatErrorMessage:
     @needs_torch
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
-        with patch("utils.hardware.get_device", return_value = DeviceType.CUDA):
+        with patch("utils.hardware.get_device", return_value=DeviceType.CUDA):
             msg = format_error_message(err, "big/model")
         assert "GPU" in msg
         assert "big/model" not in msg
@@ -691,7 +694,7 @@ class TestFormatErrorMessage:
     @needs_mlx
     def test_mlx_oom(self):
         err = Exception("MLX backend out of memory")
-        with patch("utils.hardware.get_device", return_value = DeviceType.MLX):
+        with patch("utils.hardware.get_device", return_value=DeviceType.MLX):
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
@@ -699,7 +702,7 @@ class TestFormatErrorMessage:
 
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
-        with patch("utils.hardware.get_device", return_value = DeviceType.CPU):
+        with patch("utils.hardware.get_device", return_value=DeviceType.CPU):
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
 
@@ -764,7 +767,7 @@ class TestAuthSafeRedirectHandler:
         srv = _Server(("127.0.0.1", 0), _Recorder)
         srv.seen = []
         srv.plan = plan
-        threading.Thread(target = srv.serve_forever, daemon = True).start()
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
         return srv
 
     @staticmethod
@@ -778,8 +781,8 @@ class TestAuthSafeRedirectHandler:
         import urllib.request
         from utils.utils import auth_safe_open
 
-        req = urllib.request.Request(url, method = "HEAD", headers = {"Authorization": self.TOKEN})
-        auth_safe_open(req, timeout = 5).close()
+        req = urllib.request.Request(url, method="HEAD", headers={"Authorization": self.TOKEN})
+        auth_safe_open(req, timeout=5).close()
 
     def test_same_origin_redirect_keeps_the_token(self):
         srv = self._serve(lambda p: (302, "/final") if p == "/start" else (200, None))
@@ -822,12 +825,12 @@ class TestAuthSafeRedirectHandler:
         self,
         start,
         newurl,
-        code = 302,
+        code=302,
     ):
         import urllib.request
         from utils.utils import AuthSafeRedirectHandler
 
-        req = urllib.request.Request(start, method = "HEAD", headers = {"Authorization": self.TOKEN})
+        req = urllib.request.Request(start, method="HEAD", headers={"Authorization": self.TOKEN})
         return AuthSafeRedirectHandler().redirect_request(req, None, code, "Found", {}, newurl)
 
     def test_tls_downgrade_is_not_followed(self):
@@ -855,7 +858,7 @@ class TestAuthSafeRedirectHandler:
         from utils.utils import AuthSafeRedirectHandler
 
         req = urllib.request.Request(
-            "https://hub.example/a", method = "HEAD", headers = {"Authorization": self.TOKEN}
+            "https://hub.example/a", method="HEAD", headers={"Authorization": self.TOKEN}
         )
         new = AuthSafeRedirectHandler().redirect_request(
             req, None, 302, "Found", {}, "https://other.example/b"
@@ -882,9 +885,9 @@ class TestAuthSafeRedirectHandler:
             with pytest.raises(urllib.error.HTTPError) as excinfo:
                 opener.open(
                     urllib.request.Request(
-                        f"http://127.0.0.1:{src.server_port}/start", method = "HEAD"
+                        f"http://127.0.0.1:{src.server_port}/start", method="HEAD"
                     ),
-                    timeout = 5,
+                    timeout=5,
                 )
         finally:
             self._stop(src, dest)

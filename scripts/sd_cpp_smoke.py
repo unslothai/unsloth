@@ -55,45 +55,45 @@ _MODE_TO_POLICY = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description = "Native sd-cli engine smoke test.")
-    p.add_argument("--task", default = "txt2img", choices = ["txt2img", "img2img", "upscale"])
-    p.add_argument("--binary", default = None, help = "sd-cli path (else env / finder)")
-    p.add_argument("--family", default = "z-image")
-    p.add_argument("--diffusion-model", default = None)
+    p = argparse.ArgumentParser(description="Native sd-cli engine smoke test.")
+    p.add_argument("--task", default="txt2img", choices=["txt2img", "img2img", "upscale"])
+    p.add_argument("--binary", default=None, help="sd-cli path (else env / finder)")
+    p.add_argument("--family", default="z-image")
+    p.add_argument("--diffusion-model", default=None)
     # img2img + upscale inputs
-    p.add_argument("--init-img", default = None)
-    p.add_argument("--strength", type = float, default = 0.6)
-    p.add_argument("--upscale-model", default = None)
-    p.add_argument("--upscale-repeats", type = int, default = 1)
-    p.add_argument("--vae", default = None)
-    p.add_argument("--clip_l", default = None)
-    p.add_argument("--t5xxl", default = None)
-    p.add_argument("--llm", default = None)
-    p.add_argument("--qwen2vl", default = None)
+    p.add_argument("--init-img", default=None)
+    p.add_argument("--strength", type=float, default=0.6)
+    p.add_argument("--upscale-model", default=None)
+    p.add_argument("--upscale-repeats", type=int, default=1)
+    p.add_argument("--vae", default=None)
+    p.add_argument("--clip_l", default=None)
+    p.add_argument("--t5xxl", default=None)
+    p.add_argument("--llm", default=None)
+    p.add_argument("--qwen2vl", default=None)
     p.add_argument(
         "--prompt",
-        default = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed",
+        default="A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed",
     )
-    p.add_argument("--negative-prompt", default = None)
-    p.add_argument("--width", type = int, default = 512)
-    p.add_argument("--height", type = int, default = 512)
-    p.add_argument("--steps", type = int, default = 8)
-    p.add_argument("--cfg-scale", type = float, default = 1.0)
-    p.add_argument("--seed", type = int, default = 42)
-    p.add_argument("--memory-mode", default = "balanced", choices = list(_MODE_TO_POLICY))
-    p.add_argument("--out-image", default = "outputs/sdcpp_verify/sdcpp_smoke.png")
-    p.add_argument("--timeout", type = float, default = 1800.0)
+    p.add_argument("--negative-prompt", default=None)
+    p.add_argument("--width", type=int, default=512)
+    p.add_argument("--height", type=int, default=512)
+    p.add_argument("--steps", type=int, default=8)
+    p.add_argument("--cfg-scale", type=float, default=1.0)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--memory-mode", default="balanced", choices=list(_MODE_TO_POLICY))
+    p.add_argument("--out-image", default="outputs/sdcpp_verify/sdcpp_smoke.png")
+    p.add_argument("--timeout", type=float, default=1800.0)
     args = p.parse_args(argv)
 
     binary = args.binary or find_sd_cpp_binary()
-    engine = SdCppEngine(binary = binary)
-    print(f"binary:    {engine.binary}", flush = True)
-    print(f"available: {engine.is_available()}", flush = True)
-    print(f"version:   {engine.version()}", flush = True)
+    engine = SdCppEngine(binary=binary)
+    print(f"binary:    {engine.binary}", flush=True)
+    print(f"available: {engine.is_available()}", flush=True)
+    print(f"version:   {engine.version()}", flush=True)
     if not engine.is_available():
         print(
             "ERROR: sd-cli not found (set --binary / SD_CLI_PATH / UNSLOTH_SD_CPP_PATH).",
-            flush = True,
+            flush=True,
         )
         return 2
 
@@ -101,78 +101,78 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.task == "upscale":
         if not args.init_img or not args.upscale_model:
-            print("ERROR: upscale needs --init-img and --upscale-model.", flush = True)
+            print("ERROR: upscale needs --init-img and --upscale-model.", flush=True)
             return 2
         t0 = time.time()
         result = engine.upscale(
             SdCppUpscaleParams(
-                input_image = args.init_img,
-                upscale_model = args.upscale_model,
-                repeats = args.upscale_repeats,
+                input_image=args.init_img,
+                upscale_model=args.upscale_model,
+                repeats=args.upscale_repeats,
             ),
-            output_path = str(out),
-            verbose = True,
-            timeout = args.timeout,
-            on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
+            output_path=str(out),
+            verbose=True,
+            timeout=args.timeout,
+            on_log=lambda ln: print(f"  [sd] {ln}", flush=True),
         )
         dt = time.time() - t0
         print(
             f"\nOK: upscaled {result} ({result.stat().st_size/1024:.0f} KB) in {dt:.1f}s",
-            flush = True,
+            flush=True,
         )
-        print("SD-CPP-SMOKE-OK", flush = True)
+        print("SD-CPP-SMOKE-OK", flush=True)
         return 0
 
     if not args.diffusion_model:
-        print("ERROR: --diffusion-model is required for txt2img / img2img.", flush = True)
+        print("ERROR: --diffusion-model is required for txt2img / img2img.", flush=True)
         return 2
 
     files = SdCppModelFiles(
-        diffusion_model = args.diffusion_model,
-        vae = args.vae,
-        clip_l = args.clip_l,
-        t5xxl = args.t5xxl,
-        llm = args.llm,
-        qwen2vl = args.qwen2vl,
+        diffusion_model=args.diffusion_model,
+        vae=args.vae,
+        clip_l=args.clip_l,
+        t5xxl=args.t5xxl,
+        llm=args.llm,
+        qwen2vl=args.qwen2vl,
     )
     is_img2img = args.task == "img2img"
     params = SdCppGenParams(
-        prompt = args.prompt,
-        negative_prompt = args.negative_prompt,
-        width = args.width,
-        height = args.height,
-        steps = args.steps,
-        cfg_scale = args.cfg_scale,
-        seed = args.seed,
-        init_img = args.init_img if is_img2img else None,
-        strength = args.strength if is_img2img else None,
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        width=args.width,
+        height=args.height,
+        steps=args.steps,
+        cfg_scale=args.cfg_scale,
+        seed=args.seed,
+        init_img=args.init_img if is_img2img else None,
+        strength=args.strength if is_img2img else None,
     )
     if is_img2img and not args.init_img:
-        print("ERROR: img2img needs --init-img.", flush = True)
+        print("ERROR: img2img needs --init-img.", flush=True)
         return 2
     policy = _MODE_TO_POLICY[args.memory_mode]
     off = offload_flags(policy)
     print(
         f"task:      {args.task}"
         + (f" (init={args.init_img}, strength={args.strength})" if is_img2img else ""),
-        flush = True,
+        flush=True,
     )
-    print(f"memory:    {args.memory_mode} -> policy={policy} -> flags={off}", flush = True)
+    print(f"memory:    {args.memory_mode} -> policy={policy} -> flags={off}", flush=True)
 
     t0 = time.time()
     result = engine.generate(
         files,
         params,
-        output_path = str(out),
-        offload = off,
-        verbose = True,
-        timeout = args.timeout,
-        on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
+        output_path=str(out),
+        offload=off,
+        verbose=True,
+        timeout=args.timeout,
+        on_log=lambda ln: print(f"  [sd] {ln}", flush=True),
     )
     dt = time.time() - t0
     size_kb = result.stat().st_size / 1024 if result.is_file() else 0
-    print(f"\nOK: generated {result} ({size_kb:.0f} KB) in {dt:.1f}s", flush = True)
-    print("SD-CPP-SMOKE-OK", flush = True)
+    print(f"\nOK: generated {result} ({size_kb:.0f} KB) in {dt:.1f}s", flush=True)
+    print("SD-CPP-SMOKE-OK", flush=True)
     return 0
 
 

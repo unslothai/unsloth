@@ -38,4 +38,4 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def auth_safe_open(req, timeout):
     """Open a request without forwarding credentials to another origin."""
-    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout = timeout)
+    return urllib.request.build_opener(AuthSafeRedirectHandler()).open(req, timeout=timeout)

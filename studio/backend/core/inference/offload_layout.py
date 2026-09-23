@@ -31,7 +31,7 @@ _MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down|gate_up)_(exps|chexps)\.weight$
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class BlockLayout:
     """One transformer block, split into what may and may not be spilled."""
 
@@ -42,14 +42,14 @@ class BlockLayout:
     resident_bytes: int
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ModelLayout:
     """Everything the planner needs, and nothing about files."""
 
     arch: str = ""
     n_layers: int = 0
     n_attention_layers: int = 0
-    blocks: tuple[BlockLayout, ...] = field(default_factory = tuple)
+    blocks: tuple[BlockLayout, ...] = field(default_factory=tuple)
     # Rides the layer list at index n_layer_all, so it is GPU-resident for any -ngl >= 1 and can only be moved with an
     # explicit override.
     lm_head_bytes: int = 0
@@ -113,7 +113,7 @@ class ModelLayout:
 def _field(
     reader,
     key: str,
-    default = None,
+    default=None,
 ):
     f = reader.fields.get(key)
     if f is None:
@@ -151,6 +151,7 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
     """
     try:
         from gguf import GGUFReader
+
         readers = [GGUFReader(path)]
         if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
             shards = split_shard_paths(path)
@@ -294,32 +295,32 @@ def _layout_from_readers(readers) -> ModelLayout:
     )
     blocks = tuple(
         BlockLayout(
-            index = i,
-            spillable_bytes = spill.get(i, 0),
-            resident_bytes = resident.get(i, 0),
+            index=i,
+            spillable_bytes=spill.get(i, 0),
+            resident_bytes=resident.get(i, 0),
         )
         for i in block_indices
     )
 
     return ModelLayout(
-        arch = arch,
-        n_layers = n_layers,
-        n_attention_layers = int(n_attention),
-        has_swa = has_swa,
-        blocks = blocks,
-        lm_head_bytes = lm_head,
-        token_embd_bytes = token_embd,
-        tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
-        other_resident_bytes = other_resident,
-        kv_bytes_per_token_f16 = kv_per_token,
-        recurrent_bytes = recurrent,
-        n_ctx_train = int(_field(reader, f"{arch}.context_length") or 0),
-        is_moe = is_moe,
-        n_expert = n_expert,
-        n_expert_used = n_expert_used,
-        has_excluded_blocks = has_excluded,
-        excluded_block_bytes = excluded_bytes,
-        complete = True,
+        arch=arch,
+        n_layers=n_layers,
+        n_attention_layers=int(n_attention),
+        has_swa=has_swa,
+        blocks=blocks,
+        lm_head_bytes=lm_head,
+        token_embd_bytes=token_embd,
+        tensor_bytes=sum(int(t.n_bytes) for r in readers for t in r.tensors),
+        other_resident_bytes=other_resident,
+        kv_bytes_per_token_f16=kv_per_token,
+        recurrent_bytes=recurrent,
+        n_ctx_train=int(_field(reader, f"{arch}.context_length") or 0),
+        is_moe=is_moe,
+        n_expert=n_expert,
+        n_expert_used=n_expert_used,
+        has_excluded_blocks=has_excluded,
+        excluded_block_bytes=excluded_bytes,
+        complete=True,
     )
 
 

@@ -51,7 +51,7 @@ _KNOWN_RATIOS: dict[Fraction, str] = {
 }
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class StructuralQuantity:
     """A count measured from the app, independently of the profile.
 
@@ -63,7 +63,7 @@ class StructuralQuantity:
     name: str
     value: int
     source: str
-    components: dict[str, int] = field(default_factory = dict)
+    components: dict[str, int] = field(default_factory=dict)
 
     def describe(self) -> str:
         if self.components:
@@ -122,20 +122,20 @@ def blocks_times_renders(blocks: int, renders: int, source: str) -> StructuralQu
     stale function name.
     """
     return StructuralQuantity(
-        name = "blocks_x_renders",
-        value = blocks * renders,
-        source = source,
-        components = {"blocks": blocks, "renders": renders},
+        name="blocks_x_renders",
+        value=blocks * renders,
+        source=source,
+        components={"blocks": blocks, "renders": renders},
     )
 
 
 def subscribers_times_notifies(subscribers: int, notifies: int, source: str) -> StructuralQuantity:
     """An external-store subscription fanout: every store notify hits every subscriber."""
     return StructuralQuantity(
-        name = "subscribers_x_notifies",
-        value = subscribers * notifies,
-        source = source,
-        components = {"subscribers": subscribers, "notifies": notifies},
+        name="subscribers_x_notifies",
+        value=subscribers * notifies,
+        source=source,
+        components={"subscribers": subscribers, "notifies": notifies},
     )
 
 
@@ -147,20 +147,20 @@ def chars_times_deltas(chars: int, deltas: int, source: str) -> StructuralQuanti
     count; it is here so the M2 oracle has the same shape as the others.
     """
     return StructuralQuantity(
-        name = "chars_x_deltas",
-        value = chars * deltas,
-        source = source,
-        components = {"chars": chars, "deltas": deltas},
+        name="chars_x_deltas",
+        value=chars * deltas,
+        source=source,
+        components={"chars": chars, "deltas": deltas},
     )
 
 
 def mutations_times_thread_nodes(mutations: int, nodes: int, source: str) -> StructuralQuantity:
     """M3's prediction: one observer callback per mutation, each reading layout over the whole thread."""
     return StructuralQuantity(
-        name = "mutations_x_thread_nodes",
-        value = mutations * nodes,
-        source = source,
-        components = {"mutations": mutations, "thread_nodes": nodes},
+        name="mutations_x_thread_nodes",
+        value=mutations * nodes,
+        source=source,
+        components={"mutations": mutations, "thread_nodes": nodes},
     )
 
 
@@ -193,11 +193,11 @@ def check(
     """
     if exact_call_count is None:
         return OracleVerdict(
-            frame = frame,
-            verdict = NOT_MEASURED,
-            exact_call_count = None,
-            quantity = None,
-            detail = (
+            frame=frame,
+            verdict=NOT_MEASURED,
+            exact_call_count=None,
+            quantity=None,
+            detail=(
                 "no precise-coverage count for this frame. Without an exact integer "
                 "there is nothing to match against a structural quantity, so this "
                 "frame cannot be named however hot it is."
@@ -207,11 +207,11 @@ def check(
     for q in quantities:
         if q.value == exact_call_count:
             return OracleVerdict(
-                frame = frame,
-                verdict = NAMING,
-                exact_call_count = exact_call_count,
-                quantity = q,
-                detail = f"ran exactly {exact_call_count} times = {q.describe()}",
+                frame=frame,
+                verdict=NAMING,
+                exact_call_count=exact_call_count,
+                quantity=q,
+                detail=f"ran exactly {exact_call_count} times = {q.describe()}",
             )
 
     best: tuple[StructuralQuantity, str] | None = None
@@ -224,23 +224,23 @@ def check(
     if best is not None:
         q, note = best
         return OracleVerdict(
-            frame = frame,
-            verdict = NEAR_MISS,
-            exact_call_count = exact_call_count,
-            quantity = q,
-            ratio = note,
-            detail = (
+            frame=frame,
+            verdict=NEAR_MISS,
+            exact_call_count=exact_call_count,
+            quantity=q,
+            ratio=note,
+            detail=(
                 f"ran exactly {exact_call_count} times against a predicted {q.describe()}; "
                 f"{note}. A near miss is a hypothesis about the discrepancy, not a naming."
             ),
         )
 
     return OracleVerdict(
-        frame = frame,
-        verdict = UNEXPLAINED,
-        exact_call_count = exact_call_count,
-        quantity = None,
-        detail = (
+        frame=frame,
+        verdict=UNEXPLAINED,
+        exact_call_count=exact_call_count,
+        quantity=None,
+        detail=(
             f"ran exactly {exact_call_count} times, matching none of "
             f"{[q.describe() for q in quantities] or 'any supplied quantity'}. "
             "Reported with its bridged name and exponent so it can be looked up; "
@@ -327,20 +327,20 @@ def cumulative_reparse_chars(
     """
     value = int(final_content_chars * (deltas + 1) / 2) if deltas > 0 else 0
     return StructuralQuantity(
-        name = "cumulative_reparse_chars",
-        value = value,
-        source = source,
-        components = {"final_chars": final_content_chars, "deltas": deltas},
+        name="cumulative_reparse_chars",
+        value=value,
+        source=source,
+        components={"final_chars": final_content_chars, "deltas": deltas},
     )
 
 
 def incremental_parse_chars(final_content_chars: int, source: str) -> StructuralQuantity:
     """M2 under the NULL hypothesis: each delta is parsed once, so total = final length."""
     return StructuralQuantity(
-        name = "incremental_parse_chars",
-        value = int(final_content_chars),
-        source = source,
-        components = {"final_chars": final_content_chars},
+        name="incremental_parse_chars",
+        value=int(final_content_chars),
+        source=source,
+        components={"final_chars": final_content_chars},
     )
 
 
@@ -422,10 +422,10 @@ def forced_layout_per_callback(
         forced_layouts,
         [
             StructuralQuantity(
-                name = "observer_callbacks",
-                value = observer_callbacks,
-                source = source,
-                components = {"observer_callbacks": observer_callbacks},
+                name="observer_callbacks",
+                value=observer_callbacks,
+                source=source,
+                components={"observer_callbacks": observer_callbacks},
             )
         ],
     )
@@ -442,10 +442,10 @@ def forced_layout_cost_quantity(
     of layout time, not against a call count.
     """
     return StructuralQuantity(
-        name = "forced_layouts_x_thread_nodes",
-        value = forced_layouts * thread_nodes,
-        source = source,
-        components = {"forced_layouts": forced_layouts, "thread_nodes": thread_nodes},
+        name="forced_layouts_x_thread_nodes",
+        value=forced_layouts * thread_nodes,
+        source=source,
+        components={"forced_layouts": forced_layouts, "thread_nodes": thread_nodes},
     )
 
 
@@ -486,14 +486,14 @@ def evaluate_page_counters(counters: dict[str, Any]) -> dict[str, Any]:
             verdict = forced_layout_per_callback(
                 int(m3["observer_callbacks"]),
                 int(m3["forced_layouts"]),
-                source = "page counters",
+                source="page counters",
             )
             block = verdict.as_row()
             if "thread_nodes" in m3:
                 block["cost_quantity"] = forced_layout_cost_quantity(
                     int(m3["forced_layouts"]),
                     int(m3["thread_nodes"]),
-                    source = "page counters",
+                    source="page counters",
                 ).describe()
             out["m3"] = block
     return out

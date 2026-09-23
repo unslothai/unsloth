@@ -20,7 +20,7 @@ gguf_utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
 from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean():
     # Always start and end from a clean, unpatched state so tests do not leak the process-wide patch into each other.
     gc.uninstall_all()
@@ -60,7 +60,7 @@ def test_compiled_dequant_kill_switch(monkeypatch):
 
 def test_compiled_dequant_on_by_default(monkeypatch):
     # The compiled dequant is the real win, so it is ON without any env opt-in.
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT", raising=False)
     assert gc.install_compiled_dequant() is True
     assert gc.is_compiled_dequant_installed() is True
 
@@ -84,6 +84,7 @@ class TestGgufTrimmedDimsAreRestored:
     @staticmethod
     def _model():
         import torch
+
         class _M(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -98,11 +99,11 @@ class TestGgufTrimmedDimsAreRestored:
         from core.inference.diffusion import _restore_gguf_trimmed_dims
 
         model = self._model()
-        sd = {"cap_pad_token": torch.arange(8, dtype = torch.float32)}
+        sd = {"cap_pad_token": torch.arange(8, dtype=torch.float32)}
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["cap_pad_token"].shape) == (1, 8)
         # The values must survive the reshape in order, or the pad token is silently scrambled.
-        assert torch.equal(out["cap_pad_token"].flatten(), torch.arange(8, dtype = torch.float32))
+        assert torch.equal(out["cap_pad_token"].flatten(), torch.arange(8, dtype=torch.float32))
 
     def test_a_tensor_of_the_wrong_size_is_left_alone(self):
         """The guard must not rescue a genuinely wrong tensor: element count has to match."""

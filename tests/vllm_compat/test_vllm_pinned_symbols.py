@@ -76,7 +76,7 @@ def _stable_release_tags() -> list[str]:
     installable releases, so the component count is not fixed at three.
     """
     try:
-        with urllib.request.urlopen("https://pypi.org/pypi/vllm/json", timeout = 20) as r:
+        with urllib.request.urlopen("https://pypi.org/pypi/vllm/json", timeout=20) as r:
             releases = json.loads(r.read().decode("utf-8"))["releases"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
         return list(_VLLM_TAGS_FALLBACK)
@@ -99,7 +99,7 @@ def _stable_release_tags() -> list[str]:
 VLLM_TAGS = _stable_release_tags() + ["main"]
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _ref_resolves(repo: str, ref: str) -> bool:
     """Does this ref resolve? Asked of the ref itself, not of a file in it.
 
@@ -131,7 +131,7 @@ VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
 VLLM_BNB_PLUGIN_FALLBACK_REF = "v0.0.3"
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _plugin_ref() -> str | None:
     """The plugin tag users get from `pip install vllm-bnb-plugin`, or None.
 
@@ -142,7 +142,7 @@ def _plugin_ref() -> str | None:
     """
     version = None
     try:
-        with urllib.request.urlopen("https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20) as r:
+        with urllib.request.urlopen("https://pypi.org/pypi/vllm-bnb-plugin/json", timeout=20) as r:
             version = json.loads(r.read().decode("utf-8"))["info"]["version"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
         pass
@@ -163,19 +163,19 @@ VLLM_BNB_SYMBOLS = (
 )
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _api_status(path: str) -> int | None:
     """HTTP status for a GitHub API path, or None if the API cannot answer.
 
     None covers an unreachable network and an unauthenticated rate limit, both
     of which are the runner's problem rather than a compatibility answer.
     """
-    req = urllib.request.Request(f"https://api.github.com/{path}", method = "HEAD")
+    req = urllib.request.Request(f"https://api.github.com/{path}", method="HEAD")
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout = 15) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:
             return r.status
     except urllib.error.HTTPError as e:
         return e.code if e.code == 404 else None
@@ -183,7 +183,7 @@ def _api_status(path: str) -> int | None:
         return None
 
 
-@functools.lru_cache(maxsize = None)
+@functools.lru_cache(maxsize=None)
 def _fetch_text(repo: str, ref: str, path: str) -> str | None:
     """Fetch a file's text from GitHub; None on 404 (renamed/removed, informational).
 
@@ -196,8 +196,8 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout = 15) as r:
-            return r.read().decode("utf-8", errors = "replace")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -206,7 +206,7 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
         pytest.skip(f"GitHub fetch failed ({e}) for {url}")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _skip_when_the_tag_is_absent(request):
     """A PyPI release with no git tag 404s on every path; that is not a
     compatibility failure, so skip it rather than report our code broken."""
@@ -354,6 +354,7 @@ def _vllm_zoo_local_path() -> str | None:
     """Return the on-runner path to unsloth_zoo.vllm_utils source, or None."""
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("unsloth_zoo.vllm_utils")
         if spec and spec.origin:
             return spec.origin
@@ -367,7 +368,7 @@ def test_unsloth_zoo_standby_guards_present():
     path = _vllm_zoo_local_path()
     if path is None:
         pytest.skip("unsloth_zoo not installed on runner")
-    src = open(path, encoding = "utf-8").read()
+    src = open(path, encoding="utf-8").read()
     has_10x_guard = re.search(r"0\.10\.0", src) and re.search(r"standby", src, re.IGNORECASE)
     has_14x_guard = re.search(r"0\.14\.0", src) and re.search(r"standby", src, re.IGNORECASE)
     assert has_10x_guard or has_14x_guard, (

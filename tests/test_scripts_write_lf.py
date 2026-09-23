@@ -150,7 +150,7 @@ def test_every_in_place_rewriter_names_its_newline(script, func):
     This is the half that can fail on Linux. `os.linesep` is "\\n" here, so no behavioural test
     in this file can notice the default coming back -- only reading the call site can.
     """
-    tree = ast.parse((_SCRIPTS / script).read_text(encoding = "utf-8"))
+    tree = ast.parse((_SCRIPTS / script).read_text(encoding="utf-8"))
     calls = _text_write_calls(tree, func)
     assert calls, f"no text-mode write found in {script}:{func}; this guard has gone vacuous"
     for call in calls:
@@ -170,7 +170,7 @@ def test_every_in_place_rewriter_names_its_newline(script, func):
 
 def test_the_repo_agrees_these_files_are_lf():
     """The premise. If .gitattributes stops pinning LF, everything above is arguing for nothing."""
-    attributes = (_ROOT / ".gitattributes").read_text(encoding = "utf-8")
+    attributes = (_ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "*.py text eol=lf" in attributes, (
         ".gitattributes no longer pins tracked Python files to LF, so the rewriters this file "
         "guards have no ending to preserve and this whole file needs re-reading"
@@ -203,7 +203,7 @@ def test_the_release_stamp_writes_lf(tmp_path):
     module = _load("stamp_studio_release.py")
     target = tmp_path / "_studio_release_build.py"
 
-    module._atomic_write_text(target, 'VERSION = "1.2.3"\nBUILD = 7\n', encoding = "utf-8")
+    module._atomic_write_text(target, 'VERSION = "1.2.3"\nBUILD = 7\n', encoding="utf-8")
 
     written = target.read_bytes()
     assert b"\r\n" not in written, f"the release stamp wrote CRLF: {written!r}"

@@ -61,7 +61,7 @@ def hardware_globals():
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _hub_preflight_passes(monkeypatch):
     """Let the Hub preflights succeed without asking the Hub.
 
@@ -75,9 +75,9 @@ def _hub_preflight_passes(monkeypatch):
         training_routes,
         "_reject_untrainable_model_request",
         lambda request, *args, **kwargs: training_routes._ModelPreflightResult(
-            model_name = request.model_name,
-            model_local_path = None,
-            cached_model_pin = None,
+            model_name=request.model_name,
+            model_local_path=None,
+            cached_model_pin=None,
         ),
     )
 
@@ -96,10 +96,10 @@ def spawn_calls(monkeypatch):
 @pytest.fixture
 def client(spawn_calls):
     app = FastAPI()
-    app.include_router(training_routes.router, prefix = "/training")
+    app.include_router(training_routes.router, prefix="/training")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def _pretend_apple_silicon(monkeypatch):
@@ -125,7 +125,7 @@ def test_streaming_is_rejected_on_mlx_before_detection_has_run(
     _pretend_apple_silicon(monkeypatch)
     hardware_globals.DEVICE = None  # warm thread has not finished
 
-    response = client.post("/training/start", json = _STREAMING_START)
+    response = client.post("/training/start", json=_STREAMING_START)
 
     assert response.status_code == 400, (
         "streaming start on an Apple Silicon host was not rejected while DEVICE "
@@ -144,7 +144,7 @@ def test_the_guard_detects_rather_than_reading_the_default(
     _pretend_apple_silicon(monkeypatch)
     hardware_globals.DEVICE = None
 
-    client.post("/training/start", json = _STREAMING_START)
+    client.post("/training/start", json=_STREAMING_START)
 
     assert hardware_globals.DEVICE == hw.DeviceType.MLX
     spawn_calls.start_training.assert_not_called()
@@ -157,7 +157,7 @@ def test_streaming_still_starts_on_a_non_mlx_host_during_the_warm_window(
     _pretend_cpu_linux(monkeypatch)
     hardware_globals.DEVICE = None
 
-    response = client.post("/training/start", json = _STREAMING_START)
+    response = client.post("/training/start", json=_STREAMING_START)
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "queued"
@@ -172,7 +172,7 @@ def test_rejection_still_fires_once_detection_has_already_run(
     _pretend_apple_silicon(monkeypatch)
     hardware_globals.DEVICE = hw.DeviceType.MLX
 
-    response = client.post("/training/start", json = _STREAMING_START)
+    response = client.post("/training/start", json=_STREAMING_START)
 
     assert response.status_code == 400
     assert _MLX_REJECTION in response.json()["detail"]
@@ -187,7 +187,7 @@ def test_non_streaming_start_detects_before_entering_the_sync_backend(
     _pretend_cpu_linux(monkeypatch)
     hardware_globals.DEVICE = None
 
-    response = client.post("/training/start", json = _NON_STREAMING_START)
+    response = client.post("/training/start", json=_NON_STREAMING_START)
 
     assert response.status_code == 200, response.text
     assert hardware_globals.DEVICE == hw.DeviceType.CPU

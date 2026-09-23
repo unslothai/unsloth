@@ -39,7 +39,7 @@ ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 
 def source(name: str) -> str:
-    return (STUDIO_TESTS / name).read_text(encoding = "utf-8")
+    return (STUDIO_TESTS / name).read_text(encoding="utf-8")
 
 
 def section(text: str, start: str, end: str) -> str:
@@ -123,7 +123,7 @@ def test_the_verdict_asserts_the_fixture_and_not_just_its_size() -> None:
 
 
 def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     head = page.index("const EXPECTED_PER_CYCLE")
     expected = page[head : page.index("};", head)]
     assert "codeChars: 12000" in expected, "the floor has to be on something deferral cannot move"
@@ -133,7 +133,7 @@ def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
 def test_a_fence_may_be_deferred_or_highlighted_but_not_neither() -> None:
     # The SETTLEMENT half of the old token floor, asked per block. One block stuck on streamdown's
     # unhighlighted fallback used to pass as long as the others made the count up.
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     assert "unhighlightedMountedFences" in page
     assert 'counts.get("unhighlightedMountedFences", 0)' in verdict()
 
@@ -172,7 +172,7 @@ def test_the_verdict_asserts_discrimination() -> None:
 
 
 def test_the_smoke_page_exposes_every_count_the_fixture_gate_needs() -> None:
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     expected = section(page, "const EXPECTED_PER_CYCLE", "};")
     counts = section(page, "counts(): Record<string, number>", "viewportMetrics()")
     for line in expected.splitlines():
@@ -199,7 +199,7 @@ def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
     # and a badge reading "undefined forks from this message" on every assistant message: measured at 25000 chars,
     # 10 badges and 4031 DOM nodes rather than 0 and 3981. Either way the fixture stops being the thing the table says
     # was measured.
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     # Pin the fork-count entry to its own body rather than scanning the whole file: other endpoints in the allowlist
     # legitimately answer "{}", so a bare file-wide check for it would fail on them and tell us nothing about this one.
     forks = next(
@@ -230,12 +230,12 @@ def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None
     # smokes reach the point of running at all. A URL the app builds and the stub does not answer is a round trip
     # inside a timed region, so it is worth failing a unit test for.
     api = (FRONTEND / "src" / "features" / "chat" / "api" / "chat-api.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     fork_paths = re.findall(r"`(/api/chat/threads/\$\{[^`]*?\}/forks)`", api)
     assert fork_paths, "chat-api.ts no longer builds a fork-count URL this test can read"
     patterns = _stub_patterns(
-        (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+        (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     )
     for path in fork_paths:
         # A stand-in shaped like the synthetic remoteId the local runtime hands the smoke page.
@@ -250,7 +250,7 @@ def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
     # A blanket `/api/` match resolves any other request a measured interaction makes before Playwright emits it, so
     # `measure_cell`'s listener never increments `stray_api_requests` and the API fan-out this harness claims to
     # detect cannot reach it.
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     assert 'url.includes("/api/")' not in page, (
         "the fetch stub is matching every /api/ request again, which hides stray requests from "
         "the harness's own stray_api_requests counter"
@@ -264,7 +264,7 @@ def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
     # A blanket `/api/` match answers every request the measured interactions make before Playwright emits it, so
     # `stray_api_requests` stays at zero and the fan-out this harness exists to detect is invisible to it. Narrowing
     # it is what revealed the project-list and knowledge-base GETs on reopen, and the delete's own three-request sync.
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     assert (
         'url.includes("/api/")' not in page
     ), "the fetch stub is matching every /api/ request again"
@@ -275,7 +275,7 @@ def test_every_stubbed_endpoint_is_reported() -> None:
     # Answering a request inside the page removes its round trip from the timings, which is the point, but it must not
     # remove the request from the record. An endpoint that is answered and not counted is one nobody can see the cost
     # of later.
-    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding="utf-8")
     assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
     harness = source("playwright_heavy_thread.py")
     assert "stubbed_api_requests" in harness, "the harness must read the stubbed-request record"

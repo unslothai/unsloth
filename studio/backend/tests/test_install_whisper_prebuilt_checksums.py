@@ -25,7 +25,7 @@ if str(_studio) not in sys.path:
 iwp = importlib.import_module("install_whisper_prebuilt")
 
 if not hasattr(iwp, "parse_release_checksums"):
-    pytest.skip("checksum-model symbols not present - check branch", allow_module_level = True)
+    pytest.skip("checksum-model symbols not present - check branch", allow_module_level=True)
 
 _A = "0" * 64
 _B = "1" * 64
@@ -57,14 +57,14 @@ def _index(**overrides) -> dict:
 
 
 def test_resolve_release_tag_explicit_override_passthrough():
-    assert iwp.resolve_release_tag(_REPO, published_release_tag = "v1.9.1-unsloth.2") == (
+    assert iwp.resolve_release_tag(_REPO, published_release_tag="v1.9.1-unsloth.2") == (
         "v1.9.1-unsloth.2"
     )
 
 
 def test_resolve_release_tag_resolves_newest_when_no_override(monkeypatch):
     monkeypatch.setattr(iwp, "resolve_newest_release_tag", lambda repo: "v9.9.9-unsloth.9")
-    assert iwp.resolve_release_tag(_REPO, published_release_tag = None) == "v9.9.9-unsloth.9"
+    assert iwp.resolve_release_tag(_REPO, published_release_tag=None) == "v9.9.9-unsloth.9"
 
 
 def test_resolve_newest_release_tag_picks_latest_published(monkeypatch):
@@ -128,7 +128,7 @@ def test_fetch_release_for_install_prefers_download_host(monkeypatch):
         raise AssertionError(f"unexpected url {url}")
 
     monkeypatch.setattr(iwp, "_download_host_json", _dhj)
-    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = None)
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag=None)
     assert bundle.release_tag == _TAG
     assert checks[_CPU_ASSET] == _A
     # asset_urls point at the download host (github.com), not the API.
@@ -156,18 +156,18 @@ def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):
         lambda url: _index() if url.endswith(iwp.SHA256_ASSET_NAME) else _manifest(),
     )
     _no_api(monkeypatch)
-    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = _TAG)
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag=_TAG)
     assert bundle.release_tag == _TAG
 
 
 def test_fetch_release_for_install_falls_back_to_api(monkeypatch):
     # Fast path returns None (e.g. a 404) -> the API path resolves the release.
     monkeypatch.setattr(iwp, "_resolve_release_via_download_host", lambda repo, tag: None)
-    sentinel = iwp.ReleaseBundle(repo = _REPO, release_tag = _TAG, manifest = _manifest(), asset_urls = {})
+    sentinel = iwp.ReleaseBundle(repo=_REPO, release_tag=_TAG, manifest=_manifest(), asset_urls={})
     monkeypatch.setattr(iwp, "resolve_release_tag", lambda repo, *, published_release_tag: _TAG)
     monkeypatch.setattr(iwp, "fetch_release_bundle", lambda repo, tag: sentinel)
     monkeypatch.setattr(iwp, "fetch_release_checksums", lambda bundle: {_CPU_ASSET: _A})
-    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag = None)
+    bundle, checks = iwp.fetch_release_for_install(_REPO, published_release_tag=None)
     assert bundle is sentinel
     assert checks == {_CPU_ASSET: _A}
 
@@ -188,7 +188,7 @@ def test_resolve_via_download_host_tag_mismatch_returns_none(monkeypatch):
     # A checksum index whose self-reported release_tag disagrees is rejected (None).
     monkeypatch.setattr(iwp, "_download_host_latest_release_tag", lambda repo: _TAG)
     monkeypatch.setattr(
-        iwp, "_download_host_json", lambda url: _index(release_tag = "v1.9.1-unsloth.2")
+        iwp, "_download_host_json", lambda url: _index(release_tag="v1.9.1-unsloth.2")
     )
     assert iwp._resolve_release_via_download_host(_REPO, None) is None
 
@@ -208,7 +208,7 @@ def test_download_host_latest_release_tag_parses_redirect(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             return _Resp()
 
@@ -223,7 +223,7 @@ def test_download_host_latest_release_tag_404_returns_none(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
 

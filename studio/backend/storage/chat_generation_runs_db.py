@@ -296,7 +296,7 @@ def _prepare_connection() -> tuple[sqlite3.Connection, bool]:
     would skip that call forever, leaving the lease columns missing and reconcile_runs reaping
     nothing.
     """
-    conn = get_connection(check_same_thread = False)
+    conn = get_connection(check_same_thread=False)
     db_path = _database_path(conn)
     if db_path in _schema_ready:
         return conn, True
@@ -350,9 +350,9 @@ def canonical_request(
 ) -> tuple[str, str]:
     request_json = json.dumps(
         request_payload,
-        sort_keys = True,
-        separators = (",", ":"),
-        ensure_ascii = False,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     identity = json.dumps(
         {
@@ -361,9 +361,9 @@ def canonical_request(
             "assistantMessageId": assistant_message_id,
             "requestPayload": request_payload,
         },
-        sort_keys = True,
-        separators = (",", ":"),
-        ensure_ascii = False,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     return request_json, hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
@@ -412,7 +412,7 @@ def _append_events_locked(
                 run_id,
                 seq,
                 event_type,
-                json.dumps(payload, ensure_ascii = False, separators = (",", ":")),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 created,
             ),
         )
@@ -502,7 +502,7 @@ def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status:
             metadata.pop("incomplete", None)
     conn.execute(
         "UPDATE chat_messages SET metadata_json=? WHERE id=?",
-        (json.dumps(metadata, ensure_ascii = False), row["assistant_message_id"]),
+        (json.dumps(metadata, ensure_ascii=False), row["assistant_message_id"]),
     )
 
 
@@ -516,10 +516,10 @@ def create_run(
     request_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
     request_json, request_hash = canonical_request(
-        thread_id = thread_id,
-        user_message_id = user_message_id,
-        assistant_message_id = assistant_message_id,
-        request_payload = request_payload,
+        thread_id=thread_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+        request_payload=request_payload,
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
@@ -585,7 +585,7 @@ def create_run(
                     assistant_message_id,
                     thread_id,
                     user_message_id,
-                    json.dumps(metadata, ensure_ascii = False),
+                    json.dumps(metadata, ensure_ascii=False),
                     created,
                 ),
             )
@@ -621,7 +621,7 @@ def create_run(
             merged_metadata.update(metadata)
             conn.execute(
                 "UPDATE chat_messages SET metadata_json=? WHERE id=?",
-                (json.dumps(merged_metadata, ensure_ascii = False), assistant_message_id),
+                (json.dumps(merged_metadata, ensure_ascii=False), assistant_message_id),
             )
 
         try:
@@ -658,7 +658,7 @@ def create_run(
             raise
         _append_events_locked(conn, run_id, [("run.created", {"status": "queued"})])
         row = conn.execute("SELECT * FROM chat_generation_runs WHERE id=?", (run_id,)).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify=True)
         return _run_from_row(row), True
     except Exception:
         conn.rollback()
@@ -798,7 +798,7 @@ def append_events(
         # The producer's only regular write, so it is also the lease renewal: output reaching the database
         # is the definition of progress this sweep reaps on.
         _touch_progress_locked(conn, run_id, sum(1 for event in batch if event[0] == "chunk"))
-        _commit(conn, notify = True)
+        _commit(conn, notify=True)
         return sequences
     except Exception:
         conn.rollback()
@@ -834,7 +834,7 @@ def mark_running(run_id: str, worker_token: str) -> bool:
         _sync_assistant_status_locked(conn, run_id, "running")
         _append_events_locked(conn, run_id, [("run.started", {"status": "running"})])
         _touch_progress_locked(conn, run_id, 0)
-        _commit(conn, notify = True)
+        _commit(conn, notify=True)
         return True
     except Exception:
         conn.rollback()
@@ -886,7 +886,7 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify=True)
         return _run_from_row(updated_row)
     except Exception:
         conn.rollback()
@@ -943,7 +943,7 @@ def finish_run(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify=True)
         return _run_from_row(updated)
     except Exception:
         conn.rollback()
@@ -1053,7 +1053,7 @@ def reconcile_runs(
             # state and restores Send.
             _sync_assistant_status_locked(conn, run_id, status)
             settled.append(str(run_id))
-        _commit(conn, notify = bool(settled))
+        _commit(conn, notify=bool(settled))
         return settled
     except Exception:
         conn.rollback()
@@ -1063,4 +1063,4 @@ def reconcile_runs(
 
 
 def reconcile_orphaned_runs(error: str = "Unsloth restarted during generation") -> int:
-    return len(reconcile_runs(error = error))
+    return len(reconcile_runs(error=error))

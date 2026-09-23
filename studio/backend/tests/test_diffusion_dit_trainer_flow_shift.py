@@ -30,93 +30,94 @@ def _qwen_scheduler():
     diffusers = pytest.importorskip("diffusers")
     FlowMatchEulerDiscreteScheduler = diffusers.FlowMatchEulerDiscreteScheduler
     return FlowMatchEulerDiscreteScheduler(
-        num_train_timesteps = 1000,
-        shift = 1.0,
-        use_dynamic_shifting = True,
-        base_shift = math.log(3.0),
-        max_shift = math.log(3.0),
-        shift_terminal = QWEN_SHIFT_TERMINAL,
-        time_shift_type = "exponential",
+        num_train_timesteps=1000,
+        shift=1.0,
+        use_dynamic_shifting=True,
+        base_shift=math.log(3.0),
+        max_shift=math.log(3.0),
+        shift_terminal=QWEN_SHIFT_TERMINAL,
+        time_shift_type="exponential",
     )
 
 
 def _flux_static_scheduler():
     # A static-shift scheduler (shift baked into sigmas at init, no dynamic shifting).
     from diffusers import FlowMatchEulerDiscreteScheduler
-    return FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
+
+    return FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
 
 
 # ── config resolution ─────────────────────────────────────────────────────────
 def test_flow_shift_defaults_per_family():
     qwen = DiffusionLoraConfig(
-        base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o"
+        base_model="Qwen/Qwen-Image", data_dir="d", output_dir="o"
     ).normalized()
     assert qwen.resolved_family == "qwen-image"
     assert qwen.flow_shift == "auto"
     flux = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+        base_model="black-forest-labs/FLUX.1-dev", data_dir="d", output_dir="o"
     ).normalized()
     assert flux.flow_shift == 1.0
     zimg = DiffusionLoraConfig(
-        base_model = "Tongyi-MAI/Z-Image-Turbo", data_dir = "d", output_dir = "o"
+        base_model="Tongyi-MAI/Z-Image-Turbo", data_dir="d", output_dir="o"
     ).normalized()
     assert zimg.flow_shift == 1.0
 
 
 def test_flow_shift_explicit_values_and_validation():
     cfg = DiffusionLoraConfig(
-        base_model = "Qwen/Qwen-Image", data_dir = "d", output_dir = "o", flow_shift = 2.2
+        base_model="Qwen/Qwen-Image", data_dir="d", output_dir="o", flow_shift=2.2
     ).normalized()
     assert cfg.flow_shift == 2.2
     # String numerics from the Unsloth config path coerce; "auto" passes through.
     assert (
-        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0")
+        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", flow_shift="3.0")
         .normalized()
         .flow_shift
         == 3.0
     )
     assert (
-        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "AUTO")
+        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", flow_shift="AUTO")
         .normalized()
         .flow_shift
         == "auto"
     )
-    with pytest.raises(ValueError, match = "flow_shift"):
+    with pytest.raises(ValueError, match="flow_shift"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", flow_shift = 0.0
+            base_model="b", data_dir="d", output_dir="o", flow_shift=0.0
         ).normalized()
-    with pytest.raises(ValueError, match = "flow_shift"):
+    with pytest.raises(ValueError, match="flow_shift"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "bogus"
+            base_model="b", data_dir="d", output_dir="o", flow_shift="bogus"
         ).normalized()
     # Non-finite must be rejected too: JSON accepts 1e309, which floats to inf, and a positivity-only guard passed it to the sigma table as NaN.
     for bad in (float("inf"), float("-inf"), float("nan"), 1e309):
-        with pytest.raises(ValueError, match = "flow_shift"):
+        with pytest.raises(ValueError, match="flow_shift"):
             DiffusionLoraConfig(
-                base_model = "b", data_dir = "d", output_dir = "o", flow_shift = bad
+                base_model="b", data_dir="d", output_dir="o", flow_shift=bad
             ).normalized()
 
 
 def test_cfg_dropout_and_weighting_scheme_validation():
-    cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o").normalized()
+    cfg = DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o").normalized()
     assert cfg.cfg_dropout == 0.0
     assert cfg.weighting_scheme == "none"
     on = DiffusionLoraConfig(
-        base_model = "b",
-        data_dir = "d",
-        output_dir = "o",
-        cfg_dropout = 0.1,
-        weighting_scheme = "bell",
+        base_model="b",
+        data_dir="d",
+        output_dir="o",
+        cfg_dropout=0.1,
+        weighting_scheme="bell",
     ).normalized()
     assert on.cfg_dropout == 0.1
     assert on.weighting_scheme == "bell"
-    with pytest.raises(ValueError, match = "cfg_dropout"):
+    with pytest.raises(ValueError, match="cfg_dropout"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", cfg_dropout = 1.5
+            base_model="b", data_dir="d", output_dir="o", cfg_dropout=1.5
         ).normalized()
-    with pytest.raises(ValueError, match = "weighting_scheme"):
+    with pytest.raises(ValueError, match="weighting_scheme"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", weighting_scheme = "sigma_sqrt"
+            base_model="b", data_dir="d", output_dir="o", weighting_scheme="sigma_sqrt"
         ).normalized()
 
 
@@ -149,7 +150,7 @@ def test_auto_table_matches_the_exact_qwen_transform():
     shifted = 3.0 * base / (1.0 + 2.0 * base)
     scale = (1.0 - shifted[-1]) / (1.0 - QWEN_SHIFT_TERMINAL)
     expected = 1.0 - (1.0 - shifted) / scale
-    assert torch.allclose(table, expected, atol = 1e-6)
+    assert torch.allclose(table, expected, atol=1e-6)
     # Fixed-point spot checks: sigma 1.0 stays 1.0, the terminal sigma lands on 0.02, and u = 0.5 rises to ~0.754.
     assert abs(float(table[0]) - 1.0) < 1e-6
     assert abs(float(table[-1]) - QWEN_SHIFT_TERMINAL) < 1e-6
@@ -164,7 +165,7 @@ def test_numeric_table_applies_the_linear_shift():
     sched = _qwen_scheduler()
     table = _training_sigma_table(sched, 2.2)
     base = sched.sigmas
-    assert torch.allclose(table, 2.2 * base / (1.0 + 1.2 * base), atol = 1e-6)
+    assert torch.allclose(table, 2.2 * base / (1.0 + 1.2 * base), atol=1e-6)
     # u = 0.5 under shift s maps to s/(s+1).
     assert abs(float(table[499]) - 2.2 / 3.2) < 1e-3
 

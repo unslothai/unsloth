@@ -25,10 +25,10 @@ from auth import terminal_prompt  # noqa: E402
 from auth.terminal_prompt import should_prompt_password_change  # noqa: E402
 
 _GATE_KWARGS = dict(
-    host = "127.0.0.1",
-    secure = True,
-    api_only = False,
-    frontend_served = True,
+    host="127.0.0.1",
+    secure=True,
+    api_only=False,
+    frontend_served=True,
 )
 
 
@@ -52,10 +52,10 @@ def test_should_prompt_matrix(
 ):
     assert (
         should_prompt_password_change(
-            tunnel_will_start = tunnel_will_start,
-            requires_change = requires_change,
-            stdin_isatty = stdin_isatty,
-            stderr_isatty = stderr_isatty,
+            tunnel_will_start=tunnel_will_start,
+            requires_change=requires_change,
+            stdin_isatty=stdin_isatty,
+            stderr_isatty=stderr_isatty,
         )
         is expected
     )
@@ -81,8 +81,8 @@ class _BrokenStream(io.StringIO):
 
 
 def _patch_streams(monkeypatch, *, tty: bool) -> _Stream:
-    stderr = _Stream(isatty = tty)
-    monkeypatch.setattr(sys, "stdin", _Stream(isatty = tty))
+    stderr = _Stream(isatty=tty)
+    monkeypatch.setattr(sys, "stdin", _Stream(isatty=tty))
     monkeypatch.setattr(sys, "stderr", stderr)
     return stderr
 
@@ -101,31 +101,31 @@ def test_gate_skips_when_tunnel_off(monkeypatch):
 
     monkeypatch.setattr(auth_storage, "requires_password_change", _boom)
     monkeypatch.setattr(auth_storage, "ensure_default_admin", _boom)
-    assert run._terminal_password_gate(tunnel_will_start = False, **_GATE_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_GATE_KWARGS) == (True, False)
 
 
 def test_gate_skips_when_password_already_changed(monkeypatch):
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = False)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=False)
     monkeypatch.setattr(
         terminal_prompt,
         "prompt_for_password_change",
         lambda **k: pytest.fail("prompt must not run when no change is required"),
     )
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (True, False)
 
 
 def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
-    stderr = _patch_streams(monkeypatch, tty = False)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    stderr = _patch_streams(monkeypatch, tty=False)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising=False)
     monkeypatch.setattr(
         terminal_prompt,
         "prompt_for_password_change",
         lambda **k: pytest.fail("prompt must not run without a tty"),
     )
     # Proceeds, but the public HTML must not auto-fill the default credential.
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (True, True)
     out = stderr.getvalue()
     assert "default admin password is still active" in out
     assert "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT" in out
@@ -139,45 +139,45 @@ def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
 def test_gate_fails_closed_without_tty_when_deadline_cannot_arm(monkeypatch):
     # api-only launches never arm the bootstrap deadline, so a headless public
     # launch with the default password has NO safeguard: refuse to start.
-    stderr = _patch_streams(monkeypatch, tty = False)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    stderr = _patch_streams(monkeypatch, tty=False)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising=False)
     kwargs = dict(_GATE_KWARGS)
     kwargs["api_only"] = True
     kwargs["frontend_served"] = False
-    assert run._terminal_password_gate(tunnel_will_start = True, **kwargs) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **kwargs) == (False, False)
     assert "Refusing to publish" in stderr.getvalue()
 
 
 def test_gate_fails_closed_without_tty_when_deadline_disabled(monkeypatch):
-    stderr = _patch_streams(monkeypatch, tty = False)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    stderr = _patch_streams(monkeypatch, tty=False)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (False, False)
     assert "Refusing to publish" in stderr.getvalue()
 
 
 def test_gate_treats_broken_streams_as_non_interactive(monkeypatch):
     # A closed/None stdin must take the headless path, not blow up.
-    stderr = _Stream(isatty = False)
+    stderr = _Stream(isatty=False)
     monkeypatch.setattr(sys, "stdin", _BrokenStream())
     monkeypatch.setattr(sys, "stderr", stderr)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising=False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (True, True)
 
 
 def test_gate_refusal_fails_closed(monkeypatch):
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **k: False)
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (False, False)
 
 
 def test_gate_success_applies_route_equivalent_change(monkeypatch):
-    _patch_streams(monkeypatch, tty = True)
+    _patch_streams(monkeypatch, tty=True)
     calls = []
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
     monkeypatch.setattr(
         auth_storage,
         "get_user_and_secret",
@@ -198,7 +198,7 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
         return True
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (True, True)
     admin = auth_storage.DEFAULT_ADMIN_USERNAME
     # One atomic call: refresh tokens revoked in the same transaction as the
     # password commit (a separable follow-up delete can fail and leave a
@@ -217,7 +217,7 @@ def test_gate_runs_before_server_bind_in_source():
     # The gate must run before the uvicorn socket binds: on a wildcard bind
     # the served HTML injects the bootstrap credential for first login, so a
     # pre-gate listener would hand out the default password mid-prompt.
-    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    src = (_BACKEND / "run.py").read_text(encoding="utf-8")
     gate_call = src.index("_pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(")
     thread_start = src.index("thread.start()")
     callback_bind = src.index("set_studio_tunnel_url_callback(")
@@ -231,7 +231,7 @@ def test_gate_runs_before_server_bind_in_source():
 
 def test_min_password_length_single_source():
     # models/auth.py must reference the storage constant, not a literal.
-    models_src = (_BACKEND / "models" / "auth.py").read_text(encoding = "utf-8")
+    models_src = (_BACKEND / "models" / "auth.py").read_text(encoding="utf-8")
     assert "MIN_PASSWORD_LENGTH" in models_src
     assert not re.search(r"min_length\s*=\s*8\b", models_src)
     assert auth_storage.MIN_PASSWORD_LENGTH == 8
@@ -241,13 +241,13 @@ def test_lifespan_honors_bootstrap_suppression_in_source():
     # The lifespan runs AFTER the gate and re-reads the bootstrap password
     # into app.state; without the suppress flag it would overwrite the gate's
     # None and the public HTML would inject the default credential again.
-    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    main_src = (_BACKEND / "main.py").read_text(encoding="utf-8")
     assert "suppress_bootstrap_injection" in main_src
     # Every lifespan capture of the bootstrap password must be flag-guarded.
     for line in main_src.splitlines():
         if "storage.get_bootstrap_password()" in line and "=" in line:
             assert "_suppress_bootstrap" in line, line
-    run_src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    run_src = (_BACKEND / "run.py").read_text(encoding="utf-8")
     assert "app.state.suppress_bootstrap_injection = True" in run_src
 
 
@@ -329,7 +329,7 @@ def _seed_stub_admin(
     monkeypatch,
     *,
     requires_change,
-    bootstrap_pw = "bootstrap-secret",
+    bootstrap_pw="bootstrap-secret",
 ):
     """Stub storage so _apply_supplied_password sees a seeded admin whose current
     password is ``bootstrap_pw`` and whose must-change flag is ``requires_change``;
@@ -350,7 +350,7 @@ def _seed_stub_admin(
 
 
 def test_apply_supplied_password_sets_initial(monkeypatch):
-    calls = _seed_stub_admin(monkeypatch, requires_change = True)
+    calls = _seed_stub_admin(monkeypatch, requires_change=True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
     run._apply_supplied_password(None)  # resolves from the env var
     admin = auth_storage.DEFAULT_ADMIN_USERNAME
@@ -358,15 +358,15 @@ def test_apply_supplied_password_sets_initial(monkeypatch):
 
 
 def test_apply_supplied_password_off_is_noop(monkeypatch):
-    calls = _seed_stub_admin(monkeypatch, requires_change = True)
-    monkeypatch.delenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, raising = False)
+    calls = _seed_stub_admin(monkeypatch, requires_change=True)
+    monkeypatch.delenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, raising=False)
     run._apply_supplied_password(None)
     run._apply_supplied_password("")
     assert calls == []
 
 
 def test_apply_supplied_password_already_set_fails_closed(monkeypatch):
-    calls = _seed_stub_admin(monkeypatch, requires_change = False)
+    calls = _seed_stub_admin(monkeypatch, requires_change=False)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
     with pytest.raises(SystemExit) as exc:
         run._apply_supplied_password(None)
@@ -375,7 +375,7 @@ def test_apply_supplied_password_already_set_fails_closed(monkeypatch):
 
 
 def test_apply_supplied_password_too_short_fails_closed(monkeypatch):
-    calls = _seed_stub_admin(monkeypatch, requires_change = True)
+    calls = _seed_stub_admin(monkeypatch, requires_change=True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "short")
     with pytest.raises(SystemExit) as exc:
         run._apply_supplied_password(None)
@@ -384,7 +384,7 @@ def test_apply_supplied_password_too_short_fails_closed(monkeypatch):
 
 
 def test_apply_supplied_password_must_differ_fails_closed(monkeypatch):
-    calls = _seed_stub_admin(monkeypatch, requires_change = True, bootstrap_pw = "bootstrap-secret")
+    calls = _seed_stub_admin(monkeypatch, requires_change=True, bootstrap_pw="bootstrap-secret")
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "bootstrap-secret")
     with pytest.raises(SystemExit) as exc:
         run._apply_supplied_password(None)
@@ -397,7 +397,7 @@ def test_apply_supplied_password_strips_env_from_subprocess_environment(monkeypa
     # cloudflared/llama-server/code-exec tools that would otherwise inherit it (also
     # readable via /proc/PID/environ). The direct-run.py path pops it itself; the CLI
     # pops it before re-exec. Assert the pop happens on the apply path...
-    _seed_stub_admin(monkeypatch, requires_change = True)
+    _seed_stub_admin(monkeypatch, requires_change=True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
     run._apply_supplied_password(None)
     assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
@@ -406,7 +406,7 @@ def test_apply_supplied_password_strips_env_from_subprocess_environment(monkeypa
 def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
     # A literal --password wins over the env var, but a stale env value would still
     # leak to subprocesses; the unconditional pop must clear it regardless of source.
-    _seed_stub_admin(monkeypatch, requires_change = True)
+    _seed_stub_admin(monkeypatch, requires_change=True)
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
     run._apply_supplied_password("literal-new-password")
     assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
@@ -418,10 +418,10 @@ def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
 
 
 _RAW_BIND_KWARGS = dict(
-    host = "0.0.0.0",
-    secure = False,
-    api_only = False,
-    frontend_served = True,
+    host="0.0.0.0",
+    secure=False,
+    api_only=False,
+    frontend_served=True,
 )
 
 
@@ -433,9 +433,9 @@ def test_a_headless_raw_bind_is_byte_for_byte_unchanged(monkeypatch):
     strip-and-refuse handling a public tunnel launch uses, which would delete the
     .bootstrap_password such deployments are logged into with.
     """
-    _patch_streams(monkeypatch, tty = False)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    _patch_streams(monkeypatch, tty=False)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
@@ -447,7 +447,7 @@ def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
     STUDIO_HOME a new place to fail on a launch that used to work, so
     promptability must be decided before storage is consulted.
     """
-    _patch_streams(monkeypatch, tty = False)
+    _patch_streams(monkeypatch, tty=False)
 
     def _boom(*_a, **_k):
         raise AssertionError(
@@ -460,13 +460,13 @@ def test_a_headless_raw_bind_does_not_open_auth_storage(monkeypatch):
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
     monkeypatch.setattr(_storage, "requires_password_change", _boom)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
     """Ctrl+C / EOF is an explicit refusal, even for a raw bind."""
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     from auth import terminal_prompt
 
@@ -476,7 +476,7 @@ def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
         lambda **_kw: False,  # Ctrl+C / EOF
     )
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (
         False,
         False,
     )
@@ -493,14 +493,14 @@ def test_a_false_from_any_prompt_version_fails_closed(monkeypatch):
     refusal. The abort message names --password / UNSLOTH_STUDIO_PASSWORD for it.
     """
     for tunnel, kwargs in ((False, _RAW_BIND_KWARGS), (True, _GATE_KWARGS)):
-        _patch_streams(monkeypatch, tty = True)
-        _patch_seeded_admin(monkeypatch, requires_change = True)
+        _patch_streams(monkeypatch, tty=True)
+        _patch_seeded_admin(monkeypatch, requires_change=True)
 
         from auth import terminal_prompt
 
         monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
-        assert run._terminal_password_gate(tunnel_will_start = tunnel, **kwargs) == (False, False)
+        assert run._terminal_password_gate(tunnel_will_start=tunnel, **kwargs) == (False, False)
 
 
 def test_the_banner_never_promises_an_abort_the_caller_will_not_perform(monkeypatch):
@@ -521,12 +521,12 @@ def test_the_banner_never_promises_an_abort_the_caller_will_not_perform(monkeypa
     for refusal_aborts in (True, False):
         out = io.StringIO()
         terminal_prompt.prompt_for_password_change(
-            min_length = 8,
-            is_current_password = lambda _c: False,
-            apply_change = lambda _p: None,
-            out = out,
-            exposure = "on the local network",
-            refusal_aborts = refusal_aborts,
+            min_length=8,
+            is_current_password=lambda _c: False,
+            apply_change=lambda _p: None,
+            out=out,
+            exposure="on the local network",
+            refusal_aborts=refusal_aborts,
         )
         banners[refusal_aborts] = out.getvalue()
 
@@ -555,13 +555,13 @@ def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):
     out = io.StringIO()
     assert (
         terminal_prompt.prompt_for_password_change(
-            min_length = 8,
-            is_current_password = lambda _c: False,
-            apply_change = lambda _p: None,
-            out = out,
-            exposure = "on the local network",
-            first_key_timeout = 0.01,
-            refusal_aborts = False,  # the old caller's keyword, now ignored
+            min_length=8,
+            is_current_password=lambda _c: False,
+            apply_change=lambda _p: None,
+            out=out,
+            exposure="on the local network",
+            first_key_timeout=0.01,
+            refusal_aborts=False,  # the old caller's keyword, now ignored
         )
         is False
     )
@@ -569,20 +569,20 @@ def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):
 
 def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
     """The tunnel case is unchanged: refusing to secure a public URL fails closed."""
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     from auth import terminal_prompt
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (False, False)
 
 
 def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):
     """The fix. Before this, `if not tunnel_will_start` returned first."""
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     seen = {}
 
@@ -595,7 +595,7 @@ def test_a_raw_bind_with_a_terminal_reaches_the_prompt(monkeypatch):
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, True)
     # And it must not tell a LAN operator they are on the public internet.
     assert seen.get("exposure") == "on every network interface"
 
@@ -612,11 +612,11 @@ def test_a_loopback_launch_still_short_circuits(monkeypatch):
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
 
     assert run._terminal_password_gate(
-        tunnel_will_start = False,
-        host = "127.0.0.1",
-        secure = False,
-        api_only = False,
-        frontend_served = True,
+        tunnel_will_start=False,
+        host="127.0.0.1",
+        secure=False,
+        api_only=False,
+        frontend_served=True,
     ) == (True, False)
 
 
@@ -632,19 +632,19 @@ def test_api_only_and_colab_raw_binds_do_not_prompt(monkeypatch):
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
 
     assert run._terminal_password_gate(
-        tunnel_will_start = False,
-        host = "0.0.0.0",
-        secure = False,
-        api_only = True,
-        frontend_served = True,
+        tunnel_will_start=False,
+        host="0.0.0.0",
+        secure=False,
+        api_only=True,
+        frontend_served=True,
     ) == (True, False)
     assert run._terminal_password_gate(
-        tunnel_will_start = False,
-        host = "0.0.0.0",
-        secure = False,
-        api_only = False,
-        frontend_served = True,
-        is_colab = True,
+        tunnel_will_start=False,
+        host="0.0.0.0",
+        secure=False,
+        api_only=False,
+        frontend_served=True,
+        is_colab=True,
     ) == (True, False)
 
 
@@ -655,7 +655,7 @@ def test_api_only_and_colab_raw_binds_do_not_prompt(monkeypatch):
 
 class _FdStream(_Stream):
     def __init__(self):
-        super().__init__(isatty = True)
+        super().__init__(isatty=True)
 
     def fileno(self):
         return 0
@@ -663,7 +663,7 @@ class _FdStream(_Stream):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    reason="POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
     "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
     "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
@@ -686,12 +686,12 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
 
     monkeypatch.setattr(auth_storage, "ensure_default_admin", _boom)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
 
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    reason="POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
     "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
     "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
@@ -701,18 +701,18 @@ def test_a_backgrounded_tunnel_launch_still_fails_closed(monkeypatch):
     monkeypatch.setattr(sys, "stderr", _FdStream())
     monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
     monkeypatch.setattr(run.os, "getpgrp", lambda: 99)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
     # The process group check is scoped to the raw-bind branch, so a tunnel still
     # reaches the prompt and still aborts when it is refused.
     assert run._prompt_owns_the_terminal() is False
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (False, False)
 
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    reason="POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
     "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
     "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
@@ -722,20 +722,20 @@ def test_a_foreground_raw_bind_still_reaches_the_prompt(monkeypatch):
     monkeypatch.setattr(sys, "stderr", _FdStream())
     monkeypatch.setattr(run.os, "tcgetpgrp", lambda _fd: 4242)
     monkeypatch.setattr(run.os, "getpgrp", lambda: 4242)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: True)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, True)
 
 
 def test_no_job_control_falls_back_to_the_isatty_answer(monkeypatch):
     """Windows / no controlling terminal: nothing can stop us, so still prompt."""
     for exc in (OSError("ENOTTY"), AttributeError(), ValueError()):
 
-        def _boom(_fd, _exc = exc):
+        def _boom(_fd, _exc=exc):
             raise _exc
 
-        monkeypatch.setattr(run.os, "tcgetpgrp", _boom, raising = False)
+        monkeypatch.setattr(run.os, "tcgetpgrp", _boom, raising=False)
         monkeypatch.setattr(sys, "stdin", _FdStream())
         assert run._prompt_owns_the_terminal() is True
 
@@ -761,7 +761,7 @@ class _PtyStdin:
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    reason="POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
     "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
     "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
@@ -782,11 +782,11 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
         out = io.StringIO()
         # Nothing is written to `master`: the pty exists, the human does not.
         changed = terminal_prompt.prompt_for_password_change(
-            min_length = 8,
-            is_current_password = lambda _c: False,
-            apply_change = lambda _p: pytest.fail("nothing was typed"),
-            out = out,
-            first_key_timeout = 0.25,
+            min_length=8,
+            is_current_password=lambda _c: False,
+            apply_change=lambda _p: pytest.fail("nothing was typed"),
+            out=out,
+            first_key_timeout=0.25,
         )
     finally:
         os.close(master)
@@ -798,7 +798,7 @@ def test_an_unattended_pty_does_not_block_a_raw_bind_forever(monkeypatch):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    reason="POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
     "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
     "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
@@ -814,11 +814,11 @@ def test_a_pty_someone_types_into_is_not_treated_as_unattended(monkeypatch):
         monkeypatch.setattr(sys, "stdin", _PtyStdin(slave))
         out = io.StringIO()
         changed = terminal_prompt.prompt_for_password_change(
-            min_length = 8,
-            is_current_password = lambda _c: False,
-            apply_change = applied.append,
-            out = out,
-            first_key_timeout = 0.25,
+            min_length=8,
+            is_current_password=lambda _c: False,
+            apply_change=applied.append,
+            out=out,
+            first_key_timeout=0.25,
         )
     finally:
         os.close(master)
@@ -843,14 +843,14 @@ def test_the_gate_deadlines_a_raw_bind_prompt_and_never_the_tunnel(monkeypatch):
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
 
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS)
     assert seen["first_key_timeout"] == run._UNATTENDED_PROMPT_SECONDS
 
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-    run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
+    run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS)
     assert seen["first_key_timeout"] is None
 
 
@@ -863,29 +863,29 @@ def test_an_unattended_fallback_does_not_promise_a_disabled_deadline(monkeypatch
     they would act on.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
-    stderr = _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    stderr = _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     from auth import terminal_prompt
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: None)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
     assert "DISABLED for this launch" in err, err
     assert "shuts down after the bootstrap deadline" not in err, err
 
 
 def test_an_unattended_fallback_names_the_deadline_when_one_will_arm(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
-    stderr = _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising=False)
+    stderr = _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     from auth import terminal_prompt
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: None)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
     err = stderr.getvalue()
     assert "shuts down after the bootstrap deadline" in err, err
     assert "DISABLED" not in err, err
@@ -900,7 +900,7 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
     which is the startup stall the 30s value was chosen to stay under.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
-    _patch_streams(monkeypatch, tty = True)
+    _patch_streams(monkeypatch, tty=True)
 
     def _boom(*_a, **_k):
         raise AssertionError("the child prompted again after the parent gave up")
@@ -909,7 +909,7 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
 
     monkeypatch.setattr(_storage, "ensure_default_admin", _boom)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start=False, **_RAW_BIND_KWARGS) == (True, False)
     # Consumed, so a later launch from the same environment keeps its own prompt.
     import os as _os
 
@@ -919,14 +919,14 @@ def test_the_child_does_not_repeat_a_prompt_the_parent_already_gave_up_on(monkey
 def test_the_marker_never_silences_a_tunnel_launch(monkeypatch):
     """A public URL fails closed regardless of what the parent did."""
     monkeypatch.setenv("UNSLOTH_STUDIO_UNATTENDED_PROMPT_DONE", "1")
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    _patch_streams(monkeypatch, tty=True)
+    _patch_seeded_admin(monkeypatch, requires_change=True)
 
     from auth import terminal_prompt
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start=True, **_GATE_KWARGS) == (False, False)
 
 
 def test_windows_has_no_terminal_ownership_to_lose(monkeypatch):
@@ -939,5 +939,5 @@ def test_windows_has_no_terminal_ownership_to_lose(monkeypatch):
     isatty verdict stands and an interactive Windows launch still prompts. A
     False would silently drop the prompt on every Windows terminal.
     """
-    monkeypatch.delattr(run.os, "tcgetpgrp", raising = False)
+    monkeypatch.delattr(run.os, "tcgetpgrp", raising=False)
     assert run._prompt_owns_the_terminal() is True

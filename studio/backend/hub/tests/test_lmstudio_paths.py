@@ -27,16 +27,16 @@ def fake_home(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.delenv("OLLAMA_MODELS", raising = False)
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
     return home
 
 
-@pytest.mark.parametrize("bom", [False, True], ids = ["no_bom", "utf8_bom"])
+@pytest.mark.parametrize("bom", [False, True], ids=["no_bom", "utf8_bom"])
 def test_lmstudio_model_dirs_reads_a_bom_prefixed_settings_file(fake_home, bom):
     downloads = fake_home / "lmstudio-models"
     downloads.mkdir()
     settings = fake_home / ".lmstudio" / "settings.json"
-    settings.parent.mkdir(parents = True)
+    settings.parent.mkdir(parents=True)
     body = json.dumps({"downloadsFolder": str(downloads)}).encode("utf-8")
     settings.write_bytes((BOM_UTF8 if bom else b"") + body)
 

@@ -78,7 +78,7 @@ class _Scan(NamedTuple):
 class StateStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents = True, exist_ok = True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
         # Read whole, and UTF-8 only unlike the shards below: a checkpoint holds nothing but base64 cursors and booleans, so a codepage retry could only resume on a mojibaked cursor GitHub rejects with INVALID_CURSOR_ARGUMENTS, whose empty page marks the stream done. Dropping a damaged checkpoint re-scrapes from page one, which the writers dedup.
@@ -116,8 +116,8 @@ class StateStore:
 
     def _flush(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        with tmp.open("w", encoding = "utf-8") as f:
-            json.dump(self._data, f, indent = 2, default = str)
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(self._data, f, indent=2, default=str)
         os.replace(tmp, self.path)
 
 
@@ -126,7 +126,7 @@ class JsonlWriter:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents = True, exist_ok = True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._count_seen_keys: set[str] = set()
         self._codepage = _locale_encoding()
@@ -141,7 +141,7 @@ class JsonlWriter:
                 # Never convert: the writing encoding is unrecoverable and guessing mojibakes the records. Pure ASCII appends store identically under every codepage, and json.loads turns the escapes back.
                 encoding = "ascii"
                 self._ensure_ascii = True
-        self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
+        self._fh = self.path.open("a", buffering=1, encoding=encoding, errors="strict")
 
     def _scan_existing(self) -> _Scan:
         """Read the shard once to recover dedup keys and judge its encoding.
@@ -205,7 +205,7 @@ class JsonlWriter:
                 return False
             if k is not None:
                 self._count_seen_keys.add(k)
-            self._fh.write(json.dumps(obj, default = str, ensure_ascii = self._ensure_ascii))
+            self._fh.write(json.dumps(obj, default=str, ensure_ascii=self._ensure_ascii))
             self._fh.write("\n")
             self._fh.flush()
         return True

@@ -41,7 +41,7 @@ NAMED_TEMPLATE = {"default": DEFAULT_BODY, "tool_use": TOOL_USE_BODY}
 
 class _Request:
     state = SimpleNamespace()
-    url = SimpleNamespace(path = "/v1/chat/completions")
+    url = SimpleNamespace(path="/v1/chat/completions")
     method = "POST"
     scope: dict = {}
     headers = {"X-Unsloth-Events": "1"}
@@ -67,8 +67,8 @@ class _ScriptedBackend:
         self,
         *,
         messages,
-        tools = None,
-        stats_holder = None,
+        tools=None,
+        stats_holder=None,
         **kwargs,
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -78,13 +78,13 @@ class _ScriptedBackend:
         self,
         *,
         messages,
-        tools = None,
+        tools=None,
         **kwargs,
     ):
         self.calls.append({"loop": True, "messages": messages, "tools": tools, **kwargs})
         yield {"type": "content", "text": "the weather is sunny"}
 
-    def reset_generation_state(self, caller_cancel_event = None):
+    def reset_generation_state(self, caller_cancel_event=None):
         self.reset_count += 1
 
     def resize_image(self, image):
@@ -93,7 +93,7 @@ class _ScriptedBackend:
 
 def _llama_stub():
     return SimpleNamespace(
-        is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        is_loaded=False, supports_tools=False, is_vision=False, context_length=None
     )
 
 
@@ -102,20 +102,20 @@ def _install(monkeypatch, backend):
     from state.tool_policy import reset_tool_policy
 
     reset_tool_policy()
-    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries=8))
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _llama_stub())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
 
 
 def _continued_exchange(**extra):
     base = dict(
-        model = "default",
-        messages = [
-            ChatMessage(role = "user", content = "weather in SF?"),
+        model="default",
+        messages=[
+            ChatMessage(role="user", content="weather in SF?"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_abc",
                         "type": "function",
@@ -123,12 +123,12 @@ def _continued_exchange(**extra):
                     }
                 ],
             ),
-            ChatMessage(role = "tool", tool_call_id = "call_abc", name = "lookup", content = "sunny"),
+            ChatMessage(role="tool", tool_call_id="call_abc", name="lookup", content="sunny"),
         ],
-        tools = [LOOKUP_TOOL],
-        tool_choice = "none",
-        enable_tools = True,
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        tool_choice="none",
+        enable_tools=True,
+        stream=False,
     )
     base.update(extra)
     return ChatCompletionRequest(**base)
@@ -138,7 +138,7 @@ def _run(payload, monkeypatch, backend):
     _install(monkeypatch, backend)
 
     async def _go():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     return asyncio.run(_go())
 
@@ -149,7 +149,7 @@ def test_tool_history_survives_tool_choice_none(monkeypatch):
 
     assert backend.calls, "generator never ran"
     msgs = backend.calls[0]["messages"]
-    print("\nMESSAGES HANDED TO BACKEND:\n" + json.dumps(msgs, indent = 2, default = str))
+    print("\nMESSAGES HANDED TO BACKEND:\n" + json.dumps(msgs, indent=2, default=str))
     print("TOOLS HANDED TO BACKEND:", backend.calls[0]["tools"])
 
     assistant = [m for m in msgs if (m.get("role") if isinstance(m, dict) else None) == "assistant"]
@@ -164,10 +164,10 @@ def test_tool_history_survives_tool_choice_none(monkeypatch):
 def test_tool_history_survives_plain_openai_client(monkeypatch):
     """The common shape: an OpenAI client that never sets Unsloth's enable_tools."""
     backend = _ScriptedBackend()
-    _run(_continued_exchange(enable_tools = None), monkeypatch, backend)
+    _run(_continued_exchange(enable_tools=None), monkeypatch, backend)
 
     msgs = backend.calls[0]["messages"]
-    print("\nPLAIN CLIENT MESSAGES:\n" + json.dumps(msgs, indent = 2, default = str))
+    print("\nPLAIN CLIENT MESSAGES:\n" + json.dumps(msgs, indent=2, default=str))
     assistant = [m for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
     tool_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "tool"]
     assert assistant and assistant[0].get("tool_calls"), "assistant tool_calls dropped"

@@ -35,9 +35,9 @@ def _run_auditor(
         cmd.extend(["--cargo-lockfile", str(p)])
     return subprocess.run(
         cmd,
-        capture_output = True,
-        text = True,
-        timeout = timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -48,7 +48,7 @@ def test_malicious_lockfile_exits_1(tmp_path):
     """Non-registry URL + IOC substring + missing integrity hash -> auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
     assert fixture.is_file()
-    proc = _run_auditor(root = tmp_path, npm_lockfiles = [fixture])
+    proc = _run_auditor(root=tmp_path, npm_lockfiles=[fixture])
     assert proc.returncode == 1, (
         f"expected exit 1, got {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
@@ -65,7 +65,7 @@ def test_malicious_lockfile_exits_1(tmp_path):
 
 def test_clean_lockfile_exits_0(tmp_path):
     fixture = FIXTURES / "clean_lockfile.json"
-    proc = _run_auditor(root = tmp_path, npm_lockfiles = [fixture])
+    proc = _run_auditor(root=tmp_path, npm_lockfiles=[fixture])
     assert proc.returncode == 0, (
         f"expected exit 0, got {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
@@ -108,7 +108,7 @@ def test_npm_ioc_strings_contains_may11_baseline():
 
 @pytest.mark.skipif(
     not all(s in lsa.NPM_IOC_STRINGS for s in _MAY12_IOCS),
-    reason = "Fork 1 (May-12 IOC additions) not merged yet",
+    reason="Fork 1 (May-12 IOC additions) not merged yet",
 )
 def test_npm_ioc_strings_contains_may12_additions():
     iocs = set(lsa.NPM_IOC_STRINGS)
@@ -118,11 +118,12 @@ def test_npm_ioc_strings_contains_may12_additions():
 
 @pytest.mark.skipif(
     not hasattr(lsa, "BLOCKED_NPM_VERSIONS"),
-    reason = "Fork 1 (BLOCKED_NPM_VERSIONS in auditor) not merged yet",
+    reason="Fork 1 (BLOCKED_NPM_VERSIONS in auditor) not merged yet",
 )
 def test_lockfile_auditor_blocked_versions_match_scanner():
     """Auditor's BLOCKED_NPM_VERSIONS must mirror the scanner's table verbatim."""
     from scripts import scan_npm_packages as snp
+
     assert (
         lsa.BLOCKED_NPM_VERSIONS == snp.BLOCKED_NPM_VERSIONS
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
@@ -153,10 +154,10 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
-        root = tmp_path,
-        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
-        cargo_lockfiles = [lockfile],
-        strict = True,
+        root=tmp_path,
+        npm_lockfiles=[FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles=[lockfile],
+        strict=True,
     )
     assert proc.returncode == 1
     combined = proc.stdout + proc.stderr
@@ -169,9 +170,9 @@ def test_malicious_cargo_lockfile_default_mode_blocks(tmp_path):
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
-        root = tmp_path,
-        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
-        cargo_lockfiles = [lockfile],
+        root=tmp_path,
+        npm_lockfiles=[FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles=[lockfile],
     )
     assert proc.returncode == 1, (
         f"expected exit 1 (blocking), got {proc.returncode}\n"
@@ -214,7 +215,7 @@ def test_non_registry_npm_tarball_blocks_by_default(tmp_path):
             }
         )
     )
-    proc = _run_auditor(root = tmp_path, npm_lockfiles = [lockfile])
+    proc = _run_auditor(root=tmp_path, npm_lockfiles=[lockfile])
     assert proc.returncode == 1, (
         f"expected exit 1 (blocking), got {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
@@ -245,10 +246,10 @@ def test_gha_escape_collapses_finding_to_one_line():
     assert lsa._gha_escape("a%b\nc") == "a%25b%0Ac"
 
     f = lsa.Finding(
-        path = "/x/lock.json",
-        package = "node_modules/foo",
-        kind = "missing-integrity-hash",
-        detail = "bad stuff",
+        path="/x/lock.json",
+        package="node_modules/foo",
+        kind="missing-integrity-hash",
+        detail="bad stuff",
     )
     escaped = lsa._gha_escape(str(f))
     assert "\n" not in escaped
@@ -263,9 +264,9 @@ def test_blocking_finding_emitted_as_single_line_annotation(tmp_path):
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
-        root = tmp_path,
-        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
-        cargo_lockfiles = [lockfile],
+        root=tmp_path,
+        npm_lockfiles=[FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles=[lockfile],
     )
     error_lines = [line for line in proc.stderr.splitlines() if line.startswith("::error::")]
     assert error_lines, f"expected at least one ::error:: annotation; stderr was:\n{proc.stderr}"
@@ -297,7 +298,7 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
             }
         )
     )
-    proc = _run_auditor(root = tmp_path, npm_lockfiles = [lockfile])
+    proc = _run_auditor(root=tmp_path, npm_lockfiles=[lockfile])
     assert proc.returncode == 0, (
         f"expected exit 0 (advisory), got {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
@@ -329,10 +330,10 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
             "--npm-lockfile",
             str(fixture),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env_bad,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_bad,
     )
     combined_bad = proc_bad.stdout + proc_bad.stderr
     assert "::warning::" in combined_bad, combined_bad
@@ -357,10 +358,10 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
             "--npm-lockfile",
             str(fixture),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env_ok,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_ok,
     )
     combined_ok = proc_ok.stdout + proc_ok.stderr
     assert proc_ok.returncode == 0
@@ -382,10 +383,10 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
                 "--npm-lockfile",
                 str(fixture),
             ],
-            capture_output = True,
-            text = True,
-            timeout = 30,
-            env = env_b,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env_b,
         )
         c = p.stdout + p.stderr
         assert (
@@ -422,7 +423,7 @@ def test_unsupported_lockfile_version_blocks_default(tmp_path):
         '  "dependencies": {"react": {"version": "18.2.0"}}\n'
         "}\n"
     )
-    proc = _run_auditor(root = tmp_path, npm_lockfiles = [p])
+    proc = _run_auditor(root=tmp_path, npm_lockfiles=[p])
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 1, (
         f"v1 lockfile must block default mode (was advisory pre-followup); "
@@ -473,10 +474,10 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
             "--npm-lockfile",
             str(fixture),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env_a,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_a,
     )
     # The stripped value is "%inject\n::error::bad" (len 21) and is not a booleanish token -> accepted-skip path; rc 0,
     # audit skipped.
@@ -505,10 +506,10 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
             "--npm-lockfile",
             str(fixture),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 30,
-        env = env_b,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_b,
     )
     combined_b = proc_b.stdout + proc_b.stderr
     assert "REQUIRES a justification" in combined_b, combined_b
@@ -562,7 +563,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"
-        doc = yaml.safe_load(wf.read_text(encoding = "utf-8"))
+        doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
         checked = 0
         for job_id, job in (doc.get("jobs") or {}).items():
             if not isinstance(job, dict):

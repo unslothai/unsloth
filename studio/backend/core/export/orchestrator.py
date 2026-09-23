@@ -60,7 +60,7 @@ class ExportOrchestrator:
         self.is_peft: bool = False
 
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
-        self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
+        self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen=_LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
         # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
         self._log_seq: int = 0
@@ -194,14 +194,14 @@ class ExportOrchestrator:
         )
         try:
             proc.terminate()
-            proc.join(timeout = 5)
+            proc.join(timeout=5)
         except Exception:
             pass
         if proc.is_alive():
             logger.warning("Export subprocess survived terminate, killing")
             try:
                 proc.kill()
-                proc.join(timeout = 3)
+                proc.join(timeout=3)
             except Exception:
                 pass
         return True
@@ -218,6 +218,7 @@ class ExportOrchestrator:
         # be rebuilding the sidecar right now, so always refuse the spawn.
         if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
+
             raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
@@ -259,10 +260,10 @@ class ExportOrchestrator:
             # clear self._proc, and every read below would then be off a None while the
             # worker is alive and unadopted.
             _spawned_proc = _CTX.Process(
-                target = run_without_native_path_secret,
-                args = process_args,
-                kwargs = process_kwargs,
-                daemon = True,
+                target=run_without_native_path_secret,
+                args=process_args,
+                kwargs=process_kwargs,
+                daemon=True,
             )
             self._proc = _spawned_proc
             _spawned_proc.start()
@@ -277,17 +278,17 @@ class ExportOrchestrator:
         if is_process_shutting_down() or self._proc is not _spawned_proc:
             logger.info("shutdown began during the spawn; stopping the new export subprocess")
             if self._proc is _spawned_proc:
-                self._shutdown_subprocess(timeout = 5)
+                self._shutdown_subprocess(timeout=5)
             else:
                 try:
                     if _spawned_proc.is_alive():
                         _spawned_proc.terminate()
-                    _spawned_proc.join(timeout = 5)
+                    _spawned_proc.join(timeout=5)
                     if _spawned_proc.is_alive():
                         _spawned_proc.kill()
-                        _spawned_proc.join(timeout = 3)
+                        _spawned_proc.join(timeout=3)
                 except Exception:  # noqa: BLE001 - the reap is best-effort
-                    logger.warning("could not reap the orphaned export worker", exc_info = True)
+                    logger.warning("could not reap the orphaned export worker", exc_info=True)
                 if _spawned_proc.exitcode is not None:
                     forget_pid(_spawned_proc.pid)
                 else:
@@ -318,7 +319,7 @@ class ExportOrchestrator:
             pass
 
         try:
-            self._proc.join(timeout = timeout)
+            self._proc.join(timeout=timeout)
         except Exception:
             pass
 
@@ -326,14 +327,14 @@ class ExportOrchestrator:
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
                 self._proc.terminate()
-                self._proc.join(timeout = 5)
+                self._proc.join(timeout=5)
             except Exception:
                 pass
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Subprocess still alive after terminate, killing")
                 try:
                     self._proc.kill()
-                    self._proc.join(timeout = 3)
+                    self._proc.join(timeout=3)
                 except Exception:
                     pass
 
@@ -352,7 +353,7 @@ class ExportOrchestrator:
         return True
 
     def _cleanup(self):
-        self._shutdown_subprocess(timeout = 5.0)
+        self._shutdown_subprocess(timeout=5.0)
 
     def _ensure_subprocess_alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
@@ -369,7 +370,7 @@ class ExportOrchestrator:
         if self._resp_queue is None:
             return None
         try:
-            return self._resp_queue.get(timeout = timeout)
+            return self._resp_queue.get(timeout=timeout)
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
@@ -400,7 +401,7 @@ class ExportOrchestrator:
 
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 2.0))
+            resp = self._read_resp(timeout=min(remaining, 2.0))
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
@@ -426,7 +427,7 @@ class ExportOrchestrator:
                 # One structured export_progress line per phase (consolidated in the server log, like
                 # training/download progress); also shown live.
                 if message:
-                    logger.info("export_progress", phase = message)
+                    logger.info("export_progress", phase=message)
                     self._append_log(
                         {
                             "stream": "status",
@@ -511,6 +512,7 @@ class ExportOrchestrator:
 
                 if sidecar_swap_in_progress():
                     from utils.transformers_version import SidecarSwapInProgress
+
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
@@ -527,7 +529,7 @@ class ExportOrchestrator:
                         )
                         return False, op_message
                 elif self._proc is not None:
-                    self._shutdown_subprocess(timeout = 2)
+                    self._shutdown_subprocess(timeout=2)
 
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 try:
@@ -543,7 +545,7 @@ class ExportOrchestrator:
                 try:
                     resp = self._wait_response("loaded")
                 except RuntimeError as exc:
-                    self._shutdown_subprocess(timeout = 5)
+                    self._shutdown_subprocess(timeout=5)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -617,11 +619,11 @@ class ExportOrchestrator:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method = "Q4_K_M",
+        quantization_method="Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: HfTokenArg = None,
-        imatrix_file = None,
+        imatrix_file=None,
         private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
@@ -662,7 +664,7 @@ class ExportOrchestrator:
             },
         )
 
-    @owned_job(continuation = True)
+    @owned_job(continuation=True)
     def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
@@ -689,6 +691,7 @@ class ExportOrchestrator:
 
                 if sidecar_swap_in_progress():
                     from utils.transformers_version import SidecarSwapInProgress
+
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
@@ -705,7 +708,7 @@ class ExportOrchestrator:
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = _EXPORT_INACTIVITY_TIMEOUT * max(1, _n),
+                        timeout=_EXPORT_INACTIVITY_TIMEOUT * max(1, _n),
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
@@ -736,8 +739,8 @@ class ExportOrchestrator:
                     self._send_cmd({"type": "cleanup"})
                     resp = self._wait_response(
                         "cleanup_done",
-                        timeout = _CLEANUP_TIMEOUT,
-                        max_wait = _CLEANUP_TIMEOUT,
+                        timeout=_CLEANUP_TIMEOUT,
+                        max_wait=_CLEANUP_TIMEOUT,
                     )
                     success = resp.get("success", False)
                 except RuntimeError:
@@ -760,7 +763,7 @@ class ExportOrchestrator:
         validate_job_paths({"output_dir": outputs_dir})
         from utils.models.checkpoints import scan_checkpoints
 
-        return scan_checkpoints(outputs_dir = outputs_dir)
+        return scan_checkpoints(outputs_dir=outputs_dir)
 
 
 _export_backend = None

@@ -23,9 +23,9 @@ ENV_FORM = '!addplugindir "$%NSISPLUGINS%\\x86-unicode"'
 TEMPLATE_FORM = '!addplugindir "{{signed_plugins_path}}"'
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def template() -> str:
-    return TEMPLATE.read_text(encoding = "utf-8")
+    return TEMPLATE.read_text(encoding="utf-8")
 
 
 def test_both_signed_plugin_directory_forms_are_present(template: str) -> None:

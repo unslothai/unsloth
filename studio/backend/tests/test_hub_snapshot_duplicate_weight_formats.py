@@ -13,7 +13,7 @@ from hub.utils.snapshot_filters import (
 
 
 def _siblings(sizes: dict[str, int]) -> list:
-    return [types.SimpleNamespace(rfilename = name, size = size) for name, size in sizes.items()]
+    return [types.SimpleNamespace(rfilename=name, size=size) for name, size in sizes.items()]
 
 
 def _kept(sizes: dict[str, int]) -> set[str]:

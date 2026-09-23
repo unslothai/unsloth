@@ -471,6 +471,7 @@ def _gguf_shard_has_classifier_head(path: str) -> Optional[bool]:
 def _gguf_has_classifier_head(path: str) -> Optional[bool]:
     try:
         from utils.models.model_config import colocated_split_shards
+
         shards, complete = colocated_split_shards(Path(path))
     except Exception:
         return None

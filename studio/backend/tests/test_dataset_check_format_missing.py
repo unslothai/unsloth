@@ -16,7 +16,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 from routes import datasets as datasets_route  # noqa: E402
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_studio_home(tmp_path, monkeypatch):
     """Keep fixtures out of the developer's real Unsloth uploads directory."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -53,9 +53,9 @@ def no_hub(monkeypatch):
 
 
 def _check(dataset_name: str) -> HTTPException:
-    request = datasets_route.CheckFormatRequest(dataset_name = dataset_name)
+    request = datasets_route.CheckFormatRequest(dataset_name=dataset_name)
     with pytest.raises(HTTPException) as exc:
-        datasets_route.check_format(request, hf_token = None, current_subject = "test")
+        datasets_route.check_format(request, hf_token=None, current_subject="test")
     return exc.value
 
 
@@ -73,9 +73,9 @@ def test_missing_upload_reports_404(no_hub):
 @pytest.mark.parametrize(
     "spelling",
     [
-        pytest.param("{path}", id = "as-sent-by-the-ui"),
-        pytest.param(" {path}", id = "leading-whitespace"),
-        pytest.param("{path} ", id = "trailing-whitespace"),
+        pytest.param("{path}", id="as-sent-by-the-ui"),
+        pytest.param(" {path}", id="leading-whitespace"),
+        pytest.param("{path} ", id="trailing-whitespace"),
     ],
 )
 def test_every_spelling_of_a_missing_upload_reports_404(spelling, no_hub):
@@ -84,7 +84,7 @@ def test_every_spelling_of_a_missing_upload_reports_404(spelling, no_hub):
     from utils.paths import dataset_uploads_root
 
     missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
-    error = _check(spelling.format(path = missing))
+    error = _check(spelling.format(path=missing))
     assert error.status_code == 404
     assert no_hub == []
 
@@ -103,7 +103,7 @@ def test_corrupt_local_file_keeps_its_own_error(no_hub):
     from utils.paths import dataset_uploads_root
 
     corrupt = dataset_uploads_root() / "corrupt-test-fixture.jsonl"
-    corrupt.parent.mkdir(parents = True, exist_ok = True)
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
     corrupt.write_text("{not valid json at all\n")
 
     error = _check(str(corrupt))
@@ -122,9 +122,9 @@ def test_hub_repo_id_never_reports_a_deleted_file(no_hub):
 @pytest.mark.parametrize(
     ("dataset_name", "expected"),
     [
-        pytest.param("{anchor}not-a-dataset.jsonl", "under a dataset root", id = "outside-roots"),
-        pytest.param("{uploads}/../escape.jsonl", "'..' segments", id = "traversal"),
-        pytest.param("uploads/nul\x00byte.jsonl", "null bytes", id = "null-byte"),
+        pytest.param("{anchor}not-a-dataset.jsonl", "under a dataset root", id="outside-roots"),
+        pytest.param("{uploads}/../escape.jsonl", "'..' segments", id="traversal"),
+        pytest.param("uploads/nul\x00byte.jsonl", "null bytes", id="null-byte"),
     ],
 )
 def test_rejected_paths_are_client_errors(dataset_name, expected, isolated_studio_home, no_hub):
@@ -135,8 +135,8 @@ def test_rejected_paths_are_client_errors(dataset_name, expected, isolated_studi
     # Anchor on the studio home: a hardcoded "/etc/x" is relative on Windows and misses the branch.
     error = _check(
         dataset_name.format(
-            anchor = isolated_studio_home.anchor,
-            uploads = dataset_uploads_root(),
+            anchor=isolated_studio_home.anchor,
+            uploads=dataset_uploads_root(),
         )
     )
 

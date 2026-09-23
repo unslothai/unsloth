@@ -123,7 +123,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "visible",
             "after",
             "secret error text",
-            id = "hidden_attribute_subtree_is_dropped",
+            id="hidden_attribute_subtree_is_dropped",
         ),
         # Error/loading blocks are often hidden with inline CSS rather than the
         # ``hidden`` attribute; browsers do not render them, so they must not leak.
@@ -134,7 +134,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "visible",
             "after",
             "secret loading block",
-            id = "inline_style_display_none_subtree_is_dropped",
+            id="inline_style_display_none_subtree_is_dropped",
         ),
         # A hidden void element (<hr>/<br>) never joins the open-element stack, so it
         # must be suppressed inline rather than emitting its markup.
@@ -143,7 +143,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "before",
             "after",
             "---",
-            id = "hidden_void_element_is_suppressed",
+            id="hidden_void_element_is_suppressed",
         ),
         # The hidden <br> must not inject a newline between the two runs.
         pytest.param(
@@ -151,7 +151,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "one",
             "two",
             "one\ntwo",
-            id = "hidden_void_br_emits_no_break",
+            id="hidden_void_br_emits_no_break",
         ),
         # Without main_content the whole document converts (backwards compatible),
         # boilerplate included; only hidden subtrees are dropped.
@@ -160,7 +160,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
             "Skip to content",
             "hello",
             "gone",
-            id = "default_conversion_unscoped_and_unstripped",
+            id="default_conversion_unscoped_and_unstripped",
         ),
     ],
 )
@@ -179,30 +179,30 @@ def test_hidden_subtrees_are_dropped_from_the_conversion(
         pytest.param(
             '<body><p>keep</p><span aria-hidden="true">decoration</span></body>',
             "decoration",
-            id = "aria_hidden_true_subtree_is_dropped",
+            id="aria_hidden_true_subtree_is_dropped",
         ),
         pytest.param(
             '<body><p>keep</p><span style="visibility:hidden">ghost</span></body>',
             "ghost",
-            id = "inline_style_visibility_hidden_subtree_is_dropped",
+            id="inline_style_visibility_hidden_subtree_is_dropped",
         ),
         # The !important flag must not defeat the display:none detection.
         pytest.param(
             '<body><p>keep</p><div style="display:none !important">gone</div></body>',
             "gone",
-            id = "inline_style_display_none_important_is_dropped",
+            id="inline_style_display_none_important_is_dropped",
         ),
         pytest.param(
             '<body><p>keep</p><div style="color: red; display : none ; margin:0">gone</div></body>',
             "gone",
-            id = "inline_style_display_none_among_other_declarations",
+            id="inline_style_display_none_among_other_declarations",
         ),
         # ``hidden`` is enumerated: the spec maps invalid/empty values to the Hidden
         # state, so hidden="false" is NOT rendered and must not reach the Markdown.
         pytest.param(
             '<body><p>keep</p><div hidden="false">not rendered</div></body>',
             "not rendered",
-            id = "hidden_false_is_still_hidden",
+            id="hidden_false_is_still_hidden",
         ),
     ],
 )
@@ -241,14 +241,14 @@ def test_inline_style_visible_display_is_kept():
             "<body><div><p hidden>gone</div><p>kept</p></body>",
             "gone",
             "kept",
-            id = "hidden_recovers_from_omitted_close_tags",
+            id="hidden_recovers_from_omitted_close_tags",
         ),
         # Void elements also imply closes: <hr> ends an open <p hidden>.
         pytest.param(
             "<body><p hidden>secret<hr>kept text</body>",
             "secret",
             "kept text",
-            id = "hr_implicitly_closes_hidden_paragraph",
+            id="hr_implicitly_closes_hidden_paragraph",
         ),
         # A nested <table> re-scopes <tr>/<td>: an inner <td> must not be an
         # optional-close sibling of a hidden outer <td> across the nested table.
@@ -259,7 +259,7 @@ def test_inline_style_visible_display_is_kept():
             "</tr></table></body>",
             "secret cell",
             "visible cell",
-            id = "nested_hidden_table_does_not_leak_inner_cells",
+            id="nested_hidden_table_does_not_leak_inner_cells",
         ),
     ],
 )
@@ -298,7 +298,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
             "<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>",
             "shown A",
             "shown B",
-            id = "hidden_list_item_omitted_close_keeps_following_items",
+            id="hidden_list_item_omitted_close_keeps_following_items",
         ),
         # A browser closes an open <p> when a <div> arrives, even with an unclosed
         # <span> on top of it. The hidden region must end there, not swallow the
@@ -307,13 +307,13 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
             "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>",
             "visible div",
             "visible paragraph",
-            id = "hidden_paragraph_with_inline_child_implicitly_closed_by_block",
+            id="hidden_paragraph_with_inline_child_implicitly_closed_by_block",
         ),
         pytest.param(
             "<body><ul><li hidden><span>secret<li>visible item</ul><p>after</p></body>",
             "visible item",
             "after",
-            id = "hidden_list_item_with_inline_child_closed_by_next_item",
+            id="hidden_list_item_with_inline_child_closed_by_next_item",
         ),
     ],
 )
@@ -349,7 +349,7 @@ def test_visible_void_hr_still_renders():
 
 
 def test_github_page_main_content_keeps_readme_only():
-    out = html_to_markdown(_GITHUB_PAGE, main_content = True)
+    out = html_to_markdown(_GITHUB_PAGE, main_content=True)
     # README content survives.
     assert "Unsloth Studio" in out
     assert "install.sh" in out
@@ -375,7 +375,7 @@ def test_main_scope_used_when_no_article():
       <footer>footer junk</footer>
     </body>
     """ % ("Body text. " * 40)
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Doc title" in out
     assert "Body text." in out
     assert "Sign in" not in out
@@ -385,7 +385,7 @@ def test_main_scope_used_when_no_article():
 def test_main_content_falls_back_to_full_document():
     # No article/main and a tiny body: the unscoped conversion is returned.
     html = "<body><h1>Tiny</h1><p>Just a short page.</p></body>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Tiny" in out
     assert "Just a short page." in out
 
@@ -394,7 +394,7 @@ def test_tiny_article_stub_does_not_hijack_scope():
     # An <article> with negligible text must not swallow the real content.
     body_text = "Real content paragraph. " * 30
     html = f"<body><article>ad</article><main><p>{body_text}</p></main></body>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Real content paragraph." in out
 
 
@@ -406,7 +406,7 @@ def test_sibling_articles_do_not_leak_after_main_selected():
     card = "Unrelated related-post card teaser blurb. " * 3
     cards = "".join(f"<article><p>{card}</p></article>" for _ in range(5))
     html = f"<body><article><h1>Real</h1><p>{real}</p></article>{cards}</body>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Main article body content" in out
     assert "Unrelated related-post" not in out
 
@@ -420,7 +420,7 @@ def test_boilerplate_filter_preserves_phrase_inside_real_prose():
         "<p>We use cookies to authenticate API requests and keep sessions safe.</p>"
         "<p>%s</p></article>"
     ) % ("Additional documentation content to select the article. " * 8)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "We use cookies to authenticate API requests" in out
 
 
@@ -434,7 +434,7 @@ def test_boilerplate_filter_still_drops_standalone_and_stacked_furniture():
         "<p>Real README body. %s</p>"
         "</article>"
     ) % ("Genuine documentation text. " * 8)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Real README body." in out
     assert "Skip to content" not in out
     assert "Reload to refresh your session" not in out
@@ -446,7 +446,7 @@ def test_boilerplate_not_stripped_inside_code_fences():
         "<pre>assert 'There was an error while loading' in page</pre>"
         "</article></body>" % ("Prose. " * 40)
     )
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "There was an error while loading" in out
 
 
@@ -461,7 +461,7 @@ def test_aside_callout_inside_article_is_kept():
         "This operation is destructive and cannot be undone.</aside>"
         "<p>Trailing paragraph.</p></article>"
     ) % ("Documentation body text to select the article scope. " * 6)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "This operation is destructive and cannot be undone." in out
     assert "Warning:" in out
     # Also kept in the unscoped (backwards-compatible) conversion.
@@ -506,10 +506,10 @@ def test_fetch_page_text_prefers_github_readme(monkeypatch):
 
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         calls.append((url, extra_headers))
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
@@ -537,10 +537,10 @@ def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
 
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         calls.append(url)
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
@@ -559,10 +559,10 @@ def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
 def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         if url.startswith("https://api.github.com/"):
             return "Failed to fetch URL: HTTP 403 rate limited", "", ""
@@ -585,10 +585,10 @@ def _page_text(monkeypatch, url, body, content_type):
 
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         return None, body, content_type
 
@@ -606,7 +606,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/plain",
             ["    indented code"],
             [],
-            id = "fetch_page_text_non_html_returned_raw",
+            id="fetch_page_text_non_html_returned_raw",
         ),
         pytest.param(
             "https://github.com/unslothai/unsloth/tree/main",
@@ -614,7 +614,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/html",
             ["Unsloth Studio"],
             ["Uh oh!"],
-            id = "fetch_page_text_html_conversion",
+            id="fetch_page_text_html_conversion",
         ),
         # A header-less bare HTML fragment must still be sniffed and converted, not served raw.
         pytest.param(
@@ -623,7 +623,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "",
             ["Doc Title", "Readable fragment body."],
             ["<article"],
-            id = "fetch_page_text_missing_content_type_fragment_converted",
+            id="fetch_page_text_missing_content_type_fragment_converted",
         ),
         # A header-less server returning plain text stays raw (whitespace kept).
         pytest.param(
@@ -632,7 +632,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "",
             ["    indented code"],
             [],
-            id = "fetch_page_text_missing_content_type_plain_text_raw",
+            id="fetch_page_text_missing_content_type_plain_text_raw",
         ),
         # text/plain on an HTML body is sniffed and converted, as before extraction existed.
         pytest.param(
@@ -641,7 +641,7 @@ def _page_text(monkeypatch, url, body, content_type):
             "text/plain",
             ["Unsloth Studio"],
             ["<html"],
-            id = "fetch_page_text_mislabeled_text_plain_html_converted",
+            id="fetch_page_text_mislabeled_text_plain_html_converted",
         ),
     ],
 )
@@ -658,10 +658,10 @@ def test_fetch_page_text_content_type_handling(
 def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         return "Failed to fetch URL: HTTP 404 Not Found", "", ""
 
@@ -731,7 +731,7 @@ def test_looks_like_html_leading_table_stays_markdown():
             "```html",
             "<!DOCTYPE html>",
             "# My Project",
-            id = "fetch_page_text_keeps_markdown_readme_with_html_example",
+            id="fetch_page_text_keeps_markdown_readme_with_html_example",
         ),
         # A README opening with a raw HTML <table> badge/layout row then continuing in
         # Markdown must be served verbatim, never run through html_to_markdown (which
@@ -748,7 +748,7 @@ def test_looks_like_html_leading_table_stays_markdown():
             "- feature one\n- feature two",
             "```python",
             "# My Project",
-            id = "fetch_page_text_keeps_markdown_readme_with_leading_table",
+            id="fetch_page_text_keeps_markdown_readme_with_leading_table",
         ),
         # A raw-Markdown README that OPENS with an HTML block tag (<blockquote>, <ul>,
         # <pre>, ...) must not be run through html_to_markdown, which would collapse its
@@ -764,7 +764,7 @@ def test_looks_like_html_leading_table_stays_markdown():
             "# My Project",
             "- step one",
             "```bash",
-            id = "fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown",
+            id="fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown",
         ),
     ],
 )
@@ -773,10 +773,10 @@ def test_fetch_page_text_keeps_a_markdown_readme_verbatim(
 ):
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
         return (None, md_readme, "text/plain")
@@ -802,7 +802,7 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
         def __init__(self):
             self._body = b"<html><body>hello</body></html>"
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             # Hand back the body once, then EOF, so the chunked reader terminates.
             body, self._body = self._body, b""
             return body
@@ -811,7 +811,7 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             return _FakeResp()
 
@@ -828,6 +828,7 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
 def _four_address_getaddrinfo(hostname, port, *args, **kwargs):
     import socket as _socket
+
     return [
         (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::1", port, 0, 0)),
         (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::2", port, 0, 0)),
@@ -858,10 +859,10 @@ class _FakeSocket:
 
 def _recording_create_connection(
     monkeypatch,
-    unreachable = (),
-    stall = (),
-    answers_above = None,
-    overrun = 1.0,
+    unreachable=(),
+    stall=(),
+    answers_above=None,
+    overrun=1.0,
 ):
     """``socket.create_connection`` on a virtual clock: a dial charges its timeout
     rather than sleeping it. *stall* burns the whole dial (*overrun* times it),
@@ -873,8 +874,8 @@ def _recording_create_connection(
 
     def create(
         address,
-        timeout = None,
-        source_address = None,
+        timeout=None,
+        source_address=None,
     ):
         calls.append((address[0], timeout))
         if address[0] in stall:
@@ -901,7 +902,7 @@ def test_pinned_dial_walks_to_the_next_address_when_first_is_unreachable(monkeyp
     # Only the third answers, so trying just the ends cannot pass.
     addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
     unreachable = set(addresses) - {addresses[2]}
-    calls, create = _recording_create_connection(monkeypatch, unreachable = unreachable)
+    calls, create = _recording_create_connection(monkeypatch, unreachable=unreachable)
     monkeypatch.setattr(_socket, "create_connection", create)
 
     dial = tools_mod._pinned_create_connection(addresses)
@@ -932,8 +933,8 @@ def test_pinned_dial_asks_for_no_more_than_the_callers_timeout(monkeypatch, over
     addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1")
     calls, create = _recording_create_connection(
         monkeypatch,
-        stall = set(addresses),
-        overrun = overrun,
+        stall=set(addresses),
+        overrun=overrun,
     )
     monkeypatch.setattr(_socket, "create_connection", create)
 
@@ -956,20 +957,20 @@ def test_pinned_dial_probe_stays_affordable_for_many_records(monkeypatch):
     addresses = tuple(f"198.51.100.{i}" for i in range(31))
     calls, create = _recording_create_connection(
         monkeypatch,
-        stall = set(addresses[:-1]),
-        unreachable = {addresses[-1]},
+        stall=set(addresses[:-1]),
+        unreachable={addresses[-1]},
     )
     monkeypatch.setattr(_socket, "create_connection", create)
 
     dial = tools_mod._pinned_create_connection(addresses)
-    with pytest.raises(OSError, match = addresses[-1]):
+    with pytest.raises(OSError, match=addresses[-1]):
         dial((addresses[0], 443), 1.0)
 
     probes = [timeout for _ip, timeout in calls[: len(addresses)]]
     assert sum(probes) == pytest.approx(tools_mod._PINNED_PROBE_BUDGET)
     assert calls[len(addresses)][1] == pytest.approx(
         (1 - tools_mod._PINNED_PROBE_BUDGET) / len(addresses),
-        rel = 0.05,
+        rel=0.05,
     )
 
 
@@ -983,9 +984,9 @@ def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypa
     addresses = ("192.0.2.1", "2606:4700::2", "104.16.0.1")
     calls, create = _recording_create_connection(
         monkeypatch,
-        unreachable = {addresses[0]},
-        stall = {addresses[1]},
-        answers_above = (addresses[2], 0.05),
+        unreachable={addresses[0]},
+        stall={addresses[1]},
+        answers_above=(addresses[2], 0.05),
     )
     monkeypatch.setattr(_socket, "create_connection", create)
 
@@ -996,8 +997,8 @@ def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypa
     assert [ip for ip, _timeout in calls] == list(addresses) * 2
     assert [timeout for _ip, timeout in calls[:3]] == [0.02] * 3
     # The first fails for free, so the next share rises from a third to a half.
-    assert calls[3][1] == pytest.approx((0.6 - 0.04) / 3, rel = 0.01)
-    assert calls[4][1] == pytest.approx(calls[3][1] * 3 / 2, rel = 0.01)
+    assert calls[3][1] == pytest.approx((0.6 - 0.04) / 3, rel=0.01)
+    assert calls[4][1] == pytest.approx(calls[3][1] * 3 / 2, rel=0.01)
     assert sock.timeout == 0.6
 
 
@@ -1008,11 +1009,11 @@ def test_pinned_https_connection_walks_a_bracketed_ipv6_host(monkeypatch):
     from core.inference import tools as tools_mod
 
     addresses = ("2606:2800:220:1::1", "93.184.216.34")
-    calls, create = _recording_create_connection(monkeypatch, unreachable = {addresses[0]})
+    calls, create = _recording_create_connection(monkeypatch, unreachable={addresses[0]})
     monkeypatch.setattr(_socket, "create_connection", create)
 
     handler = tools_mod._SNIHTTPSHandler("example.com", addresses)
-    conn = handler._sni_connection(f"[{addresses[0]}]", timeout = 30)
+    conn = handler._sni_connection(f"[{addresses[0]}]", timeout=30)
     sock = conn._create_connection((conn.host, conn.port), conn.timeout, None)
 
     assert sock.address == (addresses[1], 443)
@@ -1035,8 +1036,8 @@ def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
 
     def create(
         address,
-        timeout = None,
-        source_address = None,
+        timeout=None,
+        source_address=None,
     ):
         dialled.append(address[0])
         if address[0] != addresses[2]:
@@ -1051,7 +1052,7 @@ def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
         tools_mod._PinnedHTTPHandler(addresses),
         urllib.request.ProxyHandler({}),
     )
-    with opener.open(f"http://[{addresses[0]}]/page", timeout = 5) as resp:
+    with opener.open(f"http://[{addresses[0]}]/page", timeout=5) as resp:
         body = resp.read()
     server.close()
 
@@ -1073,7 +1074,7 @@ def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypat
         def __init__(self):
             self._body = b"slow origin answered"
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             body, self._body = self._body, b""
             return body
 
@@ -1083,7 +1084,7 @@ def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypat
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             seen["timeouts"].append(timeout)
             seen["url"] = req.full_url
@@ -1101,14 +1102,14 @@ def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypat
 
     err, body, _content_type = tools_mod._fetch_url_raw(
         "https://example.com/",
-        timeout = 30,
-        deadline = time.monotonic() + 30,
+        timeout=30,
+        deadline=time.monotonic() + 30,
     )
 
     assert err is None
     assert "slow origin answered" in body
     assert seen["url"] == "https://[2606:4700::1]/"
-    assert seen["timeouts"] == [pytest.approx(30, abs = 1)]
+    assert seen["timeouts"] == [pytest.approx(30, abs=1)]
     addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
     for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
         handler = next(h for h in seen["handlers"] if isinstance(h, handler_type))
@@ -1140,7 +1141,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
         def __init__(self):
             self._body = b"ok"
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             body, self._body = self._body, b""
             return body
 
@@ -1150,7 +1151,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             requested.append(req)
             return _FakeResp()
@@ -1208,7 +1209,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
         def __init__(self):
             self._body = b"ok"
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             body, self._body = self._body, b""
             return body
 
@@ -1219,7 +1220,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             requested.append(req)
             return _FakeResp()
@@ -1272,7 +1273,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
         def __init__(self):
             self._body = b"ok"
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             body, self._body = self._body, b""
             return body
 
@@ -1283,7 +1284,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             requested.append(req)
             return _FakeResp()
@@ -1293,8 +1294,8 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
         return _FakeOpener()
 
     for var in ("http_proxy", "https_proxy", "no_proxy", "all_proxy", "REQUEST_METHOD"):
-        monkeypatch.delenv(var, raising = False)
-        monkeypatch.delenv(var.upper(), raising = False)
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.upper(), raising=False)
     monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
     monkeypatch.setenv("no_proxy", no_proxy)
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
@@ -1341,10 +1342,10 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     # A header-less server returning an HTML body must still be converted.
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         return None, _GITHUB_PAGE, ""
 
@@ -1404,7 +1405,7 @@ def test_many_tiny_articles_do_not_displace_substantial_main():
     )
     main_body = "Authoritative main documentation content. " * 30
     html = f"<body>{cards}<main><h1>Real page</h1><p>{main_body}</p></main></body>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Authoritative main documentation content." in out
     assert "Advertisement card blurb." not in out
 
@@ -1419,7 +1420,7 @@ def test_single_substantial_article_still_preferred_over_main():
         "<div><h2>Languages</h2><p>JavaScript 89.3%</p></div>"
         "</main></body>"
     )
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Real README documentation body text." in out
     assert "JavaScript 89.3%" not in out
 
@@ -1435,7 +1436,7 @@ def test_truncated_open_article_scope_is_scored_and_preferred():
     article_body = "Real README documentation body text. " * 20
     # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Real README documentation body text." in out
     assert "Repository file tree and page chrome." not in out
 
@@ -1444,7 +1445,7 @@ def test_truncated_open_main_scope_is_scored_and_preferred():
     chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
     main_body = "Authoritative main documentation content. " * 30
     html = f"<body>{chrome}<main><h1>Doc</h1><p>{main_body}</p>"
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     assert "Authoritative main documentation content." in out
     assert "Repository file tree and page chrome." not in out
 
@@ -1471,7 +1472,7 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             clock["t"] += 5.0
             hops["n"] += 1
@@ -1492,8 +1493,8 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
 
     err, body, content_type = tools_mod._fetch_url_raw(
         "https://example.com/start",
-        timeout = 30,
-        deadline = clock["t"] + 8.0,
+        timeout=30,
+        deadline=clock["t"] + 8.0,
     )
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
@@ -1516,7 +1517,7 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             opened["n"] += 1
             raise AssertionError("network must not be touched after cancel")
@@ -1530,7 +1531,7 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
 
     err, body, content_type = tools_mod._fetch_url_raw(
         "https://example.com/",
-        cancel_event = ev,
+        cancel_event=ev,
     )
     assert err == "Failed to fetch URL: cancelled."
     assert opened["n"] == 0
@@ -1543,17 +1544,17 @@ def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypa
 
     def fake_fetch(
         url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
+        timeout=30,
+        extra_headers=None,
+        deadline=None,
+        cancel_event=None,
     ):
         seen_deadlines.append(deadline)
         # Fail the README API so the HTML fallback also runs.
         return "Failed to fetch URL: HTTP 429 rate limited", "", ""
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://github.com/unslothai/unsloth", timeout = 30)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth", timeout=30)
     assert out == "Failed to fetch URL: HTTP 429 rate limited"
     # Both attempts ran and shared the same, single deadline value.
     assert len(seen_deadlines) == 2
@@ -1579,7 +1580,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     class _DrippingResp:
         headers = email.message_from_string("")
 
-        def read(self, n = -1):
+        def read(self, n=-1):
             # One chunk, then jump the clock past the deadline so the next
             # between-chunk budget check aborts instead of reading forever.
             clock["t"] += 10.0
@@ -1592,7 +1593,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
         def open(
             self,
             req,
-            timeout = None,
+            timeout=None,
         ):
             return _DrippingResp()
 
@@ -1605,8 +1606,8 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
 
     err, body, content_type = tools_mod._fetch_url_raw(
         "https://example.com/",
-        timeout = 30,
-        deadline = clock["t"] + 5.0,
+        timeout=30,
+        deadline=clock["t"] + 5.0,
     )
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
@@ -1636,9 +1637,9 @@ def test_read_capped_body_deadline_bounds_a_real_socket_drip():
             except OSError:
                 pass
 
-    threading.Thread(target = _drip, daemon = True).start()
+    threading.Thread(target=_drip, daemon=True).start()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    resp = opener.open(f"http://127.0.0.1:{server.getsockname()[1]}/", timeout = 15)
+    resp = opener.open(f"http://127.0.0.1:{server.getsockname()[1]}/", timeout=15)
     started = time.monotonic()
     try:
         err, _body = _read_capped_body(resp, 1_000_000, 15, started + 0.5, None)
@@ -1673,10 +1674,11 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
     def advance_past_deadline():
         import time as _t
+
         _t.sleep(0.1)
         clock["t"] += 100.0
 
-    t = threading.Thread(target = advance_past_deadline, daemon = True)
+    t = threading.Thread(target=advance_past_deadline, daemon=True)
     t.start()
     try:
         ok, reason, ip = tools_mod._resolve_with_budget(
@@ -1716,7 +1718,7 @@ def test_web_search_query_cancelled_skips_search(monkeypatch):
     fake_mod.DDGS = _DDGS
     monkeypatch.setitem(sys.modules, "ddgs", fake_mod)
 
-    out = tools_mod._web_search("some query", cancel_event = ev)
+    out = tools_mod._web_search("some query", cancel_event=ev)
     assert out == "Search cancelled."
     assert called["n"] == 0
 
@@ -1751,7 +1753,7 @@ def test_in_main_header_language_list_does_not_displace_article():
         "<main><header><h1>Cat</h1><div id='p-lang-btn'><ul>%s</ul></div></header>"
         "<div id='mw-content-text'><p>%s</p></div></main>"
     ) % (_interlanguage_list(300), "The cat (Felis catus) is a small mammal. " * 30)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Felis catus" in out
     assert "Lang0" not in out
     assert "x0.wikipedia.org" not in out
@@ -1764,7 +1766,7 @@ def test_header_title_kept_when_article_is_shorter_than_its_language_list():
         _interlanguage_list(300),
         "Short article body. " * 15,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Short article body." in out
     assert "Lang0" not in out
     assert "# Stub" in out
@@ -1775,7 +1777,7 @@ def test_link_only_article_header_reduces_to_its_heading():
         _interlanguage_list(300),
         "Real article content. " * 40,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "# Post title" in out
     assert "Real article content." in out
     assert "Lang0" not in out
@@ -1788,7 +1790,7 @@ def test_article_header_byline_and_date_are_kept():
         "<time>2026-07-12</time><p>A summary of what this essay argues.</p></header>"
         "<p>%s</p></article>"
     ) % ("Real article content. " * 40)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "# Why Rust" in out
     assert "By Jane Doe" in out
     assert "2026-07-12" in out
@@ -1801,7 +1803,7 @@ def test_small_link_header_is_left_alone():
         "<article><header><h1>Post title</h1>"
         "<a href='/subscribe'>Subscribe now</a></header><p>%s</p></article>"
     ) % ("Real article content. " * 40)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Subscribe now" in out
     assert "Real article content." in out
 
@@ -1809,7 +1811,7 @@ def test_small_link_header_is_left_alone():
 def test_unclosed_header_does_not_swallow_the_body():
     # Browsers adopt the rest of the subtree into an unclosed <header>.
     body = "<main><header><h1>Title</h1><p>%s</p></main>" % ("Article body text. " * 40)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Article body text." in out
     assert "Title" in out
 
@@ -1818,7 +1820,7 @@ def test_unclosed_header_with_many_headings_keeps_body():
     # Headings survive, so a heading-rich page clears the size gate alone.
     sections = "".join(f"<h2>Section {i}</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12))
     body = f"<main><header><h1>T</h1>{sections}</main>"
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Body prose here." in out
     assert "Section 0" in out
 
@@ -1828,7 +1830,7 @@ def test_header_strip_applies_without_article_or_main():
         _interlanguage_list(300),
         "Page prose without a main landmark. " * 20,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Page prose without a main landmark." in out
     assert "# Site name" in out
     assert "Lang0" not in out
@@ -1848,7 +1850,7 @@ def test_unclosed_header_in_truncated_scope_keeps_body():
     )
     out = html_to_markdown(
         f"<body><main><header><h1>T</h1>{sections}",
-        main_content = True,
+        main_content=True,
     )
     assert "Body prose here." in out
     assert "Section 0 of the article" in out
@@ -1857,7 +1859,7 @@ def test_unclosed_header_in_truncated_scope_keeps_body():
 def test_sibling_card_does_not_beat_an_article_with_a_swallowed_body():
     real = "<article><header><h1>Real</h1><p>%s</p></article>" % ("Real article body. " * 40)
     card = "<article><p>%s</p></article>" % ("Related card teaser. " * 12)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "Real article body." in out
     assert "Related card teaser." not in out
 
@@ -1868,7 +1870,7 @@ def test_text_heavy_header_is_kept_even_when_longer_than_the_body():
         "Introductory hero text. " * 30,
         "The real body prose. " * 20,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "The real body prose." in out
     assert "Introductory hero text." in out
     assert "# Title" in out
@@ -1877,7 +1879,7 @@ def test_text_heavy_header_is_kept_even_when_longer_than_the_body():
 def test_unclosed_link_in_unclosed_header_keeps_the_body():
     # The <a> adopts the body, so its text is not link furniture.
     body = "<main><header><h1>Title</h1><a href='/'>Home<p>%s</p>" % ("Article body text. " * 40)
-    out = html_to_markdown(f"<body>{body}", main_content = True)
+    out = html_to_markdown(f"<body>{body}", main_content=True)
     assert "Article body text." in out
     assert "# Title" in out
 
@@ -1885,7 +1887,7 @@ def test_unclosed_link_in_unclosed_header_keeps_the_body():
 def test_unclosed_link_does_not_hand_the_scope_to_a_sibling_card():
     real = "<article><header><h1>Real</h1><a href='/'>Home<p>%s</p></article>" % ("REAL " * 60)
     card = "<article><p>%s</p></article>" % ("CARD " * 30)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "REAL" in out
     assert "CARD" not in out
 
@@ -1893,7 +1895,7 @@ def test_unclosed_link_does_not_hand_the_scope_to_a_sibling_card():
 def test_entity_encoded_body_is_not_lost_to_an_unclosed_header():
     out = html_to_markdown(
         "<body><main><header><h1>T</h1><p>%s</p>" % ("&alpha;" * 400),
-        main_content = True,
+        main_content=True,
     )
     assert out.count("α") == 400
 
@@ -1904,7 +1906,7 @@ def test_header_closed_by_an_ancestor_is_kept_whole():
         _interlanguage_list(300),
         "The real body prose. " * 20,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "The real body prose." in out
     assert "# Site" in out
     assert "Lang0" in out
@@ -1915,7 +1917,7 @@ def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
         _interlanguage_list(300),
         "Short real article. " * 4,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Short real article." in out
 
 
@@ -1928,7 +1930,7 @@ def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
             "Article body. " * 30,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Page Title" in out
     assert "Lang0" not in out
     assert out.index("Article body.") < 16000
@@ -1938,7 +1940,7 @@ def test_long_hrefs_count_toward_the_header_size_floor():
     # Short labels, huge destinations: the rendered links are what displace it.
     nav = "".join('<a href="https://e.com/p?%s=%d">L%d</a>' % ("q" * 1000, i, i) for i in range(30))
     body = "<main><header>%s</header><p>%s</p></main>" % (nav, "Article body. " * 30)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "L0" not in out
     assert out.index("Article body.") < 16000
 
@@ -1952,7 +1954,7 @@ def test_long_hrefs_count_toward_the_header_size_floor():
             5,
             "By Jane Doe",
             "Very Long Linked",
-            id = "linked_heading_does_not_condemn_the_byline_beside_it",
+            id="linked_heading_does_not_condemn_the_byline_beside_it",
         ),
         pytest.param(
             "<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>",
@@ -1960,7 +1962,7 @@ def test_long_hrefs_count_toward_the_header_size_floor():
             8,
             "Introductory prose",
             "Byline",
-            id = "anchor_without_href_is_prose_not_link_furniture",
+            id="anchor_without_href_is_prose_not_link_furniture",
         ),
         # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
         pytest.param(
@@ -1970,7 +1972,7 @@ def test_long_hrefs_count_toward_the_header_size_floor():
             900,
             "Title",
             "Jane",
-            id = "a_long_heading_href_does_not_condemn_the_rest_of_the_header",
+            id="a_long_heading_href_does_not_condemn_the_rest_of_the_header",
         ),
     ],
 )
@@ -1978,7 +1980,7 @@ def test_header_link_density_is_measured_on_rendered_text(
     template, filler, repeats, present, also_present
 ):
     body = template % (filler * repeats, "Article body. " * 30)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert present in out
     assert also_present in out
 
@@ -1991,7 +1993,7 @@ def test_linked_heading_is_not_emitted_twice():
             "Article body. " * 30,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "# [Title](/post)" in out
     assert out.count("Title") == 1
 
@@ -2003,7 +2005,7 @@ def test_article_still_beats_a_bigger_card_after_its_header_goes():
         "Short real body. " * 14,
     )
     card = "<article><p>%s</p></article>" % ("Related card teaser text here. " * 12)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "Short real body." in out
     assert "Related card teaser" not in out
 
@@ -2015,7 +2017,7 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
         "Short teaser about the related thing, read more.",
     )
     body = "<p>%s</p>" % ("The real article body the reader wants. " * 40)
-    out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content = True)
+    out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content=True)
     assert "The real article body the reader wants." in out
     assert "Language 7" not in out
 
@@ -2025,7 +2027,7 @@ def test_a_preserved_heading_is_terminated():
     body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
         _interlanguage_list(300)
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "# TitleArticle" not in out
     assert out.startswith("# Title")
     assert "Article body text here." in out
@@ -2037,7 +2039,7 @@ def test_scope_holding_only_furniture_does_not_win_or_blank_the_page():
         _interlanguage_list(300),
         "Real page body prose. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Real page body prose." in out
 
 
@@ -2045,19 +2047,19 @@ def test_header_inside_an_enclosing_link_renders_once():
     body = "<main><a href='/x'><header><h1>T</h1></header></a><p>%s</p></main>" % (
         "Article body. " * 30
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert out.count("[# T](/x)") == 1
 
 
 def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     html = "<table><tr><td><header><table><tr><td>x</td></tr></table></header></td></tr></table>"
-    assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
+    assert html_to_markdown(f"<body>{html}</body>", main_content=True) == html_to_markdown(
         f"<body>{html}</body>"
     )
 
 
 def test_truncated_header_and_blockquote_keep_source_order():
-    out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
+    out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content=True)
     assert out.index("Title") < out.index("Quote")
 
 
@@ -2110,7 +2112,7 @@ def test_header_survives_every_buffer_combination(
         f"<body><main>{open_wrap}{header}{close_wrap if close_header else ''}"
         f"<p>{_GRID_BODY}</p></main></body>"
     )
-    out = html_to_markdown(html, main_content = True)
+    out = html_to_markdown(html, main_content=True)
     # These hold for every shape, however malformed.
     assert "Article body sentence." in out, "body lost"
     assert out.strip(), "empty output"
@@ -2129,7 +2131,7 @@ def test_a_stub_cannot_outrank_a_real_article_on_removed_navigation():
         _interlanguage_list(300),
     )
     real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
-    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content=True)
     assert "Genuine full article body" in out
 
 
@@ -2139,7 +2141,7 @@ def test_unclosed_link_in_a_closed_header_counts_as_furniture():
         "Navigation label text. " * 20,
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Navigation label text." not in out
     assert "Article body." in out
 
@@ -2149,7 +2151,7 @@ def test_enclosing_anchor_text_counts_toward_header_density():
         "".join(f"<span>Nav label {i}</span>" for i in range(40)),
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Nav label 0" not in out
     assert "Article body." in out
 
@@ -2157,10 +2159,10 @@ def test_enclosing_anchor_text_counts_toward_header_density():
 def test_truncated_header_flushes_into_its_enclosing_buffer():
     # The header is inside the link/cell, so its text belongs there, in order.
     assert html_to_markdown(
-        "<body><main><a href='/x'>before<header><h1>Title", main_content = True
+        "<body><main><a href='/x'>before<header><h1>Title", main_content=True
     ).startswith("[before")
     assert html_to_markdown(
-        "<body><main><table><tr><td><header><h1>Title", main_content = True
+        "<body><main><table><tr><td><header><h1>Title", main_content=True
     ).startswith("|")
 
 
@@ -2175,7 +2177,7 @@ def test_empty_blocks_do_not_inflate_the_header_size():
             "Genuine full article body text. " * 20,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Genuine full article body" in out
 
 
@@ -2185,7 +2187,7 @@ def test_blockquoted_heading_is_not_counted_as_retained_prose():
         _interlanguage_list(300),
     )
     real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
-    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content=True)
     assert "Genuine full article body" in out
 
 
@@ -2193,7 +2195,7 @@ def test_list_left_open_in_a_header_does_not_indent_the_body():
     body = "<main><header><h1>T</h1><ul>%s</header><ul><li>Body item one</li></ul></main>" % (
         _interlanguage_list(300)
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     item = next(line for line in out.split("\n") if "Body item one" in line)
     assert item.startswith("*"), item
 
@@ -2216,7 +2218,7 @@ def test_deeply_nested_headers_do_not_blow_up_quadratically():
     for depth in (20, 80):
         html = build(depth)
         start = time.perf_counter()
-        html_to_markdown(html, main_content = True)
+        html_to_markdown(html, main_content=True)
         timings.append(time.perf_counter() - start)
     # Four times the depth and payload, nowhere near quadratic cost.
     assert timings[1] < timings[0] * 12, timings
@@ -2228,7 +2230,7 @@ def test_linked_heading_text_is_counted_once_for_the_size_floor():
         "<a href='/author'>Jane</a></header><p>%s</p></article>"
         % ("Headline word " * 60, "Article body. " * 30)
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Jane" in out
 
 
@@ -2240,7 +2242,7 @@ def test_fenced_code_counts_as_retained_content():
         code,
     )
     sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
-    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content=True)
     assert "comment line 1" in out
     assert "Sibling teaser" not in out
 
@@ -2256,7 +2258,7 @@ def test_dropped_furniture_cannot_dominate_sibling_ranking():
         "Teaser words here. " * 20,
     )
     real = "<article><p>%s</p></article>" % ("The genuine article body text goes here. " * 55)
-    out = html_to_markdown(f"<body>{teaser}{real}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{teaser}{real}</body>", main_content=True)
     assert "The genuine article body text goes here." in out
     assert "Teaser words here." not in out
 
@@ -2269,7 +2271,7 @@ def test_literal_bracket_paren_is_prose_not_a_destination():
         "Tail prose to finish the paragraph off here.",
     )
     sibling = "<article><p>%s</p></article>" % ("Unrelated sibling teaser words. " * 8)
-    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content=True)
     assert "Real article prose that the reader wants to see." in out
     assert "Unrelated sibling teaser" not in out
 
@@ -2286,7 +2288,7 @@ def test_hand_preserved_heading_reaches_the_eligibility_tally():
         )
     )
     real = "<p>%s</p>" % ("The real page body text here. " * 30)
-    out = html_to_markdown(f"<body><main>{real}{card}</main></body>", main_content = True)
+    out = html_to_markdown(f"<body><main>{real}{card}</main></body>", main_content=True)
     assert "The real page body text here." in out
 
 
@@ -2295,7 +2297,7 @@ def test_pre_inside_a_table_cell_is_drained_before_the_row():
     body = "<main><header><h1>T</h1><table><tr><td><pre>CODEMARKER</header><p>%s</p></main>" % (
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "CODEMARKER|" not in out
     assert "Article body." in out
 
@@ -2305,7 +2307,7 @@ def test_post_processing_respects_the_widened_fence():
     # cleaned and de-boilerplated.
     code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
     body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
-    out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
+    out = html_to_markdown(f"<body><main>{body}</main></body>", main_content=True)
     assert "skip to content" in out
     assert "skip to content\n\nreal code line" in out
     assert "real code line   " in out
@@ -2317,7 +2319,7 @@ def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
         "Substantial article prose continues here. " * 6,
     )
     sibling = "<article><p>%s</p></article>" % ("Sibling teaser text. " * 12)
-    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content=True)
     assert "Substantial article prose continues here." in out
     assert "Sibling teaser" not in out
 
@@ -2330,7 +2332,7 @@ def test_structural_headings_do_not_satisfy_the_eligibility_gate():
         _interlanguage_list(300),
     )
     real = "<article><p>%s</p></article>" % ("The real article body text here. " * 20)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "The real article body text here." in out
     assert "Card Title Words" not in out
 
@@ -2346,7 +2348,7 @@ def test_anchor_wrapping_a_heading_preserves_only_the_heading():
             "Article body. " * 30,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Title" in out
     assert "NavWord0000" not in out
     assert out.index("Article body.") < 16000
@@ -2360,7 +2362,7 @@ def test_link_destination_scan_balances_parentheses():
         query,
     )
     real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "The genuine article body text here." in out
     assert "/card(foo)?" not in out
 
@@ -2376,7 +2378,7 @@ def test_literal_fence_inside_pre_does_not_end_the_code_region():
         code,
     )
     sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
-    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content=True)
     assert "code line 1" in out
     assert "Sibling teaser" not in out
 
@@ -2390,7 +2392,7 @@ def test_heading_through_a_nested_buffer_is_emitted_once():
             "Article body. " * 30,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert out.count("UniqueTitle") == 1
 
 
@@ -2400,7 +2402,7 @@ def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
         _interlanguage_list(300),
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert out.count("`") % 2 == 0
     assert "Article body." in out
 
@@ -2412,7 +2414,7 @@ def test_header_text_is_sized_after_whitespace_collapses():
         byline,
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Jane Doe" in out
     assert "July 2026" in out
 
@@ -2425,7 +2427,7 @@ def test_link_destinations_do_not_count_as_retained_prose():
         query,
     )
     real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
-    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content=True)
     assert "The genuine article body text here." in out
     assert "/card?" not in out
 
@@ -2437,7 +2439,7 @@ def test_late_end_tag_cannot_replay_a_recovered_pre_block():
         "NAVJUNK_MARKER\n" * 3,
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "NAVJUNK_MARKER" not in out
     assert out.index("Article body.") < 16000
 
@@ -2456,7 +2458,7 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
             "Article body. " * 30,
         )
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Page Title" in out
     assert "Lang0" not in out
 
@@ -2479,7 +2481,7 @@ def test_heading_survives_a_stripped_header(heading_markup, marker):
         _interlanguage_list(300),
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert marker in out
     assert "Lang0" not in out
     assert "Article body." in out
@@ -2497,8 +2499,8 @@ def test_heading_survives_a_stripped_header(heading_markup, marker):
     ],
 )
 def test_link_list_is_stripped_through_a_nested_buffer(body_markup):
-    body = body_markup.format(links = _interlanguage_list(300), body = "Article body. " * 30)
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    body = body_markup.format(links=_interlanguage_list(300), body="Article body. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert "Lang0" not in out
     assert out.index("Article body.") < 16000
 
@@ -2511,7 +2513,7 @@ def test_hash_prefixed_prose_still_wins_its_scope():
         lines,
     )
     sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
-    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content=True)
     assert "#include" in out
     assert "Sibling teaser" not in out
 
@@ -2532,7 +2534,7 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
             inner,
             "Article body. " * 30,
         )
-        kept.add("L000" in html_to_markdown(f"<body>{body}</body>", main_content = True))
+        kept.add("L000" in html_to_markdown(f"<body>{body}</body>", main_content=True))
     assert len(kept) == 1
 
 
@@ -2541,7 +2543,7 @@ def test_nested_inline_code_closes_every_span_it_opened():
     body = "<main><article><p><code><code>x</code></code></p><p>%s</p></article></main>" % (
         "Body text here. " * 20,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert out.count("`") % 2 == 0
     assert "``x``" in out
 
@@ -2551,7 +2553,7 @@ def test_header_inside_open_inline_code_leaves_delimiters_paired():
     body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
         "Article body. " * 30,
     )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    out = html_to_markdown(f"<body>{body}</body>", main_content=True)
     assert out.count("`") % 2 == 0
     assert "`head`" not in out
     assert "Article body." in out
@@ -2569,7 +2571,7 @@ def test_nested_blockquote_prose_does_not_backtrack():
         + "</main></body>"
     )
     start = time.perf_counter()
-    html_to_markdown(html, main_content = True)
+    html_to_markdown(html, main_content=True)
     assert time.perf_counter() - start < 1.0
 
 
@@ -2588,7 +2590,7 @@ def test_deeply_nested_tags_stay_linear():
     timings = []
     for count in (1000, 4000):
         start = time.perf_counter()
-        html_to_markdown(build(count), main_content = True)
+        html_to_markdown(build(count), main_content=True)
         timings.append(time.perf_counter() - start)
     # Four times the tags, well under sixteen times the work.
     assert timings[1] < timings[0] * 12, timings

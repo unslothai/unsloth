@@ -45,8 +45,8 @@ def test_video_generation_blocks_foreign_chat_load(calls, monkeypatch):
     from core.inference import video as video_module
 
     backend = video_module.get_video_backend()
-    monkeypatch.setattr(backend, "_generate_job_active", True, raising = False)
-    monkeypatch.setattr(backend, "_generate_job_account", ALICE.account_id, raising = False)
+    monkeypatch.setattr(backend, "_generate_job_active", True, raising=False)
+    monkeypatch.setattr(backend, "_generate_job_account", ALICE.account_id, raising=False)
     run_as(ALICE, arb.acquire_for, arb.VIDEO, lambda: None)
     with pytest.raises(arb.GpuBusyForAnotherAccountError):
         run_as(BOB, arb.acquire_for, arb.CHAT, lambda: None)

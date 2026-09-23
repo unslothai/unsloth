@@ -20,7 +20,7 @@ _CACHE_DIRNAME = "snapshot-loads"
 _METADATA_FILENAME = "metadata.json"
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class AppProcessedDatasetCache:
     repo_id: str
     hub_cache: Path
@@ -32,12 +32,13 @@ class AppProcessedDatasetCache:
 
 def app_processed_dataset_cache_root() -> Path:
     from utils.paths.storage_roots import cache_root
+
     return cache_root() / "hf-datasets" / _CACHE_DIRNAME
 
 
 def _canonical_path(path: str | Path) -> Optional[Path]:
     try:
-        return Path(path).expanduser().resolve(strict = False)
+        return Path(path).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
@@ -73,14 +74,15 @@ def _safe_create_child(parent: Path, name: str, root: Path) -> Path:
     candidate = parent / name
     if candidate.is_symlink():
         raise OSError(f"Dataset cache path is a symlink: {candidate}")
-    candidate.mkdir(exist_ok = True)
-    resolved = candidate.resolve(strict = True)
+    candidate.mkdir(exist_ok=True)
+    resolved = candidate.resolve(strict=True)
     resolved.relative_to(root)
     return resolved
 
 
 def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path]:
     from utils.paths.storage_roots import cache_root
+
     try:
         configured_root = Path(cache_root()).expanduser().absolute()
         root_path = app_processed_dataset_cache_root().expanduser().absolute()
@@ -88,8 +90,8 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
         if not relative.parts:
             return None
         if create:
-            configured_root.mkdir(parents = True, exist_ok = True)
-        trusted_root = configured_root.resolve(strict = True)
+            configured_root.mkdir(parents=True, exist_ok=True)
+        trusted_root = configured_root.resolve(strict=True)
         if create:
             resolved = trusted_root
             for part in relative.parts:
@@ -99,7 +101,7 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
             return resolved
         if root_path.is_symlink() or not root_path.is_dir():
             return None
-        resolved = root_path.resolve(strict = True)
+        resolved = root_path.resolve(strict=True)
         resolved.relative_to(trusted_root)
         return resolved
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -109,14 +111,14 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
 def _atomic_write_metadata(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        with temporary.open("x", encoding = "utf-8") as handle:
+        with temporary.open("x", encoding="utf-8") as handle:
             json.dump(payload, handle)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except Exception:
         try:
-            temporary.unlink(missing_ok = True)
+            temporary.unlink(missing_ok=True)
         except OSError:
             pass
         raise
@@ -140,8 +142,8 @@ def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProc
         raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable")
     repo_dir, selected = validated
     try:
-        snapshots = (repo_dir / "snapshots").resolve(strict = True)
-        selected = selected.resolve(strict = True)
+        snapshots = (repo_dir / "snapshots").resolve(strict=True)
+        selected = selected.resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as error:
         raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable") from error
     if selected.parent != snapshots or not selected.is_dir():
@@ -149,8 +151,8 @@ def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProc
     commit_hash = normalized_commit_hash(selected.name)
     if commit_hash is None:
         raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable")
-    hub_cache = repo_dir.parent.resolve(strict = True)
-    root = _resolved_app_processed_dataset_cache_root(create = True)
+    hub_cache = repo_dir.parent.resolve(strict=True)
+    root = _resolved_app_processed_dataset_cache_root(create=True)
     if root is None:
         raise OSError("Dataset cache root is unavailable")
     hub_dir = _safe_create_child(root, _hub_cache_key(hub_cache), root)
@@ -165,25 +167,25 @@ def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProc
                 repo_id,
                 hub_cache,
                 commit_hash,
-                complete = False,
+                complete=False,
             ),
         )
     cache_dir = _safe_create_child(entry_path, "data", root)
     return AppProcessedDatasetCache(
-        repo_id = repo_id,
-        hub_cache = hub_cache,
-        commit_hash = commit_hash,
-        path = entry_path,
-        cache_dir = cache_dir,
-        complete = bool(existing and existing.complete),
+        repo_id=repo_id,
+        hub_cache=hub_cache,
+        commit_hash=commit_hash,
+        path=entry_path,
+        cache_dir=cache_dir,
+        complete=bool(existing and existing.complete),
     )
 
 
 def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -> None:
-    root = _resolved_app_processed_dataset_cache_root(create = False)
+    root = _resolved_app_processed_dataset_cache_root(create=False)
     if root is None:
         raise OSError("Dataset cache root is unavailable")
-    entry_path = entry.path.resolve(strict = True)
+    entry_path = entry.path.resolve(strict=True)
     entry_path.relative_to(root)
     if entry.path.is_symlink() or entry.cache_dir.is_symlink():
         raise OSError(f"Dataset cache path is a symlink: {entry.path}")
@@ -193,7 +195,7 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
             entry.repo_id,
             entry.hub_cache,
             entry.commit_hash,
-            complete = True,
+            complete=True,
         ),
     )
 
@@ -202,12 +204,12 @@ def _read_cache_entry(entry_path: Path, root: Path) -> Optional[AppProcessedData
     try:
         if entry_path.is_symlink() or not entry_path.is_dir():
             return None
-        resolved = entry_path.resolve(strict = True)
+        resolved = entry_path.resolve(strict=True)
         resolved.relative_to(root)
         metadata_path = resolved / _METADATA_FILENAME
         if metadata_path.is_symlink() or metadata_path.stat().st_size > 65536:
             return None
-        payload = json.loads(metadata_path.read_text(encoding = "utf-8"))
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, RuntimeError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("version") != _CACHE_VERSION:
@@ -231,22 +233,22 @@ def _read_cache_entry(entry_path: Path, root: Path) -> Optional[AppProcessedData
     try:
         if cache_dir.is_symlink() or not cache_dir.is_dir():
             return None
-        cache_dir.resolve(strict = True).relative_to(root)
+        cache_dir.resolve(strict=True).relative_to(root)
     except (OSError, RuntimeError, ValueError):
         return None
     return AppProcessedDatasetCache(
-        repo_id = repo_id,
-        hub_cache = hub_cache,
-        commit_hash = commit_hash,
-        path = resolved,
-        cache_dir = cache_dir,
-        complete = payload.get("complete") is True,
+        repo_id=repo_id,
+        hub_cache=hub_cache,
+        commit_hash=commit_hash,
+        path=resolved,
+        cache_dir=cache_dir,
+        complete=payload.get("complete") is True,
     )
 
 
 def iter_app_processed_dataset_caches() -> Iterator[AppProcessedDatasetCache]:
     try:
-        root = _resolved_app_processed_dataset_cache_root(create = False)
+        root = _resolved_app_processed_dataset_cache_root(create=False)
         if root is None:
             return
         hub_dirs = list(root.iterdir())
@@ -295,11 +297,11 @@ def delete_app_processed_dataset_caches(
     if not is_valid_repo_id(repo_id):
         return False, []
     try:
-        root = _resolved_app_processed_dataset_cache_root(create = False)
+        root = _resolved_app_processed_dataset_cache_root(create=False)
         if root is None:
             return False, []
         if hub_cache is not None:
-            canonical_hub = hub_cache.expanduser().resolve(strict = False)
+            canonical_hub = hub_cache.expanduser().resolve(strict=False)
             hub_dirs = [root / _hub_cache_key(canonical_hub)]
         else:
             hub_dirs = list(root.iterdir())
@@ -313,7 +315,7 @@ def delete_app_processed_dataset_caches(
         try:
             if hub_dir.is_symlink() or not hub_dir.is_dir():
                 continue
-            resolved_hub = hub_dir.resolve(strict = True)
+            resolved_hub = hub_dir.resolve(strict=True)
             resolved_hub.relative_to(root)
             target = resolved_hub / repo_key
             if not target.exists():
@@ -321,7 +323,7 @@ def delete_app_processed_dataset_caches(
             if target.is_symlink() or not target.is_dir():
                 failures.append(f"Unsafe processed dataset cache path: {target}")
                 continue
-            resolved_target = target.resolve(strict = True)
+            resolved_target = target.resolve(strict=True)
             resolved_target.relative_to(root)
             if any(child.is_symlink() for child in resolved_target.iterdir()):
                 failures.append(f"Unsafe processed dataset cache entry under: {resolved_target}")

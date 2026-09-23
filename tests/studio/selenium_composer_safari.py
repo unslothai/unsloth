@@ -21,7 +21,7 @@ from _playwright_robust import (
 
 def main():
     output = Path("temp/queue-validation/compatibility")
-    output.mkdir(parents = True, exist_ok = True)
+    output.mkdir(parents=True, exist_ok=True)
     server = driver = None
     report = {"browser": "native Safari", "passed": False}
     try:
@@ -30,9 +30,9 @@ def main():
         wait_for_smoke_page(
             base + "/smoke-prompt-queue-actions.html",
             "/smoke-prompt-queue-actions-main.tsx",
-            proc = server,
+            proc=server,
         )
-        driver = open_session_with_retry(webdriver.Safari, retry_on = SessionNotCreatedException)
+        driver = open_session_with_retry(webdriver.Safari, retry_on=SessionNotCreatedException)
         driver.set_window_size(1100, 900)
         report["version"] = driver.capabilities.get("browserVersion")
         wait = WebDriverWait(driver, 10)
@@ -154,7 +154,7 @@ def main():
         report["passed"] = True
         print(
             "PASS: native Safari queue controls, keyboard, pointer, preview, shortcuts and persistence",
-            flush = True,
+            flush=True,
         )
     except Exception as error:
         report["error"] = str(error)
@@ -164,7 +164,7 @@ def main():
         raise
     finally:
         (output / "native-safari.json").write_text(
-            json.dumps(report, indent = 2) + "\n", encoding = "utf-8"
+            json.dumps(report, indent=2) + "\n", encoding="utf-8"
         )
         if driver:
             driver.quit()

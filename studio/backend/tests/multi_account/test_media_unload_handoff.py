@@ -47,8 +47,8 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(inference.studio_router, prefix = "/api/inference")
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(inference.studio_router, prefix="/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -71,7 +71,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     backend = DiffusionBackend()
     entered, release, response_ready = (threading.Event() for _ in range(3))
     threads, errors, responses = [], [], []
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -104,7 +104,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     def load():
         try:
             getattr(backend, load_method)(
-                str(tmp_path), family_override = "z-image", local_files_only = True
+                str(tmp_path), family_override="z-image", local_files_only=True
             )
         except RuntimeError as exc:
             errors.append(str(exc))
@@ -117,10 +117,10 @@ def test_cpu_load_cancellation_requires_its_owner(
     account_token = bind_account(accounts["alice"])
     try:
         access.note_resident_account("diffusion", str(tmp_path))
-        loader = tracked_thread(target = load, daemon = True)
+        loader = tracked_thread(target=load, daemon=True)
     finally:
         reset_account(account_token)
-    ejector = threading.Thread(target = unload, daemon = True)
+    ejector = threading.Thread(target=unload, daemon=True)
     loader.start()
     try:
         assert entered.wait(10), errors
@@ -166,7 +166,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
     backend = DiffusionBackend()
     entered, pending, release, response_ready = (threading.Event() for _ in range(4))
     threads, errors, responses = [], [], {}
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    (tmp_path / "model_index.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -186,7 +186,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
     def start(account, target):
         token = bind_account(accounts[account])
         try:
-            tracked_thread(target = target, daemon = True).start()
+            tracked_thread(target=target, daemon=True).start()
         finally:
             reset_account(token)
 
@@ -214,7 +214,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
 
     def load():
         try:
-            backend.begin_load(str(tmp_path), family_override = "z-image", local_files_only = True)
+            backend.begin_load(str(tmp_path), family_override="z-image", local_files_only=True)
         except RuntimeError as exc:
             errors.append(str(exc))
 
@@ -228,7 +228,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
             account_token = bind_account(accounts["alice"])
             try:
                 backend.load_pipeline(
-                    str(tmp_path), family_override = "z-image", local_files_only = True
+                    str(tmp_path), family_override="z-image", local_files_only=True
                 )
                 access.note_resident_account("diffusion", str(tmp_path))
             finally:
@@ -318,17 +318,17 @@ def test_unload_does_not_cancel_foreign_generation_started_after_route_check(
         account,
         key,
         path,
-        body = None,
+        body=None,
     ):
         with client_for(account) as client:
-            responses[key] = client.post("/api/inference/" + path, json = body)
+            responses[key] = client.post("/api/inference/" + path, json=body)
 
     unload_thread = threading.Thread(
-        target = post, args = (accounts[unloader], "unload", "images/unload")
+        target=post, args=(accounts[unloader], "unload", "images/unload")
     )
     generate_thread = threading.Thread(
-        target = post,
-        args = (accounts["bob"], "generate", "images/generate", {"prompt": "Bob's private prompt"}),
+        target=post,
+        args=(accounts["bob"], "generate", "images/generate", {"prompt": "Bob's private prompt"}),
     )
     active_generations.reset_for_tests()
     try:
@@ -362,10 +362,10 @@ def test_video_unload_does_not_cancel_later_foreign_reservation(monkeypatch, acc
     render_done = threading.Event()
     results = {}
     family = SimpleNamespace(
-        name = "wan", default_fps = 24, default_num_frames = 49, frame_step = 4, frame_offset = 1
+        name="wan", default_fps=24, default_num_frames=49, frame_step=4, frame_offset=1
     )
     backend._state = SimpleNamespace(
-        family = family, h3_task = None, engine = "diffusers", repo_id = "org/public-video"
+        family=family, h3_task=None, engine="diffusers", repo_id="org/public-video"
     )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video_module, "validate_video_request_shape", lambda *a, **k: None)
@@ -406,13 +406,13 @@ def test_video_unload_does_not_cancel_later_foreign_reservation(monkeypatch, acc
         with client_for(accounts["alice"]) as client:
             results["unload"] = client.post("/api/inference/video/unload")
 
-    thread = threading.Thread(target = unload)
+    thread = threading.Thread(target=unload)
     thread.start()
     try:
         assert arrived.wait(10)
         with client_for(accounts["bob"]) as client:
             response = client.post(
-                "/api/inference/video/generate", json = {"prompt": "private", "steps": 5}
+                "/api/inference/video/generate", json={"prompt": "private", "steps": 5}
             )
         assert response.status_code == 200, response.text
         assert generating.wait(10)
@@ -435,7 +435,7 @@ def test_video_unload_does_not_cancel_later_foreign_reservation(monkeypatch, acc
 
 
 @pytest.mark.parametrize("kind", ["diffusers", "sd_cpp", "video"])
-@pytest.mark.parametrize("managed", [False, True], ids = ["single-user", "managed-install"])
+@pytest.mark.parametrize("managed", [False, True], ids=["single-user", "managed-install"])
 def test_own_unload_still_cancels_and_returns_200(monkeypatch, isolated_auth, kind, managed):
     """The new foreign guard must preserve intentional cancellation of one's own work."""
     from core.inference import video as video_module

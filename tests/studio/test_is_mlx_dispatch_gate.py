@@ -24,7 +24,7 @@ UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 def test_is_mlx_gate_uses_three_required_predicates():
     """_IS_MLX must AND Darwin+arm64+importable-mlx; dropping any breaks dispatch."""
-    tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
+    tree = ast.parse(UNSLOTH_INIT.read_text(encoding="utf-8"))
 
     target = None
     for node in ast.walk(tree):
@@ -84,7 +84,7 @@ def test_is_mlx_gate_true_on_apple_silicon_with_mlx_present(monkeypatch):
 
     # Fake mlx so find_spec returns a non-None ModuleSpec.
     fake_mlx = types.ModuleType("mlx")
-    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
+    fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None)
     fake_mlx.__path__ = []
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
 
@@ -101,7 +101,7 @@ def test_is_mlx_gate_false_when_mlx_missing(monkeypatch):
     import importlib.util
 
     # Apple Silicon but no mlx -> gate must be False.
-    monkeypatch.delitem(sys.modules, "mlx", raising = False)
+    monkeypatch.delitem(sys.modules, "mlx", raising=False)
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
 
@@ -126,6 +126,7 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
 
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         import pytest
+
         pytest.skip("Test host is Apple Silicon; CUDA-side canary doesn't apply.")
 
     import os
@@ -186,6 +187,7 @@ def test_detect_hardware_picks_cuda_on_real_host():
 
     if not torch.cuda.is_available():
         import pytest
+
         pytest.skip("No CUDA available on this host; canary not applicable.")
 
     hw = _import_studio_hardware()

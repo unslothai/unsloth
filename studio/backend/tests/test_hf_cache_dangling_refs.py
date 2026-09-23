@@ -38,16 +38,16 @@ def _build_repo(
     resolves to itself, so the real scanner runs without the Windows symlink privilege."""
     repo_dir = cache_root / name
     refs = repo_dir / "refs"
-    refs.mkdir(parents = True, exist_ok = True)
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    refs.mkdir(parents=True, exist_ok=True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
     for commit in snapshots:
         snapshot = repo_dir / "snapshots" / commit
-        snapshot.mkdir(parents = True, exist_ok = True)
+        snapshot.mkdir(parents=True, exist_ok=True)
         (snapshot / "model.safetensors").write_bytes(payload)
     if ref is not None:
-        (refs / "main").write_text(ref, encoding = "utf-8")
+        (refs / "main").write_text(ref, encoding="utf-8")
     for ref_name, commit in (extra_refs or {}).items():
-        (refs / ref_name).write_text(commit, encoding = "utf-8")
+        (refs / ref_name).write_text(commit, encoding="utf-8")
     return repo_dir
 
 
@@ -86,7 +86,7 @@ def test_huggingface_hub_really_hides_a_repo_behind_a_dangling_ref(tmp_path):
 
     repo_dir = _build_repo(tmp_path)
 
-    raw = scan_cache_dir(cache_dir = str(tmp_path))
+    raw = scan_cache_dir(cache_dir=str(tmp_path))
 
     assert [repo.repo_id for repo in raw.repos] == []
     assert raw.warnings
@@ -112,12 +112,12 @@ def test_dangling_ref_no_longer_hides_an_intact_repo(tmp_path, monkeypatch):
     assert revision.refs == frozenset()
     # ...and is still on disk: the repair never writes to the cache.
     assert _ref_names(repo_dir) == ["main"]
-    assert (repo_dir / "refs" / "main").read_text(encoding = "utf-8") == UPSTREAM_HEAD
+    assert (repo_dir / "refs" / "main").read_text(encoding="utf-8") == UPSTREAM_HEAD
 
 
 def test_recovery_reads_a_multi_file_multi_revision_repo(tmp_path, monkeypatch):
     other = "c" * 40
-    repo_dir = _build_repo(tmp_path, snapshots = (SNAPSHOT, other))
+    repo_dir = _build_repo(tmp_path, snapshots=(SNAPSHOT, other))
     (repo_dir / "snapshots" / SNAPSHOT / "nested").mkdir()
     (repo_dir / "snapshots" / SNAPSHOT / "nested" / "extra.json").write_bytes(b"{}")
 
@@ -134,7 +134,7 @@ def test_recovery_reads_a_multi_file_multi_revision_repo(tmp_path, monkeypatch):
 
 def test_a_still_resolvable_ref_keeps_its_revision_mapping(tmp_path, monkeypatch):
     """One good ref plus one stale ref: hub drops the repo, we keep the mapping."""
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT, extra_refs = {"stale": UPSTREAM_HEAD})
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT, extra_refs={"stale": UPSTREAM_HEAD})
 
     repo = _only_repo(tmp_path, monkeypatch)
 
@@ -148,13 +148,13 @@ def test_a_still_resolvable_ref_keeps_its_revision_mapping(tmp_path, monkeypatch
 def test_a_healthy_cache_is_returned_untouched(tmp_path, monkeypatch):
     import huggingface_hub
 
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT, extra_refs = {"v1.0": SNAPSHOT})
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT, extra_refs={"v1.0": SNAPSHOT})
     calls: list[str] = []
     real_scan = huggingface_hub.scan_cache_dir
 
-    def counting_scan(cache_dir = None):
+    def counting_scan(cache_dir=None):
         calls.append(str(cache_dir))
-        return real_scan(cache_dir = cache_dir)
+        return real_scan(cache_dir=cache_dir)
 
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", counting_scan)
 
@@ -167,9 +167,9 @@ def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monk
     """snapshot_download writes refs/<revision> before fetching the first file, so there is no
     snapshot to recover yet and nothing may be reported as downloaded."""
     repo_dir = tmp_path / "models--Org--Model"
-    (repo_dir / "snapshots").mkdir(parents = True)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text(UPSTREAM_HEAD, encoding = "utf-8")
+    (repo_dir / "snapshots").mkdir(parents=True)
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text(UPSTREAM_HEAD, encoding="utf-8")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
     assert _ref_names(repo_dir) == ["main"]
@@ -177,7 +177,7 @@ def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monk
 
 def test_a_broken_symlink_costs_its_file_and_not_the_repo(tmp_path, monkeypatch):
     """A broken link must not hide readable files beside it."""
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT)
     broken = repo_dir / "snapshots" / SNAPSHOT / "weights.bin"
     try:
         os.symlink(repo_dir / "blobs" / "missing", broken)
@@ -193,8 +193,8 @@ def test_a_broken_symlink_costs_its_file_and_not_the_repo(tmp_path, monkeypatch)
 
 def test_a_stray_file_under_snapshots_costs_itself_and_not_the_repo(tmp_path, monkeypatch):
     """A stray snapshot file is not a revision."""
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
-    (repo_dir / "snapshots" / "notes.txt").write_text("stray", encoding = "utf-8")
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT)
+    (repo_dir / "snapshots" / "notes.txt").write_text("stray", encoding="utf-8")
 
     repo = _only_repo(tmp_path, monkeypatch)
 
@@ -203,23 +203,23 @@ def test_a_stray_file_under_snapshots_costs_itself_and_not_the_repo(tmp_path, mo
 
 def test_a_repo_dropped_for_a_reason_this_cannot_see_is_not_invented(tmp_path):
     """Do not invent a row when the on-disk state does not explain the omission."""
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT)
 
     assert inventory_scan._recover_repo_dropped_by_scan(repo_dir) is None
 
 
 def test_a_refs_file_where_the_refs_directory_belongs_stays_omitted(tmp_path, monkeypatch):
     """Unreadable refs provide too little information to recover the repo."""
-    repo_dir = _build_repo(tmp_path, ref = None)
+    repo_dir = _build_repo(tmp_path, ref=None)
     shutil.rmtree(repo_dir / "refs")
-    (repo_dir / "refs").write_text(SNAPSHOT, encoding = "utf-8")
+    (repo_dir / "refs").write_text(SNAPSHOT, encoding="utf-8")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
 
 
 def test_an_unrelated_repo_is_never_disturbed(tmp_path, monkeypatch):
     hidden = _build_repo(tmp_path)
-    healthy = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Healthy")
+    healthy = _build_repo(tmp_path, ref=SNAPSHOT, name="models--Org--Healthy")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Healthy", "Org/Model"]
     assert _ref_names(hidden) == ["main"]
@@ -232,7 +232,7 @@ def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
     from huggingface_hub import HFCacheInfo
 
     hidden = _build_repo(tmp_path)
-    locked = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Locked")
+    locked = _build_repo(tmp_path, ref=SNAPSHOT, name="models--Org--Locked")
     locked.chmod(0)
     if os.access(locked / "refs", os.R_OK):
         pytest.skip("filesystem does not enforce directory permissions")
@@ -264,7 +264,7 @@ def test_a_scan_object_without_warnings_still_reaches_the_caller(tmp_path, monke
     monkeypatch.setattr(
         huggingface_hub,
         "scan_cache_dir",
-        lambda cache_dir = None: SimpleNamespace(cache_dir = cache_dir),
+        lambda cache_dir=None: SimpleNamespace(cache_dir=cache_dir),
     )
 
     assert len(_scan(tmp_path, monkeypatch)) == 1
@@ -318,7 +318,7 @@ def _autoload_rows(
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_root),
+        lambda: SimpleNamespace(hub_cache=cache_root),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -334,7 +334,7 @@ def test_auto_load_sees_a_model_hidden_behind_a_dangling_ref(tmp_path, monkeypat
     nothing downloaded and the app re-downloaded."""
     repo_dir = _build_repo(tmp_path)
     snapshot = repo_dir / "snapshots" / SNAPSHOT
-    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
@@ -345,8 +345,8 @@ def test_auto_load_sees_a_model_hidden_behind_a_dangling_ref(tmp_path, monkeypat
 
 
 def test_a_resolvable_repo_still_loads_by_repo_id(tmp_path, monkeypatch):
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
-    (repo_dir / "snapshots" / SNAPSHOT / "config.json").write_text("{}", encoding = "utf-8")
+    repo_dir = _build_repo(tmp_path, ref=SNAPSHOT)
+    (repo_dir / "snapshots" / SNAPSHOT / "config.json").write_text("{}", encoding="utf-8")
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
@@ -357,9 +357,9 @@ def test_a_resolvable_repo_still_loads_by_repo_id(tmp_path, monkeypatch):
 def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
     """The pin only defers to refs/main when it names a directory actually on disk; a dangling or
     absent ref has to fall through."""
-    dangling = _build_repo(tmp_path, name = "models--Org--Dangling")
-    resolved = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Resolved")
-    detached = _build_repo(tmp_path, ref = None, name = "models--Org--Detached")
+    dangling = _build_repo(tmp_path, name="models--Org--Dangling")
+    resolved = _build_repo(tmp_path, ref=SNAPSHOT, name="models--Org--Resolved")
+    detached = _build_repo(tmp_path, ref=None, name="models--Org--Detached")
 
     assert inventory_scan.default_ref_snapshot(dangling) is None
     assert inventory_scan.default_ref_snapshot(resolved) is not None
@@ -393,7 +393,7 @@ def _age(path: Path, seconds: float) -> None:
 
 def _autoload_gguf_rows(cache_root: Path, monkeypatch) -> list[dict]:
     """What chat auto-load sees for GGUF: GET /api/hub/cached-gguf."""
-    return _autoload_rows(cache_root, monkeypatch, gguf = True)
+    return _autoload_rows(cache_root, monkeypatch, gguf=True)
 
 
 def _two_snapshot_repo(
@@ -407,16 +407,16 @@ def _two_snapshot_repo(
     commit materialises a newer, weightless snapshot beside the download. ``ref = None`` is what a
     commit-pinned fetch leaves, since only a branch or tag gets a ref."""
     repo_dir = cache_root / "models--Org--Model"
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
     if ref is not None:
-        (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
+        (repo_dir / "refs" / "main").write_text(ref, encoding="utf-8")
     for commit, files in ((OLDER, older_files), (NEWER, newer_files)):
         snapshot = repo_dir / "snapshots" / commit
-        snapshot.mkdir(parents = True, exist_ok = True)
+        snapshot.mkdir(parents=True, exist_ok=True)
         for name, payload in files.items():
             # Keys may name a subdir ("MTP/...") the way real GGUF repos ship companions.
-            (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+            (snapshot / name).parent.mkdir(parents=True, exist_ok=True)
             (snapshot / name).write_bytes(payload)
     _age(repo_dir / "snapshots" / OLDER, 600)
     return repo_dir
@@ -427,8 +427,8 @@ def test_load_id_names_the_snapshot_holding_the_safetensors_payload(tmp_path, mo
     older snapshot than the newest directory."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
+        older_files={"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}"},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -450,8 +450,8 @@ def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, 
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"config.json": b"{}"},
+        older_files={"config.json": b"{}", "Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"config.json": b"{}"},
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -471,8 +471,8 @@ def test_load_id_still_prefers_the_newest_snapshot_that_holds_the_payload(tmp_pa
     newest still wins."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+        older_files={"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}", "model.safetensors": b"\0" * 13},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -485,9 +485,9 @@ def test_load_id_leaves_the_payload_snapshot_when_main_resolves_elsewhere(tmp_pa
     older snapshot repoints it at the weightless one, so loading by repo id finds no weights."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-        ref = NEWER,
+        older_files={"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}"},
+        ref=NEWER,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -496,7 +496,7 @@ def test_load_id_leaves_the_payload_snapshot_when_main_resolves_elsewhere(tmp_pa
     load_id = rows[0]["load_id"]
     # Follow the load identity the way a load would (repo id via refs/main).
     resolved = (
-        repo_dir / "snapshots" / (repo_dir / "refs" / "main").read_text(encoding = "utf-8")
+        repo_dir / "snapshots" / (repo_dir / "refs" / "main").read_text(encoding="utf-8")
         if load_id == "Org/Model"
         else Path(load_id)
     )
@@ -511,9 +511,9 @@ def test_load_id_stays_the_repo_id_when_main_resolves_onto_the_payload(tmp_path,
     the pinned revision keeps winning and the row keeps the repo id."""
     _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
-        ref = OLDER,
+        older_files={"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}", "model.safetensors": b"\0" * 13},
+        ref=OLDER,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -534,8 +534,8 @@ def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
     response = asyncio.run(
         gguf_variants.get_gguf_variants_response(
             row["repo_id"],
-            prefer_local_cache = True,
-            local_path = row["cache_path"],
+            prefer_local_cache=True,
+            local_path=row["cache_path"],
         )
     )
     return [variant.quant for variant in response.variants if variant.downloaded]
@@ -551,8 +551,8 @@ def _listed_gguf_variants(row: dict, cache_root: Path) -> list[str]:
     response = asyncio.run(
         gguf_variants.get_gguf_variants_response(
             row["repo_id"],
-            prefer_local_cache = True,
-            local_path = row["cache_path"],
+            prefer_local_cache=True,
+            local_path=row["cache_path"],
         )
     )
     return sorted(variant.quant for variant in response.variants)
@@ -566,8 +566,8 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -599,7 +599,7 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
             {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
             ["Q8_0"],
             [],
-            id = "nothing-complete-anywhere",
+            id="nothing-complete-anywhere",
         ),
         # When that snapshot holds a whole quant too, offering both shadows it.
         pytest.param(
@@ -609,7 +609,7 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
             },
             ["Q4_K_M", "Q8_0"],
             ["Q8_0"],
-            id = "one-whole-quant-beside-a-half-one",
+            id="one-whole-quant-beside-a-half-one",
         ),
     ],
 )
@@ -620,8 +620,8 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
     whole one sits beside it."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
-        newer_files = newer_files,
+        older_files={"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files=newer_files,
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -636,10 +636,10 @@ def test_a_broken_symlink_costs_its_quant_and_leaves_the_clean_one_loadable(tmp_
     """Recovery keeps a clean quant loadable without offering the broken one."""
     repo_dir = tmp_path / "models--Org--Model"
     snapshot = repo_dir / "snapshots" / SNAPSHOT
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (repo_dir / "blobs").mkdir()
     (repo_dir / "refs").mkdir()
-    (repo_dir / "refs" / "main").write_text(SNAPSHOT, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text(SNAPSHOT, encoding="utf-8")
     good = repo_dir / "blobs" / ("1" * 64)
     good.write_bytes(b"\0" * 2048)
     try:
@@ -667,8 +667,8 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q6_K.gguf": b"\0" * 96},
-        newer_files = {
+        older_files={"Model-Q6_K.gguf": b"\0" * 96},
+        newer_files={
             "Model-Q4_K_M.gguf": b"\0" * 16,
             "Model-Q8_0-00001-of-00002.gguf": b"\0" * 8,
         },
@@ -699,9 +699,9 @@ def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkey
     still fill the config in from the hub, rather than pin a weight-only snapshot."""
     _two_snapshot_repo(
         tmp_path,
-        older_files = {"model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-        ref = NEWER,
+        older_files={"model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}"},
+        ref=NEWER,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -721,9 +721,9 @@ def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, 
     worse than the repo id, which can still complete the config."""
     _two_snapshot_repo(
         tmp_path,
-        older_files = {"model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-        ref = UPSTREAM_HEAD,
+        older_files={"model.safetensors": b"\0" * 11},
+        newer_files={"config.json": b"{}"},
+        ref=UPSTREAM_HEAD,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -759,7 +759,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             {"config.json": b"{}"},
             NEWER,
             True,
-            id = "payload-snapshot-supplies-the-row",
+            id="payload-snapshot-supplies-the-row",
         ),
         # The rule stays narrow: with no self-contained snapshot the newest still supplies the row.
         pytest.param(
@@ -767,7 +767,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
             NEWER,
             False,
-            id = "newest-snapshot-fallback",
+            id="newest-snapshot-fallback",
         ),
         # Both revisions are self-contained and refs/main resolves onto the OLDER one.
         pytest.param(
@@ -779,7 +779,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             OLDER,
             False,
-            id = "repo-id-resolves-onto-the-older-payload",
+            id="repo-id-resolves-onto-the-older-payload",
         ),
     ],
 )
@@ -788,9 +788,9 @@ def test_metadata_describes_the_snapshot_the_row_hands_out(
 ):
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = newer_files,
-        ref = ref,
+        older_files=older_files,
+        newer_files=newer_files,
+        ref=ref,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -813,8 +813,8 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
-        newer_files = {"MTP/Model-Q8_0-MTP.gguf": b"\0" * 64},
+        older_files={"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files={"MTP/Model-Q8_0-MTP.gguf": b"\0" * 64},
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -836,14 +836,14 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
             {"Model-Q4_K_M.gguf": b"\0" * 32},
             {"mmproj-F16.gguf": b"\0" * 64},
             False,
-            id = "projector-stranded-in-another-snapshot",
+            id="projector-stranded-in-another-snapshot",
         ),
         # Negative side: colocated with the pinned quant it is reachable, so the flag must survive.
         pytest.param(
             {"Model-Q4_K_M.gguf": b"\0" * 32, "mmproj-F16.gguf": b"\0" * 64},
             {"config.json": b"{}"},
             True,
-            id = "projector-beside-the-pinned-quant",
+            id="projector-beside-the-pinned-quant",
         ),
     ],
 )
@@ -856,15 +856,15 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = newer_files,
+        older_files=older_files,
+        newer_files=newer_files,
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
     load_dir = Path(rows[0]["load_id"])
     assert load_dir == repo_dir / "snapshots" / OLDER
 
-    listed = list_gguf_variants_from_hf_cache("Org/Model", root = tmp_path)
+    listed = list_gguf_variants_from_hf_cache("Org/Model", root=tmp_path)
     assert listed is not None
     variants, reported_vision, _complete = listed
     # The quant on disk stays offered either way; only the flag may move.
@@ -879,8 +879,8 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
 @pytest.mark.parametrize(
     ("projector", "has_vision"),
     [
-        pytest.param(b"", False, id = "a-projector-with-nothing-behind-the-name"),
-        pytest.param(b"\0" * 128, True, id = "a-projector-with-content"),
+        pytest.param(b"", False, id="a-projector-with-nothing-behind-the-name"),
+        pytest.param(b"\0" * 128, True, id="a-projector-with-content"),
     ],
 )
 def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, projector, has_vision):
@@ -906,7 +906,7 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
         pytest.param(
             {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
             True,
-            id = "the-only-quant-is-half-a-split",
+            id="the-only-quant-is-half-a-split",
         ),
         pytest.param(
             {
@@ -914,7 +914,7 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
                 "Model-Q4_K_M-00002-of-00002.gguf": b"\0" * 256,
             },
             False,
-            id = "the-split-is-whole",
+            id="the-split-is-whole",
         ),
         pytest.param(
             {
@@ -922,15 +922,15 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
                 "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256,
             },
             False,
-            id = "a-whole-quant-beside-the-torn-one",
+            id="a-whole-quant-beside-the-torn-one",
         ),
-        pytest.param({"Model-Q4_K_M.gguf": b"\0" * 256}, False, id = "one-unsplit-quant"),
+        pytest.param({"Model-Q4_K_M.gguf": b"\0" * 256}, False, id="one-unsplit-quant"),
     ],
 )
 def test_a_manifestless_torn_quant_is_still_reported(tmp_path, monkeypatch, files, torn):
     """Every other quant signal comes from a manifest, a marker or the completed set, and an
     interrupted attempt leaves none of those, so the shards are the only evidence of a torn split."""
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: files}, refs={"main": UPSTREAM_HEAD})
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn
     assert rows[0]["capabilities"]["can_chat"] is not torn
@@ -941,8 +941,8 @@ def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monk
     payload snapshot."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"mtp-Model-Q8_0.gguf": b"\0" * 64, "Model-Q8_0.gguf": b"\0" * 128},
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"mtp-Model-Q8_0.gguf": b"\0" * 64, "Model-Q8_0.gguf": b"\0" * 128},
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -957,7 +957,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
 
     if kind == "marker":
         download_manifest.write_cancel_marker(
-            "model", "Org/Model", None, "http", hub_cache = hub_cache
+            "model", "Org/Model", None, "http", hub_cache=hub_cache
         )
         return
     download_manifest.write_manifest(
@@ -966,7 +966,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
         None,
         [download_manifest.ExpectedFile("model.safetensors", 99)],
         "http",
-        hub_cache = hub_cache,
+        hub_cache=hub_cache,
     )
 
 
@@ -975,7 +975,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
     "newer_files, ref, advertised, partial",
     [
         # The signal belongs to the newest snapshot while the row advertises an older, complete one.
-        pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
+        pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id="pinned-older-snapshot"),
         # Negative side: the signal does describe the snapshot the row advertises. No refs/main
         # (a commit-pinned fetch) carries no evidence either way.
         pytest.param(
@@ -983,7 +983,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             None,
             NEWER,
             True,
-            id = "advertised-snapshot",
+            id="advertised-snapshot",
         ),
         # A refs/main naming no directory does carry evidence: that attempt landed no file.
         pytest.param(
@@ -991,7 +991,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             UPSTREAM_HEAD,
             NEWER,
             False,
-            id = "unmaterialised-attempt",
+            id="unmaterialised-attempt",
         ),
         # refs/main resolves onto the OLDER payload snapshot though the newer one is self-contained too.
         pytest.param(
@@ -999,7 +999,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             OLDER,
             "Org/Model",
             False,
-            id = "repo-id-resolves-onto-the-older-payload",
+            id="repo-id-resolves-onto-the-older-payload",
         ),
     ],
 )
@@ -1011,9 +1011,9 @@ def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
     the newest snapshot and neither may be verified against an older revision's payload."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = newer_files,
-        ref = ref,
+        older_files={"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files=newer_files,
+        ref=ref,
     )
     _write_repo_wide_signal(signal, tmp_path)
 
@@ -1036,8 +1036,8 @@ def test_gguf_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
     )
     (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
 
@@ -1057,9 +1057,9 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
     partial."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
-        ref = None,
+        older_files={"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files={"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+        ref=None,
     )
     (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
 
@@ -1077,7 +1077,7 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
         pytest.param(
             {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
             True,
-            id = "pinned-snapshot-holds-half-a-split-quant",
+            id="pinned-snapshot-holds-half-a-split-quant",
         ),
         # Negative side: the pinned snapshot serves the whole quant, so the row stays chattable.
         pytest.param(
@@ -1086,7 +1086,7 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
                 "Model-Q4_K_M-00002-of-00002.gguf": b"\0" * 32,
             },
             False,
-            id = "pinned-snapshot-holds-the-whole-quant",
+            id="pinned-snapshot-holds-the-whole-quant",
         ),
     ],
 )
@@ -1098,9 +1098,9 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
     dangle; suppressing every repo-wide signal on sight then reported the row chattable."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = {"config.json": b"{}"},
-        ref = UPSTREAM_HEAD,
+        older_files=older_files,
+        newer_files={"config.json": b"{}"},
+        ref=UPSTREAM_HEAD,
     )
     (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
 
@@ -1118,7 +1118,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
         pytest.param(
             {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
             True,
-            id = "pinned-snapshot-holds-half-a-sharded-set",
+            id="pinned-snapshot-holds-half-a-sharded-set",
         ),
         # Negative side: the whole set is here, so the row stays chattable.
         pytest.param(
@@ -1129,13 +1129,13 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
-            id = "pinned-snapshot-holds-the-whole-sharded-set",
+            id="pinned-snapshot-holds-the-whole-sharded-set",
         ),
         # Nothing names a total, so nothing proves breakage: the #7374 shape must keep loading.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 32},
             False,
-            id = "pinned-snapshot-holds-an-unsharded-payload",
+            id="pinned-snapshot-holds-an-unsharded-payload",
         ),
         # from_pretrained loads one family, so a torn set beside a complete one keeps auto-load.
         pytest.param(
@@ -1145,7 +1145,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "pytorch_model-00001-of-00002.bin": b"\0" * 32,
             },
             False,
-            id = "pinned-snapshot-holds-a-whole-family-beside-a-broken-one",
+            id="pinned-snapshot-holds-a-whole-family-beside-a-broken-one",
         ),
         pytest.param(
             {
@@ -1156,7 +1156,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "pytorch_model-00001-of-00003.bin": b"\0" * 32,
             },
             False,
-            id = "pinned-snapshot-holds-a-whole-sharded-family-beside-a-broken-one",
+            id="pinned-snapshot-holds-a-whole-sharded-family-beside-a-broken-one",
         ),
         # The half-fetched set stays proof: no training artefact or adapter is a base family.
         pytest.param(
@@ -1167,7 +1167,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "optimizer.bin": b"\0" * 8,
             },
             True,
-            id = "half-a-sharded-set-beside-training-artefacts",
+            id="half-a-sharded-set-beside-training-artefacts",
         ),
         pytest.param(
             {
@@ -1176,7 +1176,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "adapter_model.safetensors": b"\0" * 8,
             },
             True,
-            id = "half-a-sharded-set-beside-an-adapter",
+            id="half-a-sharded-set-beside-an-adapter",
         ),
         # A COMPLETE auxiliary set is not a base family either, so it cannot stand in for one.
         pytest.param(
@@ -1187,7 +1187,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "adapter_model-00002-of-00002.safetensors": b"\0" * 8,
             },
             True,
-            id = "half-a-sharded-set-beside-a-whole-sharded-adapter",
+            id="half-a-sharded-set-beside-a-whole-sharded-adapter",
         ),
         pytest.param(
             {
@@ -1197,7 +1197,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "optimizer-00002-of-00002.bin": b"\0" * 8,
             },
             True,
-            id = "half-a-sharded-set-beside-a-whole-sharded-optimizer",
+            id="half-a-sharded-set-beside-a-whole-sharded-optimizer",
         ),
     ],
 )
@@ -1208,9 +1208,9 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
     attempt rewrote the ref and materialised no directory, so the row offered unfetched shards."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = {"config.json": b"{}"},
-        ref = UPSTREAM_HEAD,
+        older_files=older_files,
+        newer_files={"config.json": b"{}"},
+        ref=UPSTREAM_HEAD,
     )
     (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
 
@@ -1228,7 +1228,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
         pytest.param(
             {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
             True,
-            id = "half-a-sharded-set-and-no-other-trace",
+            id="half-a-sharded-set-and-no-other-trace",
         ),
         # Negative side, and #7374's own shape: the payload is whole, so the row loads from disk.
         pytest.param(
@@ -1239,13 +1239,13 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
                 "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
-            id = "a-whole-sharded-set-and-no-other-trace",
+            id="a-whole-sharded-set-and-no-other-trace",
         ),
         # Nothing names a total, so nothing proves breakage and the row loads.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 32},
             False,
-            id = "an-unsharded-payload-and-no-other-trace",
+            id="an-unsharded-payload-and-no-other-trace",
         ),
         # One whole family beside a torn one still loads, as with an .incomplete blob present.
         pytest.param(
@@ -1255,7 +1255,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
                 "pytorch_model-00001-of-00002.bin": b"\0" * 32,
             },
             False,
-            id = "a-whole-family-beside-a-torn-one-and-no-other-trace",
+            id="a-whole-family-beside-a-torn-one-and-no-other-trace",
         ),
         # A complete auxiliary set does not vouch for torn base shards either.
         pytest.param(
@@ -1266,7 +1266,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
                 "adapter_model-00002-of-00002.safetensors": b"\0" * 8,
             },
             True,
-            id = "half-a-base-set-beside-a-whole-adapter-and-no-other-trace",
+            id="half-a-base-set-beside-a-whole-adapter-and-no-other-trace",
         ),
     ],
 )
@@ -1278,9 +1278,9 @@ def test_a_recovered_snapshot_short_a_shard_is_partial_with_no_other_signal(
     nothing else behind, or the row advertises ``can_chat`` for a payload short a shard."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = {"config.json": b"{}"},
-        ref = UPSTREAM_HEAD,
+        older_files=older_files,
+        newer_files={"config.json": b"{}"},
+        ref=UPSTREAM_HEAD,
     )
     # No .incomplete blob, no marker, no manifest: the point of this case.
     assert not any((repo_dir / "blobs").iterdir())
@@ -1297,12 +1297,12 @@ def test_a_resolving_ref_is_not_judged_on_the_recovery_walk(tmp_path, monkeypatc
     on disk the repo is one ``scan_cache_dir`` already returns, and its answer is left alone."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {
+        older_files={
             "config.json": b"{}",
             "model-00001-of-00002.safetensors": b"\0" * 32,
         },
-        newer_files = {"config.json": b"{}"},
-        ref = OLDER,
+        newer_files={"config.json": b"{}"},
+        ref=OLDER,
     )
 
     assert inventory_scan.default_ref_snapshot(repo_dir) is not None
@@ -1320,9 +1320,9 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     """The recovered row's own scenario. ``refs/main`` is rewritten before the first byte and the
     manifest earlier still, so an update interrupted that early leaves the previous complete snapshot
     as the only payload under a ref that resolves nowhere: it must not arrive partial."""
-    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
+    repo_dir = _build_repo(tmp_path, ref=UPSTREAM_HEAD)
     snapshot = repo_dir / "snapshots" / SNAPSHOT
-    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
     _write_repo_wide_signal(signal, tmp_path)
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -1342,7 +1342,7 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
             NEWER,
             OLDER,
             False,
-            id = "pinned-older-snapshot",
+            id="pinned-older-snapshot",
         ),
         # Negative side: the manifest's quant is incomplete under the pinned snapshot, which judges.
         pytest.param(
@@ -1351,7 +1351,7 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
             None,
             NEWER,
             True,
-            id = "advertised-snapshot",
+            id="advertised-snapshot",
         ),
     ],
 )
@@ -1362,9 +1362,9 @@ def test_a_gguf_variant_manifest_is_scoped_to_the_snapshot_the_row_pins(
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = older_files,
-        newer_files = newer_files,
-        ref = ref,
+        older_files=older_files,
+        newer_files=newer_files,
+        ref=ref,
     )
     download_manifest.write_manifest(
         "model",
@@ -1372,7 +1372,7 @@ def test_a_gguf_variant_manifest_is_scoped_to_the_snapshot_the_row_pins(
         "Q4_K_M",
         [download_manifest.ExpectedFile("Model-Q4_K_M.gguf", 999)],
         "http",
-        hub_cache = tmp_path,
+        hub_cache=tmp_path,
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -1392,12 +1392,12 @@ def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"config.json": b"{}"},
-        ref = NEWER,
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"config.json": b"{}"},
+        ref=NEWER,
     )
     download_manifest.write_cancel_marker(
-        "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path
+        "model", "Org/Model", "Q4_K_M", "http", hub_cache=tmp_path
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -1419,12 +1419,12 @@ def test_a_gguf_variant_marker_against_the_advertised_snapshot_is_still_partial(
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"config.json": b"{}"},
-        newer_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        ref = None,
+        older_files={"config.json": b"{}"},
+        newer_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        ref=None,
     )
     download_manifest.write_cancel_marker(
-        "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path
+        "model", "Org/Model", "Q4_K_M", "http", hub_cache=tmp_path
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
@@ -1441,11 +1441,11 @@ def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(tmp_pa
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"config.json": b"{}"},
-        ref = NEWER,
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"config.json": b"{}"},
+        ref=NEWER,
     )
-    download_manifest.write_cancel_marker("model", "Org/Model", "Q8_0", "http", hub_cache = tmp_path)
+    download_manifest.write_cancel_marker("model", "Org/Model", "Q8_0", "http", hub_cache=tmp_path)
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
@@ -1466,7 +1466,7 @@ def test_equal_mtime_snapshots_order_the_same_way_whatever_the_iteration_order(t
     first = tmp_path / "snapshots" / OLDER
     second = tmp_path / "snapshots" / NEWER
     for snapshot in (first, second):
-        snapshot.mkdir(parents = True)
+        snapshot.mkdir(parents=True)
         os.utime(snapshot, (1_700_000_000, 1_700_000_000))
 
     forward = cache_inventory._newest_snapshot_dir([first, second])
@@ -1484,8 +1484,8 @@ def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeyp
 
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0.gguf": b"\0" * 64},
+        older_files={"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files={"Model-Q8_0.gguf": b"\0" * 64},
     )
     for commit in (OLDER, NEWER):
         os.utime(repo_dir / "snapshots" / commit, (1_700_000_000, 1_700_000_000))
@@ -1500,7 +1500,7 @@ def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeyp
         f"resolves only {sorted(resolvable)}"
     )
     # Both selectors head the same list, so the tie cannot split them again.
-    assert load_dir == next(iter(iter_hf_cache_snapshots("Org/Model", root = tmp_path)))
+    assert load_dir == next(iter(iter_hf_cache_snapshots("Org/Model", root=tmp_path)))
 
 
 def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
@@ -1517,16 +1517,16 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
         (previous, {"Model-Q4_K_M.gguf": b"\0" * 32, "mmproj-F16.gguf": b"\0" * 64}),
     ):
         snapshot = root / "models--Org--Model" / "snapshots" / SNAPSHOT
-        snapshot.mkdir(parents = True)
-        (root / "models--Org--Model" / "refs").mkdir(parents = True)
-        (root / "models--Org--Model" / "refs" / "main").write_text(SNAPSHOT, encoding = "utf-8")
+        snapshot.mkdir(parents=True)
+        (root / "models--Org--Model" / "refs").mkdir(parents=True)
+        (root / "models--Org--Model" / "refs" / "main").write_text(SNAPSHOT, encoding="utf-8")
         for name, payload in files.items():
             (snapshot / name).write_bytes(payload)
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, previous])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
+        lambda: SimpleNamespace(hub_cache=active),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -1582,7 +1582,8 @@ _MTIME_READERS = {
 
 def _function_defs(path: Path) -> dict:
     import ast
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     return {
         node.name: node
         for node in ast.walk(tree)
@@ -1660,16 +1661,16 @@ def _repo_with(
 ):
     """A cache repo with arbitrary per-snapshot contents and ref targets."""
     repo_dir = cache_root / name
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
     for commit, files in snapshots.items():
         snapshot = repo_dir / "snapshots" / commit
-        snapshot.mkdir(parents = True, exist_ok = True)
+        snapshot.mkdir(parents=True, exist_ok=True)
         for rel, payload in files.items():
-            (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+            (snapshot / rel).parent.mkdir(parents=True, exist_ok=True)
             (snapshot / rel).write_bytes(payload)
     for ref_name, commit in refs.items():
-        (repo_dir / "refs" / ref_name).write_text(commit, encoding = "utf-8")
+        (repo_dir / "refs" / ref_name).write_text(commit, encoding="utf-8")
     return repo_dir
 
 
@@ -1678,8 +1679,8 @@ def _snapshot_repo(
     commit,
     files,
     *,
-    ref = UPSTREAM_HEAD,
-    name = "models--Org--Model",
+    ref=UPSTREAM_HEAD,
+    name="models--Org--Model",
 ):
     """A cache repo whose one snapshot ``commit`` holds ``files``, with refs/main at ``ref``."""
     return _repo_with(cache_root, {commit: files}, {"main": ref}, name)
@@ -1697,13 +1698,13 @@ def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, 
             "config.json": b'{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}',
             "model.safetensors": b"\0" * 256,
         },
-        ref = SNAPSHOT,
-        name = "models--user--speech-finetune",
+        ref=SNAPSHOT,
+        name="models--user--speech-finetune",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -1731,13 +1732,13 @@ def test_task_inventory_preserves_cached_community_tts_codec(tmp_path, monkeypat
             "model.safetensors": b"\0" * 256,
             "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
         },
-        ref = SNAPSHOT,
-        name = "models--community--renamed-checkpoint",
+        ref=SNAPSHOT,
+        name="models--community--renamed-checkpoint",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     monkeypatch.setattr(cache_inventory, "detect_local_tts_audio_type", lambda _path: "snac")
     inventory_scan.invalidate_hf_cache_scans()
@@ -1765,13 +1766,13 @@ def test_active_cache_native_fork_loads_by_detected_snapshot(tmp_path, monkeypat
             "config.json": b'{"model_type":"moss_tts_local"}',
             "model.safetensors": b"\0" * 256,
         },
-        ref = SNAPSHOT,
-        name = "models--acme--native-audio-fork",
+        ref=SNAPSHOT,
+        name="models--acme--native-audio-fork",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -1793,13 +1794,13 @@ def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, 
     contents are the only evidence: the guard has to key on ANY dangling ref, not just refs/main."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 256,
             }
         },
-        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+        refs={"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [r["repo_id"] for r in rows] == ["Org/Model"]
@@ -1813,12 +1814,12 @@ def test_a_torn_payload_stays_partial_when_the_ref_resolves(tmp_path, monkeypatc
     unfinished, so an interrupted attempt on another revision must not make it chattable."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {
+        older_files={
             "config.json": b'{"model_type":"llama"}',
             "model-00001-of-00002.safetensors": b"\0" * 256,
         },
-        newer_files = {"README.md": b"probe"},
-        ref = OLDER,
+        newer_files={"README.md": b"probe"},
+        ref=OLDER,
     )
     (repo_dir / "blobs" / "deadbeef.incomplete").write_bytes(b"\0" * 8)
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -1829,7 +1830,7 @@ def test_a_torn_payload_stays_partial_when_the_ref_resolves(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     "weight",
     ["model.safetensors", "adapter_model.safetensors"],
-    ids = ["base", "adapter"],
+    ids=["base", "adapter"],
 )
 def test_selection_passes_over_a_newer_snapshot_whose_weight_file_is_empty(
     tmp_path, monkeypatch, weight
@@ -1840,11 +1841,11 @@ def test_selection_passes_over_a_newer_snapshot_whose_weight_file_is_empty(
     body = b'{"peft_type":"LORA"}' if config == "adapter_config.json" else b'{"model_type":"llama"}'
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {config: body, weight: b"\0" * 256},
             NEWER: {config: body, weight: b""},
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
 
@@ -1860,7 +1861,7 @@ def test_a_snapshot_whose_every_shard_is_empty_names_no_family_to_miss(tmp_path,
     snapshot holding nothing but one named no family at all and read as having nothing missing."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 256,
@@ -1872,7 +1873,7 @@ def test_a_snapshot_whose_every_shard_is_empty_names_no_family_to_miss(tmp_path,
                 "model-00001-of-00002.safetensors": b"",
             },
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
 
@@ -1886,7 +1887,7 @@ def test_a_snapshot_whose_every_shard_is_empty_names_no_family_to_miss(tmp_path,
 @pytest.mark.parametrize(
     "config_body",
     [b'{"model_type": "llam', b"[1,2,3]", b""],
-    ids = ["truncated", "not-an-object", "empty"],
+    ids=["truncated", "not-an-object", "empty"],
 )
 def test_a_required_config_has_to_parse_before_it_proves_a_payload(
     tmp_path, monkeypatch, config_body
@@ -1983,7 +1984,7 @@ def test_an_empty_weight_of_the_rows_own_kind_still_vetoes(tmp_path, monkeypatch
         "model-00003-of-00002.safetensors",
         "model-00001-of-00000.safetensors",
     ],
-    ids = ["index-zero", "index-past-total", "total-zero"],
+    ids=["index-zero", "index-past-total", "total-zero"],
 )
 def test_numbering_no_set_of_shards_can_satisfy_is_a_family_short(tmp_path, monkeypatch, weight):
     """The name still classifies the snapshot, so dropping the family left nothing to be short of
@@ -2014,11 +2015,11 @@ def test_an_empty_checkpoint_is_not_a_payload_this_walk_can_excuse(tmp_path, mon
     different: the file is there, the loader opens it, and there is nothing inside."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {"config.json": b'{"model_type":"llama"}', "model.ckpt": b"\0" * 256},
             NEWER: {"config.json": b'{"model_type":"llama"}', "model.ckpt": b""},
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
 
@@ -2034,7 +2035,7 @@ def test_an_empty_diffusion_weight_is_judged_like_an_empty_checkpoint(tmp_path, 
     selection and the pinned load opens a zero-byte weight."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "diffusion_pytorch_model.safetensors": b"\0" * 256,
@@ -2044,7 +2045,7 @@ def test_an_empty_diffusion_weight_is_judged_like_an_empty_checkpoint(tmp_path, 
                 "diffusion_pytorch_model.safetensors": b"",
             },
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
 
@@ -2175,14 +2176,14 @@ def test_a_weight_under_the_wrong_case_does_not_hide_one_under_the_right_case(
         root = tmp_path / next(iter(extra)).replace(".", "_")
         _repo_with(
             root,
-            snapshots = {
+            snapshots={
                 OLDER: {
                     "config.json": b'{"model_type":"llama"}',
                     "MODEL.SAFETENSORS": b"\0" * 256,
                     **extra,
                 }
             },
-            refs = {"main": UPSTREAM_HEAD},
+            refs={"main": UPSTREAM_HEAD},
         )
 
         rows = _autoload_rows(root, monkeypatch)
@@ -2196,7 +2197,7 @@ def test_a_root_index_naming_shards_in_a_subdirectory_still_serves(tmp_path, mon
     index pointing into weights/ is one it can load. Only the index's own paths are judged."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors.index.json": _shard_index(
@@ -2205,7 +2206,7 @@ def test_a_root_index_naming_shards_in_a_subdirectory_still_serves(tmp_path, mon
                 "weights/model-00001-of-00001.safetensors": b"\0" * 64,
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2257,7 +2258,7 @@ def test_a_family_behind_an_alternate_index_name_is_not_visible(tmp_path, monkey
     a set behind the alternate name is one the pinned load never opens."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-copy-00001-of-00001.safetensors": b"\0" * 64,
@@ -2266,7 +2267,7 @@ def test_a_family_behind_an_alternate_index_name_is_not_visible(tmp_path, monkey
                 ),
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2280,7 +2281,7 @@ def test_an_alternate_index_family_does_not_rescue_a_broken_canonical_one(tmp_pa
     is short, and never reaches the alternate set sitting beside it."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 64,
@@ -2291,7 +2292,7 @@ def test_an_alternate_index_family_does_not_rescue_a_broken_canonical_one(tmp_pa
                 ),
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2367,7 +2368,7 @@ def test_a_whole_quant_does_not_vouch_for_the_weights_row_beside_it(tmp_path, mo
     """The converse: a complete quant is not evidence that a shard-short safetensors set loads."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors.index.json": _shard_index(
@@ -2377,7 +2378,7 @@ def test_a_whole_quant_does_not_vouch_for_the_weights_row_beside_it(tmp_path, mo
                 "Model-Q8_0.gguf": b"GGUF" + b"\0" * 252,
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2411,14 +2412,14 @@ def test_a_root_weight_the_loader_never_opens_does_not_veto_the_name_it_does(tmp
         root = tmp_path / next(iter(extra)).replace(".", "_")
         _repo_with(
             root,
-            snapshots = {
+            snapshots={
                 OLDER: {
                     "config.json": b'{"model_type":"llama"}',
                     "consolidated.safetensors": b"\0" * 256,
                     **extra,
                 }
             },
-            refs = {"main": UPSTREAM_HEAD},
+            refs={"main": UPSTREAM_HEAD},
         )
 
         rows = _autoload_rows(root, monkeypatch)
@@ -2552,15 +2553,15 @@ def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, mon
     torn = dict(whole)
     del torn["model-00002-of-00002.safetensors"]
     # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
-    _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
-    legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
+    _repo_with(active, snapshots={OLDER: torn}, refs={"main": UPSTREAM_HEAD})
+    legacy_repo = _repo_with(legacy, snapshots={NEWER: whole}, refs={"main": NEWER})
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     inventory_scan.invalidate_hf_cache_scans()
 
     response = asyncio.run(
-        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+        models_route.list_cached_models(current_subject="test-user", hf_token=None)
     )
     cached = response["cached"] if isinstance(response, dict) else response.cached
     assert len(cached) == 1
@@ -2572,7 +2573,7 @@ def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, mon
     inventory_scan.invalidate_hf_cache_scans()
 
     response = asyncio.run(
-        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+        models_route.list_cached_models(current_subject="test-user", hf_token=None)
     )
     cached = response["cached"] if isinstance(response, dict) else response.cached
     assert len(cached) == 1
@@ -2601,14 +2602,14 @@ def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monk
     """Negative control for the test above: same shape, but the pinned payload is whole."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {
+        older_files={
             "config.json": b'{"model_type":"llama"}',
             "model-00001-of-00002.safetensors": b"\0" * 256,
             "model-00002-of-00002.safetensors": b"\0" * 256,
             "model.safetensors.index.json": _SHARD_INDEX,
         },
-        newer_files = {"README.md": b"probe"},
-        ref = OLDER,
+        newer_files={"README.md": b"probe"},
+        ref=OLDER,
     )
     (repo_dir / "blobs" / "deadbeef.incomplete").write_bytes(b"\0" * 8)
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2626,28 +2627,28 @@ _WHOLE_SHARDS = {
 @pytest.mark.parametrize(
     ("index", "torn"),
     [
-        pytest.param(_SHARD_INDEX, False, id = "a-map-naming-both-shards"),
+        pytest.param(_SHARD_INDEX, False, id="a-map-naming-both-shards"),
         pytest.param(
             b'{"metadata": {}, "weight_map": {"w0": "model-00001-of-0',
             True,
-            id = "an-index-truncated-mid-write",
+            id="an-index-truncated-mid-write",
         ),
         pytest.param(
             _shard_index("model-00001-of-00003.safetensors"),
             True,
-            id = "a-map-naming-a-shard-that-is-not-here",
+            id="a-map-naming-a-shard-that-is-not-here",
         ),
-        pytest.param(b'{"metadata": {}}', True, id = "an-index-with-no-weight-map"),
+        pytest.param(b'{"metadata": {}}', True, id="an-index-with-no-weight-map"),
         pytest.param(
             _shard_index("model-00001-of-00002.safetensors"),
             True,
-            id = "a-map-covering-only-part-of-the-numbered-family",
+            id="a-map-covering-only-part-of-the-numbered-family",
         ),
-        pytest.param(_shard_index(), True, id = "a-map-naming-nothing"),
+        pytest.param(_shard_index(), True, id="a-map-naming-nothing"),
         pytest.param(
             _shard_index("../../elsewhere.safetensors"),
             True,
-            id = "a-map-reaching-outside-the-snapshot",
+            id="a-map-reaching-outside-the-snapshot",
         ),
     ],
 )
@@ -2656,8 +2657,8 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
     resolve, or the numbered files read as a whole family that nothing can load."""
     _repo_with(
         tmp_path,
-        snapshots = {SNAPSHOT: {**_WHOLE_SHARDS, "model.safetensors.index.json": index}},
-        refs = {"main": UPSTREAM_HEAD},
+        snapshots={SNAPSHOT: {**_WHOLE_SHARDS, "model.safetensors.index.json": index}},
+        refs={"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn
@@ -2678,7 +2679,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 ),
             },
             True,
-            id = "a-whole-bin-cannot-vouch-for-a-broken-safetensors-index",
+            id="a-whole-bin-cannot-vouch-for-a-broken-safetensors-index",
         ),
         pytest.param(
             {
@@ -2689,7 +2690,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
-            id = "the-same-shape-with-an-index-that-resolves",
+            id="the-same-shape-with-an-index-that-resolves",
         ),
         pytest.param(
             {
@@ -2701,12 +2702,12 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 ),
             },
             False,
-            id = "a-whole-model-safetensors-is-picked-before-any-index",
+            id="a-whole-model-safetensors-is-picked-before-any-index",
         ),
         pytest.param(
             {"config.json": b'{"model_type":"llama"}', "pytorch_model.bin": b"\0" * 256},
             False,
-            id = "a-whole-bin-with-nothing-safetensors-beside-it",
+            id="a-whole-bin-with-nothing-safetensors-beside-it",
         ),
         pytest.param(
             {
@@ -2715,7 +2716,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model-00002-of-00002.safetensors": b"\0" * 64,
             },
             True,
-            id = "a-numbered-adapter-set-with-every-file-present",
+            id="a-numbered-adapter-set-with-every-file-present",
         ),
         pytest.param(
             {
@@ -2724,7 +2725,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model.bin": b"\0" * 128,
             },
             False,
-            id = "a-whole-ckpt-payload-beside-a-stray-adapter-file",
+            id="a-whole-ckpt-payload-beside-a-stray-adapter-file",
         ),
         pytest.param(
             {
@@ -2733,12 +2734,12 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model.bin": b"\0" * 128,
             },
             False,
-            id = "a-diffusion-payload-beside-a-stray-adapter-file",
+            id="a-diffusion-payload-beside-a-stray-adapter-file",
         ),
         pytest.param(
             {"config.json": b'{"model_type":"llama"}', "adapter_model.bin": b"\0" * 128},
             True,
-            id = "an-adapter-file-standing-in-for-base-weights-that-are-not-here",
+            id="an-adapter-file-standing-in-for-base-weights-that-are-not-here",
         ),
         pytest.param(
             {
@@ -2748,7 +2749,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "pytorch_model.bin": b"\0" * 256,
             },
             False,
-            id = "index-less-shards-are-looked-past-to-the-whole-bin",
+            id="index-less-shards-are-looked-past-to-the-whole-bin",
         ),
         pytest.param(
             {
@@ -2757,7 +2758,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "model-00002-of-00002.safetensors": b"\0" * 64,
             },
             True,
-            id = "index-less-shards-with-nothing-else-to-fall-back-to",
+            id="index-less-shards-with-nothing-else-to-fall-back-to",
         ),
         pytest.param(
             {
@@ -2766,7 +2767,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model.bin": b"\0" * 128,
             },
             True,
-            id = "a-training-artefact-is-not-a-payload-either",
+            id="a-training-artefact-is-not-a-payload-either",
         ),
         pytest.param(
             {
@@ -2774,12 +2775,12 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model.safetensors": b"\0" * 256,
             },
             False,
-            id = "the-singular-name-peft-resolves",
+            id="the-singular-name-peft-resolves",
         ),
         pytest.param(
             {"adapter_config.json": b'{"peft_type":"LORA"}', "adapter_model.bin": b"\0" * 256},
             False,
-            id = "the-singular-pickle-name",
+            id="the-singular-pickle-name",
         ),
         pytest.param(
             {
@@ -2788,7 +2789,7 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
                 "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
             },
             False,
-            id = "a-whole-singular-adapter-beside-a-numbered-set",
+            id="a-whole-singular-adapter-beside-a-numbered-set",
         ),
     ],
 )
@@ -2796,7 +2797,7 @@ def test_the_family_a_loader_would_pick_is_the_one_judged(tmp_path, monkeypatch,
     """transformers takes model.safetensors, then its index, then pytorch_model.bin, and never falls
     back once one matches, so a whole .bin cannot vouch for a broken safetensors index. peft
     resolves only the singular adapter names and has no shard path, so numbered sets never load."""
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: files}, refs={"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn
     assert rows[0]["capabilities"]["can_chat"] is not torn
@@ -2807,7 +2808,7 @@ def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_pa
     that revision classifies, so membership alone would hand the row back to the half download."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {**_WHOLE_SHARDS, "model.safetensors.index.json": _SHARD_INDEX},
             NEWER: {
                 "config.json": b'{"model_type":"llama"}',
@@ -2815,7 +2816,7 @@ def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_pa
                 "model.safetensors.index.json": _SHARD_INDEX,
             },
         },
-        refs = {"main": NEWER, "stale": UPSTREAM_HEAD},
+        refs={"main": NEWER, "stale": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2828,7 +2829,7 @@ def test_the_load_id_stays_the_repo_id_when_the_default_ref_is_whole(tmp_path, m
     """Control: where refs/main lands on the complete payload the repo id is what loads."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 256,
@@ -2836,7 +2837,7 @@ def test_the_load_id_stays_the_repo_id_when_the_default_ref_is_whole(tmp_path, m
             },
             NEWER: {**_WHOLE_SHARDS, "model.safetensors.index.json": _SHARD_INDEX},
         },
-        refs = {"main": NEWER, "stale": UPSTREAM_HEAD},
+        refs={"main": NEWER, "stale": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2851,12 +2852,12 @@ def test_a_payload_split_across_snapshots_is_not_advertised_runnable(tmp_path, m
     self-contained snapshot and no refs/main, from_pretrained(repo_id) resolves to nothing."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {"model.safetensors": b"\0" * 256},
             NEWER: {"config.json": b'{"model_type":"llama"}'},
         },
-        refs = {"main": UPSTREAM_HEAD},
-        name = "models--Org--Split",
+        refs={"main": UPSTREAM_HEAD},
+        name="models--Org--Split",
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [r["repo_id"] for r in rows] == ["Org/Split"]
@@ -2901,7 +2902,7 @@ def _local_offer(snapshot: Path) -> list:
     from hub.services.models import gguf_variants
 
     response = asyncio.run(
-        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
+        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache=True)
     )
     return sorted((v.quant, bool(v.downloaded)) for v in response.variants)
 
@@ -2970,17 +2971,17 @@ def _primary_gguf_predicates(rel_paths: list[str]) -> dict:
 
     files = [
         SimpleNamespace(
-            file_path = f"/cache/models--Org--Model/snapshots/{SNAPSHOT}/{rel}",
-            file_name = rel.rsplit("/", 1)[-1],
-            size_on_disk = 64,
-            blob_path = None,
-            blob_last_modified = 1.0,
+            file_path=f"/cache/models--Org--Model/snapshots/{SNAPSHOT}/{rel}",
+            file_name=rel.rsplit("/", 1)[-1],
+            size_on_disk=64,
+            blob_path=None,
+            blob_last_modified=1.0,
         )
         for rel in rel_paths
     ]
     repo_info = SimpleNamespace(
-        repo_path = None,
-        revisions = [SimpleNamespace(commit_hash = SNAPSHOT, snapshot_path = "/s", files = files)],
+        repo_path=None,
+        revisions=[SimpleNamespace(commit_hash=SNAPSHOT, snapshot_path="/s", files=files)],
     )
     return {
         "inventory": cache_inventory._repo_gguf_size_bytes(repo_info),
@@ -3035,7 +3036,7 @@ def test_an_mtp_only_recovered_repo_does_not_become_a_chattable_gguf_row(tmp_pat
     more loosely than a healthy one: with only a drafter in the snapshot there is nothing to
     load."""
     _snapshot_repo(tmp_path, SNAPSHOT, {"MTP/drafter-Q4_K_M.gguf": b"\0" * 64})
-    assert _autoload_rows(tmp_path, monkeypatch, gguf = True) == []
+    assert _autoload_rows(tmp_path, monkeypatch, gguf=True) == []
 
 
 def test_an_all_incomplete_repo_is_offered_by_repo_id_as_partial(tmp_path, monkeypatch):
@@ -3048,17 +3049,17 @@ def test_an_all_incomplete_repo_is_offered_by_repo_id_as_partial(tmp_path, monke
     from hub.services.models import gguf_variants
 
     _snapshot_repo(
-        tmp_path, SNAPSHOT, {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}, ref = SNAPSHOT
+        tmp_path, SNAPSHOT, {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}, ref=SNAPSHOT
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
         response = asyncio.run(
-            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache = True)
+            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache=True)
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
@@ -3075,16 +3076,16 @@ def test_a_whole_repo_is_still_offered_by_repo_id_as_downloaded(tmp_path, monkey
 
     from hub.services.models import gguf_variants
 
-    _snapshot_repo(tmp_path, SNAPSHOT, {"Model-Q4_K_M.gguf": b"\0" * 64}, ref = SNAPSHOT)
+    _snapshot_repo(tmp_path, SNAPSHOT, {"Model-Q4_K_M.gguf": b"\0" * 64}, ref=SNAPSHOT)
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
         response = asyncio.run(
-            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache = True)
+            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache=True)
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
@@ -3106,16 +3107,16 @@ def _split_payload_rows(tmp_path, monkeypatch, *, where: str, refs: dict) -> lis
     legacy.mkdir()
     _repo_with(
         active if where == "active" else legacy,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {"config.json": b'{"model_type":"llama"}'},
             OLDER: {"model.safetensors": b"\0" * 256},
         },
-        refs = refs,
+        refs=refs,
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
+        lambda: SimpleNamespace(hub_cache=active),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -3141,7 +3142,7 @@ def test_a_split_payload_is_partial_wherever_it_is_cached(
     the weights in another reads as runnable while nothing on disk can serve it. Neither the cache it
     sits in nor the state of refs/main changes that: a resolving ref only ever lands on one half,
     since a directory that could serve the payload would be a payload snapshot."""
-    rows = _split_payload_rows(tmp_path, monkeypatch, where = where, refs = refs)
+    rows = _split_payload_rows(tmp_path, monkeypatch, where=where, refs=refs)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is True
     assert rows[0]["capabilities"]["can_chat"] is False
@@ -3166,19 +3167,19 @@ def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
     legacy.mkdir()
     _repo_with(
         active if where == "active" else legacy,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors": b"\0" * 256,
             },
             OLDER: {"model.safetensors": b"\0" * 256},
         },
-        refs = refs,
+        refs=refs,
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
+        lambda: SimpleNamespace(hub_cache=active),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -3218,8 +3219,8 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
     repo_dir = _repo_with(
         tmp_path,
         # SNAPSHOT is the companion-only prefetch, OLDER the complete pipeline refs/main names.
-        snapshots = {SNAPSHOT: companion_only, OLDER: pipeline},
-        refs = {"main": OLDER},
+        snapshots={SNAPSHOT: companion_only, OLDER: pipeline},
+        refs={"main": OLDER},
     )
     # The companion-only revision is unambiguously the newest, the shape the repo-wide check picks.
     os.utime(repo_dir / "snapshots" / OLDER, (1_000_000, 1_000_000))
@@ -3228,7 +3229,7 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = tmp_path),
+        lambda: SimpleNamespace(hub_cache=tmp_path),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
@@ -3252,7 +3253,7 @@ def _pipeline_snapshot(tmp_path, manifest: dict, files: dict) -> Path:
     (snapshot / "model_index.json").write_bytes(json.dumps(manifest).encode())
     for name, blob in files.items():
         target = snapshot / name
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob)
     return snapshot
 
@@ -3278,7 +3279,7 @@ _WAN_INDEX = {
     "vae": ["diffusers", "AutoencoderKLWan"],
 }
 # Wan-AI/Wan2.2-TI2V-5B-Diffusers declares transformer_2 as [null, null] and ships no such dir.
-_WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2 = [None, None])
+_WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2=[None, None])
 # Stable Cascade and friends call theirs "decoder"/"prior", so no key matches either fixed name.
 _CASCADE_INDEX = {
     "_class_name": "StableCascadeDecoderPipeline",
@@ -3667,7 +3668,7 @@ def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "a directory called C: cannot exist on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="a directory called C: cannot exist on Windows")
 def test_a_drive_qualified_shard_name_is_outside_the_component_everywhere(tmp_path):
     """The escape above, spelled the way a Windows-written index spells it.
 
@@ -3878,18 +3879,18 @@ def test_the_loader_and_the_inventory_break_an_mtime_tie_the_same_way(tmp_path):
     cache = tmp_path / "hub"
     repo = _repo_with(
         cache,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 64},
             OLDER: {"Model-Q4_K_M.gguf": b"\0" * 64},
         },
-        refs = {"main": SNAPSHOT},
+        refs={"main": SNAPSHOT},
     )
     stamp = 1_700_000_000
     for commit in (SNAPSHOT, OLDER):
         os.utime(repo / "snapshots" / commit, (stamp, stamp))
     assert len({(repo / "snapshots" / c).stat().st_mtime for c in (SNAPSHOT, OLDER)}) == 1
 
-    loader_order = list(_iter_hf_cache_snapshots("Org/Model", cache_dir = cache))
+    loader_order = list(_iter_hf_cache_snapshots("Org/Model", cache_dir=cache))
     assert loader_order, "the loader must still find the snapshots"
     assert loader_order[0] == latest_snapshot_dir(repo)
 
@@ -3906,8 +3907,8 @@ def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
     commits = [c * 40 for c in "abcd"]
     repo = _repo_with(
         cache,
-        snapshots = {c: {"Model-Q4_K_M.gguf": b"\0" * 64} for c in commits},
-        refs = {"main": commits[0]},
+        snapshots={c: {"Model-Q4_K_M.gguf": b"\0" * 64} for c in commits},
+        refs={"main": commits[0]},
     )
     stamp = 1_700_000_000
     for index, commit in enumerate(commits):
@@ -3920,13 +3921,14 @@ def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
         _snapshot_selection_key(s) for s in snapshots
     ]
     assert list(_iter_hf_cache_snapshots_names(cache)) == [
-        s.name for s in sorted(snapshots, key = snapshot_selection_key, reverse = True)
+        s.name for s in sorted(snapshots, key=snapshot_selection_key, reverse=True)
     ]
 
 
 def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
     from utils.models.model_config import _iter_hf_cache_snapshots
-    return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir = cache)]
+
+    return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir=cache)]
 
 
 @pytest.mark.parametrize(
@@ -3940,14 +3942,14 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
     stray shard veto it. No config.json is what says this snapshot can only be an adapter."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "adapter_config.json": b'{"peft_type":"LORA"}',
                 "adapter_model.safetensors": b"\0" * 128,
                 "pytorch_model-00001-of-00002.bin": b"\0" * 64,
             }
         },
-        refs = refs,
+        refs=refs,
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
@@ -3968,14 +3970,14 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
             False,
         ),
     ],
-    ids = ["chat-base", "non-chat-base"],
+    ids=["chat-base", "non-chat-base"],
 )
 def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
     base_config, expected, tmp_path, monkeypatch
 ):
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "adapter_config.json": json.dumps(
                     {
@@ -3987,8 +3989,8 @@ def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
                 "adapter_model.safetensors": b"\0" * 128,
             }
         },
-        refs = {"main": SNAPSHOT},
-        name = "models--Org--Adapter",
+        refs={"main": SNAPSHOT},
+        name="models--Org--Adapter",
     )
     _snapshot_repo(
         tmp_path,
@@ -3997,8 +3999,8 @@ def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
             "config.json": json.dumps(base_config).encode(),
             "model.safetensors": b"\0" * 256,
         },
-        ref = SNAPSHOT,
-        name = "models--Org--Base",
+        ref=SNAPSHOT,
+        name="models--Org--Base",
     )
 
     rows = {row["repo_id"]: row for row in _autoload_rows(tmp_path, monkeypatch)}
@@ -4079,12 +4081,12 @@ def _compat_cached_rows(cache_root: Path, monkeypatch) -> list[dict]:
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [cache_root])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_root),
+        lambda: SimpleNamespace(hub_cache=cache_root),
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
         response = asyncio.run(
-            models_route.list_cached_models(current_subject = "tester", hf_token = None)
+            models_route.list_cached_models(current_subject="tester", hf_token=None)
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
@@ -4097,7 +4099,7 @@ def _compat_cached_rows(cache_root: Path, monkeypatch) -> list[dict]:
         ({"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256}, False),
         ({"config.json": b"{}", "model.safetensors": b"\0" * 256}, True),
     ],
-    ids = ["short-a-shard", "whole-but-only-loadable-by-path"],
+    ids=["short-a-shard", "whole-but-only-loadable-by-path"],
 )
 def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
     snapshot_files, listed, tmp_path, monkeypatch
@@ -4109,7 +4111,7 @@ def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
     this schema now carries ``load_id``, so the row can name the snapshot to load instead of an
     id that does not resolve. Withholding it hid a model whose weights are on disk and loadable.
     """
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: snapshot_files}, refs={"main": UPSTREAM_HEAD})
     rows = _compat_cached_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == (["Org/Model"] if listed else [])
     if listed:
@@ -4129,7 +4131,7 @@ def test_the_compatibility_route_still_lists_what_upstream_returns(tmp_path, mon
             "config.json": b"{}",
             "model.safetensors": b"\0" * 256,
         },
-        ref = SNAPSHOT,
+        ref=SNAPSHOT,
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
 
@@ -4139,8 +4141,8 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
     Those load by id perfectly well, so the gate must not swallow them."""
     _repo_with(
         tmp_path,
-        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
-        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+        snapshots={SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
+        refs={"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
 
@@ -4157,7 +4159,7 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
         # Negative control: a stale ref must not flag a snapshot that matches.
         ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 999, False),
     ],
-    ids = ["stale-ref-beside-a-resolving-main", "no-stale-ref", "main-dangles", "matches-manifest"],
+    ids=["stale-ref-beside-a-resolving-main", "no-stale-ref", "main-dangles", "matches-manifest"],
 )
 def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
     refs, on_disk, partial, tmp_path
@@ -4170,8 +4172,8 @@ def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
 
     repo = _repo_with(
         tmp_path,
-        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * on_disk}},
-        refs = refs,
+        snapshots={SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * on_disk}},
+        refs=refs,
     )
     download_manifest.write_manifest(
         "model",
@@ -4179,11 +4181,11 @@ def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
         None,
         [download_manifest.ExpectedFile("model.safetensors", 999)],
         "http",
-        hub_cache = tmp_path,
+        hub_cache=tmp_path,
     )
     snapshot = repo / "snapshots" / SNAPSHOT
     assert (
-        inventory_scan.is_snapshot_partial("model", "Org/Model", repo, snapshot_dir = snapshot)
+        inventory_scan.is_snapshot_partial("model", "Org/Model", repo, snapshot_dir=snapshot)
         is partial
     )
 
@@ -4194,8 +4196,8 @@ def test_the_compatibility_route_withholds_a_half_payload_landing(tmp_path, monk
     classify on its own: the shard check says nothing about a snapshot carrying no weights."""
     _repo_with(
         tmp_path,
-        snapshots = {SNAPSHOT: {"config.json": b"{}"}, OLDER: {"model.safetensors": b"\0" * 256}},
-        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+        snapshots={SNAPSHOT: {"config.json": b"{}"}, OLDER: {"model.safetensors": b"\0" * 256}},
+        refs={"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == []
 
@@ -4205,11 +4207,11 @@ def test_the_compatibility_route_lists_a_self_contained_landing(tmp_path, monkey
     snapshot refs/main names is loadable by id and stays listed."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256},
             OLDER: {"model.safetensors": b"\0" * 256},
         },
-        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+        refs={"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
 
@@ -4259,13 +4261,13 @@ def test_an_adapter_beside_a_config_json_is_still_an_adapter(tmp_path, monkeypat
         # A zero-byte config.json fails to parse, whole weights or not.
         ({"config.json": b"", "model.safetensors": b"\0" * 256}, True),
     ],
-    ids = ["shards-split-across-extensions", "one-whole-family", "empty-config"],
+    ids=["shards-split-across-extensions", "one-whole-family", "empty-config"],
 )
 def test_a_recovered_snapshot_that_cannot_load_is_not_chattable(
     files, partial, tmp_path, monkeypatch
 ):
     """Three ways a recovered snapshot passes a shard count yet cannot be loaded."""
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: files}, refs={"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is partial
@@ -4280,14 +4282,14 @@ def test_a_complete_older_snapshot_beats_a_torn_newer_one(tmp_path, monkeypatch)
 
     repo = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 64,
             },
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     os.utime(repo / "snapshots" / OLDER, (1_700_000_000, 1_700_000_000))
     os.utime(repo / "snapshots" / SNAPSHOT, (1_700_009_999, 1_700_009_999))
@@ -4305,11 +4307,11 @@ def test_the_newest_snapshot_still_wins_when_both_are_complete(tmp_path, monkeyp
 
     repo = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
             SNAPSHOT: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     os.utime(repo / "snapshots" / OLDER, (1_700_000_000, 1_700_000_000))
     os.utime(repo / "snapshots" / SNAPSHOT, (1_700_009_999, 1_700_009_999))
@@ -4404,12 +4406,12 @@ def test_an_adapter_file_does_not_stand_in_for_a_checkpoint_row(tmp_path, monkey
         {"config.json": b"{}", "diffusion_pytorch_model.safetensors": b"\0" * 256},
         {"config.json": b"{}", "model.ckpt": b"\0" * 256},
     ],
-    ids = ["safetensors", "adapter", "diffusion", "ckpt-file"],
+    ids=["safetensors", "adapter", "diffusion", "ckpt-file"],
 )
 def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, monkeypatch):
     """The controls that bound the rule above: only weights of the OTHER kind standing in is
     evidence of a mismatch, and finding no family at all is not."""
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: files}, refs={"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is False
@@ -4471,11 +4473,11 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
             True,
         ),
     ],
-    ids = ["no-index", "empty-index", "with-index", "bin-index", "adapter-shards-never-load"],
+    ids=["no-index", "empty-index", "with-index", "bin-index", "adapter-shards-never-load"],
 )
 def test_a_sharded_base_family_needs_its_index(files, partial, tmp_path, monkeypatch):
     """A complete shard set is not a loadable payload on its own."""
-    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(tmp_path, snapshots={SNAPSHOT: files}, refs={"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is partial
@@ -4512,8 +4514,8 @@ def test_a_root_weight_no_runtime_discovers_by_name_does_not_serve(tmp_path, mon
         root = tmp_path / "-".join(sorted(weights)).replace(".", "_")
         _repo_with(
             root,
-            snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', **weights}},
-            refs = {"main": UPSTREAM_HEAD},
+            snapshots={OLDER: {"config.json": b'{"model_type":"llama"}', **weights}},
+            refs={"main": UPSTREAM_HEAD},
         )
 
         rows = _autoload_rows(root, monkeypatch)
@@ -4566,7 +4568,7 @@ def test_a_stale_incomplete_blob_still_reaches_the_snapshot_it_describes(tmp_pat
     """Control for the test above: with no quant to mis-attribute, the blob charges the row."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors.index.json": _shard_index(
@@ -4575,7 +4577,7 @@ def test_a_stale_incomplete_blob_still_reaches_the_snapshot_it_describes(tmp_pat
                 "model-00001-of-00002.safetensors": b"\0" * 256,
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     (repo_dir / "blobs" / "abc123.incomplete").write_bytes(b"\0" * 8)
 
@@ -4591,7 +4593,7 @@ def test_an_index_whose_map_holds_a_non_string_does_not_hide_the_repo(tmp_path, 
     edited index next to a loadable checkpoint would make the whole model disappear."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
                 "pytorch_model.bin": b"\0" * 256,
@@ -4600,7 +4602,7 @@ def test_an_index_whose_map_holds_a_non_string_does_not_hide_the_repo(tmp_path, 
                 ).encode(),
             }
         },
-        refs = {"main": SNAPSHOT},
+        refs={"main": SNAPSHOT},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -4616,7 +4618,7 @@ def test_a_stale_root_shard_beside_a_whole_index_does_not_tear_the_snapshot(tmp_
     walk's families ahead of the index that was selected charges the load for it anyway."""
     _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors.index.json": _shard_index(
@@ -4626,7 +4628,7 @@ def test_a_stale_root_shard_beside_a_whole_index_does_not_tear_the_snapshot(tmp_
                 "model-00001-of-00002.safetensors": b"\0" * 256,
             }
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -4661,7 +4663,7 @@ def test_a_torn_revision_does_not_choose_the_format_over_a_whole_one(tmp_path, m
     loads: an interrupted safetensors attempt must not hide the checkpoint beside it."""
     repo_dir = _repo_with(
         tmp_path,
-        snapshots = {
+        snapshots={
             OLDER: {
                 "config.json": b'{"model_type":"llama"}',
                 "model.safetensors.index.json": _SHARD_INDEX,
@@ -4672,7 +4674,7 @@ def test_a_torn_revision_does_not_choose_the_format_over_a_whole_one(tmp_path, m
                 "pytorch_model.bin": b"\0" * 256,
             },
         },
-        refs = {"main": UPSTREAM_HEAD},
+        refs={"main": UPSTREAM_HEAD},
     )
     _age(repo_dir / "snapshots" / OLDER, 600)
 
@@ -4709,7 +4711,7 @@ def test_a_shard_total_from_a_filename_is_not_materialised(tmp_path):
     anything on disk. Recovery runs this check over repos scan_cache_dir used to drop, so listing
     cached models must not allocate a set per declared shard: -of-999999999 costs gigabytes."""
     snapshot = tmp_path / "snapshots" / SNAPSHOT
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M-00001-of-1000000.gguf").write_bytes(b"GGUF" + b"\0" * 252)
 
     tracemalloc.start()
@@ -4726,7 +4728,7 @@ def test_a_shard_total_from_a_filename_is_not_materialised(tmp_path):
 def test_a_whole_split_quant_is_still_complete(tmp_path):
     """Control for the test above: a set whose shards are all present still reads complete."""
     snapshot = tmp_path / "snapshots" / SNAPSHOT
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     for index in (1, 2):
         (snapshot / f"Model-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"GGUF" + b"\0" * 252)
 
@@ -4737,10 +4739,10 @@ def test_a_whole_split_quant_is_still_complete(tmp_path):
 def test_oserror_in_one_repo_does_not_hide_healthy_models(tmp_path, monkeypatch, bad_repo_name):
     from huggingface_hub import scan_cache_dir
 
-    healthy = _build_repo(tmp_path, ref = SNAPSHOT)
-    broken = _build_repo(tmp_path, ref = SNAPSHOT, name = bad_repo_name)
+    healthy = _build_repo(tmp_path, ref=SNAPSHOT)
+    broken = _build_repo(tmp_path, ref=SNAPSHOT, name=bad_repo_name)
     bad_file = broken / "snapshots" / SNAPSHOT / "README.md"
-    bad_file.write_text("unreadable", encoding = "utf-8")
+    bad_file.write_text("unreadable", encoding="utf-8")
     original_stat = Path.stat
 
     def stat_with_windows_error(path, *args, **kwargs):

@@ -61,7 +61,7 @@ def test_both_stamps_wait_for_the_accelerator(monkeypatch):
     dispatch, not prefill. Measured on an RTX 3080: a 2048-token prefill reads as 28ms
     unsynchronized against 77ms synchronized, a 2.7x overstated prompt speed."""
     synced = []
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: synced.append(device))
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: synced.append(device))
 
     cuda = torch.device("cuda", 0)
     timer = GenerationTimer()
@@ -77,7 +77,7 @@ def test_a_faulting_device_wait_still_produces_timings(monkeypatch):
     sites stamp in a finally and only then end the streamer, so a raise here would strand the
     stream and kill the worker thread on a traceback that belongs to generate()."""
 
-    def _boom(device = None):
+    def _boom(device=None):
         raise RuntimeError("CUDA error: device-side assert triggered")
 
     monkeypatch.setattr(torch.cuda, "synchronize", _boom)
@@ -93,7 +93,7 @@ def test_a_faulting_device_wait_still_produces_timings(monkeypatch):
 
 def test_a_cpu_run_has_nothing_to_wait_for(monkeypatch):
     monkeypatch.setattr(
-        torch.cuda, "synchronize", lambda device = None: pytest.fail("cpu run synchronized")
+        torch.cuda, "synchronize", lambda device=None: pytest.fail("cpu run synchronized")
     )
     timer = GenerationTimer()
     timer.start()
@@ -112,10 +112,10 @@ def test_a_run_that_never_reached_prefill_reports_no_prompt_window():
 
 def test_timings_carry_llama_server_field_names_and_rates():
     timings = build_generation_timings(
-        prompt_n = 400,
-        predicted_n = 50,
-        prompt_ms = 200.0,
-        predicted_ms = 2000.0,
+        prompt_n=400,
+        predicted_n=50,
+        prompt_ms=200.0,
+        predicted_ms=2000.0,
     )
     assert timings["prompt_n"] == 400
     assert timings["prompt_ms"] == pytest.approx(200.0)
@@ -131,10 +131,10 @@ def test_timings_carry_llama_server_field_names_and_rates():
 def test_unmeasured_split_reports_no_timings_at_all():
     assert (
         build_generation_timings(
-            prompt_n = 10,
-            predicted_n = 5,
-            prompt_ms = None,
-            predicted_ms = 12.0,
+            prompt_n=10,
+            predicted_n=5,
+            prompt_ms=None,
+            predicted_ms=12.0,
         )
         is None
     )
@@ -149,10 +149,10 @@ def test_unmeasured_split_reports_no_timings_at_all():
 )
 def test_unratable_prompt_window_omits_the_rate_instead_of_reporting_zero(prompt_n, prompt_ms):
     timings = build_generation_timings(
-        prompt_n = prompt_n,
-        predicted_n = 5,
-        prompt_ms = prompt_ms,
-        predicted_ms = 100.0,
+        prompt_n=prompt_n,
+        predicted_n=5,
+        prompt_ms=prompt_ms,
+        predicted_ms=100.0,
     )
     assert "prompt_per_second" not in timings
     assert "prompt_per_token_ms" not in timings
@@ -162,7 +162,7 @@ def test_unratable_prompt_window_omits_the_rate_instead_of_reporting_zero(prompt
 def test_processor_stamps_the_boundary_and_keeps_the_penalty_processor():
     timer = GenerationTimer()
     timer.start()
-    penalty = _make_presence_penalty_processor(1.0, prompt_len = 2)
+    penalty = _make_presence_penalty_processor(1.0, prompt_len=2)
     processors = with_prefill_boundary_processor(penalty, timer)
     assert len(processors) == 2
 
@@ -181,7 +181,7 @@ def test_boundary_lands_after_the_prompt_forward_pass_in_a_real_generate():
 
     torch.manual_seed(0)
     model = GPT2LMHeadModel(
-        GPT2Config(vocab_size = 64, n_positions = 128, n_embd = 32, n_layer = 2, n_head = 2)
+        GPT2Config(vocab_size=64, n_positions=128, n_embd=32, n_layer=2, n_head=2)
     ).eval()
 
     seen_lengths = []
@@ -198,21 +198,21 @@ def test_boundary_lands_after_the_prompt_forward_pass_in_a_real_generate():
 
     timer.start()
     outputs = model.generate(
-        input_ids = torch.randint(0, 64, (1, prompt_len)),
-        max_new_tokens = 8,
-        do_sample = False,
-        logits_processor = processors,
-        pad_token_id = 0,
+        input_ids=torch.randint(0, 64, (1, prompt_len)),
+        max_new_tokens=8,
+        do_sample=False,
+        logits_processor=processors,
+        pad_token_id=0,
     )
     timer.finish()
 
     assert seen_lengths[0] == prompt_len  # first call sees the prompt alone: prefill
     assert seen_lengths == list(range(prompt_len, prompt_len + 8))
     timings = build_generation_timings(
-        prompt_n = prompt_len,
-        predicted_n = int(outputs.shape[1]) - prompt_len,
-        prompt_ms = timer.prompt_ms,
-        predicted_ms = timer.predicted_ms,
+        prompt_n=prompt_len,
+        predicted_n=int(outputs.shape[1]) - prompt_len,
+        prompt_ms=timer.prompt_ms,
+        predicted_ms=timer.predicted_ms,
     )
     assert timings["predicted_n"] == 8
     assert timings["prompt_per_second"] > 0
@@ -229,7 +229,7 @@ def test_processor_wraps_a_zero_penalty_run_that_has_no_processor_of_its_own():
     assert torch.equal(out, scores)
 
 
-@pytest.mark.skipif(InferenceBackend is None, reason = "unsloth stack not installed")
+@pytest.mark.skipif(InferenceBackend is None, reason="unsloth stack not installed")
 def test_recorded_stats_carry_timings_only_when_a_run_was_timed():
     timer = GenerationTimer()
     timer.start()
@@ -239,10 +239,10 @@ def test_recorded_stats_carry_timings_only_when_a_run_was_timed():
     backend = InferenceBackend.__new__(InferenceBackend)
     InferenceBackend._record_generation_stats(
         backend,
-        prompt_tokens = 64,
-        completion_tokens = 16,
-        max_new_tokens = 256,
-        timer = timer,
+        prompt_tokens=64,
+        completion_tokens=16,
+        max_new_tokens=256,
+        timer=timer,
     )
     stats = backend.last_generation_stats
     assert stats["usage"] == {"prompt_tokens": 64, "completion_tokens": 16, "total_tokens": 80}
@@ -251,8 +251,8 @@ def test_recorded_stats_carry_timings_only_when_a_run_was_timed():
 
     InferenceBackend._record_generation_stats(
         backend,
-        prompt_tokens = 64,
-        completion_tokens = 16,
-        max_new_tokens = 256,
+        prompt_tokens=64,
+        completion_tokens=16,
+        max_new_tokens=256,
     )
     assert "timings" not in backend.last_generation_stats

@@ -60,19 +60,19 @@ def write_metadata(
     choice,
     approved_checksums,
     *,
-    requested_tag = "latest",
-    llama_tag = "b9001",
-    release_tag = "release-1",
-    prebuilt_fallback_used = False,
+    requested_tag="latest",
+    llama_tag="b9001",
+    release_tag="release-1",
+    prebuilt_fallback_used=False,
 ):
     write_prebuilt_metadata(
         install_dir,
-        requested_tag = requested_tag,
-        llama_tag = llama_tag,
-        release_tag = release_tag,
-        choice = choice,
-        approved_checksums = approved_checksums,
-        prebuilt_fallback_used = prebuilt_fallback_used,
+        requested_tag=requested_tag,
+        llama_tag=llama_tag,
+        release_tag=release_tag,
+        choice=choice,
+        approved_checksums=approved_checksums,
+        prebuilt_fallback_used=prebuilt_fallback_used,
     )
 
 
@@ -80,16 +80,16 @@ def release_plan(
     attempts,
     approved_checksums,
     *,
-    requested_tag = "latest",
-    llama_tag = "b9001",
-    release_tag = "release-1",
+    requested_tag="latest",
+    llama_tag="b9001",
+    release_tag="release-1",
 ):
     return INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
-        requested_tag = requested_tag,
-        llama_tag = llama_tag,
-        release_tag = release_tag,
-        attempts = attempts,
-        approved_checksums = approved_checksums,
+        requested_tag=requested_tag,
+        llama_tag=llama_tag,
+        release_tag=release_tag,
+        attempts=attempts,
+        approved_checksums=approved_checksums,
     )
 
 
@@ -99,13 +99,13 @@ def asset_choice(**overrides) -> AssetChoice:
     only when it must differ."""
     name = overrides.pop("name", "llama-b9001-bin-ubuntu-x64.tar.gz")
     defaults = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "release-1",
-        name = name,
-        url = f"https://example.com/{name}",
-        source_label = "upstream",
-        install_kind = "linux-cpu",
-        expected_sha256 = "a" * 64,
+        repo="unslothai/llama.cpp",
+        tag="release-1",
+        name=name,
+        url=f"https://example.com/{name}",
+        source_label="upstream",
+        install_kind="linux-cpu",
+        expected_sha256="a" * 64,
     )
     defaults.update(overrides)
     return AssetChoice(**defaults)
@@ -118,7 +118,7 @@ _SOURCE = ("ggml-org/llama.cpp", "upstream-source")
 
 def _artifact_hash(asset_name: str, sha256: str, origin: tuple[str, str]) -> ApprovedArtifactHash:
     repo, kind = origin
-    return ApprovedArtifactHash(asset_name = asset_name, sha256 = sha256, repo = repo, kind = kind)
+    return ApprovedArtifactHash(asset_name=asset_name, sha256=sha256, repo=repo, kind=kind)
 
 
 def release_checksums(
@@ -138,76 +138,76 @@ def release_checksums(
     for asset_name, sha256, origin in assets:
         artifacts[asset_name] = _artifact_hash(asset_name, sha256, origin)
     return ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        source_commit = source_commit,
-        artifacts = artifacts,
+        repo="unslothai/llama.cpp",
+        release_tag=release_tag,
+        upstream_tag=upstream_tag,
+        source_commit=source_commit,
+        artifacts=artifacts,
     )
 
 
 def _host(platform: dict, **overrides) -> HostInfo:
     base = dict(
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
     )
     return HostInfo(**{**platform, **base, **overrides})
 
 
 def linux_host(**overrides) -> HostInfo:
     platform = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
+        system="Linux",
+        machine="x86_64",
+        is_windows=False,
+        is_linux=True,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
     )
     return _host(platform, **overrides)
 
 
 def windows_host(**overrides) -> HostInfo:
     platform = dict(
-        system = "Windows",
-        machine = "AMD64",
-        is_windows = True,
-        is_linux = False,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
+        system="Windows",
+        machine="AMD64",
+        is_windows=True,
+        is_linux=False,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
     )
     return _host(platform, **overrides)
 
 
 def macos_host(**overrides) -> HostInfo:
     platform = dict(
-        system = "Darwin",
-        machine = "arm64",
-        is_windows = False,
-        is_linux = False,
-        is_macos = True,
-        is_x86_64 = False,
-        is_arm64 = True,
+        system="Darwin",
+        machine="arm64",
+        is_windows=False,
+        is_linux=False,
+        is_macos=True,
+        is_x86_64=False,
+        is_arm64=True,
     )
     return _host(platform, **overrides)
 
 
 def approved_release_checksums_for_asset(asset_name: str, sha256: str) -> ApprovedReleaseChecksums:
     return ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = "b9334",
-        upstream_tag = "b9334",
-        artifacts = {
+        repo="unslothai/llama.cpp",
+        release_tag="b9334",
+        upstream_tag="b9334",
+        artifacts={
             asset_name: ApprovedArtifactHash(
-                asset_name = asset_name,
-                sha256 = sha256,
-                repo = "unslothai/llama.cpp",
-                kind = "diffusion-visual-server",
+                asset_name=asset_name,
+                sha256=sha256,
+                repo="unslothai/llama.cpp",
+                kind="diffusion-visual-server",
             )
         },
     )
@@ -217,22 +217,22 @@ def approved_checksums_for(
     upstream_tag: str, *, source_archive: Path, bundle_archive: Path, bundle_name: str
 ) -> ApprovedReleaseChecksums:
     return ApprovedReleaseChecksums(
-        repo = "local",
-        release_tag = upstream_tag,
-        upstream_tag = upstream_tag,
-        source_commit = None,
-        artifacts = {
+        repo="local",
+        release_tag=upstream_tag,
+        upstream_tag=upstream_tag,
+        source_commit=None,
+        artifacts={
             source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
-                asset_name = source_archive_logical_name(upstream_tag),
-                sha256 = sha256_file(source_archive),
-                repo = "ggml-org/llama.cpp",
-                kind = "upstream-source",
+                asset_name=source_archive_logical_name(upstream_tag),
+                sha256=sha256_file(source_archive),
+                repo="ggml-org/llama.cpp",
+                kind="upstream-source",
             ),
             bundle_name: ApprovedArtifactHash(
-                asset_name = bundle_name,
-                sha256 = sha256_file(bundle_archive),
-                repo = "local",
-                kind = "local-test-bundle",
+                asset_name=bundle_name,
+                sha256=sha256_file(bundle_archive),
+                repo="local",
+                kind="local-test-bundle",
             ),
         },
     )
@@ -247,57 +247,57 @@ def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
     managed = tmp_path / "managed"
     nested = managed / "nested"
     external = tmp_path / "external"
-    nested.mkdir(parents = True)
+    nested.mkdir(parents=True)
     external.mkdir()
-    (managed / "AGENTS.md").write_text("managed root", encoding = "utf-8")
-    (nested / "AGENTS.md").write_text("managed nested", encoding = "utf-8")
-    (managed / "CLAUDE.md").write_text("managed Claude root", encoding = "utf-8")
-    (nested / "CLAUDE.md").write_text("managed Claude nested", encoding = "utf-8")
-    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
-    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
+    (managed / "AGENTS.md").write_text("managed root", encoding="utf-8")
+    (nested / "AGENTS.md").write_text("managed nested", encoding="utf-8")
+    (managed / "CLAUDE.md").write_text("managed Claude root", encoding="utf-8")
+    (nested / "CLAUDE.md").write_text("managed Claude nested", encoding="utf-8")
+    (external / "AGENTS.md").write_text("user owned", encoding="utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding="utf-8")
     try:
-        (managed / "external-link").symlink_to(external, target_is_directory = True)
+        (managed / "external-link").symlink_to(external, target_is_directory=True)
         linked_root = tmp_path / "linked-root"
-        linked_root.symlink_to(external, target_is_directory = True)
+        linked_root.symlink_to(external, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
     assert remove_agent_instruction_files(managed) == 4
     assert not list(managed.rglob("AGENTS.md"))
     assert not list(managed.rglob("CLAUDE.md"))
-    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
-    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
+    assert (external / "AGENTS.md").read_text(encoding="utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding="utf-8") == "user-owned Claude"
 
     assert remove_agent_instruction_files(linked_root) == 0
     assert (external / "AGENTS.md").exists()
     assert (external / "CLAUDE.md").exists()
 
 
-@pytest.mark.skipif(os.name != "nt", reason = "Windows junction behavior")
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
 def test_remove_agent_instruction_files_does_not_follow_windows_junctions(tmp_path: Path):
     managed = tmp_path / "managed"
     external = tmp_path / "external"
     managed.mkdir()
     external.mkdir()
-    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
-    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
+    (external / "AGENTS.md").write_text("user owned", encoding="utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding="utf-8")
 
     nested_junction = managed / "external-junction"
     root_junction = tmp_path / "linked-root"
     for junction in (nested_junction, root_junction):
         result = subprocess.run(
             ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(external)],
-            capture_output = True,
-            text = True,
-            check = False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if result.returncode != 0:
             pytest.skip(f"directory junctions unavailable: {result.stderr or result.stdout}")
 
     assert remove_agent_instruction_files(managed) == 0
     assert remove_agent_instruction_files(root_junction) == 0
-    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
-    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
+    assert (external / "AGENTS.md").read_text(encoding="utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding="utf-8") == "user-owned Claude"
 
 
 def test_remove_agent_instruction_files_prunes_linklike_directories(
@@ -305,11 +305,11 @@ def test_remove_agent_instruction_files_prunes_linklike_directories(
 ):
     managed = tmp_path / "managed"
     simulated_junction = managed / "simulated-junction"
-    simulated_junction.mkdir(parents = True)
+    simulated_junction.mkdir(parents=True)
     agents = simulated_junction / "AGENTS.md"
     claude = simulated_junction / "CLAUDE.md"
-    agents.write_text("external instructions", encoding = "utf-8")
-    claude.write_text("external Claude instructions", encoding = "utf-8")
+    agents.write_text("external instructions", encoding="utf-8")
+    claude.write_text("external Claude instructions", encoding="utf-8")
     real_is_link_or_junction = INSTALL_LLAMA_PREBUILT._is_link_or_junction
 
     monkeypatch.setattr(
@@ -330,8 +330,8 @@ def test_remove_agent_instruction_files_continues_after_unlink_error(
     managed.mkdir()
     blocked = managed / "AGENTS.md"
     removable = managed / "CLAUDE.md"
-    blocked.write_text("blocked", encoding = "utf-8")
-    removable.write_text("remove me", encoding = "utf-8")
+    blocked.write_text("blocked", encoding="utf-8")
+    removable.write_text("remove me", encoding="utf-8")
     real_unlink = Path.unlink
 
     def selective_unlink(path: Path, *args, **kwargs):
@@ -355,7 +355,7 @@ def test_main_resolves_linked_install_path_and_preserves_cleanup_root(
     linked_root = tmp_path / "linked-root"
     target.mkdir()
     try:
-        linked_root.symlink_to(target, target_is_directory = True)
+        linked_root.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -384,9 +384,9 @@ def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
     install_dir = tmp_path / "target"
     linked_root = tmp_path / "linked-root"
     install_dir.mkdir()
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{}", encoding = "utf-8")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{}", encoding="utf-8")
     try:
-        linked_root.symlink_to(install_dir, target_is_directory = True)
+        linked_root.symlink_to(install_dir, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -412,7 +412,7 @@ def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
             "latest",
             "unslothai/llama.cpp",
             "",
-            instruction_cleanup_root = linked_root.absolute(),
+            instruction_cleanup_root=linked_root.absolute(),
         )
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
@@ -474,7 +474,7 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     hydrate_source_tree(
-        upstream_tag, install_dir, work_dir, expected_sha256 = sha256_file(archive_path)
+        upstream_tag, install_dir, work_dir, expected_sha256=sha256_file(archive_path)
     )
 
     assert (install_dir / "CMakeLists.txt").exists()
@@ -543,10 +543,10 @@ def test_hydrate_source_tree_prefers_release_asset_for_mix(
         commit,
         install_dir,
         work_dir,
-        source_repo = "unslothai/llama.cpp",
-        expected_sha256 = sha256_file(archive_path),
-        exact_source = True,
-        asset_url = asset_url,
+        source_repo="unslothai/llama.cpp",
+        expected_sha256=sha256_file(archive_path),
+        exact_source=True,
+        asset_url=asset_url,
     )
     assert seen == [asset_url]
     assert (install_dir / "CMakeLists.txt").exists()
@@ -580,10 +580,10 @@ def test_hydrate_source_tree_falls_back_to_codeload_when_asset_missing(
         commit,
         install_dir,
         work_dir,
-        source_repo = "unslothai/llama.cpp",
-        expected_sha256 = sha256_file(archive_path),
-        exact_source = True,
-        asset_url = asset_url,
+        source_repo="unslothai/llama.cpp",
+        expected_sha256=sha256_file(archive_path),
+        exact_source=True,
+        asset_url=asset_url,
     )
     assert (install_dir / "CMakeLists.txt").exists()
 
@@ -612,8 +612,8 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
             b"__all__ = []\n",
         )
     with tarfile.open(bundle_archive, "w:gz") as archive:
-        add_bytes_to_tar(archive, "llama-server", b"#!/bin/sh\nexit 0\n", mode = 0o755)
-        add_bytes_to_tar(archive, "llama-quantize", b"#!/bin/sh\nexit 0\n", mode = 0o755)
+        add_bytes_to_tar(archive, "llama-server", b"#!/bin/sh\nexit 0\n", mode=0o755)
+        add_bytes_to_tar(archive, "llama-quantize", b"#!/bin/sh\nexit 0\n", mode=0o755)
         add_bytes_to_tar(archive, "libllama.so.0.0.1", b"libllama")
         add_symlink_to_tar(archive, "libllama.so.0", "libllama.so.0.0.1")
         add_symlink_to_tar(archive, "libllama.so", "libllama.so.0")
@@ -659,16 +659,16 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
 
     host = linux_host()
     choice = asset_choice(
-        name = bundle_name,
-        url = "file://bundle",
-        repo = "local",
-        tag = upstream_tag,
-        source_label = "local",
-        is_ready_bundle = True,
-        install_kind = "linux-cuda",
-        bundle_profile = "cuda13-newer",
-        runtime_line = "cuda13",
-        expected_sha256 = sha256_file(bundle_archive),
+        name=bundle_name,
+        url="file://bundle",
+        repo="local",
+        tag=upstream_tag,
+        source_label="local",
+        is_ready_bundle=True,
+        install_kind="linux-cuda",
+        bundle_profile="cuda13-newer",
+        runtime_line="cuda13",
+        expected_sha256=sha256_file(bundle_archive),
     )
 
     install_dir = tmp_path / "install"
@@ -682,17 +682,17 @@ def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
         install_dir,
         work_dir,
         probe_path,
-        requested_tag = upstream_tag,
-        llama_tag = upstream_tag,
-        release_tag = upstream_tag,
-        approved_checksums = approved_checksums_for(
+        requested_tag=upstream_tag,
+        llama_tag=upstream_tag,
+        release_tag=upstream_tag,
+        approved_checksums=approved_checksums_for(
             upstream_tag,
-            source_archive = source_archive,
-            bundle_archive = bundle_archive,
-            bundle_name = bundle_name,
+            source_archive=source_archive,
+            bundle_archive=bundle_archive,
+            bundle_name=bundle_name,
         ),
-        prebuilt_fallback_used = False,
-        quantized_path = quantized_path,
+        prebuilt_fallback_used=False,
+        quantized_path=quantized_path,
     )
 
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
@@ -762,14 +762,14 @@ def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(
 
     host = windows_host()
     choice = asset_choice(
-        name = bundle_name,
-        url = "file://bundle.zip",
-        repo = "local",
-        tag = upstream_tag,
-        source_label = "local",
-        is_ready_bundle = True,
-        install_kind = "windows-cpu",
-        expected_sha256 = sha256_file(bundle_archive),
+        name=bundle_name,
+        url="file://bundle.zip",
+        repo="local",
+        tag=upstream_tag,
+        source_label="local",
+        is_ready_bundle=True,
+        install_kind="windows-cpu",
+        expected_sha256=sha256_file(bundle_archive),
     )
 
     install_dir = tmp_path / "install"
@@ -783,17 +783,17 @@ def test_validate_prebuilt_choice_creates_repo_shaped_windows_install(
         install_dir,
         work_dir,
         probe_path,
-        requested_tag = upstream_tag,
-        llama_tag = upstream_tag,
-        release_tag = upstream_tag,
-        approved_checksums = approved_checksums_for(
+        requested_tag=upstream_tag,
+        llama_tag=upstream_tag,
+        release_tag=upstream_tag,
+        approved_checksums=approved_checksums_for(
             upstream_tag,
-            source_archive = source_archive,
-            bundle_archive = bundle_archive,
-            bundle_name = bundle_name,
+            source_archive=source_archive,
+            bundle_archive=bundle_archive,
+            bundle_name=bundle_name,
         ),
-        prebuilt_fallback_used = False,
-        quantized_path = quantized_path,
+        prebuilt_fallback_used=False,
+        quantized_path=quantized_path,
     )
 
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
@@ -826,7 +826,7 @@ def test_activate_install_tree_restores_existing_install_after_activation_failur
 
     with pytest.raises(
         PrebuiltFallback,
-        match = "activation failed; restored previous install",
+        match="activation failed; restored previous install",
     ):
         activate_install_tree(staging_dir, install_dir, host)
 
@@ -849,10 +849,10 @@ def test_activate_install_tree_preserves_symlink_to_resolved_target(
     staging_dir = tmp_path / "staging"
     install_dir.mkdir()
     staging_dir.mkdir()
-    (install_dir / "old.txt").write_text("old", encoding = "utf-8")
-    (staging_dir / "new.txt").write_text("new", encoding = "utf-8")
+    (install_dir / "old.txt").write_text("old", encoding="utf-8")
+    (staging_dir / "new.txt").write_text("new", encoding="utf-8")
     try:
-        linked_root.symlink_to(install_dir, target_is_directory = True)
+        linked_root.symlink_to(install_dir, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
@@ -860,7 +860,7 @@ def test_activate_install_tree_preserves_symlink_to_resolved_target(
     activate_install_tree(staging_dir, linked_root.resolve(), linux_host())
 
     assert linked_root.is_symlink()
-    assert (linked_root / "new.txt").read_text(encoding = "utf-8") == "new"
+    assert (linked_root / "new.txt").read_text(encoding="utf-8") == "new"
     assert not (linked_root / "old.txt").exists()
 
 
@@ -902,7 +902,7 @@ def test_activate_install_tree_keeps_rollback_when_restore_fails(
         ),
     )
 
-    with pytest.raises(PrebuiltFallback, match = "previous install kept at") as excinfo:
+    with pytest.raises(PrebuiltFallback, match="previous install kept at") as excinfo:
         activate_install_tree(staging_dir, install_dir, host)
 
     assert "cleaned install state for fresh source build" in str(excinfo.value)
@@ -967,7 +967,7 @@ def _fail_activation_then_restore_rename(
             [("src", "dst", "[Errno 28] No space left on device: 'llama-server'")]
         ),
     ],
-    ids = ["oserror", "shutil_error"],
+    ids=["oserror", "shutil_error"],
 )
 def test_activate_install_tree_reports_a_recovery_disk_full_as_out_of_space(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_copy_error
@@ -1033,7 +1033,7 @@ def test_activate_install_tree_copies_previous_install_back_when_restore_rename_
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", flaky_replace)
 
-    with pytest.raises(PrebuiltFallback, match = "activation failed; restored previous install"):
+    with pytest.raises(PrebuiltFallback, match="activation failed; restored previous install"):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
     # A copy is attempted before giving up on the install path itself.
@@ -1057,7 +1057,7 @@ def test_activate_install_tree_does_not_follow_a_symlink_out_of_the_install(
     install_dir.mkdir()
     (install_dir / "old.txt").write_text("old install\n")
     try:
-        (install_dir / "link-out").symlink_to(outside, target_is_directory = True)
+        (install_dir / "link-out").symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -1143,7 +1143,7 @@ def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
 
 def test_remove_tree_logged_clears_read_only_files(tmp_path: Path):
     tree = tmp_path / "tree"
-    (tree / "nested").mkdir(parents = True)
+    (tree / "nested").mkdir(parents=True)
     locked = tree / "nested" / "locked.bin"
     locked.write_bytes(b"locked")
     os.chmod(locked, stat.S_IRUSR)
@@ -1161,7 +1161,7 @@ def test_remove_tree_logged_refuses_a_symlinked_root_without_touching_the_target
 
     link = tmp_path / "link"
     try:
-        link.symlink_to(target, target_is_directory = True)
+        link.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -1185,7 +1185,7 @@ def test_activate_install_tree_leaves_a_symlinked_install_target_intact(
 
     install_dir = tmp_path / "llama.cpp"
     try:
-        install_dir.symlink_to(target, target_is_directory = True)
+        install_dir.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -1289,12 +1289,12 @@ def test_repeated_retention_keeps_exactly_one_previous_install(
     staging_root = tmp_path / ".staging"
 
     for attempt in range(3):
-        install_dir.mkdir(parents = True, exist_ok = True)
+        install_dir.mkdir(parents=True, exist_ok=True)
         (install_dir / "old.txt").write_text(f"install {attempt}\n")
         staging_dir = create_install_staging_dir(install_dir)
         (staging_dir / "new.txt").write_text("new install\n")
         _fail_restore_and_copy(monkeypatch, install_dir)
-        with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+        with pytest.raises(PrebuiltFallback, match="previous install kept at"):
             activate_install_tree(staging_dir, install_dir, linux_host())
         monkeypatch.undo()
 
@@ -1308,13 +1308,13 @@ def test_repeated_retention_keeps_exactly_one_previous_install(
 
 def _write_usable_install(root: Path, marker: bytes) -> None:
     """A tree confirm_install_tree accepts, tagged with recognisable bytes."""
-    (root / "build" / "bin").mkdir(parents = True, exist_ok = True)
+    (root / "build" / "bin").mkdir(parents=True, exist_ok=True)
     for name in ("llama-server", "llama-quantize"):
         (root / name).write_bytes(marker)
         (root / "build" / "bin" / name).write_bytes(marker)
     (root / "convert_hf_to_gguf.py").write_bytes(marker)
-    (root / "gguf-py").mkdir(exist_ok = True)
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+    (root / "gguf-py").mkdir(exist_ok=True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding="utf-8")
 
 
 def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
@@ -1362,7 +1362,7 @@ def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", confirm_bad_prebuilt)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", deny_failed_move)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", deny_install_dir_rmtree)
-    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+    with pytest.raises(PrebuiltFallback, match="previous install kept at"):
         activate_install_tree(staging_dir, install_dir, host)
     monkeypatch.undo()
 
@@ -1391,7 +1391,7 @@ def test_retention_keeps_a_known_good_install_over_an_unvalidated_one(
             OSError(errno.ENOSPC, "No space left on device")
         ),
     )
-    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+    with pytest.raises(PrebuiltFallback, match="previous install kept at"):
         activate_install_tree(staging_dir, install_dir, host)
     monkeypatch.undo()
 
@@ -1413,7 +1413,7 @@ def test_retention_does_not_copy_a_linked_previous_install(
 
     install_dir = tmp_path / "llama.cpp"
     try:
-        install_dir.symlink_to(target, target_is_directory = True)
+        install_dir.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -1441,7 +1441,7 @@ def test_retention_does_not_copy_a_linked_previous_install(
         lambda *args, **kwargs: (copied.append(args), original_copytree(*args, **kwargs))[1],
     )
 
-    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+    with pytest.raises(PrebuiltFallback, match="previous install kept at"):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
     # copytree follows its source root even with symlinks = True, so copying a
@@ -1516,7 +1516,7 @@ def test_replace_with_busy_retry_rejects_a_zero_attempt_budget(tmp_path: Path):
     # Falling off the loop would report a move that never happened, the exact
     # failure the aside-move must never fake.
     with pytest.raises(ValueError):
-        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts = 0)
+        replace_with_busy_retry(tmp_path / "src", tmp_path / "dst", attempts=0)
 
 
 def test_readonly_rmtree_handler_only_retries_the_removal_calls(tmp_path: Path):
@@ -1542,7 +1542,7 @@ def test_readonly_rmtree_handler_never_chmods_through_a_link(tmp_path: Path):
     original_mode = stat.S_IMODE(os.stat(target).st_mode)
     link = tmp_path / "link"
     try:
-        link.symlink_to(target, target_is_directory = True)
+        link.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
@@ -1559,7 +1559,7 @@ def test_remove_tree_logged_leaves_posix_directory_modes_alone(tmp_path: Path):
         pytest.skip("the read-only handler is Windows only by design")
     tree = tmp_path / "tree"
     unreadable = tree / "unreadable"
-    unreadable.mkdir(parents = True)
+    unreadable.mkdir(parents=True)
     (unreadable / "file.bin").write_bytes(b"x")
     os.chmod(unreadable, 0o500)
     if os.access(unreadable, os.W_OK):  # pragma: no cover - root ignores the mode
@@ -1585,7 +1585,7 @@ def test_prune_stale_install_side_paths_keeps_the_paths_it_is_told_to_keep(tmp_p
     doomed = staging_root / "llama.cpp.rollback-20200101000000-1"
     doomed.mkdir()
 
-    assert prune_stale_install_side_paths(install_dir, keep = (keeper, None)) == 1
+    assert prune_stale_install_side_paths(install_dir, keep=(keeper, None)) == 1
 
     assert keeper.exists()
     assert not doomed.exists()
@@ -1614,7 +1614,7 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
 
     with pytest.raises(
         PrebuiltFallback,
-        match = "could not be moved aside; previous install left in place",
+        match="could not be moved aside; previous install left in place",
     ):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
@@ -1676,7 +1676,7 @@ def test_move_install_dir_aside_leaves_no_partial_tree_when_the_copy_fails(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "copytree", failing_copytree)
 
-    with pytest.raises(OSError, match = "No space left on device"):
+    with pytest.raises(OSError, match="No space left on device"):
         INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
 
     # callers read dst.exists() as proof of a COMPLETE tree
@@ -1694,7 +1694,7 @@ def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
 
     src = tmp_path / "llama.cpp"
     try:
-        src.symlink_to(target, target_is_directory = True)
+        src.symlink_to(target, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
     dst = tmp_path / "llama.cpp.rollback-20250101000000-1"
@@ -1706,7 +1706,7 @@ def test_move_install_dir_aside_refuses_to_copy_a_linked_install(
 
     # copytree always follows the root, so this would duplicate a checkout the
     # installer does not own
-    with pytest.raises(OSError, match = "cross-device"):
+    with pytest.raises(OSError, match="cross-device"):
         INSTALL_LLAMA_PREBUILT.move_install_dir_aside(src, dst)
 
     assert not dst.exists()
@@ -1735,7 +1735,7 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
 
     with pytest.raises(
         BusyInstallConflict,
-        match = "appears to still be in use; previous install left in place",
+        match="appears to still be in use; previous install left in place",
     ):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
@@ -1771,7 +1771,7 @@ def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
 
     with pytest.raises(
         PrebuiltFallback,
-        match = "activation failed; restored previous install",
+        match="activation failed; restored previous install",
     ):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
@@ -1821,7 +1821,7 @@ def test_activate_install_tree_keeps_rollback_when_failed_install_cannot_be_remo
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "rmtree", flaky_rmtree)
 
-    with pytest.raises(PrebuiltFallback, match = "previous install kept at"):
+    with pytest.raises(PrebuiltFallback, match="previous install kept at"):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
     rollbacks = sorted((tmp_path / ".staging").glob("llama.cpp.rollback-*"))
@@ -1852,7 +1852,7 @@ def test_activate_install_tree_cleans_install_when_no_previous_install_exists(
 
     with pytest.raises(
         PrebuiltFallback,
-        match = "activation and rollback failed; cleaned install state for fresh source build",
+        match="activation and rollback failed; cleaned install state for fresh source build",
     ):
         activate_install_tree(staging_dir, install_dir, linux_host())
 
@@ -1870,7 +1870,7 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     staging_dir = tmp_path / "llama.cpp.staging-test"
-    (staging_dir / "bin").mkdir(parents = True)
+    (staging_dir / "bin").mkdir(parents=True)
     (staging_dir / "bin" / "ggml-base.dll").write_bytes(b"fake dll")
     dst = tmp_path / "llama.cpp"
 
@@ -1888,7 +1888,7 @@ def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
     assert "falling back to file-by-file copy" in captured.out + captured.err
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "soname links are a Unix bundle layout")
+@pytest.mark.skipif(os.name == "nt", reason="soname links are a Unix bundle layout")
 @pytest.mark.parametrize("dst_exists", [False, True])
 def test_activate_staged_dir_copy_keeps_soname_links(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dst_exists: bool
@@ -1944,7 +1944,7 @@ def test_activate_staged_dir_reraises_non_busy_errors(
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", out_of_space_replace)
 
-    with pytest.raises(OSError, match = "No space left on device"):
+    with pytest.raises(OSError, match="No space left on device"):
         activate_staged_dir(staging_dir, dst)
 
     assert not dst.exists()
@@ -1956,7 +1956,7 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
 ):
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     binary_path = bin_dir / "llama-server"
     binary_path.write_bytes(b"fake")
 
@@ -1981,7 +1981,7 @@ def test_binary_env_windows_skips_inaccessible_inherited_path_entry(
     runtime_dir = tmp_path / "runtime"
     inherited_dir = tmp_path / "usable-path"
     for directory in (bin_dir, runtime_dir, inherited_dir):
-        directory.mkdir(parents = True)
+        directory.mkdir(parents=True)
     inaccessible = {denied}
 
     class FakePath:
@@ -2014,7 +2014,7 @@ def test_binary_env_windows_skips_inaccessible_inherited_path_entry(
         lambda _runtime_line: [str(runtime_dir)],
     )
 
-    env = binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line = "cuda")
+    env = binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line="cuda")
 
     assert env["PATH"].split(";") == [
         str(bin_dir.resolve()),
@@ -2024,8 +2024,8 @@ def test_binary_env_windows_skips_inaccessible_inherited_path_entry(
     assert denied not in env["PATH"]
 
     inaccessible.add(str(runtime_dir))
-    with pytest.raises(PermissionError, match = "Access is denied"):
-        binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line = "cuda")
+    with pytest.raises(PermissionError, match="Access is denied"):
+        binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line="cuda")
 
 
 def test_scrub_env_drops_secrets_and_keeps_runtime_vars():
@@ -2133,7 +2133,7 @@ def test_binary_env_strips_secrets_from_downloaded_binary_environment(
 ):
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     binary_path = bin_dir / "llama-server"
     binary_path.write_bytes(b"fake")
 
@@ -2162,7 +2162,7 @@ def test_binary_env_redirects_home_away_from_real_credential_stores(
 ):
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     binary_path = bin_dir / "llama-server"
     binary_path.write_bytes(b"fake")
 
@@ -2223,7 +2223,7 @@ def test_binary_env_drops_explicit_credential_file_pointers(
 def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
-    def fake_missing(binary_path, *, env = None):
+    def fake_missing(binary_path, *, env=None):
         captured["env"] = env
         return []
 
@@ -2246,22 +2246,22 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     host = linux_host()
 
     first_choice = asset_choice(
-        name = "app-b9002-linux-x64.tar.gz",
-        tag = "old-release",
-        source_label = "published",
+        name="app-b9002-linux-x64.tar.gz",
+        tag="old-release",
+        source_label="published",
     )
     second_choice = asset_choice(
-        name = "app-b9001-linux-x64.tar.gz",
-        tag = "older-release",
-        source_label = "published",
+        name="app-b9001-linux-x64.tar.gz",
+        tag="older-release",
+        source_label="published",
     )
     first_plan = release_plan(
         [first_choice],
-        release_checksums(release_tag = "release-2", upstream_tag = "b9002", source_commit = None),
-        llama_tag = "b9002",
-        release_tag = "release-2",
+        release_checksums(release_tag="release-2", upstream_tag="b9002", source_commit=None),
+        llama_tag="b9002",
+        release_tag="release-2",
     )
-    second_plan = release_plan([second_choice], release_checksums(source_commit = None))
+    second_plan = release_plan([second_choice], release_checksums(source_commit=None))
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -2291,13 +2291,13 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         llama_tag,
         release_tag,
         approved_checksums,
-        initial_fallback_used = False,
-        existing_install_dir = None,
-        force_cpu = False,
-        llama_backend = None,
-        backend_request = None,
-        rocm_gfx = None,
-        walk_back = None,
+        initial_fallback_used=False,
+        existing_install_dir=None,
+        force_cpu=False,
+        llama_backend=None,
+        backend_request=None,
+        rocm_gfx=None,
+        walk_back=None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2342,11 +2342,11 @@ def _write_entrypoints(install_dir: Path) -> None:
     exists(): a tree it keeps but installed_runtime_health rejects is a repair loop.
     """
     runtime_dir = install_dir / "build" / "bin"
-    runtime_dir.mkdir(parents = True, exist_ok = True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     for directory in (install_dir, runtime_dir):
         for name in ("llama-server", "llama-quantize"):
             binary = directory / name
-            binary.write_text("#!/bin/sh\n", encoding = "utf-8")
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
             binary.chmod(0o755)
 
 
@@ -2364,8 +2364,8 @@ def write_linux_install_shape(install_dir: Path) -> None:
     (runtime_dir / "libggml-base.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml-cpu-x64.so.0").write_bytes(b"DLL")
     (runtime_dir / "libmtmd.so.0").write_bytes(b"DLL")
-    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding = "utf-8")
-    (install_dir / "gguf-py" / "gguf").mkdir(parents = True, exist_ok = True)
+    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    (install_dir / "gguf-py" / "gguf").mkdir(parents=True, exist_ok=True)
 
 
 def write_windows_install_shape(
@@ -2377,7 +2377,7 @@ def write_windows_install_shape(
     include_shared_runtime: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin" / "Release"
-    runtime_dir.mkdir(parents = True, exist_ok = True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "llama-server.exe").write_bytes(b"MZ")
     (runtime_dir / "llama-quantize.exe").write_bytes(b"MZ")
     if include_shared_runtime:
@@ -2401,8 +2401,8 @@ def write_windows_install_shape(
         (runtime_dir / "cudart64_12.dll").write_bytes(b"DLL")
         (runtime_dir / "cublas64_12.dll").write_bytes(b"DLL")
         (runtime_dir / "cublasLt64_12.dll").write_bytes(b"DLL")
-    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding = "utf-8")
-    (install_dir / "gguf-py" / "gguf").mkdir(parents = True, exist_ok = True)
+    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    (install_dir / "gguf-py" / "gguf").mkdir(parents=True, exist_ok=True)
 
 
 def write_macos_install_shape(
@@ -2428,8 +2428,8 @@ def write_macos_install_shape(
         (runtime_dir / "libggml.0.dylib").write_bytes(b"DLL")
     if include_libmtmd:
         (runtime_dir / "libmtmd.0.dylib").write_bytes(b"DLL")
-    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding = "utf-8")
-    (install_dir / "gguf-py" / "gguf").mkdir(parents = True, exist_ok = True)
+    (install_dir / "convert_hf_to_gguf.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    (install_dir / "gguf-py" / "gguf").mkdir(parents=True, exist_ok=True)
 
 
 def test_existing_install_matches_plan_with_fingerprint_linux(tmp_path: Path):
@@ -2453,11 +2453,11 @@ def test_existing_install_matches_plan_false_without_fingerprint(tmp_path: Path)
     write_linux_install_shape(install_dir)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"tag": "b9001", "asset": "llama-b9001-bin-ubuntu-x64.tar.gz"}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     host = linux_host()
-    choice = asset_choice(url = "https://example.com/x.tar.gz")
+    choice = asset_choice(url="https://example.com/x.tar.gz")
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     plan = release_plan([choice], checksums)
 
@@ -2468,10 +2468,10 @@ def test_existing_install_matches_plan_false_with_malformed_metadata(tmp_path: P
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{not-json\n", encoding = "utf-8")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{not-json\n", encoding="utf-8")
 
     host = linux_host()
-    choice = asset_choice(url = "https://example.com/x.tar.gz")
+    choice = asset_choice(url="https://example.com/x.tar.gz")
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     plan = release_plan([choice], checksums)
 
@@ -2481,14 +2481,14 @@ def test_existing_install_matches_plan_false_with_malformed_metadata(tmp_path: P
 def test_existing_install_matches_plan_windows_cpu_requires_llama_dll(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    write_windows_install_shape(install_dir, include_llama_dll = True)
+    write_windows_install_shape(install_dir, include_llama_dll=True)
 
     host = windows_host()
     choice = asset_choice(
-        name = "llama-b9001-bin-win-cpu-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cpu",
+        name="llama-b9001-bin-win-cpu-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cpu",
     )
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     plan = release_plan([choice], checksums)
@@ -2504,14 +2504,14 @@ def test_existing_install_matches_plan_windows_rejects_an_empty_executable(tmp_p
     record, so a zero-byte llama-server.exe passed every other check and was reused."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    write_windows_install_shape(install_dir, include_llama_dll = True)
+    write_windows_install_shape(install_dir, include_llama_dll=True)
 
     host = windows_host()
     choice = asset_choice(
-        name = "llama-b9001-bin-win-cpu-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cpu",
+        name="llama-b9001-bin-win-cpu-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cpu",
     )
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     plan = release_plan([choice], checksums)
@@ -2529,15 +2529,15 @@ def test_existing_install_matches_plan_windows_rejects_an_empty_executable(tmp_p
 def test_existing_install_matches_plan_windows_cuda_requires_cuda_dll(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    write_windows_install_shape(install_dir, include_llama_dll = True, include_cuda_dll = True)
+    write_windows_install_shape(install_dir, include_llama_dll=True, include_cuda_dll=True)
 
-    host = windows_host(driver_cuda_version = (12, 4), has_usable_nvidia = True)
+    host = windows_host(driver_cuda_version=(12, 4), has_usable_nvidia=True)
     choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
     )
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     plan = release_plan([choice], checksums)
@@ -2554,21 +2554,21 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_p
     install_dir.mkdir()
     write_windows_install_shape(
         install_dir,
-        include_llama_dll = True,
-        include_cuda_dll = True,
-        include_cudart_dlls = True,
+        include_llama_dll=True,
+        include_cuda_dll=True,
+        include_cudart_dlls=True,
     )
 
-    host = windows_host(driver_cuda_version = (12, 4), has_usable_nvidia = True)
+    host = windows_host(driver_cuda_version=(12, 4), has_usable_nvidia=True)
     choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
-        runtime_name = "cudart-llama-bin-win-cuda-12.4-x64.zip",
-        runtime_url = "https://example.com/cudart.zip",
-        runtime_sha256 = "c" * 64,
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
+        runtime_name="cudart-llama-bin-win-cuda-12.4-x64.zip",
+        runtime_url="https://example.com/cudart.zip",
+        runtime_sha256="c" * 64,
     )
     checksums = release_checksums(
         (choice.name, choice.expected_sha256, PREBUILT),
@@ -2587,9 +2587,9 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_p
     # cudart missing -- stale, must reinstall.
     write_windows_install_shape(
         install_dir,
-        include_llama_dll = True,
-        include_cuda_dll = True,
-        include_cudart_dlls = True,
+        include_llama_dll=True,
+        include_cuda_dll=True,
+        include_cudart_dlls=True,
     )
     (install_dir / "build" / "bin" / "Release" / "cudart64_12.dll").unlink()
     assert existing_install_matches_plan(install_dir, host, plan) is False
@@ -2597,9 +2597,9 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_p
     # cublasLt missing -- stale, must reinstall (all three DLLs are required).
     write_windows_install_shape(
         install_dir,
-        include_llama_dll = True,
-        include_cuda_dll = True,
-        include_cudart_dlls = True,
+        include_llama_dll=True,
+        include_cuda_dll=True,
+        include_cudart_dlls=True,
     )
     (install_dir / "build" / "bin" / "Release" / "cublasLt64_12.dll").unlink()
     assert existing_install_matches_plan(install_dir, host, plan) is False
@@ -2611,18 +2611,18 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
     install_dir.mkdir()
     write_windows_install_shape(
         install_dir,
-        include_llama_dll = True,
-        include_cuda_dll = True,
-        include_cudart_dlls = False,
+        include_llama_dll=True,
+        include_cuda_dll=True,
+        include_cudart_dlls=False,
     )
 
-    host = windows_host(driver_cuda_version = (12, 4), has_usable_nvidia = True)
+    host = windows_host(driver_cuda_version=(12, 4), has_usable_nvidia=True)
     choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
     )
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     plan = release_plan([choice], checksums)
@@ -2637,32 +2637,32 @@ def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
     names its built archs, and leaking them in would stale every existing ROCm install
     the moment this shipped. Inverse of the cudart-pair test below."""
     choice_kwargs = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "release-1",
-        name = "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
-        url = "https://example.com/x.tar.gz",
-        source_label = "published",
-        install_kind = "linux-rocm",
-        runtime_line = "rocm7",
-        expected_sha256 = "a" * 64,
+        repo="unslothai/llama.cpp",
+        tag="release-1",
+        name="app-b9001-linux-x64-rocm-gfx110X.tar.gz",
+        url="https://example.com/x.tar.gz",
+        source_label="published",
+        install_kind="linux-rocm",
+        runtime_line="rocm7",
+        expected_sha256="a" * 64,
     )
     # The pre-PR marker shape: no arch fields at all.
     old_choice = AssetChoice(**choice_kwargs)
     # Verbatim from the published manifest for this asset.
     new_choice = AssetChoice(
         **choice_kwargs,
-        gfx_target = "gfx110X",
-        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        gfx_target="gfx110X",
+        mapped_targets=["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
     )
     checksums = release_checksums()
     fingerprint_kwargs = dict(
-        llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums
+        llama_tag="b9001", release_tag="release-1", approved_checksums=checksums
     )
     old_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        choice = old_choice, **fingerprint_kwargs
+        choice=old_choice, **fingerprint_kwargs
     )
     new_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        choice = new_choice, **fingerprint_kwargs
+        choice=new_choice, **fingerprint_kwargs
     )
     assert old_fingerprint and old_fingerprint == new_fingerprint, (
         "recording gfx_target/mapped_targets changed the install fingerprint; "
@@ -2698,10 +2698,10 @@ def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
         write_metadata(
             install_dir,
             asset_choice(
-                name = asset,
-                url = "https://example.com/x",
-                source_label = "published",
-                install_kind = kind,
+                name=asset,
+                url="https://example.com/x",
+                source_label="published",
+                install_kind=kind,
             ),
             checksums,
         )
@@ -2713,17 +2713,17 @@ def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
 def _rocm_choice(**overrides):
     """A published ROCm bundle choice, as published_rocm_choice_for_host returns."""
     fields = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "b10360",
-        name = "app-b10360-linux-x64-rocm-gfx110X.tar.gz",
-        url = "https://example.invalid/app.tar.gz",
-        source_label = "published",
-        install_kind = "app",
-        bundle_profile = "rocm",
-        runtime_line = "rocm",
-        coverage_class = "gfx110X",
-        gfx_target = "gfx110X",
-        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        repo="unslothai/llama.cpp",
+        tag="b10360",
+        name="app-b10360-linux-x64-rocm-gfx110X.tar.gz",
+        url="https://example.invalid/app.tar.gz",
+        source_label="published",
+        install_kind="app",
+        bundle_profile="rocm",
+        runtime_line="rocm",
+        coverage_class="gfx110X",
+        gfx_target="gfx110X",
+        mapped_targets=["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
     )
     fields.update(overrides)
     return AssetChoice(**fields)
@@ -2733,9 +2733,9 @@ def _sync_arch_coverage(install_dir, choice):
     """sync_marker_selection with only the built-arch coverage in play."""
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
         install_dir,
-        choice = choice,
-        backend_request = None,
-        persist_llama_backend = "auto",
+        choice=choice,
+        backend_request=None,
+        persist_llama_backend="auto",
     )
 
 
@@ -2748,12 +2748,12 @@ def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     _sync_arch_coverage(install_dir, _rocm_choice())
 
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
     assert marker["gfx_target"] == "gfx110X"
     assert marker["release_tag"] == "b10360"  # nothing else lost
@@ -2770,23 +2770,23 @@ def test_a_reused_bundle_records_whether_it_is_this_runs_fallback(tmp_path: Path
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"release_tag": "b10360", "prebuilt_fallback_used": False}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
-        install_dir, choice = _rocm_choice(), backend_request = None, prebuilt_fallback_used = True
+        install_dir, choice=_rocm_choice(), backend_request=None, prebuilt_fallback_used=True
     )
-    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
+    assert json.loads(marker_path.read_text(encoding="utf-8"))["prebuilt_fallback_used"] is True
     # Not asked: left alone.
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
-        install_dir, choice = _rocm_choice(), backend_request = None
+        install_dir, choice=_rocm_choice(), backend_request=None
     )
-    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is True
+    assert json.loads(marker_path.read_text(encoding="utf-8"))["prebuilt_fallback_used"] is True
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
-        install_dir, choice = _rocm_choice(), backend_request = None, prebuilt_fallback_used = False
+        install_dir, choice=_rocm_choice(), backend_request=None, prebuilt_fallback_used=False
     )
-    assert json.loads(marker_path.read_text(encoding = "utf-8"))["prebuilt_fallback_used"] is False
+    assert json.loads(marker_path.read_text(encoding="utf-8"))["prebuilt_fallback_used"] is False
     # And the kept-install pre-check refuses a marker that says True.
-    source = open(INSTALL_LLAMA_PREBUILT.__file__, encoding = "utf-8").read()
+    source = open(INSTALL_LLAMA_PREBUILT.__file__, encoding="utf-8").read()
     assert 'marker.get("prebuilt_fallback_used") is True' in source
     assert "_record_reused_selection(plan, satisfied.choice, satisfied.used_fallback)" in source
 
@@ -2807,12 +2807,12 @@ def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
             }
         )
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     _sync_arch_coverage(install_dir, _rocm_choice())
 
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
 
 
@@ -2829,13 +2829,13 @@ def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, 
         "gfx_target": "gfx110X",
         "mapped_targets": ["gfx1100", "gfx1101"],
     }
-    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+    marker_path.write_text(json.dumps(original) + "\n", encoding="utf-8")
 
-    _sync_arch_coverage(install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets))
+    _sync_arch_coverage(install_dir, _rocm_choice(gfx_target=None, mapped_targets=targets))
 
     # The arch fields specifically: the shared writer may still record other
     # selection fields from this run, which is not what this test is about.
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["gfx_target"] == original["gfx_target"]
     assert marker["mapped_targets"] == original["mapped_targets"]
 
@@ -2851,16 +2851,16 @@ def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
     assert not marker_path.exists()
     # A marker that is not JSON, and one that is JSON but not an object.
     for payload in ("{not json", "[1, 2]"):
-        marker_path.write_text(payload, encoding = "utf-8")
+        marker_path.write_text(payload, encoding="utf-8")
         _sync_arch_coverage(install_dir, _rocm_choice())
-        assert marker_path.read_text(encoding = "utf-8") == payload
+        assert marker_path.read_text(encoding="utf-8") == payload
 
 
 def test_every_reuse_path_syncs_the_arch_coverage():
     """The reuse paths skip write_prebuilt_metadata, so the coverage has to ride the
     one writer they all share. Source-level because reaching them needs a full install
     run: pinned on _record_reused_selection, which every reuse path calls."""
-    source = MODULE_PATH.read_text(encoding = "utf-8")
+    source = MODULE_PATH.read_text(encoding="utf-8")
     assert source.count("_record_reused_selection(") == 4  # definition + 3 reuse paths
     patch = source[
         source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")
@@ -2868,7 +2868,7 @@ def test_every_reuse_path_syncs_the_arch_coverage():
     assert 'patch["mapped_targets"] = targets' in patch
 
 
-@pytest.mark.parametrize("visual_server", [True, False], ids = ["present", "missing"])
+@pytest.mark.parametrize("visual_server", [True, False], ids=["present", "missing"])
 def test_a_published_bundle_owes_its_visual_server(tmp_path, monkeypatch, visual_server):
     """The marker's source label decides, exactly as on the canonical reuse path.
     runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a published
@@ -2876,7 +2876,7 @@ def test_a_published_bundle_owes_its_visual_server(tmp_path, monkeypatch, visual
     setup.sh's source build has its own target for the binary, so exit 2 is a recovery here."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(
-        tmp_path, backend = "vulkan", source = "published", visual_server = visual_server
+        tmp_path, backend="vulkan", source="published", visual_server=visual_server
     )
 
     if visual_server:
@@ -2891,7 +2891,7 @@ def test_an_upstream_bundle_does_not_owe_a_visual_server(tmp_path, monkeypatch):
     """Only "published" carries it; requiring it of an upstream tree would source build."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(
-        tmp_path, backend = "vulkan", source = "upstream", visual_server = False
+        tmp_path, backend="vulkan", source="upstream", visual_server=False
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -2909,20 +2909,20 @@ def test_a_reused_install_backfills_the_paired_runtime_asset(tmp_path: Path):
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"release_tag": "release-1", "llama_backend": "auto", "force_cpu": False}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     choice = asset_choice(
-        name = "app-b9002-windows-cuda-x64.zip",
-        url = "https://example/x",
-        tag = "b9002",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_name = "cudart-llama-bin-win-cuda-13.0-x64.zip",
+        name="app-b9002-windows-cuda-x64.zip",
+        url="https://example/x",
+        tag="b9002",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_name="cudart-llama-bin-win-cuda-13.0-x64.zip",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = choice, backend_request = "auto")
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice=choice, backend_request="auto")
 
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["runtime_asset"] == "cudart-llama-bin-win-cuda-13.0-x64.zip"
 
 
@@ -2933,19 +2933,19 @@ def test_a_pair_less_reuse_does_not_invent_a_runtime_asset(tmp_path: Path):
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"release_tag": "release-1", "llama_backend": "auto", "force_cpu": False}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     choice = asset_choice(
-        name = "app-b9002-windows-cpu-x64.zip",
-        url = "https://example/x",
-        tag = "b9002",
-        source_label = "published",
-        install_kind = "windows-cpu",
+        name="app-b9002-windows-cpu-x64.zip",
+        url="https://example/x",
+        tag="b9002",
+        source_label="published",
+        install_kind="windows-cpu",
     )
 
-    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice = choice, backend_request = "auto")
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(install_dir, choice=choice, backend_request="auto")
 
-    assert "runtime_asset" not in json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert "runtime_asset" not in json.loads(marker_path.read_text(encoding="utf-8"))
 
 
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
@@ -2965,16 +2965,16 @@ def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
                 "mapped_targets": ["gfx1100", "gfx1101"],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
         install_dir,
-        choice = _rocm_choice(gfx_target = None, mapped_targets = None),
-        backend_request = "cpu",
-        persist_force_cpu = True,
-        persist_llama_backend = "auto",
-        ggml_tree = "tree-abc",
-        rocm_gfx = "gfx1101",
+        choice=_rocm_choice(gfx_target=None, mapped_targets=None),
+        backend_request="cpu",
+        persist_force_cpu=True,
+        persist_llama_backend="auto",
+        ggml_tree="tree-abc",
+        rocm_gfx="gfx1101",
     )
 
     marker = json.loads(marker_path.read_text())
@@ -2988,17 +2988,17 @@ def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
 
 def _cuda_choice(**overrides):
     fields = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "b10360",
-        name = "app-b10360-linux-x64-cuda13-older.tar.gz",
-        url = "https://example.invalid/app.tar.gz",
-        source_label = "published",
-        install_kind = "linux-cuda",
-        bundle_profile = "app",
-        runtime_line = "cuda13",
-        coverage_class = "older",
-        supported_sms = ["75", "80", "86", "89"],
-        expected_sha256 = "a" * 64,
+        repo="unslothai/llama.cpp",
+        tag="b10360",
+        name="app-b10360-linux-x64-cuda13-older.tar.gz",
+        url="https://example.invalid/app.tar.gz",
+        source_label="published",
+        install_kind="linux-cuda",
+        bundle_profile="app",
+        runtime_line="cuda13",
+        coverage_class="older",
+        supported_sms=["75", "80", "86", "89"],
+        expected_sha256="a" * 64,
     )
     fields.update(overrides)
     return AssetChoice(**fields)
@@ -3014,8 +3014,8 @@ def test_write_prebuilt_metadata_records_supported_sms(tmp_path: Path):
         install_dir,
         choice,
         approved_release_checksums_for_asset(choice.name, "a" * 64),
-        llama_tag = "b10360",
-        release_tag = "b10360",
+        llama_tag="b10360",
+        release_tag="b10360",
     )
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["supported_sms"] == ["75", "80", "86", "89"]
@@ -3027,12 +3027,12 @@ def test_reused_install_backfills_supported_sms(tmp_path: Path):
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(
         json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     _sync_arch_coverage(install_dir, _cuda_choice())
 
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["supported_sms"] == ["75", "80", "86", "89"]
     assert marker["release_tag"] == "b10360"
 
@@ -3043,11 +3043,11 @@ def test_a_bundle_that_declares_no_sms_leaves_the_marker_alone(tmp_path: Path, s
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     original = {"release_tag": "b10360", "supported_sms": ["86", "89", "90"]}
-    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+    marker_path.write_text(json.dumps(original) + "\n", encoding="utf-8")
 
-    _sync_arch_coverage(install_dir, _cuda_choice(supported_sms = sms))
+    _sync_arch_coverage(install_dir, _cuda_choice(supported_sms=sms))
 
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert marker["supported_sms"] == original["supported_sms"]
 
 
@@ -3057,28 +3057,28 @@ def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: P
     install_dir.mkdir()
     write_windows_install_shape(
         install_dir,
-        include_llama_dll = True,
-        include_cuda_dll = True,
-        include_cudart_dlls = False,
+        include_llama_dll=True,
+        include_cuda_dll=True,
+        include_cudart_dlls=False,
     )
 
-    host = windows_host(driver_cuda_version = (12, 4), has_usable_nvidia = True)
+    host = windows_host(driver_cuda_version=(12, 4), has_usable_nvidia=True)
     legacy_choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
     )
     paired_choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "https://example.com/x.zip",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
-        runtime_name = "cudart-llama-bin-win-cuda-12.4-x64.zip",
-        runtime_url = "https://example.com/cudart.zip",
-        runtime_sha256 = "c" * 64,
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="https://example.com/x.zip",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
+        runtime_name="cudart-llama-bin-win-cuda-12.4-x64.zip",
+        runtime_url="https://example.com/cudart.zip",
+        runtime_sha256="c" * 64,
     )
     checksums = release_checksums(
         (legacy_choice.name, legacy_choice.expected_sha256, PREBUILT),
@@ -3090,16 +3090,16 @@ def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: P
 
     # The paired choice's fingerprint must differ from the legacy one so the install refreshes.
     legacy_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = legacy_choice,
-        approved_checksums = checksums,
+        llama_tag="b9001",
+        release_tag="release-1",
+        choice=legacy_choice,
+        approved_checksums=checksums,
     )
     paired_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = paired_choice,
-        approved_checksums = checksums,
+        llama_tag="b9001",
+        release_tag="release-1",
+        choice=paired_choice,
+        approved_checksums=checksums,
     )
     assert legacy_fingerprint != paired_fingerprint, (
         "expected_install_fingerprint must hash runtime_name/runtime_sha256 "
@@ -3117,10 +3117,10 @@ def test_existing_install_matches_plan_macos_requires_dylibs(tmp_path: Path):
 
     host = macos_host()
     choice = asset_choice(
-        name = "llama-b9001-bin-macos-arm64.tar.gz",
-        url = "https://example.com/x.tar.gz",
-        source_label = "published",
-        install_kind = "macos-arm64",
+        name="llama-b9001-bin-macos-arm64.tar.gz",
+        url="https://example.com/x.tar.gz",
+        source_label="published",
+        install_kind="macos-arm64",
     )
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     plan = release_plan([choice], checksums)
@@ -3144,13 +3144,13 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     plan = release_plan([choice], checksums)
 
     write_metadata(install_dir, choice, checksums)
-    (install_dir / "AGENTS.md").write_text("old root instructions", encoding = "utf-8")
+    (install_dir / "AGENTS.md").write_text("old root instructions", encoding="utf-8")
     nested_agents = install_dir / "examples" / "AGENTS.md"
     nested_agents.parent.mkdir()
-    nested_agents.write_text("old nested instructions", encoding = "utf-8")
-    (install_dir / "CLAUDE.md").write_text("old Claude instructions", encoding = "utf-8")
+    nested_agents.write_text("old nested instructions", encoding="utf-8")
+    (install_dir / "CLAUDE.md").write_text("old Claude instructions", encoding="utf-8")
     (nested_agents.parent / "CLAUDE.md").write_text(
-        "old nested Claude instructions", encoding = "utf-8"
+        "old nested Claude instructions", encoding="utf-8"
     )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
@@ -3176,8 +3176,8 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
 
 
 def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
-    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding="utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding="utf-8")
 
     assert (
         "_remove_agent_instruction_files \\\n"
@@ -3217,14 +3217,14 @@ def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
     if shutil.which("bash") is None:
         pytest.skip("bash is not available")
 
-    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding="utf-8")
     start = setup_sh.index("_remove_agent_instruction_files() {")
     end = setup_sh.index("\n}\n", start) + 2
     function = setup_sh[start:end]
     managed = tmp_path / "managed"
     external = tmp_path / "external.md"
     managed.mkdir()
-    external.write_text("external", encoding = "utf-8")
+    external.write_text("external", encoding="utf-8")
     instruction = managed / "AGENTS.md"
     try:
         instruction.symlink_to(external)
@@ -3233,11 +3233,11 @@ def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
 
     subprocess.run(
         ["bash", "-c", function + '\n_remove_agent_instruction_files "$1"', "bash", str(managed)],
-        check = True,
+        check=True,
     )
 
     assert not os.path.lexists(instruction)
-    assert external.read_text(encoding = "utf-8") == "external"
+    assert external.read_text(encoding="utf-8") == "external"
 
 
 def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
@@ -3276,7 +3276,7 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
     )
 
     with pytest.raises(
-        AssertionError, match = "unhealthy install must continue into normal install flow"
+        AssertionError, match="unhealthy install must continue into normal install flow"
     ):
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
@@ -3290,17 +3290,17 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
 
     host = linux_host()
     latest_choice = asset_choice(
-        name = "llama-b9002-bin-ubuntu-x64.tar.gz",
-        tag = "release-2",
-        expected_sha256 = "c" * 64,
+        name="llama-b9002-bin-ubuntu-x64.tar.gz",
+        tag="release-2",
+        expected_sha256="c" * 64,
     )
     fallback_choice = asset_choice()
     latest_checksums = release_checksums(
         (latest_choice.name, latest_choice.expected_sha256, UPSTREAM),
-        release_tag = "release-2",
-        upstream_tag = "b9002",
-        source_commit = "beadfeed",
-        source_sha256 = "d" * 64,
+        release_tag="release-2",
+        upstream_tag="b9002",
+        source_commit="beadfeed",
+        source_sha256="d" * 64,
     )
     fallback_checksums = release_checksums(
         (fallback_choice.name, fallback_choice.expected_sha256, UPSTREAM)
@@ -3308,12 +3308,12 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     latest_plan = release_plan(
         [latest_choice],
         latest_checksums,
-        llama_tag = "b9002",
-        release_tag = "release-2",
+        llama_tag="b9002",
+        release_tag="release-2",
     )
     fallback_plan = release_plan([fallback_choice], fallback_checksums)
 
-    write_metadata(install_dir, fallback_choice, fallback_checksums, prebuilt_fallback_used = True)
+    write_metadata(install_dir, fallback_choice, fallback_checksums, prebuilt_fallback_used=True)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -3343,13 +3343,13 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         llama_tag,
         release_tag,
         approved_checksums,
-        initial_fallback_used = False,
-        existing_install_dir = None,
-        force_cpu = False,
-        llama_backend = None,
-        backend_request = None,
-        rocm_gfx = None,
-        walk_back = None,
+        initial_fallback_used=False,
+        existing_install_dir=None,
+        force_cpu=False,
+        llama_backend=None,
+        backend_request=None,
+        rocm_gfx=None,
+        walk_back=None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -3372,7 +3372,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     assert call_log == ["b9002"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.skipif(os.name == "nt", reason="the root wrapper is written on POSIX only")
 @pytest.mark.parametrize("name", ["llama-server", "llama-quantize"])
 def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path, name: str):
     """Codex 3973890098, P1. The keep decision graded only build/bin, so an online repair
@@ -3389,30 +3389,30 @@ def test_a_damaged_root_entrypoint_stops_the_release_being_reused(tmp_path: Path
     install_dir.mkdir()
     write_linux_install_shape(install_dir)
     host = linux_host()
-    choice = asset_choice(name = "llama-b9001-bin-ubuntu-x64-good.tar.gz")
+    choice = asset_choice(name="llama-b9001-bin-ubuntu-x64-good.tar.gz")
     checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT))
     write_metadata(install_dir, choice, checksums)
     kwargs = dict(
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = choice,
-        approved_checksums = checksums,
+        llama_tag="b9001",
+        release_tag="release-1",
+        choice=choice,
+        approved_checksums=checksums,
     )
     assert existing_install_matches_choice(install_dir, host, **kwargs) is True
-    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host=host) == (True, "")
 
     (install_dir / name).chmod(0o644)
     # Walked past by the resolver, so the runtime still starts and launch says so.
-    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (True, "")
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host=host) == (True, "")
     assert (
         existing_install_matches_choice(install_dir, host, **kwargs) is False
     ), "a reinstall is what replaces a rotten root wrapper"
 
     # Empty is the damage the resolver does NOT walk past: is_file() and the execute bit
     # both survive a truncation, so discovery selects it and the exec dies on ENOEXEC.
-    (install_dir / name).write_text("", encoding = "utf-8")
+    (install_dir / name).write_text("", encoding="utf-8")
     (install_dir / name).chmod(0o755)
-    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host = host) == (
+    assert INSTALL_LLAMA_PREBUILT.installed_runtime_health(install_dir, host=host) == (
         False,
         "llama_runtime_binaries_missing",
     )
@@ -3430,26 +3430,26 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
 
     host = linux_host()
     first_choice = asset_choice(
-        name = "llama-b9001-bin-ubuntu-x64-bad.tar.gz",
-        source_label = "published",
-        expected_sha256 = "c" * 64,
+        name="llama-b9001-bin-ubuntu-x64-bad.tar.gz",
+        source_label="published",
+        expected_sha256="c" * 64,
     )
-    fallback_choice = asset_choice(name = "llama-b9001-bin-ubuntu-x64-good.tar.gz")
+    fallback_choice = asset_choice(name="llama-b9001-bin-ubuntu-x64-good.tar.gz")
     checksums = release_checksums(
         (first_choice.name, first_choice.expected_sha256, PREBUILT),
         (fallback_choice.name, fallback_choice.expected_sha256, UPSTREAM),
     )
     plan = release_plan([first_choice, fallback_choice], checksums)
 
-    write_metadata(install_dir, fallback_choice, checksums, prebuilt_fallback_used = True)
+    write_metadata(install_dir, fallback_choice, checksums, prebuilt_fallback_used=True)
     assert (
         existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = fallback_choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=fallback_choice,
+            approved_checksums=checksums,
         )
         is True
     )
@@ -3484,11 +3484,11 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         approved_checksums,
         prebuilt_fallback_used,
         quantized_path,
-        force_cpu = False,
-        llama_backend = None,
-        backend_request = None,
-        rocm_gfx = None,
-        walk_back = None,
+        force_cpu=False,
+        llama_backend=None,
+        backend_request=None,
+        rocm_gfx=None,
+        walk_back=None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -3520,18 +3520,18 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     host = linux_host()
 
     same_tag_upstream_choice = asset_choice(
-        name = "llama-b9002-bin-ubuntu-x64.tar.gz",
-        repo = "ggml-org/llama.cpp",
-        tag = "b9002",
+        name="llama-b9002-bin-ubuntu-x64.tar.gz",
+        repo="ggml-org/llama.cpp",
+        tag="b9002",
     )
-    older_release_choice = asset_choice(expected_sha256 = "b" * 64)
+    older_release_choice = asset_choice(expected_sha256="b" * 64)
     latest_plan = release_plan(
         [same_tag_upstream_choice],
-        release_checksums(release_tag = "release-2", upstream_tag = "b9002", source_commit = None),
-        llama_tag = "b9002",
-        release_tag = "release-2",
+        release_checksums(release_tag="release-2", upstream_tag="b9002", source_commit=None),
+        llama_tag="b9002",
+        release_tag="release-2",
     )
-    older_plan = release_plan([older_release_choice], release_checksums(source_commit = None))
+    older_plan = release_plan([older_release_choice], release_checksums(source_commit=None))
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -3568,13 +3568,13 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         llama_tag,
         release_tag,
         approved_checksums,
-        initial_fallback_used = False,
-        existing_install_dir = None,
-        force_cpu = False,
-        llama_backend = None,
-        backend_request = None,
-        rocm_gfx = None,
-        walk_back = None,
+        initial_fallback_used=False,
+        existing_install_dir=None,
+        force_cpu=False,
+        llama_backend=None,
+        backend_request=None,
+        rocm_gfx=None,
+        walk_back=None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -3645,10 +3645,10 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete(tmp_
         existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=choice,
+            approved_checksums=checksums,
         )
         is True
     )
@@ -3659,10 +3659,10 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete(tmp_
         existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=choice,
+            approved_checksums=checksums,
         )
         is False
     )
@@ -3675,7 +3675,7 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
     write_macos_install_shape(install_dir)
 
     host = macos_host()
-    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    choice = asset_choice(name="llama-b9001-bin-macos-arm64.tar.gz", install_kind="macos-arm64")
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     write_metadata(install_dir, choice, checksums)
 
@@ -3684,10 +3684,10 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
         existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=choice,
+            approved_checksums=checksums,
         )
         is True
     )
@@ -3698,10 +3698,10 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
         existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=choice,
+            approved_checksums=checksums,
         )
         is False
     )
@@ -3719,8 +3719,8 @@ def test_existing_macos_install_that_cannot_load_is_not_reused(tmp_path: Path, m
     install_dir.mkdir()
     write_macos_install_shape(install_dir)
 
-    host = macos_host(macos_version = (15, 5))
-    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    host = macos_host(macos_version=(15, 5))
+    choice = asset_choice(name="llama-b9001-bin-macos-arm64.tar.gz", install_kind="macos-arm64")
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     write_metadata(install_dir, choice, checksums)
 
@@ -3728,10 +3728,10 @@ def test_existing_macos_install_that_cannot_load_is_not_reused(tmp_path: Path, m
         return existing_install_matches_choice(
             install_dir,
             host,
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            choice = choice,
-            approved_checksums = checksums,
+            llama_tag="b9001",
+            release_tag="release-1",
+            choice=choice,
+            approved_checksums=checksums,
         )
 
     # Loads cleanly -> reuse is correct.
@@ -3751,16 +3751,16 @@ def test_paired_runtime_dll_patterns_excludes_executables() -> None:
     """The paired runtime archive must contribute only CUDA DLLs (no *.exe/*.dll) so it can't overwrite binaries."""
     paired_runtime_dll_patterns = INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns
     paired_choice = asset_choice(
-        name = "llama-b9001-bin-win-cuda-12.4-x64.zip",
-        url = "u",
-        repo = "x",
-        tag = "t",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
-        runtime_name = "cudart-llama-bin-win-cuda-12.4-x64.zip",
-        runtime_url = "https://example.com/cudart.zip",
-        runtime_sha256 = "c" * 64,
+        name="llama-b9001-bin-win-cuda-12.4-x64.zip",
+        url="u",
+        repo="x",
+        tag="t",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
+        runtime_name="cudart-llama-bin-win-cuda-12.4-x64.zip",
+        runtime_url="https://example.com/cudart.zip",
+        runtime_sha256="c" * 64,
     )
     patterns = paired_runtime_dll_patterns(paired_choice)
     assert "cudart64_*.dll" in patterns
@@ -3779,12 +3779,12 @@ def test_paired_runtime_dll_patterns_excludes_executables() -> None:
         "windows-hip",
     ):
         non_windows = asset_choice(
-            name = "x",
-            url = "u",
-            repo = "x",
-            tag = "t",
-            source_label = "published",
-            install_kind = kind,
+            name="x",
+            url="u",
+            repo="x",
+            tag="t",
+            source_label="published",
+            install_kind=kind,
         )
         assert paired_runtime_dll_patterns(non_windows) == []
 
@@ -3818,17 +3818,17 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -
     runtime_sha = hashlib.sha256(runtime_zip.read_bytes()).hexdigest()
 
     choice = asset_choice(
-        name = main_zip.name,
-        url = f"https://example.com/{main_zip.name}",
-        source_label = "published",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda12",
-        expected_sha256 = main_sha,
-        runtime_name = runtime_zip.name,
-        runtime_url = f"https://example.com/{runtime_zip.name}",
-        runtime_sha256 = runtime_sha,
+        name=main_zip.name,
+        url=f"https://example.com/{main_zip.name}",
+        source_label="published",
+        install_kind="windows-cuda",
+        runtime_line="cuda12",
+        expected_sha256=main_sha,
+        runtime_name=runtime_zip.name,
+        runtime_url=f"https://example.com/{runtime_zip.name}",
+        runtime_sha256=runtime_sha,
     )
-    host = windows_host(driver_cuda_version = (12, 4), has_usable_nvidia = True)
+    host = windows_host(driver_cuda_version=(12, 4), has_usable_nvidia=True)
 
     import shutil as _shutil
 
@@ -3838,8 +3838,8 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -
         url,
         target_path,
         *,
-        expected_sha256 = None,
-        label = None,
+        expected_sha256=None,
+        label=None,
         **kw,
     ):
         src = main_zip if "cudart" not in url else runtime_zip
@@ -3902,15 +3902,15 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
 
     bundle_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
     choice = asset_choice(
-        name = bundle.name,
-        url = f"https://example.com/{bundle.name}",
-        tag = "b9334",
-        source_label = "published",
-        install_kind = "linux-cuda",
-        runtime_line = "cuda13",
-        expected_sha256 = bundle_sha,
+        name=bundle.name,
+        url=f"https://example.com/{bundle.name}",
+        tag="b9334",
+        source_label="published",
+        install_kind="linux-cuda",
+        runtime_line="cuda13",
+        expected_sha256=bundle_sha,
     )
-    host = linux_host(driver_cuda_version = (13, 0), has_physical_nvidia = True, has_usable_nvidia = True)
+    host = linux_host(driver_cuda_version=(13, 0), has_physical_nvidia=True, has_usable_nvidia=True)
 
     orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
 
@@ -3918,8 +3918,8 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
         url,
         target_path,
         *,
-        expected_sha256 = None,
-        label = None,
+        expected_sha256=None,
+        label=None,
         **kw,
     ):
         _shutil.copy2(bundle, target_path)
@@ -3953,16 +3953,16 @@ def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: 
     site_dir = tmp_path / "Lib" / "site-packages"
     # cu12-style modular wheel
     cu12_bin = site_dir / "nvidia" / "cuda_runtime" / "bin"
-    cu12_bin.mkdir(parents = True)
+    cu12_bin.mkdir(parents=True)
     # cu13-style unsuffixed wheel
     cu13_arch = site_dir / "nvidia" / "cu13" / "bin" / "x86_64"
-    cu13_arch.mkdir(parents = True)
+    cu13_arch.mkdir(parents=True)
     # conda-style repack
     library_bin = site_dir / "nvidia" / "cublas" / "Library" / "bin"
-    library_bin.mkdir(parents = True)
+    library_bin.mkdir(parents=True)
     # PyTorch bundled-CUDA wheel
     torch_lib = site_dir / "torch" / "lib"
-    torch_lib.mkdir(parents = True)
+    torch_lib.mkdir(parents=True)
 
     monkeypatch.setattr(sys, "path", [str(site_dir)])
     monkeypatch.setattr(_site, "getsitepackages", lambda: [str(site_dir)])
@@ -3976,7 +3976,7 @@ def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: 
 
 
 def _nvidia_linux_host():
-    return linux_host(compute_caps = ["10.0"], has_physical_nvidia = True, has_usable_nvidia = True)
+    return linux_host(compute_caps=["10.0"], has_physical_nvidia=True, has_usable_nvidia=True)
 
 
 def _run_validate_prebuilt_choice(
@@ -3984,7 +3984,7 @@ def _run_validate_prebuilt_choice(
     tmp_path,
     *,
     expected_sha256,
-    probe = None,
+    probe=None,
 ):
     """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
     calls = {"quantize": 0, "server": 0}
@@ -4017,16 +4017,16 @@ def _run_validate_prebuilt_choice(
     bundle_archive.write_bytes(b"bundle")
 
     choice = asset_choice(
-        name = bundle_name,
-        url = "file://bundle",
-        repo = "local",
-        tag = "b9998",
-        source_label = "local",
-        is_ready_bundle = True,
-        install_kind = "linux-cuda",
-        bundle_profile = "cuda13-newer",
-        runtime_line = "cuda13",
-        expected_sha256 = expected_sha256,
+        name=bundle_name,
+        url="file://bundle",
+        repo="local",
+        tag="b9998",
+        source_label="local",
+        is_ready_bundle=True,
+        install_kind="linux-cuda",
+        bundle_profile="cuda13-newer",
+        runtime_line="cuda13",
+        expected_sha256=expected_sha256,
     )
     src.validate_prebuilt_choice(
         choice,
@@ -4034,37 +4034,37 @@ def _run_validate_prebuilt_choice(
         tmp_path / "install",
         tmp_path / "work",
         probe if probe is not None else tmp_path / "stories260K.gguf",
-        requested_tag = "b9998",
-        llama_tag = "b9998",
-        release_tag = "b9998",
-        approved_checksums = approved_checksums_for(
+        requested_tag="b9998",
+        llama_tag="b9998",
+        release_tag="b9998",
+        approved_checksums=approved_checksums_for(
             "b9998",
-            source_archive = source_archive,
-            bundle_archive = bundle_archive,
-            bundle_name = bundle_name,
+            source_archive=source_archive,
+            bundle_archive=bundle_archive,
+            bundle_name=bundle_name,
         ),
-        prebuilt_fallback_used = False,
-        quantized_path = tmp_path / "stories260K-q4.gguf",
+        prebuilt_fallback_used=False,
+        quantized_path=tmp_path / "stories260K-q4.gguf",
     )
     return calls
 
 
 def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
     # An approved (sha256-verified) bundle skips the smoke test while the flag is off.
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256="ab" * 32)
     assert calls == {"quantize": 0, "server": 0}
 
 
 def test_validate_prebuilt_choice_hashless_build_always_validated(tmp_path, monkeypatch):
     # A hashless build has no sha256 gate, so the smoke test must run even with the flag off.
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256=None)
     assert calls == {"quantize": 1, "server": 1}
 
 
 def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp_path, monkeypatch):
     # _RUN_STAGED_PREBUILT_VALIDATION back on restores the smoke test for approved bundles too.
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256="ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
 
 
@@ -4076,7 +4076,7 @@ def test_validate_prebuilt_choice_never_fetches_probe_for_approved_bundle(tmp_pa
         raise AssertionError("probe model must not be fetched when the smoke test is skipped")
 
     calls = _run_validate_prebuilt_choice(
-        monkeypatch, tmp_path, expected_sha256 = "ab" * 32, probe = refuse
+        monkeypatch, tmp_path, expected_sha256="ab" * 32, probe=refuse
     )
     assert calls == {"quantize": 0, "server": 0}
 
@@ -4090,7 +4090,7 @@ def test_validate_prebuilt_choice_fetches_probe_once_when_validating(tmp_path, m
         fetches.append(1)
         return probe_path
 
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None, probe = fetch)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256=None, probe=fetch)
     assert calls == {"quantize": 1, "server": 1}
     assert len(fetches) == 1
 
@@ -4100,7 +4100,7 @@ def test_lazy_validation_model_downloads_once_on_first_use(tmp_path, monkeypatch
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "download_validation_model",
-        lambda path, cache_path = None: downloads.append((path, cache_path)),
+        lambda path, cache_path=None: downloads.append((path, cache_path)),
     )
     probe_path = tmp_path / "stories260K.gguf"
     ensure = INSTALL_LLAMA_PREBUILT.lazy_validation_model(probe_path, tmp_path / "cache.gguf")
@@ -4121,16 +4121,16 @@ def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch)
     host = linux_host()
     choice = asset_choice()
     checksums = ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = "release-1",
-        upstream_tag = "b9001",
-        source_commit = "deadbeef",
-        artifacts = {
+        repo="unslothai/llama.cpp",
+        release_tag="release-1",
+        upstream_tag="b9001",
+        source_commit="deadbeef",
+        artifacts={
             choice.name: ApprovedArtifactHash(
-                asset_name = choice.name,
-                sha256 = choice.expected_sha256,
-                repo = "ggml-org/llama.cpp",
-                kind = "upstream-prebuilt",
+                asset_name=choice.name,
+                sha256=choice.expected_sha256,
+                repo="ggml-org/llama.cpp",
+                kind="upstream-prebuilt",
             ),
         },
     )
@@ -4159,7 +4159,7 @@ def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch)
 
     # Reaching validate_prebuilt_attempts is the point: the rate limit no longer
     # short-circuits into SystemExit(EXIT_FALLBACK) before the release loop runs.
-    with pytest.raises(AssertionError, match = "reached the install flow"):
+    with pytest.raises(AssertionError, match="reached the install flow"):
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
 
@@ -4185,16 +4185,16 @@ def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, m
 
     def hashless(name: str, install_kind: str) -> AssetChoice:
         return AssetChoice(
-            repo = "unslothai/llama.cpp",
-            tag = "release-1",
-            name = name,
-            url = f"https://example.com/{name}",
-            source_label = "direct-upstream",
-            install_kind = install_kind,
-            expected_sha256 = None,  # hashless: the smoke test is its only integrity gate
+            repo="unslothai/llama.cpp",
+            tag="release-1",
+            name=name,
+            url=f"https://example.com/{name}",
+            source_label="direct-upstream",
+            install_kind=install_kind,
+            expected_sha256=None,  # hashless: the smoke test is its only integrity gate
         )
 
-    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "429"):
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match="429"):
         INSTALL_LLAMA_PREBUILT.validate_prebuilt_attempts(
             [
                 hashless("llama-b9001-bin-win-cuda-x64.zip", "windows-cuda"),
@@ -4204,10 +4204,10 @@ def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, m
             tmp_path / "install",
             tmp_path / "work",
             refuse,
-            requested_tag = "b9001",
-            llama_tag = "b9001",
-            release_tag = "release-1",
-            approved_checksums = release_checksums(source_commit = None),
+            requested_tag="b9001",
+            llama_tag="b9001",
+            release_tag="release-1",
+            approved_checksums=release_checksums(source_commit=None),
         )
 
     assert attempted == []  # the CPU asset was never reached
@@ -4223,19 +4223,19 @@ def test_probe_failure_does_not_demote_to_an_older_release(tmp_path, monkeypatch
 
     def hashless_plan(release_tag: str, llama_tag: str):
         choice = AssetChoice(
-            repo = "unslothai/llama.cpp",
-            tag = release_tag,
-            name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz",
-            url = f"https://example.com/{llama_tag}.tar.gz",
-            source_label = "direct-upstream",
-            install_kind = "linux-cpu",
-            expected_sha256 = None,  # hashless plans always smoke-test
+            repo="unslothai/llama.cpp",
+            tag=release_tag,
+            name=f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz",
+            url=f"https://example.com/{llama_tag}.tar.gz",
+            source_label="direct-upstream",
+            install_kind="linux-cpu",
+            expected_sha256=None,  # hashless plans always smoke-test
         )
         return release_plan(
             [choice],
-            release_checksums(release_tag = release_tag, upstream_tag = llama_tag, source_commit = None),
-            llama_tag = llama_tag,
-            release_tag = release_tag,
+            release_checksums(release_tag=release_tag, upstream_tag=llama_tag, source_commit=None),
+            llama_tag=llama_tag,
+            release_tag=release_tag,
         )
 
     plans = [hashless_plan("release-2", "b9002"), hashless_plan("release-1", "b9001")]
@@ -4273,7 +4273,7 @@ def test_probe_failure_does_not_demote_to_an_older_release(tmp_path, monkeypatch
 
 def test_staged_validation_enabled_default_off(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
-    monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising=False)
     assert INSTALL_LLAMA_PREBUILT.staged_validation_enabled() is False
 
 
@@ -4287,7 +4287,7 @@ def test_staged_validation_enabled_env_opt_in(monkeypatch, value):
 def test_validate_prebuilt_choice_approved_validation_runs_when_env_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
     monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256="ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
 
 
@@ -4295,15 +4295,15 @@ def test_validate_existing_install_runs_server_smoke(tmp_path, monkeypatch):
     # setup.sh --validate-install path: exercise smoke helpers without a real GPU.
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
-    (bin_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
-    (bin_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "llama-server").write_text("#!/bin/sh\n", encoding="utf-8")
+    (bin_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding="utf-8")
     calls: dict[str, int] = {"quantize": 0, "server": 0, "download": 0}
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "download_validation_model",
-        lambda path, cache = None: calls.__setitem__("download", calls["download"] + 1),
+        lambda path, cache=None: calls.__setitem__("download", calls["download"] + 1),
     )
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
@@ -4321,13 +4321,13 @@ def test_validate_existing_install_runs_server_smoke(tmp_path, monkeypatch):
         lambda: linux_host(),
     )
 
-    INSTALL_LLAMA_PREBUILT.validate_existing_install(install_dir, install_kind = "linux-cuda")
+    INSTALL_LLAMA_PREBUILT.validate_existing_install(install_dir, install_kind="linux-cuda")
     assert calls == {"quantize": 1, "server": 1, "download": 1}
 
 
 def test_validate_existing_install_missing_server_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: linux_host())
-    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "llama-server not found"):
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match="llama-server not found"):
         INSTALL_LLAMA_PREBUILT.validate_existing_install(tmp_path / "missing")
 
 
@@ -4402,10 +4402,10 @@ def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, t
         linux_host(),
         "b9334",
         ApprovedReleaseChecksums(
-            repo = "unslothai/llama.cpp",
-            release_tag = "b9334",
-            upstream_tag = "b9334",
-            artifacts = {},
+            repo="unslothai/llama.cpp",
+            release_tag="b9334",
+            upstream_tag="b9334",
+            artifacts={},
         ),
     )
 
@@ -4435,11 +4435,11 @@ def test_dedupe_existing_dirs_skips_inaccessible_path_entry(monkeypatch):
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "Path", FakePath)
 
-    with pytest.raises(PermissionError, match = "Access is denied"):
+    with pytest.raises(PermissionError, match="Access is denied"):
         INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs([denied])
 
     assert INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs(
-        [denied, PACKAGE_ROOT], skip_unusable = True
+        [denied, PACKAGE_ROOT], skip_unusable=True
     ) == [str(PACKAGE_ROOT.resolve())]
 
 
@@ -4449,7 +4449,7 @@ def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "pathsep", ";")
 
-    def fake_dedupe(paths, *, skip_unusable = False):
+    def fake_dedupe(paths, *, skip_unusable=False):
         observed["paths"] = [str(path) for path in paths]
         observed["skip_unusable"] = skip_unusable
         return []
@@ -4457,7 +4457,7 @@ def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp
     monkeypatch.setenv("PATH", denied)
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     for name in ("CUDA_RUNTIME_DLL_DIR", "CUDA_PATH", "CUDA_HOME", "CUDA_ROOT"):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "python_runtime_dirs", lambda: [])
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "dedupe_existing_dirs", fake_dedupe)
 
@@ -4502,7 +4502,7 @@ def _extract_block(text: str, start_marker: str, end_marker: str) -> str:
 
 
 def _setup_sh_routing_block() -> str:
-    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding="utf-8")
     # The routing chain ends at the first dedented "    fi" after it.
     start = setup_sh.index(_SETUP_SH_ROUTING_START)
     end = setup_sh.index("\n    fi\n", start)
@@ -4519,9 +4519,9 @@ def _run_setup_sh_routing(
     """Drive the real setup.sh exit-code chain with a stubbed helper result."""
     llama_dir = tmp_path / "llama.cpp"
     if install_exists:
-        llama_dir.mkdir(parents = True, exist_ok = True)
+        llama_dir.mkdir(parents=True, exist_ok=True)
     log_path = tmp_path / "prebuilt.log"
-    log_path.write_text("boom\n", encoding = "utf-8")
+    log_path.write_text("boom\n", encoding="utf-8")
 
     script = "\n".join(
         [
@@ -4534,7 +4534,7 @@ def _run_setup_sh_routing(
             _SETUP_SH_HARNESS_TAIL,
         ]
     )
-    completed = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
+    completed = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
     return {
         "returncode": completed.returncode,
         "stdout": completed.stdout,
@@ -4544,7 +4544,7 @@ def _run_setup_sh_routing(
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason = "setup.sh is the POSIX installer; Windows runs setup.ps1, and driving a "
+    reason="setup.sh is the POSIX installer; Windows runs setup.ps1, and driving a "
     "POSIX script through Git Bash with Windows paths proves nothing about either",
 )
 @pytest.mark.parametrize(
@@ -4580,7 +4580,7 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
         pytest.skip("bash is required to exercise the setup.sh routing block")
 
     result = _run_setup_sh_routing(
-        status, tmp_path, install_exists = True, explicit_backend = explicit_backend
+        status, tmp_path, install_exists=True, explicit_backend=explicit_backend
     )
 
     assert result["returncode"] == expect_exit, result
@@ -4617,12 +4617,12 @@ Write-Output "source_build=$($NeedLlamaSourceBuild.ToString().ToLower())"
 """
 
 requires_pwsh = pytest.mark.skipif(
-    shutil.which("pwsh") is None, reason = "pwsh is required to execute the setup.ps1 routing block"
+    shutil.which("pwsh") is None, reason="pwsh is required to execute the setup.ps1 routing block"
 )
 
 
 def _setup_ps1_routing_block() -> str:
-    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding="utf-8")
     return _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
 
 
@@ -4636,9 +4636,9 @@ def _run_setup_ps1_routing(
     """Drive the real setup.ps1 exit-code chain, the mirror of _run_setup_sh_routing."""
     llama_dir = tmp_path / "llama.cpp"
     if install_exists:
-        llama_dir.mkdir(parents = True, exist_ok = True)
+        llama_dir.mkdir(parents=True, exist_ok=True)
     else:
-        tmp_path.mkdir(parents = True, exist_ok = True)
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
     script = "\n".join(
         [
@@ -4651,7 +4651,7 @@ def _run_setup_ps1_routing(
         ]
     )
     script_path = tmp_path / "routing.ps1"
-    script_path.write_text(script, encoding = "utf-8")
+    script_path.write_text(script, encoding="utf-8")
     # run_pwsh (see tests/_shared/unsloth_pwsh_runner.py), not subprocess.run: a pwsh killed
     # at startup returns rc -6 with empty stdout, which callers would compare against the
     # bash mirror and report as setup.ps1 routing the exit code wrongly.
@@ -4663,9 +4663,9 @@ def _run_setup_ps1_routing(
             "-File",
             str(script_path),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     return {
         "returncode": completed.returncode,
@@ -4675,7 +4675,7 @@ def _run_setup_ps1_routing(
 
 
 @requires_pwsh
-@pytest.mark.parametrize("install_exists", [True, False], ids = ["installed", "fresh"])
+@pytest.mark.parametrize("install_exists", [True, False], ids=["installed", "fresh"])
 @pytest.mark.parametrize("explicit_backend", ["", "cuda", "rocm", "vulkan", "cpu"])
 @pytest.mark.parametrize("status", [0, 1, 2, 3, 4, 5, 137])
 def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_exists, tmp_path):
@@ -4699,14 +4699,14 @@ def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_ex
     sh = _run_setup_sh_routing(
         status,
         sh_dir,
-        install_exists = install_exists,
-        explicit_backend = explicit_backend,
+        install_exists=install_exists,
+        explicit_backend=explicit_backend,
     )
     ps = _run_setup_ps1_routing(
         status,
         ps_dir,
-        install_exists = install_exists,
-        explicit_backend = explicit_backend,
+        install_exists=install_exists,
+        explicit_backend=explicit_backend,
     )
 
     assert ps["returncode"] == sh["returncode"], {"bash": sh, "pwsh": ps}
@@ -4725,8 +4725,8 @@ def test_setup_ps1_routing_matches_setup_sh(status, explicit_backend, install_ex
 
 def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     """The new catch-all must fail loudly, not queue a compile, on both platforms."""
-    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding="utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding="utf-8")
 
     sh_block = _setup_sh_routing_block()
     sh_else = sh_block[sh_block.rindex("\n    else\n") :]
@@ -4772,7 +4772,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
         urllib.error.URLError("connection reset"),
         TimeoutError("timed out"),
     ],
-    ids = ["rate-limit", "bad-payload", "urlerror", "timeout"],
+    ids=["rate-limit", "bad-payload", "urlerror", "timeout"],
 )
 def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch, error):
     """A network problem while listing releases must ask for a source build.
@@ -4841,8 +4841,8 @@ def test_github_api_rate_limit_status_carries_the_token_hint(monkeypatch, status
     def raise_status(_url, **_kw):
         raise urllib.error.HTTPError(_url, status, "rate limited", {}, io.BytesIO(b""))
 
-    monkeypatch.delenv("GH_TOKEN", raising = False)
-    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", raise_status)
     with pytest.raises(RuntimeError) as caught:
         INSTALL_LLAMA_PREBUILT.fetch_json(url)
@@ -4889,24 +4889,24 @@ _PUBLISHED_PAYLOAD = {"linux": ["llama-diffusion-gemma-visual-server"]}
 def _complete_existing_llama_install(
     tmp_path,
     *,
-    executable = True,
-    backend = None,
-    payload = True,
-    windows = False,
-    backend_request = None,
-    runtime_asset = None,
-    paired_runtime = True,
-    runnable = True,
-    runnable_root = None,
-    runtime_line = None,
-    source = None,
-    visual_server = True,
+    executable=True,
+    backend=None,
+    payload=True,
+    windows=False,
+    backend_request=None,
+    runtime_asset=None,
+    paired_runtime=True,
+    runnable=True,
+    runnable_root=None,
+    runtime_line=None,
+    source=None,
+    visual_server=True,
 ):
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = (
         install_dir / "build" / "bin" / "Release" if windows else install_dir / "build" / "bin"
     )
-    runtime_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
     ext = ".exe" if windows else ""
     marker = {"release_tag": "old-release", "tag": "old-upstream"}
     if backend is not None:
@@ -4931,7 +4931,7 @@ def _complete_existing_llama_install(
         if path.name == "gguf-py":
             path.mkdir()
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
-            path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
+            path.write_text(json.dumps(marker) + "\n", encoding="utf-8")
         elif path.name.startswith("llama-"):
             ok = (
                 runnable
@@ -4939,23 +4939,23 @@ def _complete_existing_llama_install(
                 else (runnable if runnable_root is None else runnable_root)
             )
             # These get exec'd; a zero-byte file that kept its mode bits is ENOEXEC.
-            path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
+            path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding="utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
         else:
-            path.write_text("x", encoding = "utf-8")
+            path.write_text("x", encoding="utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("x", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding="utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
-            (runtime_dir / name).write_text("x", encoding = "utf-8")
+            (runtime_dir / name).write_text("x", encoding="utf-8")
         if source == "published" and visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("x", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding="utf-8")
         if runtime_asset is not None and paired_runtime:
             for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
-                (runtime_dir / name).write_text("x", encoding = "utf-8")
+                (runtime_dir / name).write_text("x", encoding="utf-8")
     return install_dir
 
 
@@ -4985,7 +4985,7 @@ def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
 
-    install_dir = _complete_existing_llama_install(tmp_path, executable = False)
+    install_dir = _complete_existing_llama_install(tmp_path, executable=False)
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -5004,7 +5004,7 @@ def _windows_host() -> HostInfo:
         (False, linux_host, "cpu"),
         (True, _windows_host, "cuda"),
     ],
-    ids = ["linux", "windows"],
+    ids=["linux", "windows"],
 )
 def test_release_listing_failure_does_not_keep_a_gutted_runtime(
     tmp_path, monkeypatch, windows, host, backend
@@ -5018,11 +5018,11 @@ def test_release_listing_failure_does_not_keep_a_gutted_runtime(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", host)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
 
-    kept = _complete_existing_llama_install(tmp_path / "kept", backend = backend, windows = windows)
+    kept = _complete_existing_llama_install(tmp_path / "kept", backend=backend, windows=windows)
     install_prebuilt(kept, "latest", "unslothai/llama.cpp", "")
 
     gutted = _complete_existing_llama_install(
-        tmp_path / "gutted", backend = backend, payload = False, windows = windows
+        tmp_path / "gutted", backend=backend, payload=False, windows=windows
     )
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(gutted, "latest", "unslothai/llama.cpp", "")
@@ -5046,7 +5046,7 @@ def _listing_failure(monkeypatch, host):
         ("cudart-llama-bin-win-cuda-13.0-x64.zip", False, False),
         (None, False, True),
     ],
-    ids = ["paired-intact", "paired-gutted", "pair-less"],
+    ids=["paired-intact", "paired-gutted", "pair-less"],
 )
 def test_a_paired_cuda_install_needs_its_cudart_trio(
     tmp_path, monkeypatch, runtime_asset, paired_runtime, kept
@@ -5055,10 +5055,10 @@ def test_a_paired_cuda_install_needs_its_cudart_trio(
     _listing_failure(monkeypatch, _windows_host)
     install_dir = _complete_existing_llama_install(
         tmp_path,
-        backend = "cuda",
-        windows = True,
-        runtime_asset = runtime_asset,
-        paired_runtime = paired_runtime,
+        backend="cuda",
+        windows=True,
+        runtime_asset=runtime_asset,
+        paired_runtime=paired_runtime,
     )
 
     if kept:
@@ -5072,15 +5072,15 @@ def test_a_paired_cuda_install_needs_its_cudart_trio(
 @pytest.mark.parametrize(
     ("windows", "host"),
     [(True, _windows_host), (False, linux_host)],
-    ids = ["windows", "linux"],
+    ids=["windows", "linux"],
 )
-@pytest.mark.parametrize("payload", [True, False], ids = ["intact", "gutted"])
+@pytest.mark.parametrize("payload", [True, False], ids=["intact", "gutted"])
 def test_a_marker_that_names_no_backend_still_owes_the_shared_payload(
     tmp_path, monkeypatch, windows, host, payload
 ):
     """Unknown markers still require the platform's shared payload."""
     _listing_failure(monkeypatch, host)
-    install_dir = _complete_existing_llama_install(tmp_path, windows = windows, payload = payload)
+    install_dir = _complete_existing_llama_install(tmp_path, windows=windows, payload=payload)
 
     if payload:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -5093,7 +5093,7 @@ def test_a_marker_that_names_no_backend_still_owes_the_shared_payload(
 def test_a_stored_backend_choice_the_install_already_satisfies_is_kept(tmp_path, monkeypatch):
     """Keep a working install that already satisfies its recorded backend."""
     _listing_failure(monkeypatch, linux_host)
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu", backend_request="cpu")
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
@@ -5106,7 +5106,7 @@ def test_a_backend_named_on_this_run_still_refuses_to_answer_with_the_old_instal
     """backend_mandatory is a live instruction, not a stored preference."""
     _listing_failure(monkeypatch, linux_host)
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu", backend_request="cpu")
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -5118,7 +5118,7 @@ def test_a_stored_backend_the_install_does_not_run_is_not_answered_with_it(tmp_p
     """A recorded request the tree does not satisfy is still exit 5, never a source build."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(
-        tmp_path, backend = "cpu", backend_request = "vulkan"
+        tmp_path, backend="cpu", backend_request="vulkan"
     )
 
     with pytest.raises(SystemExit) as caught:
@@ -5130,7 +5130,7 @@ def test_a_stored_backend_the_install_does_not_run_is_not_answered_with_it(tmp_p
 @pytest.mark.parametrize(
     ("windows", "host"),
     [(True, _windows_host), (False, linux_host)],
-    ids = ["windows", "linux"],
+    ids=["windows", "linux"],
 )
 def test_release_listing_failure_does_not_keep_a_corrupt_binary(
     tmp_path, monkeypatch, windows, host
@@ -5139,7 +5139,7 @@ def test_release_listing_failure_does_not_keep_a_corrupt_binary(
     non-ELF finds nothing. On Windows neither preflight runs at all. execve sees it."""
     _listing_failure(monkeypatch, host)
     install_dir = _complete_existing_llama_install(
-        tmp_path, windows = windows, backend = "cuda" if windows else "cpu", runnable = False
+        tmp_path, windows=windows, backend="cuda" if windows else "cpu", runnable=False
     )
     ext = ".exe" if windows else ""
     runtime = install_dir / "build" / "bin" / ("Release" if windows else "")
@@ -5155,7 +5155,7 @@ def test_a_rotten_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, 
     """_find_llama_server_binary searches <install>/llama-server before build/bin, so the
     root copy is what runs; without a symlink it is a separate file that can rot alone."""
     _listing_failure(monkeypatch, linux_host)
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", runnable_root = False)
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu", runnable_root=False)
     assert os.access(install_dir / "build" / "bin" / "llama-server", os.X_OK)
 
     with pytest.raises(SystemExit) as caught:
@@ -5173,7 +5173,7 @@ def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch
         "run_capture",
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0xC0000135, "", ""),
     )
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cuda", windows = True)
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cuda", windows=True)
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -5184,7 +5184,7 @@ def test_a_windows_loader_status_is_not_a_successful_probe(tmp_path, monkeypatch
 @pytest.mark.parametrize(
     "kwargs",
     [{"llama_backend": "auto"}, {"force_cpu": True}],
-    ids = ["backend-auto", "cpu-fallback"],
+    ids=["backend-auto", "cpu-fallback"],
 )
 def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
     tmp_path, monkeypatch, kwargs
@@ -5192,7 +5192,7 @@ def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
     """ "auto" asks to re-detect; answering it with the old tree leaves the backend and its
     marker untouched while reporting success."""
     _listing_failure(monkeypatch, linux_host)
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu", backend_request="cpu")
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "", **kwargs)
@@ -5206,13 +5206,13 @@ def test_a_selection_named_on_this_run_is_not_answered_with_the_old_install(
 @pytest.mark.parametrize(
     "kwargs",
     [{"override_has_rocm": True}, {"override_rocm_gfx": "gfx1151"}],
-    ids = ["has-rocm", "rocm-gfx"],
+    ids=["has-rocm", "rocm-gfx"],
 )
 def test_forwarded_gpu_detection_is_not_a_selection_change(tmp_path, monkeypatch, kwargs):
     """setup.sh builds --rocm-gfx/--has-rocm into _PREBUILT_CMD from its own probe and
     setup.ps1 does the same, so counting them would lose the keep path on every AMD host."""
     _listing_failure(monkeypatch, linux_host)
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu")
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "", **kwargs)
 
@@ -5232,7 +5232,7 @@ def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypat
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", _record)
     install_dir = _complete_existing_llama_install(
-        tmp_path, backend = "cpu", runtime_line = "cuda-12.4"
+        tmp_path, backend="cpu", runtime_line="cuda-12.4"
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
@@ -5246,7 +5246,7 @@ def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypat
 def test_a_non_default_published_repo_is_not_answered_with_the_old_install(tmp_path, monkeypatch):
     """A different release repo is a live choice the old tree cannot satisfy."""
     _listing_failure(monkeypatch, linux_host)
-    install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu")
+    install_dir = _complete_existing_llama_install(tmp_path, backend="cpu")
 
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(install_dir, "latest", "someone-else/llama.cpp", "")
@@ -5283,7 +5283,7 @@ def test_release_listing_failure_does_not_keep_an_unloadable_install(tmp_path, m
         ("latest", "release-2"),
         ("b9002", "release-2"),
     ],
-    ids = ["upstream-tag", "published-release", "both-pins"],
+    ids=["upstream-tag", "published-release", "both-pins"],
 )
 def test_release_listing_failure_does_not_ignore_an_explicit_version(
     tmp_path, monkeypatch, llama_tag, published_release_tag
@@ -5323,7 +5323,7 @@ def test_release_listing_failure_does_not_ignore_an_explicit_version(
         OSError(errno.ENOMEM, "Cannot allocate memory"),
         PermissionError(errno.EACCES, "Permission denied"),
     ],
-    ids = ["typeerror", "attributeerror", "nameerror", "emfile", "enomem", "eacces"],
+    ids=["typeerror", "attributeerror", "nameerror", "emfile", "enomem", "eacces"],
 )
 def test_release_listing_code_defect_stays_exit_error(tmp_path, monkeypatch, error):
     """A defect in the resolver is an installer bug, not a transient condition.
@@ -5405,7 +5405,7 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
     install_dir.mkdir()
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     original = json.dumps({"force_cpu": False}) + "\n"
-    marker.write_text(original, encoding = "utf-8")
+    marker.write_text(original, encoding="utf-8")
 
     real_write = INSTALL_LLAMA_PREBUILT.tempfile.NamedTemporaryFile
 
@@ -5421,7 +5421,7 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 
     class _Ctx:
         def __enter__(self):
-            self._cm = real_write(prefix = marker.name + ".tmp-", dir = install_dir, delete = False)
+            self._cm = real_write(prefix=marker.name + ".tmp-", dir=install_dir, delete=False)
             return _FullDisk(self._cm.__enter__())
 
         def __exit__(self, *exc):
@@ -5431,19 +5431,19 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 
     _sync_force_cpu(install_dir)
 
-    assert marker.read_text(encoding = "utf-8") == original
+    assert marker.read_text(encoding="utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
 
 
 TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
 
 
-def _checksums(tree, repo = "unslothai/llama.cpp"):
+def _checksums(tree, repo="unslothai/llama.cpp"):
     return INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums(
-        repo = repo,
-        release_tag = "b10173-mix-2c8b9c1",
-        upstream_tag = "b10173",
-        ggml_tree = tree,
+        repo=repo,
+        release_tag="b10173-mix-2c8b9c1",
+        upstream_tag="b10173",
+        ggml_tree=tree,
     )
 
 
@@ -5456,15 +5456,15 @@ def test_recorded_ggml_tree_only_for_binaries_from_that_release():
 
     def choice(repo):
         return asset_choice(
-            name = "bundle.tar.gz",
-            url = "https://x/bundle",
-            repo = repo,
-            tag = "b10173",
-            source_label = "fork" if repo == "unslothai/llama.cpp" else "upstream",
-            is_ready_bundle = True,
-            bundle_profile = "cpu",
-            runtime_line = "cpu",
-            expected_sha256 = "0" * 64,
+            name="bundle.tar.gz",
+            url="https://x/bundle",
+            repo=repo,
+            tag="b10173",
+            source_label="fork" if repo == "unslothai/llama.cpp" else "upstream",
+            is_ready_bundle=True,
+            bundle_profile="cpu",
+            runtime_line="cpu",
+            expected_sha256="0" * 64,
         )
 
     fork = choice("unslothai/llama.cpp")
@@ -5481,13 +5481,13 @@ def test_reused_install_backfills_the_ggml_tree(tmp_path):
     tree-less forever and slim whisper pairing falls back to the "-mix-" suffix.
     """
     install_dir = tmp_path / "llama.cpp"
-    (install_dir / "build" / "bin").mkdir(parents = True)
+    (install_dir / "build" / "bin").mkdir(parents=True)
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps({"release_tag": "b10173-mix-2c8b9c1"}) + "\n", encoding = "utf-8")
+    marker.write_text(json.dumps({"release_tag": "b10173-mix-2c8b9c1"}) + "\n", encoding="utf-8")
 
     _sync_ggml_tree(install_dir, TREE_A)
 
-    payload = json.loads(marker.read_text(encoding = "utf-8"))
+    payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["ggml_tree"] == TREE_A
     assert payload["release_tag"] == "b10173-mix-2c8b9c1"  # nothing else lost
     assert INSTALL_LLAMA_PREBUILT.installed_llama_ggml_tree(install_dir) == TREE_A
@@ -5501,15 +5501,15 @@ def test_reused_install_keeps_the_ggml_tree_when_the_release_declares_none(tmp_p
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker.write_text(
         json.dumps({"release_tag": "b10173-mix-2c8b9c1", "ggml_tree": TREE_A}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     _sync_ggml_tree(install_dir, declared)
 
-    assert json.loads(marker.read_text(encoding = "utf-8"))["ggml_tree"] == TREE_A
+    assert json.loads(marker.read_text(encoding="utf-8"))["ggml_tree"] == TREE_A
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.skipif(os.name == "nt", reason="Windows st_mode carries no POSIX mode bits")
 @pytest.mark.parametrize("mode", [0o444, 0o644, 0o664])
 def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
     """A shared install's marker must stay readable by everyone who could read it.
@@ -5521,13 +5521,13 @@ def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
+    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding="utf-8")
     os.chmod(marker, mode)
 
     _sync_force_cpu(install_dir)
 
     assert stat.S_IMODE(marker.stat().st_mode) == mode
-    assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is True
+    assert json.loads(marker.read_text(encoding="utf-8"))["force_cpu"] is True
     # and no temp file is stranded next to it
     assert [p.name for p in install_dir.iterdir() if ".tmp-" in p.name] == []
 
@@ -5542,8 +5542,8 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-    original = json.dumps({"force_cpu": False, "release_tag": "b9002"}, indent = 2) + "\n"
-    marker.write_text(original, encoding = "utf-8")
+    original = json.dumps({"force_cpu": False, "release_tag": "b9002"}, indent=2) + "\n"
+    marker.write_text(original, encoding="utf-8")
 
     def out_of_space(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")
@@ -5552,7 +5552,7 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
 
     _sync_force_cpu(install_dir)
 
-    assert marker.read_text(encoding = "utf-8") == original
+    assert marker.read_text(encoding="utf-8") == original
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
 
 
@@ -5564,9 +5564,9 @@ def test_python_runtime_dirs_skips_an_inaccessible_glob_result(monkeypatch, tmp_
     """
     root = tmp_path / "site-packages"
     good = root / "torch" / "lib"
-    good.mkdir(parents = True)
+    good.mkdir(parents=True)
     denied = root / "nvidia" / "cublas" / "lib"
-    denied.mkdir(parents = True)
+    denied.mkdir(parents=True)
 
     real_is_dir = Path.is_dir
 
@@ -5589,7 +5589,7 @@ def test_python_runtime_dirs_skips_an_inaccessible_glob_result(monkeypatch, tmp_
 def test_python_runtime_dirs_skips_inaccessible_sys_path_entry(monkeypatch, tmp_path):
     """A denied sys.path entry must not escape windows_runtime_dirs()."""
     usable = tmp_path / "site-packages"
-    (usable / "torch" / "lib").mkdir(parents = True)
+    (usable / "torch" / "lib").mkdir(parents=True)
 
     denied = Path(r"\\\\denied-share\\site-packages")
 
@@ -5624,10 +5624,10 @@ def test_windows_runtime_dirs_skips_inaccessible_program_files(monkeypatch):
     monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "pathsep", ";")
     monkeypatch.setenv("ProgramFiles", denied)
-    monkeypatch.delenv("CUDA_RUNTIME_DLL_DIR", raising = False)
-    monkeypatch.delenv("CUDA_PATH", raising = False)
-    monkeypatch.delenv("CUDA_HOME", raising = False)
-    monkeypatch.delenv("CUDA_ROOT", raising = False)
+    monkeypatch.delenv("CUDA_RUNTIME_DLL_DIR", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_ROOT", raising=False)
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "python_runtime_dirs", lambda: [])
 
@@ -5669,24 +5669,24 @@ def test_binary_env_linux_skips_inaccessible_inherited_ld_library_path(monkeypat
 # ── marker sync is advisory, never fatal ──
 
 
-def _reused_choice(install_kind = "linux-cpu"):
+def _reused_choice(install_kind="linux-cpu"):
     """The bundle a reuse path re-records the run's selection against."""
     return asset_choice(
-        name = "bundle.tar.gz",
-        url = "file://bundle",
-        tag = "b10173",
-        source_label = "published",
-        install_kind = install_kind,
+        name="bundle.tar.gz",
+        url="file://bundle",
+        tag="b10173",
+        source_label="published",
+        install_kind=install_kind,
     )
 
 
-def _sync_force_cpu(install_dir, value = True):
+def _sync_force_cpu(install_dir, value=True):
     """sync_marker_selection with only the deliberate-CPU choice in play."""
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
         install_dir,
-        choice = _reused_choice(),
-        backend_request = "cpu" if value else "auto",
-        persist_force_cpu = value,
+        choice=_reused_choice(),
+        backend_request="cpu" if value else "auto",
+        persist_force_cpu=value,
     )
 
 
@@ -5694,9 +5694,9 @@ def _sync_ggml_tree(install_dir, tree):
     """sync_marker_selection with only the paired ggml tree in play."""
     INSTALL_LLAMA_PREBUILT.sync_marker_selection(
         install_dir,
-        choice = _reused_choice(),
-        backend_request = "auto",
-        ggml_tree = tree,
+        choice=_reused_choice(),
+        backend_request="auto",
+        ggml_tree=tree,
     )
 
 
@@ -5725,7 +5725,7 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind,
     install_dir.mkdir()
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker.write_text(
-        json.dumps({"force_cpu": False, "llama_backend": None}) + "\n", encoding = "utf-8"
+        json.dumps({"force_cpu": False, "llama_backend": None}) + "\n", encoding="utf-8"
     )
     os.chmod(marker, 0o444)
     if os.access(marker, os.W_OK):  # pragma: no cover - root ignores the mode
@@ -5737,7 +5737,7 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind,
     try:
         # Must not raise: that would surface as EXIT_ERROR and abort setup.
         INSTALL_LLAMA_PREBUILT.sync_marker_selection(
-            install_dir, choice = _reused_choice(install_kind), **kwargs
+            install_dir, choice=_reused_choice(install_kind), **kwargs
         )
     finally:
         monkeypatch.undo()
@@ -5748,7 +5748,7 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind,
     # Silently losing force_cpu would let a later update re-route a deliberate CPU
     # user onto a GPU bundle (#7213). Windows refuses os.replace onto a read-only
     # destination, hence the two-way assert.
-    persisted = json.loads(marker.read_text(encoding = "utf-8")).get(field) == expected
+    persisted = json.loads(marker.read_text(encoding="utf-8")).get(field) == expected
     assert persisted or any("WARNING" in line and field in line for line in logged), logged
 
 
@@ -5757,7 +5757,7 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
+    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding="utf-8")
 
     def refuse(*args, **kwargs):
         raise PermissionError(13, "Access is denied", str(marker), 5)
@@ -5827,24 +5827,24 @@ def test_supported_sms_stays_out_of_the_install_fingerprint():
     supported_sms onto existing markers only works while it is not hashed: in
     the payload, every install predating the field reinstalls on upgrade."""
     base = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "b9001",
-        name = "app-b9001-linux-x64-cuda13-older.tar.gz",
-        url = "https://example.invalid/app.tar.gz",
-        source_label = "published",
-        install_kind = "linux-cuda",
-        bundle_profile = "app",
-        runtime_line = "cuda13",
-        coverage_class = "older",
-        expected_sha256 = "a" * 64,
+        repo="unslothai/llama.cpp",
+        tag="b9001",
+        name="app-b9001-linux-x64-cuda13-older.tar.gz",
+        url="https://example.invalid/app.tar.gz",
+        source_label="published",
+        install_kind="linux-cuda",
+        bundle_profile="app",
+        runtime_line="cuda13",
+        coverage_class="older",
+        expected_sha256="a" * 64,
     )
     checksums = release_checksums()
-    kwargs = dict(llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums)
+    kwargs = dict(llama_tag="b9001", release_tag="release-1", approved_checksums=checksums)
     without = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        choice = AssetChoice(**base), **kwargs
+        choice=AssetChoice(**base), **kwargs
     )
     with_sms = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
-        choice = AssetChoice(**base, supported_sms = ["75", "80", "86", "89"]), **kwargs
+        choice=AssetChoice(**base, supported_sms=["75", "80", "86", "89"]), **kwargs
     )
     assert without and without == with_sms, (
         "recording supported_sms changed the install fingerprint; every existing "
@@ -5862,13 +5862,13 @@ def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kin
     coverage. Pin that at the writing end."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    choice = _cuda_choice(install_kind = install_kind, runtime_line = runtime_line, supported_sms = None)
+    choice = _cuda_choice(install_kind=install_kind, runtime_line=runtime_line, supported_sms=None)
     write_metadata(
         install_dir,
         choice,
         approved_release_checksums_for_asset(choice.name, "a" * 64),
-        llama_tag = "b10360",
-        release_tag = "b10360",
+        llama_tag="b10360",
+        release_tag="b10360",
     )
     marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["supported_sms"] == []
@@ -5891,7 +5891,7 @@ _LOCALIZED_NVIDIA_SMI = (
 
 def test_run_capture_keeps_ascii_lines_when_a_child_writes_another_code_page():
     result = INSTALL_LLAMA_PREBUILT.run_capture(
-        [sys.executable, "-c", _LOCALIZED_NVIDIA_SMI], timeout = 30
+        [sys.executable, "-c", _LOCALIZED_NVIDIA_SMI], timeout=30
     )
     assert "CUDA Version: 13.1" in result.stdout
     assert "\ufffd" in result.stdout
@@ -5901,7 +5901,7 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
     monkeypatch, tmp_path
 ):
     fake = tmp_path / "nvidia-smi.py"
-    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding = "utf-8")
+    fake.write_text(_LOCALIZED_NVIDIA_SMI, encoding="utf-8")
     real_run = subprocess.run
 
     def run_fake_nvidia_smi(command, *args, **kwargs):
@@ -5910,7 +5910,7 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
         kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
         return real_run(command, *args, **kwargs)
 
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.subprocess, "run", run_fake_nvidia_smi)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT.shutil,
@@ -5940,7 +5940,7 @@ def _flat(groups: list[list[str]]) -> set[str]:
 def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
     """Requiring only llama.dll let a tree missing llama-common.dll validate and
     then fail at exec."""
-    patterns = _flat(runtime_payload_health_groups(install_kind, source_label = "published"))
+    patterns = _flat(runtime_payload_health_groups(install_kind, source_label="published"))
     for required in (
         "llama.dll",
         "llama-common.dll",
@@ -5958,7 +5958,7 @@ def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
 def test_windows_source_build_does_not_require_the_shared_runtime():
     """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so requiring these would
     fail a healthy tree."""
-    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label=None))
     assert "llama.dll" in patterns
     for absent in (
         "llama-common.dll",
@@ -5971,7 +5971,7 @@ def test_windows_source_build_does_not_require_the_shared_runtime():
 
 def test_windows_upstream_bundles_require_the_shared_runtime_too():
     """Upstream ggml-org Windows zips are also built with shared libs on."""
-    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = "upstream"))
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label="upstream"))
     assert "llama-common.dll" in patterns
 
 
@@ -6000,7 +6000,7 @@ _POST_SPLIT_WINDOWS_PAYLOAD = _PRE_SPLIT_WINDOWS_PAYLOAD + (
         ("b9283", _POST_SPLIT_WINDOWS_PAYLOAD, True),
         ("b9283", _PRE_SPLIT_WINDOWS_PAYLOAD, False),
     ],
-    ids = ["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
+    ids=["pre-split-monolithic", "post-split-complete", "post-split-truncated"],
 )
 def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
     tmp_path: Path, tag: str, payload: tuple[str, ...], healthy: bool
@@ -6010,17 +6010,17 @@ def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
     a costly Windows source build."""
     install_dir = tmp_path / "llama.cpp"
     runtime_dir = install_dir / "build" / "bin" / "Release"
-    runtime_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
     for name in payload:
         (runtime_dir / name).write_bytes(b"DLL")
 
     choice = AssetChoice(
-        repo = "ggml-org/llama.cpp",
-        tag = tag,
-        name = f"llama-{tag}-bin-win-cpu-x64.zip",
-        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/x.zip",
-        source_label = "upstream",
-        install_kind = "windows-cpu",
+        repo="ggml-org/llama.cpp",
+        tag=tag,
+        name=f"llama-{tag}-bin-win-cpu-x64.zip",
+        url=f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/x.zip",
+        source_label="upstream",
+        install_kind="windows-cpu",
     )
     assert (
         INSTALL_LLAMA_PREBUILT.runtime_payload_is_healthy(install_dir, _windows_host(), choice)
@@ -6031,25 +6031,25 @@ def test_pre_split_upstream_windows_pin_is_not_forced_to_a_source_build(
 def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    write_windows_install_shape(install_dir, include_llama_dll = True)
+    write_windows_install_shape(install_dir, include_llama_dll=True)
     runtime_dir = install_dir / "build" / "bin" / "Release"
     (runtime_dir / "llama-common.dll").unlink()
 
-    groups = runtime_payload_health_groups("windows-cpu", source_label = "published")
+    groups = runtime_payload_health_groups("windows-cpu", source_label="published")
     host = HostInfo(
-        system = "Windows",
-        machine = "AMD64",
-        is_windows = True,
-        is_linux = False,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
+        system="Windows",
+        machine="AMD64",
+        is_windows=True,
+        is_linux=False,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
     )
     assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is False
 
@@ -6060,7 +6060,7 @@ def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_
 def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
     """A source guard: reaching that call needs a real download, but the check
     has to run where the bundle is unpacked, not only on the reuse path."""
-    source = MODULE_PATH.read_text(encoding = "utf-8")
+    source = MODULE_PATH.read_text(encoding="utf-8")
     gate = source[source.index("overlaying prebuilt bundle") :]
     gate = gate[: gate.index("preflight_linux_installed_binaries")]
     assert "runtime_payload_is_healthy" in gate, "fresh installs are not payload checked at all"
@@ -6080,11 +6080,11 @@ sync_marker_selection = INSTALL_LLAMA_PREBUILT.sync_marker_selection
 
 # A CUDA box as detect_host reports it.
 _CUDA_HOST_FIELDS = dict(
-    nvidia_smi = "nvidia-smi",
-    has_physical_nvidia = True,
-    has_usable_nvidia = True,
-    driver_cuda_version = (12, 8),
-    compute_caps = ["8.9"],
+    nvidia_smi="nvidia-smi",
+    has_physical_nvidia=True,
+    has_usable_nvidia=True,
+    driver_cuda_version=(12, 8),
+    compute_caps=["8.9"],
 )
 
 
@@ -6102,54 +6102,54 @@ def _current_install(
     **marker_overrides,
 ) -> Path:
     install_dir = tmp_path / "llama.cpp"
-    install_dir.mkdir(parents = True)
+    install_dir.mkdir(parents=True)
     write_linux_install_shape(install_dir)
     for name in ("llama-server", "llama-quantize"):
         for parent in (install_dir, install_dir / "build" / "bin"):
             (parent / name).chmod(0o755)
-    choice = asset_choice(repo = published_repo)
+    choice = asset_choice(repo=published_repo)
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     if published_repo != checksums.repo:
-        checksums = dataclasses.replace(checksums, repo = published_repo)
+        checksums = dataclasses.replace(checksums, repo=published_repo)
     host = install_host if install_host is not None else linux_host()
     write_prebuilt_metadata(
         install_dir,
-        host = host,
-        requested_tag = "latest",
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = choice,
-        approved_checksums = checksums,
-        prebuilt_fallback_used = False,
-        backend_request = "auto",
+        host=host,
+        requested_tag="latest",
+        llama_tag="b9001",
+        release_tag="release-1",
+        choice=choice,
+        approved_checksums=checksums,
+        prebuilt_fallback_used=False,
+        backend_request="auto",
     )
     if marker_overrides:
         marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-        payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
         for key, value in marker_overrides.items():
             if value is None:
                 payload.pop(key, None)
             else:
                 payload[key] = value
-        marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+        marker_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     _detects(monkeypatch, host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-1"
     )
-    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
-    monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
-    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-    monkeypatch.delenv("UNSLOTH_ROCM_GFX_REMEMBERED", raising = False)
+    monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising=False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising=False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising=False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_REMEMBERED", raising=False)
     return install_dir
 
 
 def _check(install_dir: Path, **overrides) -> bool:
     kwargs = dict(
-        llama_tag = "latest",
-        published_repo = "unslothai/llama.cpp",
-        published_release_tag = "",
-        backend_request = "auto",
-        force_cpu = False,
+        llama_tag="latest",
+        published_repo="unslothai/llama.cpp",
+        published_release_tag="",
+        backend_request="auto",
+        force_cpu=False,
     )
     kwargs.update(overrides)
     return existing_install_current_without_plan(install_dir, **kwargs)
@@ -6161,8 +6161,8 @@ def test_a_current_install_is_recognised_without_listing_the_release(tmp_path, m
     def boom(*_a, **_k):
         raise AssertionError("the no-network check must not reach the GitHub API")
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_release_bundle", boom, raising = False)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "resolve_release_tag", boom, raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "fetch_release_bundle", boom, raising=False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "resolve_release_tag", boom, raising=False)
     assert _check(install_dir) is True
 
 
@@ -6257,7 +6257,7 @@ def test_the_api_only_escape_hatch_uses_the_api_notion_of_latest(tmp_path, monke
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_releases",
-        lambda _repo, **_k: [_release("release-9", "2026-04-01T00:00:00Z", 4, draft = True)],
+        lambda _repo, **_k: [_release("release-9", "2026-04-01T00:00:00Z", 4, draft=True)],
     )
     assert _check(install_dir) is False
 
@@ -6274,7 +6274,7 @@ def test_a_custom_repo_is_answered_the_way_the_selector_orders_it(tmp_path, monk
     the API. A pre-check that followed /releases/latest for such a repo could stay
     current forever while the selector wanted the newer release GitHub never marked
     latest."""
-    install_dir = _current_install(tmp_path, monkeypatch, published_repo = "someone/llama.cpp")
+    install_dir = _current_install(tmp_path, monkeypatch, published_repo="someone/llama.cpp")
 
     def boom(_repo):
         raise AssertionError("a custom repo never resolves through the download host")
@@ -6289,9 +6289,9 @@ def test_a_custom_repo_is_answered_the_way_the_selector_orders_it(tmp_path, monk
             for i, tag in enumerate(listed["tags"])
         ],
     )
-    assert _check(install_dir, published_repo = "someone/llama.cpp") is True
+    assert _check(install_dir, published_repo="someone/llama.cpp") is True
     listed["tags"] = ["release-1", "release-2"]
-    assert _check(install_dir, published_repo = "someone/llama.cpp") is False
+    assert _check(install_dir, published_repo="someone/llama.cpp") is False
 
 
 def test_a_release_payload_this_run_already_has_overrides_the_latest_pointer(tmp_path, monkeypatch):
@@ -6352,8 +6352,8 @@ def test_a_pinned_release_tag_needs_no_lookup_at_all(tmp_path, monkeypatch):
         raise AssertionError("a pinned release tag names the answer outright")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", boom)
-    assert _check(install_dir, published_release_tag = "release-1") is True
-    assert _check(install_dir, published_release_tag = "release-9") is False
+    assert _check(install_dir, published_release_tag="release-1") is True
+    assert _check(install_dir, published_release_tag="release-9") is False
 
 
 def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monkeypatch):
@@ -6361,7 +6361,7 @@ def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monk
     fork's newest packaging of it (the fork can republish a build); /releases/latest
     has nothing to say about a pin."""
     install_dir = _current_install(tmp_path, monkeypatch)
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
 
     def boom(_repo):
         raise AssertionError("an upstream pin never asks /releases/latest")
@@ -6374,8 +6374,8 @@ def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monk
             {"tag_name": marker["release_tag"], "published_at": "2026-01-01T00:00:00Z", "id": 1}
         ],
     )
-    assert _check(install_dir, llama_tag = "b9001") is True
-    assert _check(install_dir, llama_tag = "b9999") is False
+    assert _check(install_dir, llama_tag="b9001") is True
+    assert _check(install_dir, llama_tag="b9999") is False
     # A newer packaging of the same build supersedes the installed one.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
@@ -6385,7 +6385,7 @@ def test_an_upstream_pin_is_answered_by_the_recorded_upstream_tag(tmp_path, monk
             {"tag_name": "b9001-mix-newer", "published_at": "2026-02-01T00:00:00Z", "id": 2},
         ],
     )
-    assert _check(install_dir, llama_tag = "b9001") is False
+    assert _check(install_dir, llama_tag="b9001") is False
 
 
 def test_a_full_check_request_always_does_the_work(tmp_path, monkeypatch):
@@ -6400,10 +6400,10 @@ def test_a_full_check_request_always_does_the_work(tmp_path, monkeypatch):
 
 def test_a_different_repo_or_backend_request_is_not_current(tmp_path, monkeypatch):
     install_dir = _current_install(tmp_path, monkeypatch)
-    assert _check(install_dir, published_repo = "someone/else") is False
+    assert _check(install_dir, published_repo="someone/else") is False
     # An explicit --llama-backend naming something else must reach the selector.
-    assert _check(install_dir, backend_request = "vulkan") is False
-    assert _check(install_dir, force_cpu = True) is False
+    assert _check(install_dir, backend_request="vulkan") is False
+    assert _check(install_dir, force_cpu=True) is False
 
 
 def test_a_marker_written_before_this_existed_takes_the_full_path_once(tmp_path, monkeypatch):
@@ -6428,7 +6428,7 @@ def test_a_gpu_added_since_the_install_is_not_current(tmp_path, monkeypatch):
 
 def test_a_gpu_removed_since_the_install_is_not_current(tmp_path, monkeypatch):
     install_dir = _current_install(
-        tmp_path, monkeypatch, install_host = linux_host(**_CUDA_HOST_FIELDS)
+        tmp_path, monkeypatch, install_host=linux_host(**_CUDA_HOST_FIELDS)
     )
     assert _check(install_dir) is True
     # The card is gone, or the driver is: either way the CUDA bundle cannot run.
@@ -6444,7 +6444,7 @@ def test_a_new_gpu_outside_the_recorded_coverage_is_not_current(tmp_path, monkey
     card for one outside that set leaves an install that starts and then cannot run a
     model, which is worse than a reinstall."""
     install_dir = _current_install(
-        tmp_path, monkeypatch, install_host = linux_host(**_CUDA_HOST_FIELDS)
+        tmp_path, monkeypatch, install_host=linux_host(**_CUDA_HOST_FIELDS)
     )
     _detects(monkeypatch, linux_host(**{**_CUDA_HOST_FIELDS, "compute_caps": ["12.0"]}))
     assert _check(install_dir) is False
@@ -6456,21 +6456,21 @@ def test_a_new_gpu_outside_the_recorded_coverage_is_not_current(tmp_path, monkey
 
 
 def test_a_rocm_gfx_change_is_not_current(tmp_path, monkeypatch):
-    rocm = dict(has_rocm = True, rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
-    install_dir = _current_install(tmp_path, monkeypatch, install_host = linux_host(**rocm))
+    rocm = dict(has_rocm=True, rocm_gfx_target="gfx1100", rocm_gfx_targets=["gfx1100"])
+    install_dir = _current_install(tmp_path, monkeypatch, install_host=linux_host(**rocm))
     assert _check(install_dir) is True
     _detects(
         monkeypatch,
-        linux_host(has_rocm = True, rocm_gfx_target = "gfx1030", rocm_gfx_targets = ["gfx1030"]),
+        linux_host(has_rocm=True, rocm_gfx_target="gfx1030", rocm_gfx_targets=["gfx1030"]),
     )
     assert _check(install_dir) is False
     # A second AMD card the ROCm bundle has no kernels for is a change too.
     _detects(
         monkeypatch,
         linux_host(
-            has_rocm = True,
-            rocm_gfx_target = "gfx1100",
-            rocm_gfx_targets = ["gfx1100", "gfx1030"],
+            has_rocm=True,
+            rocm_gfx_target="gfx1100",
+            rocm_gfx_targets=["gfx1100", "gfx1030"],
         ),
     )
     assert _check(install_dir) is False
@@ -6481,11 +6481,11 @@ def test_the_recorded_profile_is_the_routed_host_not_the_raw_one(tmp_path, monke
     routing _select uses. Comparing a raw detect_host against a routed profile would
     never match and would take the slow path forever."""
     install_dir = _current_install(tmp_path, monkeypatch)
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     route = INSTALL_LLAMA_PREBUILT.route_backend_request(
-        backend = "auto",
-        published_repo = "unslothai/llama.cpp",
-        published_release_tag = "",
+        backend="auto",
+        published_repo="unslothai/llama.cpp",
+        published_release_tag="",
     )
     assert marker["host_profile"] == host_profile(route.host)
 
@@ -6494,7 +6494,7 @@ def test_a_marker_naming_a_backend_this_platform_cannot_hold_is_not_current(tmp_
     """A directory copied off another machine keeps its marker. backend "metal" has no
     Linux install kind, so _kept_install_payload_is_healthy has no shared payload to
     require and answers yes to a tree it has never seen."""
-    install_dir = _current_install(tmp_path, monkeypatch, backend = "metal")
+    install_dir = _current_install(tmp_path, monkeypatch, backend="metal")
     assert _check(install_dir) is False
 
 
@@ -6502,14 +6502,14 @@ def test_a_marker_whose_request_and_backend_disagree_is_not_current(tmp_path, mo
     """A concrete request must name the bundle's own backend, or say outright that it is
     a request the install could not honour (the test below). A bare disagreement with no
     such flag was not written by this installer."""
-    install_dir = _current_install(tmp_path, monkeypatch, backend_request = "vulkan")
-    assert _check(install_dir, backend_request = "vulkan") is False
+    install_dir = _current_install(tmp_path, monkeypatch, backend_request="vulkan")
+    assert _check(install_dir, backend_request="vulkan") is False
 
 
 # A request the install could not honour is PRESERVED now (#11143), so the fast path holds two
 # lines at once: retry the choice when something moved, and do not pay the full listing plus
 # re-validation on every update of a host that simply cannot serve it.
-_UNSATISFIED = dict(backend_request = "vulkan", backend_request_unsatisfied = True)
+_UNSATISFIED = dict(backend_request="vulkan", backend_request_unsatisfied=True)
 
 
 def test_an_unsatisfied_choice_read_off_the_marker_does_not_reinstall_every_update(
@@ -6518,8 +6518,8 @@ def test_an_unsatisfied_choice_read_off_the_marker_does_not_reinstall_every_upda
     """Nothing moved, so the install on disk is still the one this run would produce. The
     request stays recorded, owed a retry, not retried here."""
     install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
-    assert _check(install_dir, backend_request = "vulkan") is True
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    assert _check(install_dir, backend_request="vulkan") is True
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert marker["backend_request"] == "vulkan"
 
 
@@ -6528,7 +6528,7 @@ def test_an_unsatisfied_choice_named_by_this_run_is_re_asserted(tmp_path, monkey
     hand: take the full path, where the request is re-asserted and, if it still cannot be
     served, fails loudly instead of silently keeping the bundle it did not ask for."""
     install_dir = _current_install(tmp_path, monkeypatch, **_UNSATISFIED)
-    assert _check(install_dir, backend_request = "vulkan", backend_request_mandatory = True) is False
+    assert _check(install_dir, backend_request="vulkan", backend_request_mandatory=True) is False
 
 
 def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monkeypatch):
@@ -6538,18 +6538,18 @@ def test_an_unsatisfied_choice_is_retried_when_the_release_moves(tmp_path, monke
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT, "_download_host_latest_release_tag", lambda _repo: "release-2"
     )
-    assert _check(install_dir, backend_request = "vulkan") is False
+    assert _check(install_dir, backend_request="vulkan") is False
 
 
 def test_an_old_marker_is_read_as_a_satisfied_choice(tmp_path, monkeypatch):
     """No flag means satisfied, so every install made before the field behaves exactly as
     it did: a recorded choice that names the installed backend stays current."""
-    install_dir = _current_install(tmp_path, monkeypatch, backend_request = "cpu", backend = "cpu")
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    install_dir = _current_install(tmp_path, monkeypatch, backend_request="cpu", backend="cpu")
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert "backend_request_unsatisfied" not in marker
-    assert _check(install_dir, backend_request = "cpu") is True
+    assert _check(install_dir, backend_request="cpu") is True
     # And the mandatory flag changes nothing for it: there is no unmet request to re-assert.
-    assert _check(install_dir, backend_request = "cpu", backend_request_mandatory = True) is True
+    assert _check(install_dir, backend_request="cpu", backend_request_mandatory=True) is True
 
 
 def test_a_truncated_shared_library_is_not_current(tmp_path, monkeypatch):
@@ -6594,18 +6594,18 @@ def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monk
     install_dir = _current_install(
         tmp_path,
         monkeypatch,
-        runtime_sha256 = None,
-        runtime_files = None,
-        host_profile = None,
+        runtime_sha256=None,
+        runtime_files=None,
+        host_profile=None,
     )
     assert _check(install_dir) is False
     sync_marker_selection(
         install_dir,
-        choice = asset_choice(),
-        backend_request = "auto",
-        host = linux_host(),
+        choice=asset_choice(),
+        backend_request="auto",
+        host=linux_host(),
     )
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert "runtime_sha256" in marker
     assert marker["host_profile"] == host_profile(linux_host())
     assert "build/bin/libggml-base.so.0" in marker["runtime_files"]
@@ -6616,15 +6616,15 @@ def test_an_empty_runtime_record_is_backfilled_like_an_absent_one(tmp_path, monk
     """runtime_file_records answers {} when a binary could not be read; a marker that
     persisted it would fail the no-network check closed forever unless the reuse path
     treats it as missing and records it again once the bytes can be read."""
-    install_dir = _current_install(tmp_path, monkeypatch, runtime_files = {})
+    install_dir = _current_install(tmp_path, monkeypatch, runtime_files={})
     assert _check(install_dir) is False
     sync_marker_selection(
         install_dir,
-        choice = asset_choice(),
-        backend_request = "auto",
-        host = linux_host(),
+        choice=asset_choice(),
+        backend_request="auto",
+        host=linux_host(),
     )
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert marker["runtime_files"]
     assert _check(install_dir) is True
 
@@ -6633,15 +6633,15 @@ def test_the_backfill_never_overwrites_evidence_a_run_already_recorded(tmp_path,
     """Added only, for the hashes: a key already present was written by a run that
     hashed the bytes, and a reuse decision must not re-bless them."""
     install_dir = _current_install(tmp_path, monkeypatch)
-    before = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    before = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     (install_dir / "build" / "bin" / "libggml-base.so.0").write_bytes(b"replaced after install")
     sync_marker_selection(
         install_dir,
-        choice = asset_choice(),
-        backend_request = "auto",
-        host = linux_host(),
+        choice=asset_choice(),
+        backend_request="auto",
+        host=linux_host(),
     )
-    after = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    after = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert after["runtime_files"] == before["runtime_files"]
     assert after["runtime_sha256"] == before["runtime_sha256"]
 
@@ -6652,17 +6652,17 @@ def test_the_reuse_path_refreshes_a_stale_host_profile(tmp_path, monkeypatch):
     later update down the full path: only the no-network check reads the profile, and
     nothing else would ever write it again."""
     install_dir = _current_install(
-        tmp_path, monkeypatch, install_host = linux_host(**_CUDA_HOST_FIELDS)
+        tmp_path, monkeypatch, install_host=linux_host(**_CUDA_HOST_FIELDS)
     )
     _detects(monkeypatch, linux_host())
     assert _check(install_dir) is False
     sync_marker_selection(
         install_dir,
-        choice = asset_choice(),
-        backend_request = "auto",
-        host = linux_host(),
+        choice=asset_choice(),
+        backend_request="auto",
+        host=linux_host(),
     )
-    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     assert marker["host_profile"] == host_profile(linux_host())
     assert _check(install_dir) is True
 
@@ -6670,32 +6670,32 @@ def test_the_reuse_path_refreshes_a_stale_host_profile(tmp_path, monkeypatch):
 def test_a_fallback_bundle_is_retried_rather_than_kept(tmp_path, monkeypatch):
     """A bundle that landed because the preferred one could not be fetched is recorded
     with prebuilt_fallback_used; the full path is what retries the preferred bundle."""
-    install_dir = _current_install(tmp_path, monkeypatch, prebuilt_fallback_used = True)
+    install_dir = _current_install(tmp_path, monkeypatch, prebuilt_fallback_used=True)
     assert _check(install_dir) is False
-    install_dir = _current_install(tmp_path / "again", monkeypatch, prebuilt_fallback_used = False)
+    install_dir = _current_install(tmp_path / "again", monkeypatch, prebuilt_fallback_used=False)
     assert _check(install_dir) is True
 
 
 def test_a_release_pin_still_honours_an_upstream_pin(tmp_path, monkeypatch):
     """The full path checks a pinned release against a concrete UNSLOTH_LLAMA_TAG too."""
     install_dir = _current_install(tmp_path, monkeypatch)
-    assert _check(install_dir, published_release_tag = "release-1", llama_tag = "b9001") is True
-    assert _check(install_dir, published_release_tag = "release-1", llama_tag = "b9999") is False
+    assert _check(install_dir, published_release_tag="release-1", llama_tag="b9001") is True
+    assert _check(install_dir, published_release_tag="release-1", llama_tag="b9999") is False
 
 
 def test_a_different_cpu_architecture_is_not_current(tmp_path, monkeypatch):
     """Every GPU field can be equal across an x86_64 and an arm64 box; the profile has
     to carry the architecture the bundle was built for."""
     assert host_profile(linux_host())["machine"] == "x86_64"
-    stale = dict(host_profile(linux_host()), machine = "aarch64")
-    install_dir = _current_install(tmp_path, monkeypatch, host_profile = stale)
+    stale = dict(host_profile(linux_host()), machine="aarch64")
+    install_dir = _current_install(tmp_path, monkeypatch, host_profile=stale)
     assert _check(install_dir) is False
 
 
 def test_a_hand_edited_marker_is_not_trusted(tmp_path, monkeypatch):
     """The fingerprint is recomputed from the marker's own fields, so a field changed
     without the fingerprint no longer adds up."""
-    install_dir = _current_install(tmp_path, monkeypatch, asset = "some-other-bundle.tar.gz")
+    install_dir = _current_install(tmp_path, monkeypatch, asset="some-other-bundle.tar.gz")
     assert _check(install_dir) is False
 
 
@@ -6704,15 +6704,15 @@ def test_a_truncated_binary_is_not_current(tmp_path, monkeypatch):
     answers the same question in ~100 ms."""
     install_dir = _current_install(tmp_path, monkeypatch)
     assert _check(install_dir) is True
-    (install_dir / "build" / "bin" / "llama-server").write_text("", encoding = "utf-8")
+    (install_dir / "build" / "bin" / "llama-server").write_text("", encoding="utf-8")
     assert _check(install_dir) is False
 
 
 def test_a_swapped_binary_of_the_same_size_is_not_current(tmp_path, monkeypatch):
     install_dir = _current_install(tmp_path, monkeypatch)
     target = install_dir / "build" / "bin" / "llama-quantize"
-    original = target.read_text(encoding = "utf-8")
-    target.write_text("X" * len(original), encoding = "utf-8")
+    original = target.read_text(encoding="utf-8")
+    target.write_text("X" * len(original), encoding="utf-8")
     target.chmod(0o755)
     assert _check(install_dir) is False
 
@@ -6729,7 +6729,7 @@ def test_a_gutted_runtime_payload_is_not_current(tmp_path, monkeypatch):
     assert _check(install_dir) is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "os.chmod cannot clear an execute bit Windows lacks")
+@pytest.mark.skipif(os.name == "nt", reason="os.chmod cannot clear an execute bit Windows lacks")
 def test_a_non_executable_binary_is_not_current(tmp_path, monkeypatch):
     install_dir = _current_install(tmp_path, monkeypatch)
     (install_dir / "build" / "bin" / "llama-server").chmod(0o644)
@@ -6776,25 +6776,25 @@ def test_a_route_the_caller_already_made_is_not_recomputed(tmp_path, monkeypatch
     a new release does not probe the host twice."""
     install_dir = _current_install(tmp_path, monkeypatch)
     route = INSTALL_LLAMA_PREBUILT.route_backend_request(
-        backend = "auto",
-        published_repo = "unslothai/llama.cpp",
-        published_release_tag = "",
+        backend="auto",
+        published_repo="unslothai/llama.cpp",
+        published_release_tag="",
     )
 
     def boom(**_kwargs):
         raise AssertionError("the caller already routed this host")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "route_backend_request", boom)
-    assert _check(install_dir, route = route) is True
+    assert _check(install_dir, route=route) is True
 
 
 def test_the_profile_sees_an_nvidia_adapter_that_is_present_but_not_usable():
     """The Intel and ROCm-less AMD routes go to Vulkan only when there is NO NVIDIA
     adapter at all, so an adapter that appears or goes without ever becoming usable
     changes the selection while has_usable_nvidia and every other field stay equal."""
-    host = linux_host(has_intel_gpu = True)
+    host = linux_host(has_intel_gpu=True)
     assert host_profile(host)["has_physical_nvidia"] is False
-    with_adapter = dataclasses.replace(host, has_physical_nvidia = True)
+    with_adapter = dataclasses.replace(host, has_physical_nvidia=True)
     assert host_profile(with_adapter)["has_physical_nvidia"] is True
     assert host_profile(with_adapter) != host_profile(host)
 
@@ -6810,7 +6810,7 @@ def test_the_full_path_holds_a_marker_to_the_runtime_files_it_recorded(tmp_path,
     choice = asset_choice()
     checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM))
     kwargs = dict(
-        llama_tag = "b9001", release_tag = "release-1", choice = choice, approved_checksums = checksums
+        llama_tag="b9001", release_tag="release-1", choice=choice, approved_checksums=checksums
     )
     assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
     server = install_dir / "build" / "bin" / "llama-server"
@@ -6821,9 +6821,9 @@ def test_the_full_path_holds_a_marker_to_the_runtime_files_it_recorded(tmp_path,
     assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
     # A marker from before the record existed is held to the probes alone, as before.
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
     marker.pop("runtime_files", None)
-    marker_path.write_text(json.dumps(marker), encoding = "utf-8")
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
     server.write_bytes(original[: max(1, len(original) // 2)])
     assert existing_install_matches_choice(install_dir, linux_host(), **kwargs) is True
 
@@ -6833,7 +6833,7 @@ def test_the_api_latest_lookup_scans_the_pages_the_selector_scans(monkeypatch):
     page of a big repository, and one page would report an older marker current."""
     seen = {}
 
-    def fake_releases(repo, max_pages = 0):
+    def fake_releases(repo, max_pages=0):
         seen["max_pages"] = max_pages
         return [{"tag_name": "release-2", "published_at": "2026-01-02T00:00:00Z"}]
 
@@ -6847,7 +6847,7 @@ def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch
     the pinned fallback release; the marker check expects that release too, so a current
     pinned install takes the fast path instead of repeating the release work on every
     update."""
-    host = macos_host(macos_version = (15, 5))
+    host = macos_host(macos_version=(15, 5))
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_api_newest_release_tag",
@@ -6861,16 +6861,16 @@ def test_latest_on_an_older_mac_expects_the_pinned_upstream_fallback(monkeypatch
     marker = {"release_tag": INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG}
     assert (
         INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(
-            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = host
+            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host=host
         )
         == INSTALL_LLAMA_PREBUILT._PINNED_MACOS_FALLBACK_TAG
     )
     # At or above the floor the pin does not apply and the repository's newest release is the answer.
-    newer = macos_host(macos_version = (26, 0))
+    newer = macos_host(macos_version=(26, 0))
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_api_newest_release_tag", lambda repo: "b9999")
     assert (
         INSTALL_LLAMA_PREBUILT._expected_release_tag_without_plan(
-            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host = newer
+            marker, "latest", INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO, "", host=newer
         )
         == "b9999"
     )
@@ -6939,11 +6939,11 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     M = INSTALL_LLAMA_PREBUILT
     from types import SimpleNamespace
 
-    host = SimpleNamespace(has_usable_nvidia = True, is_linux = True, is_windows = False)
+    host = SimpleNamespace(has_usable_nvidia=True, is_linux=True, is_windows=False)
     monkeypatch.setattr(
         M,
         "detect_torch_cuda_runtime_preference",
-        lambda _host: SimpleNamespace(runtime_line = "cuda13", selection_log = []),
+        lambda _host: SimpleNamespace(runtime_line="cuda13", selection_log=[]),
     )
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12", "cuda13"], {}))
     monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
@@ -6973,7 +6973,7 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     monkeypatch.setattr(
         M,
         "detect_torch_cuda_runtime_preference",
-        lambda _host: SimpleNamespace(runtime_line = None, selection_log = []),
+        lambda _host: SimpleNamespace(runtime_line=None, selection_log=[]),
     )
     monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: False)
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda13", "cuda12"], {}))
@@ -7000,7 +7000,7 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     monkeypatch.setattr(
         M,
         "detect_torch_cuda_runtime_preference",
-        lambda _host: SimpleNamespace(runtime_line = "cuda13", selection_log = []),
+        lambda _host: SimpleNamespace(runtime_line="cuda13", selection_log=[]),
     )
     # A preference the selectors cannot act on is not movement.
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))
@@ -7010,7 +7010,7 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
     monkeypatch.setattr(M, "compatible_linux_runtime_lines", lambda _h: ["cuda12", "cuda13"])
     # Windows with no runtime DLL: the selector falls back to every line the driver can run.
-    windows = SimpleNamespace(has_usable_nvidia = True, is_linux = False, is_windows = True)
+    windows = SimpleNamespace(has_usable_nvidia=True, is_linux=False, is_windows=True)
     monkeypatch.setattr(M, "detected_windows_runtime_lines", lambda: ([], {}))
     monkeypatch.setattr(M, "compatible_windows_runtime_lines", lambda _h: ["cuda12", "cuda13"])
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, windows) is True
@@ -7021,10 +7021,10 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
     monkeypatch.setattr(
         M,
         "detect_torch_cuda_runtime_preference",
-        lambda _host: SimpleNamespace(runtime_line = None, selection_log = []),
+        lambda _host: SimpleNamespace(runtime_line=None, selection_log=[]),
     )
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, host) is False
-    cpu_host = SimpleNamespace(has_usable_nvidia = False, is_linux = True, is_windows = False)
+    cpu_host = SimpleNamespace(has_usable_nvidia=False, is_linux=True, is_windows=False)
     assert M._runtime_preference_moved({"runtime_line": "cuda12"}, cpu_host) is False
 
 
@@ -7033,7 +7033,7 @@ def test_the_host_profile_carries_the_cuda_runtimes_on_disk(monkeypatch):
     preference; a runtime that appeared since the install changes the selection with the
     GPU and driver unchanged, so it has to move the profile the marker check compares."""
     M = INSTALL_LLAMA_PREBUILT
-    host = linux_host(compute_caps = ["8.9"], has_physical_nvidia = True, has_usable_nvidia = True)
+    host = linux_host(compute_caps=["8.9"], has_physical_nvidia=True, has_usable_nvidia=True)
     monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda12"], {}))
     before = M.host_profile(host)
     assert before["cuda_runtime_lines"] == ["cuda12"]
@@ -7042,7 +7042,7 @@ def test_the_host_profile_carries_the_cuda_runtimes_on_disk(monkeypatch):
     assert after["cuda_runtime_lines"] == ["cuda12", "cuda13"]
     assert before != after
     # Off CUDA hosts no selector reads it, and the key is a constant None.
-    cpu = linux_host(has_physical_nvidia = False, has_usable_nvidia = False)
+    cpu = linux_host(has_physical_nvidia=False, has_usable_nvidia=False)
     assert M.host_profile(cpu)["cuda_runtime_lines"] is None
 
 
@@ -7055,7 +7055,7 @@ def test_the_host_profile_records_the_rocm_runtime_the_upstream_selector_reads(m
     M = INSTALL_LLAMA_PREBUILT
     host = linux_host()
     try:
-        rocm_host = dataclasses.replace(host, has_rocm = True)
+        rocm_host = dataclasses.replace(host, has_rocm=True)
     except TypeError:
         rocm_host = SimpleNamespace(
             **{k: getattr(host, k) for k in dir(host) if not k.startswith("_")}
@@ -7079,14 +7079,14 @@ def test_the_marker_fast_path_accepts_a_recorded_macos_walk_back():
     into the full path; a newer release than the recorded one still does."""
     met = INSTALL_LLAMA_PREBUILT._release_expectation_met
     marker = {"release_tag": "r1", "walked_back_from": "r2", "walked_back_on_macos": "14.7"}
-    mac = macos_host(macos_version = (14, 7))
+    mac = macos_host(macos_version=(14, 7))
     assert met(marker, "r1", mac) is True
     assert met(marker, "r2", mac) is True
     assert met(marker, "r3", mac) is False
     assert met(marker, None, mac) is False
     # An OS upgrade may satisfy the skipped release's floor: decided on 14.7, not standing on 15.0.
-    assert met(marker, "r2", macos_host(macos_version = (15, 0))) is False
-    assert met(marker, "r2", macos_host(macos_version = None)) is False
+    assert met(marker, "r2", macos_host(macos_version=(15, 0))) is False
+    assert met(marker, "r2", macos_host(macos_version=None)) is False
     # Only macOS walks back; anywhere else a release mismatch is a release mismatch.
     assert met(marker, "r2", linux_host()) is False
     assert met({"release_tag": "r1"}, "r2", mac) is False
@@ -7102,10 +7102,10 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     module = INSTALL_LLAMA_PREBUILT
     bundles = [
         module.PublishedReleaseBundle(
-            repo = "unslothai/llama.cpp", release_tag = "r2", upstream_tag = "b9002"
+            repo="unslothai/llama.cpp", release_tag="r2", upstream_tag="b9002"
         ),
         module.PublishedReleaseBundle(
-            repo = "unslothai/llama.cpp", release_tag = "r1", upstream_tag = "b9001"
+            repo="unslothai/llama.cpp", release_tag="r1", upstream_tag="b9001"
         ),
     ]
     monkeypatch.setattr(
@@ -7113,9 +7113,9 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
         "iter_resolved_published_releases",
         lambda *args, **kwargs: [
             module.ResolvedPublishedRelease(
-                bundle = bundle,
-                checksums = release_checksums(
-                    release_tag = bundle.release_tag, upstream_tag = bundle.upstream_tag
+                bundle=bundle,
+                checksums=release_checksums(
+                    release_tag=bundle.release_tag, upstream_tag=bundle.upstream_tag
                 ),
             )
             for bundle in bundles
@@ -7125,19 +7125,19 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     def choose(host, resolved_tag, bundle, checksums):
         if bundle.release_tag == "r2":
             raise module.PrebuiltFallback("macOS 15.0 or newer required")
-        return [types.SimpleNamespace(selection_log = [])]
+        return [types.SimpleNamespace(selection_log=[])]
 
     monkeypatch.setattr(module, "resolve_release_asset_choice", choose)
-    host = macos_host(macos_version = (14, 7))
+    host = macos_host(macos_version=(14, 7))
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert [plan.release_tag for plan in plans] == ["r1"]
-    assert plans[0].walk_back == module._core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    assert plans[0].walk_back == module._core.WalkBack(release_tag="r2", macos_version="14.7")
 
     # A host the newest release fits records no walk-back.
     monkeypatch.setattr(
         module,
         "resolve_release_asset_choice",
-        lambda *args, **kwargs: [types.SimpleNamespace(selection_log = [])],
+        lambda *args, **kwargs: [types.SimpleNamespace(selection_log=[])],
     )
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
@@ -7146,7 +7146,7 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
 
 def test_a_late_rocm_listing_failure_keeps_the_vulkan_plan(monkeypatch):
     module = INSTALL_LLAMA_PREBUILT
-    vulkan = release_plan([asset_choice(install_kind = "linux-vulkan")], release_checksums())
+    vulkan = release_plan([asset_choice(install_kind="linux-vulkan")], release_checksums())
 
     def rocm_plans():
         yield vulkan
@@ -7166,20 +7166,20 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
     marker written before it existed lacks (both keys), and a plan that no longer
     walks back retires a stale one."""
     choice = asset_choice(
-        name = "llama-b9001-bin-macos-arm64.tar.gz", tag = "r1", source_label = "published"
+        name="llama-b9001-bin-macos-arm64.tar.gz", tag="r1", source_label="published"
     )
-    walk_back = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    walk_back = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag="r2", macos_version="14.7")
 
     def patch(marker, walk_back):
         return INSTALL_LLAMA_PREBUILT._marker_selection_patch(
             marker,
-            choice = choice,
-            backend_request = None,
-            persist_force_cpu = False,
-            persist_llama_backend = None,
-            ggml_tree = None,
-            rocm_gfx = None,
-            walk_back = walk_back,
+            choice=choice,
+            backend_request=None,
+            persist_force_cpu=False,
+            persist_llama_backend=None,
+            ggml_tree=None,
+            rocm_gfx=None,
+            walk_back=walk_back,
         )
 
     marker = {"release_tag": "r1", "runtime_sha256": None}
@@ -7197,7 +7197,7 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
         "walked_back_on_macos": "14.7"
     }
     # An OS upgrade re-decides the same walk-back on the new version.
-    upgraded = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag = "r2", macos_version = "15.0")
+    upgraded = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag="r2", macos_version="15.0")
     assert walk_back_part(patch(recorded, upgraded)) == {"walked_back_on_macos": "15.0"}
     assert not set(patch(marker, None)) & {"walked_back_from", "walked_back_on_macos"}
     retired = patch(recorded, None)

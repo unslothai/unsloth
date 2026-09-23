@@ -117,8 +117,8 @@ def begin_tool_decision(session_id, approval_id) -> dict:
 def wait_tool_decision(
     slot,
     approval_id,
-    cancel_event = None,
-    timeout = _DECISION_TIMEOUT,
+    cancel_event=None,
+    timeout=_DECISION_TIMEOUT,
 ):
     """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Records WHY in ``slot["reason"]`` (see ``decision_reason``), because a bare ``"deny"`` cannot tell a user who refused from an approval nobody answered, and the loops report one of those to the user as their own decision. Always removes its own slot on exit.
 
@@ -142,7 +142,7 @@ def wait_tool_decision(
         waited = 0.0
         total = 0.0
         last_renew: Optional[float] = None
-        while not slot["event"].wait(timeout = 0.5):
+        while not slot["event"].wait(timeout=0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return _settle("deny", DECISION_CANCELLED)
             waited += 0.5
@@ -181,7 +181,7 @@ def wait_tool_decision(
                 _pending.pop(approval_id, None)
 
 
-def tool_decision_is_pending(approval_id, session_id = None) -> bool:
+def tool_decision_is_pending(approval_id, session_id=None) -> bool:
     """True while `approval_id` is still waiting on a human.
 
     A reopened tab cannot otherwise tell a parked call from one the user already answered: both are
@@ -213,18 +213,18 @@ def abort_tool_decision(slot, approval_id) -> None:
 def request_tool_decision(
     session_id,
     approval_id,
-    cancel_event = None,
-    timeout = _DECISION_TIMEOUT,
+    cancel_event=None,
+    timeout=_DECISION_TIMEOUT,
 ):
     """Register and wait in one call (when the slot is not needed early)."""
     slot = begin_tool_decision(session_id, approval_id)
-    return wait_tool_decision(slot, approval_id, cancel_event = cancel_event, timeout = timeout)
+    return wait_tool_decision(slot, approval_id, cancel_event=cancel_event, timeout=timeout)
 
 
 def resolve_tool_decision(
     approval_id,
     decision,
-    session_id = None,
+    session_id=None,
 ) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop. Returns ``True`` if a pending call matched, ``False`` otherwise (a stale or duplicate confirmation, or a session-scope mismatch). The first decision wins: once a slot's event is set, a later confirmation for the same id is rejected without mutating the recorded decision, so an Allow can never be flipped to Deny in the window before the waiter reads ``slot["decision"]`` and pops the slot."""
     if not approval_id:

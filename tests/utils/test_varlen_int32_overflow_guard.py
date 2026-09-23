@@ -73,20 +73,20 @@ def _context(
     n_docs,
     total_q,
     requires_grad,
-    n_heads = 16,
-    head_dim = 128,
+    n_heads=16,
+    head_dim=128,
 ):
-    lengths = torch.zeros(n_docs, dtype = torch.int32)
+    lengths = torch.zeros(n_docs, dtype=torch.int32)
     return ad.AttentionContext(
-        bsz = 1,
-        q_len = total_q,
-        kv_seq_len = total_q,
-        n_heads = n_heads,
-        head_dim = head_dim,
-        requires_grad = requires_grad,
-        seq_info = (lengths, None, 1),
-        attention_mask = None,
-        causal_mask = None,
+        bsz=1,
+        q_len=total_q,
+        kv_seq_len=total_q,
+        n_heads=n_heads,
+        head_dim=head_dim,
+        requires_grad=requires_grad,
+        seq_info=(lengths, None, 1),
+        attention_mask=None,
+        causal_mask=None,
     )
 
 
@@ -95,8 +95,8 @@ def _run(
     backend,
     n_docs,
     requires_grad,
-    guard_disabled = False,
-    softcap = None,
+    guard_disabled=False,
+    softcap=None,
 ):
     """Drive run_attention with every real kernel stubbed, and report which branch it took."""
     taken = {}
@@ -113,31 +113,31 @@ def _run(
         taken["backend"] = ad.SDPA
         return torch.zeros((1, 16, 4, 128))
 
-    monkeypatch.setattr(ad, "xformers_attention", _fake_xformers, raising = False)
-    monkeypatch.setattr(ad, "flash_attn_varlen_func", _fake_flash_varlen, raising = False)
-    monkeypatch.setattr(ad, "scaled_dot_product_attention", _fake_sdpa, raising = False)
+    monkeypatch.setattr(ad, "xformers_attention", _fake_xformers, raising=False)
+    monkeypatch.setattr(ad, "flash_attn_varlen_func", _fake_flash_varlen, raising=False)
+    monkeypatch.setattr(ad, "scaled_dot_product_attention", _fake_sdpa, raising=False)
     monkeypatch.setattr(ad, "build_xformers_block_causal_mask", lambda *a, **k: object())
     monkeypatch.setattr(ad, "build_sdpa_packed_attention_mask", lambda *a, **k: None)
     monkeypatch.setattr(ad, "_VARLEN_INT32_GUARD_DISABLED", guard_disabled)
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", True)
     ad._VARLEN_INT32_WARNED[0] = False
 
-    q = torch.zeros((1, 16, 4, 128), requires_grad = requires_grad)
+    q = torch.zeros((1, 16, 4, 128), requires_grad=requires_grad)
     kwargs = {"softcap": softcap} if softcap is not None else None
     config = ad.AttentionConfig(
-        backend = backend,
-        n_kv_heads = 16,
-        n_groups = 1,
-        flash_varlen_kwargs = kwargs,
-        flash_dense_kwargs = kwargs,
+        backend=backend,
+        n_kv_heads=16,
+        n_groups=1,
+        flash_varlen_kwargs=kwargs,
+        flash_dense_kwargs=kwargs,
     )
-    ad.run_attention(config = config, context = _context(n_docs, 4, requires_grad), Q = q, K = q, V = q)
+    ad.run_attention(config=config, context=_context(n_docs, 4, requires_grad), Q=q, K=q, V=q)
     return taken.get("backend")
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_oversized_partition_falls_back_to_sdpa(monkeypatch, backend):
-    assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True) == ad.SDPA
+    assert _run(monkeypatch, backend, n_docs=20000, requires_grad=True) == ad.SDPA
 
 
 # 8129 documents at 16 heads / head_dim 128 is the last count that ran;
@@ -149,7 +149,7 @@ def test_softcapped_model_raises_instead_of_silently_dropping_the_softcap(monkey
     softcap at all. Downgrading a softcapped model would keep the run alive on wrong logits
     and wrong gradients, which is worse than the fault the guard prevents, so it must stop."""
     with pytest.raises(RuntimeError) as excinfo:
-        _run(monkeypatch, backend, n_docs = 20000, requires_grad = True, softcap = 50.0)
+        _run(monkeypatch, backend, n_docs=20000, requires_grad=True, softcap=50.0)
     message = str(excinfo.value)
     assert "softcap=50.0" in message
     assert "Pack fewer documents per row" in message
@@ -158,25 +158,25 @@ def test_softcapped_model_raises_instead_of_silently_dropping_the_softcap(monkey
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_softcap_of_none_or_zero_still_falls_back(monkeypatch, backend):
     """Only a real softcap blocks the fallback; every other model keeps the rescue."""
-    assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True, softcap = 0.0) == ad.SDPA
+    assert _run(monkeypatch, backend, n_docs=20000, requires_grad=True, softcap=0.0) == ad.SDPA
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_softcapped_model_under_the_bound_is_untouched(monkeypatch, backend):
     """A softcapped model that does not overflow must keep its fast kernel, not raise."""
-    assert _run(monkeypatch, backend, n_docs = 64, requires_grad = True, softcap = 50.0) == backend
+    assert _run(monkeypatch, backend, n_docs=64, requires_grad=True, softcap=50.0) == backend
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_normal_partition_keeps_the_fast_backend(monkeypatch, backend):
-    assert _run(monkeypatch, backend, n_docs = 64, requires_grad = True) == backend
+    assert _run(monkeypatch, backend, n_docs=64, requires_grad=True) == backend
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_forward_only_is_never_downgraded(monkeypatch, backend):
     """Inference allocates no dq_accum and never faulted (20000 documents ran clean), so the
     guard must not cost generation anything."""
-    assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = False) == backend
+    assert _run(monkeypatch, backend, n_docs=20000, requires_grad=False) == backend
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
@@ -201,9 +201,9 @@ def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatc
                 taken["b"] = ad.SDPA
                 return torch.zeros((1, 16, 4, 128))
 
-            monkeypatch.setattr(ad, "xformers_attention", _fake_xformers, raising = False)
-            monkeypatch.setattr(ad, "flash_attn_varlen_func", _fake_flash_varlen, raising = False)
-            monkeypatch.setattr(ad, "scaled_dot_product_attention", _fake_sdpa, raising = False)
+            monkeypatch.setattr(ad, "xformers_attention", _fake_xformers, raising=False)
+            monkeypatch.setattr(ad, "flash_attn_varlen_func", _fake_flash_varlen, raising=False)
+            monkeypatch.setattr(ad, "scaled_dot_product_attention", _fake_sdpa, raising=False)
             monkeypatch.setattr(ad, "build_xformers_block_causal_mask", lambda *a, **k: object())
             monkeypatch.setattr(ad, "build_sdpa_packed_attention_mask", lambda *a, **k: None)
             monkeypatch.setattr(ad, "_VARLEN_INT32_GUARD_DISABLED", False)
@@ -211,13 +211,13 @@ def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatc
             ad._VARLEN_INT32_WARNED[0] = False
             q = torch.zeros((1, 16, 4, 128))
             # The checkpointed hidden state keeps requires_grad = True in both passes.
-            ctx = _context(20000, 4, requires_grad = True)
+            ctx = _context(20000, 4, requires_grad=True)
             ad.run_attention(
-                config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1),
-                context = ctx,
-                Q = q,
-                K = q,
-                V = q,
+                config=ad.AttentionConfig(backend=backend, n_kv_heads=16, n_groups=1),
+                context=ctx,
+                Q=q,
+                K=q,
+                V=q,
             )
             return taken.get("b")
 
@@ -226,7 +226,7 @@ def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatc
 
 def test_guard_can_be_disabled_by_env(monkeypatch):
     assert (
-        _run(monkeypatch, ad.XFORMERS, n_docs = 20000, requires_grad = True, guard_disabled = True)
+        _run(monkeypatch, ad.XFORMERS, n_docs=20000, requires_grad=True, guard_disabled=True)
         == ad.XFORMERS
     )
 

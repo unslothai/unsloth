@@ -53,7 +53,7 @@ BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-research-freeze"))
-OUT.mkdir(parents = True, exist_ok = True)
+OUT.mkdir(parents=True, exist_ok=True)
 
 # ~12.5 events/s is what the store's 80ms coalescing window admits during synthesis;
 # 240 of them is a ~20s run, long enough for a follow loop to show and short enough to repeat.
@@ -97,11 +97,11 @@ def section_{n}(values):
 
 
 def info(message: str) -> None:
-    print(f"[research-freeze] {message}", flush = True)
+    print(f"[research-freeze] {message}", flush=True)
 
 
 def build_report(sections: int) -> str:
-    body = "\n".join(REPORT_SECTION.format(n = n) for n in range(1, sections + 1))
+    body = "\n".join(REPORT_SECTION.format(n=n) for n in range(1, sections + 1))
     return f"# Deep research report\n\n{body}\n\n$$\\sum_{{i=1}}^{{n}} x_i^2$$\n"
 
 
@@ -170,8 +170,8 @@ def run() -> dict:
     with sync_playwright() as p:
         # The timer-driven frame pump above makes headless runs deterministic without Xvfb.
         headless = os.environ.get("SMOKE_HEADLESS", "1") == "1"
-        browser = p.chromium.launch(headless = headless, args = chromium_launch_args())
-        context = browser.new_context(viewport = {"width": 1440, "height": 900})
+        browser = p.chromium.launch(headless=headless, args=chromium_launch_args())
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
         # Deliberately NOT installing the view-transition killer: it forces
         # `body { pointer-events: auto !important }`, which is precisely the symptom under test.
         context.add_init_script(LONGTASK_INIT)
@@ -183,12 +183,12 @@ def run() -> dict:
         )
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
-            lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
+            lambda route: route.fulfill(status=200, content_type="application/json", body="{}"),
         )
         page = context.new_page()
         echo_browser_errors(page, info)
-        page.goto(f"{BASE}/smoke-research.html", wait_until = "domcontentloaded")
-        page.wait_for_function("() => Boolean(window.__research)", timeout = 30_000)
+        page.goto(f"{BASE}/smoke-research.html", wait_until="domcontentloaded")
+        page.wait_for_function("() => Boolean(window.__research)", timeout=30_000)
         cdp = context.new_cdp_session(page)
         cdp.send("Performance.enable")
 
@@ -225,7 +225,7 @@ def run() -> dict:
             "raf_callbacks": stream_raf,
             "raf_per_second": round(stream_raf / (stream_window_ms / 1000), 1),
             "long_tasks": len(long_tasks),
-            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default=0.0), 1),
             "layout_count": delta(before, after, "LayoutCount"),
             "recalc_style_count": delta(before, after, "RecalcStyleCount"),
             "layout_ms": round(delta(before, after, "LayoutDuration") * 1000, 1),
@@ -267,7 +267,7 @@ def run() -> dict:
         # A real, hit-tested input event: lands late under a blocked thread, but it must land. Record a blocked
         # click as a verdict; raising would lose every other measurement.
         try:
-            page.click('[data-smoke="click-probe"]', timeout = 10_000)
+            page.click('[data-smoke="click-probe"]', timeout=10_000)
             report_click_landed = True
         except Exception as exc:
             report_click_landed = False
@@ -285,7 +285,7 @@ def run() -> dict:
         results["report"] = {
             "chars": len(report),
             "long_tasks": len(long_tasks),
-            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default=0.0), 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
             "main_thread_stall_ms": round(page.evaluate("window.__reportStallMs"), 1),
             "clicks_registered": page.evaluate("window.__research.clicks()") - clicks_before_report,
@@ -308,7 +308,7 @@ def run() -> dict:
         page.wait_for_timeout(600)
         body_after_approve = page.evaluate("() => document.body.style.pointerEvents")
         clicks_before = page.evaluate("window.__research.clicks()")
-        page.click('[data-smoke="click-probe"]', timeout = 5000)
+        page.click('[data-smoke="click-probe"]', timeout=5000)
         clicks_after_approve = page.evaluate("window.__research.clicks()")
 
         page.evaluate("window.__research.awaitApproval()")
@@ -316,7 +316,7 @@ def run() -> dict:
         page.evaluate("window.__research.closePanel()")
         page.wait_for_timeout(600)
         body_after_close = page.evaluate("() => document.body.style.pointerEvents")
-        page.click('[data-smoke="click-probe"]', timeout = 5000)
+        page.click('[data-smoke="click-probe"]', timeout=5000)
         clicks_after_close = page.evaluate("window.__research.clicks()")
 
         results["modal"] = {
@@ -362,7 +362,7 @@ def run() -> dict:
             "latest_after_flick": page.evaluate(LATEST_BUTTON_VISIBLE),
         }
 
-        page.screenshot(path = str(OUT / f"{LABEL}.png"), full_page = False)
+        page.screenshot(path=str(OUT / f"{LABEL}.png"), full_page=False)
         context.close()
         browser.close()
     return results
@@ -375,7 +375,7 @@ def main() -> int:
         vite = start_vite(PORT)
     try:
         wait_for_smoke_page(
-            f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc = vite, info = info
+            f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc=vite, info=info
         )
         results = run()
     finally:
@@ -383,8 +383,8 @@ def main() -> int:
             stop_process(vite)
             info("vite stopped")
     out = OUT / f"{LABEL}.json"
-    out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
-    info(json.dumps(results, indent = 2))
+    out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    info(json.dumps(results, indent=2))
     info(f"wrote {out}")
 
     failures: list[str] = []

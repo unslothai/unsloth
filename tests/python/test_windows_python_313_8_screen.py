@@ -35,13 +35,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("pwsh") is None, reason = "pwsh is required to execute install.ps1 blocks"
+    shutil.which("pwsh") is None, reason="pwsh is required to execute install.ps1 blocks"
 )
 
 
 def _extract(pattern: str) -> str:
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    match = re.search(pattern, source, flags = re.DOTALL)
+    source = INSTALL_PS1.read_text(encoding="utf-8")
+    match = re.search(pattern, source, flags=re.DOTALL)
     assert match is not None, f"install.ps1 no longer contains {pattern!r}"
     return match.group(0)
 
@@ -65,10 +65,10 @@ def _fake_python(tmp_path: Path, version: str) -> Path:
     """An executable that reports ``version`` for the resolver's probe."""
     if os.name == "nt":
         exe = tmp_path / "python.cmd"
-        exe.write_text(f"@echo off\r\necho {version}\r\n", encoding = "utf-8")
+        exe.write_text(f"@echo off\r\necho {version}\r\n", encoding="utf-8")
         return exe
     exe = tmp_path / "python"
-    exe.write_text(f'#!/bin/sh\necho "{version}"\n', encoding = "utf-8")
+    exe.write_text(f'#!/bin/sh\necho "{version}"\n', encoding="utf-8")
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return exe
 
@@ -97,8 +97,8 @@ else {{ Write-Output "RESULT: kept" }}
     # screen that reached the opposite conclusion.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     return completed.stdout + completed.stderr
 
@@ -142,8 +142,8 @@ else {{ Write-Output "RESULT: kept" }}
     # interpreter that dies would masquerade as the screen wrongly rejecting it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert "RESULT: kept" in completed.stdout + completed.stderr, (
         completed.stdout + completed.stderr
@@ -152,7 +152,7 @@ else {{ Write-Output "RESULT: kept" }}
 
 def test_the_resolver_is_screened_at_every_entry_point():
     """A bare Find-CompatiblePython in the install flow would defeat the screen."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     flow = source[source.index("# ── Install Python if no compatible version") :]
     flow = flow[: flow.index("# ── Install uv ──")]
     bare = [
@@ -205,18 +205,18 @@ def test_every_enumerated_candidate_is_screened():
 # The PowerShell under test is the same text on every platform, and pwsh runs it here, so these three cases run on POSIX
 # and the rest of the file still covers Windows.
 _POSIX_LAUNCHER_ONLY = pytest.mark.skipif(
-    os.name == "nt", reason = "the fake py launcher is a /bin/sh script"
+    os.name == "nt", reason="the fake py launcher is a /bin/sh script"
 )
 
 
 def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
     """A `py` launcher over fake interpreters, one per minor in ``versions``."""
-    root.mkdir(parents = True, exist_ok = True)
+    root.mkdir(parents=True, exist_ok=True)
     branches = []
     for minor, full in versions.items():
         exe = root / f"python{minor.replace('.', '')}"
         # -S -c "import sys; print(sys.base_prefix)" for the conda screen.
-        exe.write_text('#!/bin/sh\necho "/usr"\n', encoding = "utf-8")
+        exe.write_text('#!/bin/sh\necho "/usr"\n', encoding="utf-8")
         exe.chmod(0o755)
         branches.append(f'  {minor}) ver="{full}"; exe="{exe}" ;;')
     launcher = root / "py"
@@ -231,7 +231,7 @@ def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
         '  -S) echo "$exe" ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     launcher.chmod(0o755)
     return launcher
@@ -266,8 +266,8 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
     # fail as if Find-CompatiblePython went silent.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     out = completed.stdout + completed.stderr
     match = re.search(r"RESULT: (\S+)", out)
@@ -330,8 +330,8 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
     # the screen having removed it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     out = completed.stdout + completed.stderr
     assert "RESULT: 3.13" in out, out

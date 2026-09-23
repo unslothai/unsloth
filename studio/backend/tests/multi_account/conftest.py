@@ -17,7 +17,7 @@ def isolated_auth(tmp_path, monkeypatch):
     home = tmp_path / "install"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising=False)
     monkeypatch.setattr(storage, "DB_PATH", home / "auth" / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", home / "auth" / ".bootstrap_password")
     monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)

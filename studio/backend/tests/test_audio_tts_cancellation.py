@@ -120,12 +120,12 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
     payload = ChatCompletionRequest(
-        model = "some/custom-tts",
-        messages = [{"role": "user", "content": "hello"}],
+        model="some/custom-tts",
+        messages=[{"role": "user", "content": "hello"}],
     )
 
     asyncio.run(
-        inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
+        inference_route._generate_tts_wav("hello", payload, request=None, current_subject="t")
     )
 
     assert "cancel_event" in captured
@@ -156,14 +156,14 @@ def test_minimax_prompt_encoder_overflow_is_a_client_error(monkeypatch):
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
     payload = ChatCompletionRequest(
-        model = "MiniMaxAI/MiniMax-Music3",
-        messages = [{"role": "user", "content": "lyrics"}],
-        audio_instructions = "long music description",
+        model="MiniMaxAI/MiniMax-Music3",
+        messages=[{"role": "user", "content": "lyrics"}],
+        audio_instructions="long music description",
     )
 
     with pytest.raises(inference_route.HTTPException) as excinfo:
         asyncio.run(
-            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
+            inference_route._generate_tts_wav("lyrics", payload, request=None, current_subject="t")
         )
 
     assert excinfo.value.status_code == 400
@@ -181,8 +181,8 @@ def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     stopped = threading.Event()
     stopped.set()
 
-    with pytest.raises(RuntimeError, match = "cancel"):
-        orchestrator.generate_audio_response("hello", cancel_event = stopped)
+    with pytest.raises(RuntimeError, match="cancel"):
+        orchestrator.generate_audio_response("hello", cancel_event=stopped)
 
     assert orchestrator._active_cancel_events == []
 
@@ -224,8 +224,8 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
         lambda _request_id: (read_one, lambda **_kwargs: None, lambda: released.append(True)),
     )
 
-    with pytest.raises(RuntimeError, match = "cancel"):
-        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+    with pytest.raises(RuntimeError, match="cancel"):
+        orchestrator.generate_audio_response("hello", cancel_event=caller_cancel)
 
     assert sent and sent[0]["type"] == "generate_audio"
     assert reads == 3
@@ -273,8 +273,8 @@ def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
     monkeypatch.setattr(orchestrator, "_shutdown_subprocess", shutdown)
 
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match = "Audio generation cancelled"):
-        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+    with pytest.raises(RuntimeError, match="Audio generation cancelled"):
+        orchestrator.generate_audio_response("hello", cancel_event=caller_cancel)
 
     assert time.monotonic() - started < 0.5
     assert cancel_signals == [True]
@@ -324,8 +324,8 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
     )
 
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match = "Audio generation cancelled"):
-        orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+    with pytest.raises(RuntimeError, match="Audio generation cancelled"):
+        orchestrator.generate_audio_response("hello", cancel_event=caller_cancel)
 
     assert time.monotonic() - started < 0.5
     assert shutdown_state == [0.03]
@@ -343,8 +343,8 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
 
 def test_tts_route_bounds_public_token_budget():
     payload = ChatCompletionRequest(
-        messages = [{"role": "user", "content": "hello"}],
-        max_tokens = 10**310,
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=10**310,
     )
 
     assert inference_route._tts_max_new_tokens(payload) == 8192
@@ -352,11 +352,11 @@ def test_tts_route_bounds_public_token_budget():
 
 def test_minimax_music_route_allows_its_official_frame_budget():
     payload = ChatCompletionRequest(
-        messages = [{"role": "user", "content": "hello"}],
-        max_tokens = 10**310,
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=10**310,
     )
 
-    assert inference_route._tts_max_new_tokens(payload, audio_type = "minimax_music3") == 9000
+    assert inference_route._tts_max_new_tokens(payload, audio_type="minimax_music3") == 9000
 
 
 @pytest.mark.parametrize(
@@ -383,14 +383,14 @@ def test_audio_worker_command_uses_the_model_token_budget(
             }
         )
         return (
-            lambda *, timeout: responses.get(timeout = timeout),
+            lambda *, timeout: responses.get(timeout=timeout),
             lambda **_kwargs: None,
             lambda: None,
         )
 
     monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
 
-    assert orchestrator.generate_audio_response("hello", max_new_tokens = 10**310) == (
+    assert orchestrator.generate_audio_response("hello", max_new_tokens=10**310) == (
         b"RIFFfake",
         24000,
     )
@@ -431,7 +431,7 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
 
     monkeypatch.setattr(orchestrator, "_cancel_generation", cancel_generation)
 
-    with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
+    with pytest.raises(RuntimeError, match="Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
     assert cancel_state == [True], "timeout cancellation must occur under TTS exclusivity"
@@ -463,7 +463,7 @@ def test_audio_response_timeout_tears_down_unresponsive_worker_before_release(mo
 
     monkeypatch.setattr(orchestrator, "_shutdown_subprocess", shutdown)
 
-    with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
+    with pytest.raises(RuntimeError, match="Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
     assert shutdown_state == [(True, 0.03)]
@@ -567,7 +567,7 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
             }
         )
         return (
-            lambda *, timeout: responses.get(timeout = timeout),
+            lambda *, timeout: responses.get(timeout=timeout),
             lambda **_kwargs: None,
             lambda: None,
         )
@@ -575,7 +575,7 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
     monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
     result = {}
     thread = threading.Thread(
-        target = lambda: result.setdefault("value", orchestrator.generate_audio_response("hello"))
+        target=lambda: result.setdefault("value", orchestrator.generate_audio_response("hello"))
     )
     thread.start()
 
@@ -587,7 +587,7 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
 
     with orchestrator._mailbox_lock:
         orchestrator._mailboxes.pop("compare")
-    thread.join(timeout = 3)
+    thread.join(timeout=3)
 
     assert thread.is_alive() is False
     assert result["value"] == (b"RIFFfake", 24000)
@@ -612,11 +612,11 @@ def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
 
     def run():
         try:
-            orchestrator.generate_audio_response("hello", cancel_event = caller_cancel)
+            orchestrator.generate_audio_response("hello", cancel_event=caller_cancel)
         except Exception as exc:  # noqa: BLE001 - assertion captures the thread result
             error["value"] = exc
 
-    thread = threading.Thread(target = run)
+    thread = threading.Thread(target=run)
     thread.start()
     deadline = time.monotonic() + 2
     while not orchestrator._exclusive_tts_pending and time.monotonic() < deadline:
@@ -624,7 +624,7 @@ def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
     assert orchestrator._exclusive_tts_pending is True
 
     caller_cancel.set()
-    thread.join(timeout = 2)
+    thread.join(timeout=2)
 
     assert thread.is_alive() is False
     assert "cancel" in str(error["value"]).lower()
@@ -650,7 +650,7 @@ def test_dispatched_generation_rechecks_tts_reservation_before_registration(monk
         lambda _cmd: pytest.fail("compare must not enqueue after TTS reservation"),
     )
 
-    output = list(orchestrator._generate_dispatched(messages = [{"role": "user", "content": "x"}]))
+    output = list(orchestrator._generate_dispatched(messages=[{"role": "user", "content": "x"}]))
 
     assert any("audio generation" in str(chunk).lower() for chunk in output)
     assert orchestrator._mailboxes == {}
@@ -705,5 +705,5 @@ def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
     monkeypatch.setattr(backend, "_generate_bicodec", _fake_generate)
     cancel = threading.Event()
 
-    assert backend.generate_audio_response("hello", cancel_event = cancel) == (b"RIFFfake", 24000)
+    assert backend.generate_audio_response("hello", cancel_event=cancel) == (b"RIFFfake", 24000)
     assert captured["stopping_criteria"] is criteria

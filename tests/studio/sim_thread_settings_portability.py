@@ -35,18 +35,18 @@ CHECKS = 0
 def check(
     name,
     ok,
-    detail = "",
+    detail="",
 ):
     global CHECKS
     CHECKS += 1
     if not ok:
         FAILURES.append(name)
-    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""), flush = True)
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""), flush=True)
 
 
 def fresh_home():
     """An Unsloth home under a real temp dir, so path handling is the platform's own."""
-    home = Path(tempfile.mkdtemp(prefix = "sim8686_"))
+    home = Path(tempfile.mkdtemp(prefix="sim8686_"))
     os.environ["UNSLOTH_STUDIO_HOME"] = str(home)
     return home
 
@@ -71,7 +71,7 @@ def main():
     # the run for a reason that has nothing to do with what is being tested.
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding = "utf-8", errors = "replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):  # pragma: no cover - older stream types
             pass
     print(f"platform : {platform.system()} {platform.release()} ({platform.machine()})")

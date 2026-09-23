@@ -39,8 +39,8 @@ def _msg(
     parent,
     text,
     created,
-    attachments = None,
-    thread_id = THREAD,
+    attachments=None,
+    thread_id=THREAD,
 ):
     record = {
         "id": message_id,
@@ -55,11 +55,11 @@ def _msg(
     return record
 
 
-def _doc(name = "PRF_PART_II-THEORY_(v3.1).md"):
+def _doc(name="PRF_PART_II-THEORY_(v3.1).md"):
     return [{"id": f"att-{name}", "name": name, "type": "document", "text": BIG_DOC}]
 
 
-def _stored(thread_id = THREAD):
+def _stored(thread_id=THREAD):
     return {m["id"]: m for m in studio_db.list_chat_messages(thread_id)}
 
 
@@ -76,14 +76,14 @@ def _walk(stored, message_id):
         current = stored[current]["parentId"]
 
 
-def _assert_no_dangling_parents(thread_id = THREAD):
+def _assert_no_dangling_parents(thread_id=THREAD):
     stored = _stored(thread_id)
     for message_id in stored:
         _walk(stored, message_id)
     return stored
 
 
-@pytest.mark.parametrize("parented", [False, True], ids = ["flat_thread", "branched_thread"])
+@pytest.mark.parametrize("parented", [False, True], ids=["flat_thread", "branched_thread"])
 def test_sending_the_same_text_twice_keeps_both_turns(db, parented):
     """Legacy threads store parent_id NULL throughout, so both turns share one bucket."""
     db.upsert_chat_message(_msg("u1", "user", None, "continue", 1000))
@@ -138,7 +138,7 @@ def test_sync_keeps_every_message_and_its_links(db):
     assert sorted(_assert_no_dangling_parents()) == ["a1", "a2", "u1", "u2"]
 
 
-def _regenerate_sequence(regenerations = 3):
+def _regenerate_sequence(regenerations=3):
     """The rows a regenerate writes: one assistant sibling per attempt, no new user turn.
 
     reload calls startRun({ parentId }), so there is no user append to replay, and nothing in
@@ -160,7 +160,7 @@ def test_storing_a_regenerate_sequence_keeps_one_user_turn(db):
 
 
 def test_storing_a_regenerate_sequence_keeps_one_copy_of_the_document(db):
-    for record in _regenerate_sequence(regenerations = 5):
+    for record in _regenerate_sequence(regenerations=5):
         db.upsert_chat_message(record)
 
     assert len(studio_db.list_chat_attachments()) == 1
@@ -187,7 +187,7 @@ def test_importing_a_conversation_with_repeated_turns_keeps_them_all(db):
         records.append(_msg(assistant_id, "assistant", user_id, f"part {index}", 1005 + index * 10))
         previous = assistant_id
 
-    db.sync_chat_messages(THREAD, records, prune_missing = False)
+    db.sync_chat_messages(THREAD, records, prune_missing=False)
 
     assert len(_assert_no_dangling_parents()) == len(records)
 
@@ -203,7 +203,7 @@ def test_deleting_one_message_leaves_the_rest_of_the_tree_linked(db):
     db.sync_chat_messages(THREAD, records)
     survivors = [records[0], records[1], {**records[3], "parentId": "a1"}]
 
-    db.sync_chat_messages(THREAD, survivors, prune_missing = True)
+    db.sync_chat_messages(THREAD, survivors, prune_missing=True)
 
     assert sorted(_assert_no_dangling_parents()) == ["a1", "a2", "u1"]
 
@@ -342,7 +342,7 @@ def test_the_reported_duplicate_pair_survives_a_whole_thread_sync(db):
         for m, r, p, c in _REPORTED_THREAD
     ]
 
-    db.sync_chat_messages(THREAD, records, prune_missing = True)
+    db.sync_chat_messages(THREAD, records, prune_missing=True)
 
     assert len(_assert_no_dangling_parents()) == len(_REPORTED_THREAD)
 

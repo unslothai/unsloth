@@ -27,8 +27,8 @@ SUITE = REPO / "tests" / "studio" / "playwright_update_banner_layout.py"
 
 
 def test_both_sides_spell_the_override_the_same_way():
-    hook = HOOK.read_text(encoding = "utf-8")
-    suite = SUITE.read_text(encoding = "utf-8")
+    hook = HOOK.read_text(encoding="utf-8")
+    suite = SUITE.read_text(encoding="utf-8")
 
     in_hook = re.search(r'E2E_DELAY_GLOBAL\s*=\s*"([^"]+)"', hook)
     assert in_hook, f"{HOOK.name} no longer names the override global"
@@ -49,7 +49,7 @@ def test_the_suite_actually_sets_it_before_the_app_runs():
     Setting it after load would be too late by definition: the hook reads it when the
     effect mounts, which has already happened.
     """
-    suite = SUITE.read_text(encoding = "utf-8")
+    suite = SUITE.read_text(encoding="utf-8")
     assert "add_init_script" in suite, (
         f"{SUITE.name} no longer installs an init script, so the override cannot be in "
         f"place before the hook mounts and reads it"
@@ -68,7 +68,7 @@ def test_production_keeps_the_five_second_delay():
     change what users get. This is the assertion that keeps the optimisation confined to
     CI.
     """
-    hook = HOOK.read_text(encoding = "utf-8")
+    hook = HOOK.read_text(encoding="utf-8")
     assert re.search(r"const WEB_UPDATE_CHECK_DELAY_MS = 5000;", hook), (
         "the production update-check delay is no longer 5000ms. Shortening the CI wait "
         "must not shorten the real one: that delay exists to keep the request off the "

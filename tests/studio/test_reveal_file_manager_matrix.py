@@ -38,7 +38,7 @@ if _REPO_ROOT is None:
     pytest.skip(
         "Could not locate studio/backend. Set UNSLOTH_REPO_ROOT or run from "
         "the repository checkout.",
-        allow_module_level = True,
+        allow_module_level=True,
     )
 
 _STUDIO_BACKEND = _REPO_ROOT / "studio" / "backend"
@@ -51,7 +51,7 @@ pytest.importorskip("huggingface_hub")
 try:
     from utils.paths import path_utils
 except Exception as exc:
-    pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level = True)
+    pytest.skip(f"studio backend import unavailable: {exc}", allow_module_level=True)
 
 
 # Characters that get split into two argv elements by string-built commands.
@@ -65,11 +65,11 @@ def spawned(monkeypatch):
     ``startfile`` is Windows-only, so ``raising = False`` installs it rather
     than replacing it, which is what exercises that branch from Linux.
     """
-    calls = types.SimpleNamespace(run = [], popen = [], startfile = [], popen_error = None)
+    calls = types.SimpleNamespace(run=[], popen=[], startfile=[], popen_error=None)
 
     def fake_run(cmd, **kwargs):
         calls.run.append(list(cmd))
-        return types.SimpleNamespace(stdout = "C:\\converted\n")
+        return types.SimpleNamespace(stdout="C:\\converted\n")
 
     def fake_popen(cmd, **kwargs):
         if calls.popen_error is not None:
@@ -79,7 +79,7 @@ def spawned(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(os, "startfile", calls.startfile.append, raising = False)
+    monkeypatch.setattr(os, "startfile", calls.startfile.append, raising=False)
     return calls
 
 
@@ -211,7 +211,7 @@ def test_a_deeply_nested_path_is_passed_through_whole(native_linux, spawned, tmp
     """Sandbox names are derived, but a project workspace can sit arbitrarily
     deep under a home the user chose."""
     target = tmp_path.joinpath(*[f"level_{i}" for i in range(40)])
-    target.mkdir(parents = True)
+    target.mkdir(parents=True)
     path_utils.reveal_in_file_manager(target)
     assert spawned.popen == [["xdg-open", str(target)]]
     assert len(str(target)) > 255
@@ -274,7 +274,7 @@ def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
     """The parent of a sandbox is the root holding every other chat's, so the
     Linux fallback must fail closed rather than widen to it."""
     root = tmp_path / "sandbox"
-    (root / "thread-1").mkdir(parents = True)
+    (root / "thread-1").mkdir(parents=True)
     with pytest.raises(FileNotFoundError):
         path_utils.reveal_in_file_manager(_VanishesAfterTheGuard(root / "thread-1"))
     assert spawned.popen == [], "the sandbox root must never be opened"
@@ -316,10 +316,10 @@ def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp
     which is the property under test."""
     request.getfixturevalue(host)
     root = tmp_path / "sandbox"
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     (root / "thread-1").write_bytes(b"not a directory any more")
     with pytest.raises(FileNotFoundError):
-        path_utils.reveal_in_file_manager(root / "thread-1", expect_dir = True)
+        path_utils.reveal_in_file_manager(root / "thread-1", expect_dir=True)
     assert spawned.popen == []
     assert spawned.startfile == []
 
@@ -332,12 +332,12 @@ def test_a_sandbox_swapped_for_a_directory_symlink_is_refused(host, spawned, tmp
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
     link = tmp_path / "sandbox" / "thread-1"
-    link.parent.mkdir(parents = True)
-    link.symlink_to(elsewhere, target_is_directory = True)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(elsewhere, target_is_directory=True)
     assert link.is_dir(), "the premise: it looks like a directory"
 
     with pytest.raises(FileNotFoundError):
-        path_utils.reveal_in_file_manager(link, expect_dir = True)
+        path_utils.reveal_in_file_manager(link, expect_dir=True)
     assert spawned.popen == []
     assert spawned.startfile == []
 
@@ -352,7 +352,7 @@ def test_a_symlinked_cache_entry_is_still_revealed_without_expect_dir(
     blob = tmp_path / "blob.gguf"
     blob.write_bytes(b"gguf")
     link = tmp_path / "snapshot" / "model.gguf"
-    link.parent.mkdir(parents = True)
+    link.parent.mkdir(parents=True)
     link.symlink_to(blob)
     path_utils.reveal_in_file_manager(link)
     assert spawned.popen or spawned.startfile

@@ -107,7 +107,7 @@ def test_the_summary_call_carries_the_reason():
 @pytest.mark.gpu
 @pytest.mark.skipif(
     not has_real_accelerator(),
-    reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
+    reason="loads a real checkpoint through FastLanguageModel; needs an accelerator",
 )
 def test_summary_reason_is_logged_for_a_real_model():
     """unsloth#2076 end to end: the reason has to reach the user's console."""
@@ -123,8 +123,8 @@ def test_summary_reason_is_logged_for_a_real_model():
 
     model, _tokenizer = FastLanguageModel.from_pretrained(
         "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length = 512,
-        load_in_4bit = True,
+        max_seq_length=512,
+        load_in_4bit=True,
     )
     # warning_once (patched onto logging.Logger by transformers) dedupes process wide.
     getattr(llama_module.logger.warning_once, "cache_clear", lambda: None)()
@@ -140,11 +140,11 @@ def test_summary_reason_is_logged_for_a_real_model():
     try:
         model = FastLanguageModel.get_peft_model(
             model,
-            r = 8,
-            lora_alpha = 16,
-            lora_dropout = 0.1,
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-            random_state = 0,
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.1,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            random_state=0,
         )
     finally:
         target.removeHandler(handler)

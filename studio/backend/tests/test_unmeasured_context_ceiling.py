@@ -70,7 +70,7 @@ def _unmeasurable() -> LlamaCppBackend:
 class TestTheTensorParallelFallback:
     def test_an_explicit_request_is_honoured(self):
         effective, ceiling, *_ = _unmeasurable()._plan_tensor_parallel(
-            TWO_80, 20 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True
+            TWO_80, 20 * GB, NATIVE, max_target_ctx=NATIVE, explicit_ctx=True
         )
         assert effective == NATIVE
         # The pair the issue quotes from /v1/models: the ceiling may not contradict it.
@@ -78,7 +78,7 @@ class TestTheTensorParallelFallback:
 
     def test_auto_still_takes_the_conservative_fallback(self):
         effective, ceiling, *_ = _unmeasurable()._plan_tensor_parallel(
-            TWO_80, 20 * GB, NATIVE, max_target_ctx = NATIVE
+            TWO_80, 20 * GB, NATIVE, max_target_ctx=NATIVE
         )
         assert effective == _TP_UNMEASURED_CTX
         assert ceiling == _TP_UNMEASURED_CTX
@@ -88,16 +88,16 @@ class TestTheTensorParallelFallback:
         the request and a startup OOM."""
         tight = [(0, 6 * 1024), (1, 6 * 1024)]
         capped, _ceiling, *_ = _measurable()._plan_tensor_parallel(
-            tight, 8 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True
+            tight, 8 * GB, NATIVE, max_target_ctx=NATIVE, explicit_ctx=True
         )
         assert 0 < capped < NATIVE
 
     def test_a_measurable_plan_that_fits_is_unchanged_by_the_flag(self):
         with_flag = _measurable()._plan_tensor_parallel(
-            TWO_80, 20 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True
+            TWO_80, 20 * GB, NATIVE, max_target_ctx=NATIVE, explicit_ctx=True
         )
         without = _measurable()._plan_tensor_parallel(
-            TWO_80, 20 * GB, NATIVE, max_target_ctx = NATIVE
+            TWO_80, 20 * GB, NATIVE, max_target_ctx=NATIVE
         )
         assert with_flag == without
 
@@ -109,7 +109,7 @@ class TestTheTensorParallelFallback:
     @pytest.mark.parametrize("target", [0, -1])
     def test_no_request_is_not_a_request(self, target):
         effective, _ceiling, *_ = _unmeasurable()._plan_tensor_parallel(
-            TWO_80, 20 * GB, target, explicit_ctx = True
+            TWO_80, 20 * GB, target, explicit_ctx=True
         )
         assert effective == _TP_UNMEASURED_CTX
 
@@ -212,45 +212,45 @@ class TestTheMetalArm:
         return _metal_launch(
             tmp_path,
             monkeypatch,
-            metal = True,
-            can_estimate_kv = False,
-            real_fit = True,
-            budget_bytes = 24 * GB,
-            native = NATIVE,
+            metal=True,
+            can_estimate_kv=False,
+            real_fit=True,
+            budget_bytes=24 * GB,
+            native=NATIVE,
             **kwargs,
         )
 
     def test_an_explicit_request_reaches_llama_server(self, tmp_path, monkeypatch):
-        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = NATIVE)
+        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx=NATIVE)
         assert _ctx_values(captured["cmd"])[-1] == str(NATIVE)
 
     def test_the_published_ceiling_is_not_below_what_launched(self, tmp_path, monkeypatch):
         """The floor used to be published while the child ran at the request."""
-        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = NATIVE)
+        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx=NATIVE)
         backend = captured["backend"]
         assert backend.max_context_length >= NATIVE
         assert backend.native_context_length == NATIVE
 
     def test_the_load_says_the_ceiling_was_never_measured(self, tmp_path, monkeypatch):
-        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = NATIVE)
+        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx=NATIVE)
         assert "not a measured ceiling" in (captured["backend"].last_load_warning or "")
 
     def test_auto_keeps_the_floor(self, tmp_path, monkeypatch):
-        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = 0)
+        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx=0)
         assert _ctx_values(captured["cmd"])[-1] == str(_FIT_MIN_CTX)
         assert captured["backend"].max_context_length == _FIT_MIN_CTX
 
     def test_auto_is_not_told_anything(self, tmp_path, monkeypatch):
         """Auto made no request; an advisory on every unreadable header is noise."""
-        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx = 0)
+        captured = self._launch_unmeasurable(tmp_path, monkeypatch, n_ctx=0)
         assert captured["backend"].last_load_warning is None
 
     def test_a_measured_ceiling_still_refuses(self, tmp_path, monkeypatch):
-        with pytest.raises(RuntimeError, match = "unified"):
+        with pytest.raises(RuntimeError, match="unified"):
             _metal_launch(
                 tmp_path,
                 monkeypatch,
-                n_ctx = 32768,
-                metal = True,
-                can_estimate_kv = True,
+                n_ctx=32768,
+                metal=True,
+                can_estimate_kv=True,
             )

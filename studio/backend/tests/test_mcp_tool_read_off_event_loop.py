@@ -87,8 +87,8 @@ def test_the_post_probe_re_read_stays_on_the_event_loop_thread(monkeypatch):
 
 def test_the_token_count_reads_the_cached_tools_off_the_event_loop_thread(tmp_path, monkeypatch):
     """Exercise the cache-only read through the token-count handler."""
-    _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
-    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    _count_tokens_backend(monkeypatch, count=1234, supports_tools=True)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached=MCP_TOOL_PAYLOAD)
 
     threads: list[int] = []
     real_list_servers = mcp_servers_db.list_servers
@@ -100,7 +100,7 @@ def test_the_token_count_reads_the_cached_tools_off_the_event_loop_thread(tmp_pa
     monkeypatch.setattr(mcp_servers_db, "list_servers", _list_servers)
 
     payload = _count_request(
-        [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
+        [{"role": "user", "content": "hello"}], mcp_enabled=True, enabled_tools=[]
     )
     loop_thread = threading.get_ident()
     asyncio.run(inference_routes.chat_count_tokens(payload, "tester"))
@@ -164,9 +164,9 @@ def test_the_cached_row_and_tools_are_one_snapshot_during_an_edit(monkeypatch):
         update = asyncio.create_task(
             mcp_routes.update_mcp_server(
                 "s1",
-                McpServerUpdate(url = "https://new.example/mcp"),
-                current_subject = "u",
-                via_api_key = False,
+                McpServerUpdate(url="https://new.example/mcp"),
+                current_subject="u",
+                via_api_key=False,
             )
         )
         release_row.set()
@@ -207,21 +207,21 @@ def test_queued_updates_recheck_the_stdio_api_key_gate(monkeypatch):
             ui_update = asyncio.create_task(
                 mcp_routes.update_mcp_server(
                     "s1",
-                    McpServerUpdate(url = "npx local-server"),
-                    current_subject = "u",
-                    via_api_key = False,
+                    McpServerUpdate(url="npx local-server"),
+                    current_subject="u",
+                    via_api_key=False,
                 )
             )
             api_update = asyncio.create_task(
                 mcp_routes.update_mcp_server(
                     "s1",
-                    McpServerUpdate(headers = {"API_KEY": "secret"}),
-                    current_subject = "u",
-                    via_api_key = True,
+                    McpServerUpdate(headers={"API_KEY": "secret"}),
+                    current_subject="u",
+                    via_api_key=True,
                 )
             )
             await asyncio.sleep(0)
-        return await asyncio.gather(ui_update, api_update, return_exceptions = True)
+        return await asyncio.gather(ui_update, api_update, return_exceptions=True)
 
     _ui_result, api_result = asyncio.run(_drive())
     assert isinstance(api_result, HTTPException)

@@ -71,23 +71,23 @@ _RESIDENT_FILES_BYTES = 5_000_000_000
 
 def _breakdown(gpu: int, total: int) -> SimpleNamespace:
     return SimpleNamespace(
-        weights_bytes = _RESIDENT_FILES_BYTES,
-        kv_bytes = 3_000_000_000,
-        compute_bytes = 700_000_000,
-        drafter_runtime_bytes = 0,
-        drafter_runtime_gpu_bytes = 0,
-        projector_runtime_bytes = 0,
-        drafter_kv_unsized = False,
-        adapters_unsized = False,
-        total_bytes = total,
-        gpu_bytes = gpu,
-        kv_estimable = True,
-        kv_on_gpu = gpu > 0,
-        n_ctx = 32768,
-        cache_type_kv = "f16",
-        n_parallel = 1,
-        layer_count = 28,
-        gpu_layers = 28 if gpu > 0 else 0,
+        weights_bytes=_RESIDENT_FILES_BYTES,
+        kv_bytes=3_000_000_000,
+        compute_bytes=700_000_000,
+        drafter_runtime_bytes=0,
+        drafter_runtime_gpu_bytes=0,
+        projector_runtime_bytes=0,
+        drafter_kv_unsized=False,
+        adapters_unsized=False,
+        total_bytes=total,
+        gpu_bytes=gpu,
+        kv_estimable=True,
+        kv_on_gpu=gpu > 0,
+        n_ctx=32768,
+        cache_type_kv="f16",
+        n_parallel=1,
+        layer_count=28,
+        gpu_layers=28 if gpu > 0 else 0,
     )
 
 
@@ -95,10 +95,10 @@ def _breakdown(gpu: int, total: int) -> SimpleNamespace:
 @pytest.mark.parametrize("placement", sorted(PLACEMENTS))
 class TestTheContractIsPlatformIndependent:
     def test_both_wire_shapes_are_identical_everywhere(self, platform, placement, monkeypatch):
-        monkeypatch.setattr(sys, "platform", platform, raising = False)
+        monkeypatch.setattr(sys, "platform", platform, raising=False)
         p = PLACEMENTS[placement]
         est = build_memory_estimate(
-            _breakdown(p["gpu"], p["total"]), quant_file_bytes = _QUANT_FILE_BYTES
+            _breakdown(p["gpu"], p["total"]), quant_file_bytes=_QUANT_FILE_BYTES
         )
         assert set(project_kv_cache_estimate(est)) == set(
             _KV_CACHE_ESTIMATE_KEYS
@@ -108,10 +108,10 @@ class TestTheContractIsPlatformIndependent:
         ), f"{platform}/{placement}: the inference route's field set moved"
 
     def test_the_two_meanings_stay_apart_everywhere(self, platform, placement, monkeypatch):
-        monkeypatch.setattr(sys, "platform", platform, raising = False)
+        monkeypatch.setattr(sys, "platform", platform, raising=False)
         p = PLACEMENTS[placement]
         est = build_memory_estimate(
-            _breakdown(p["gpu"], p["total"]), quant_file_bytes = _QUANT_FILE_BYTES
+            _breakdown(p["gpu"], p["total"]), quant_file_bytes=_QUANT_FILE_BYTES
         )
         panel = project_estimate_memory_response(est)
         bar = project_kv_cache_estimate(est)
@@ -125,11 +125,11 @@ class TestTheContractIsPlatformIndependent:
     def test_a_cpu_only_launch_reports_zero_rather_than_nothing(
         self, platform, placement, monkeypatch
     ):
-        monkeypatch.setattr(sys, "platform", platform, raising = False)
+        monkeypatch.setattr(sys, "platform", platform, raising=False)
         if placement != "cpu-only":
             pytest.skip("only the CPU-only placement asserts this")
         est = build_memory_estimate(
-            _breakdown(0, 8_700_000_000), quant_file_bytes = _QUANT_FILE_BYTES
+            _breakdown(0, 8_700_000_000), quant_file_bytes=_QUANT_FILE_BYTES
         )
         bar = project_kv_cache_estimate(est)
         assert bar["gpu_bytes"] == 0, (
@@ -143,8 +143,8 @@ class TestTheContractIsPlatformIndependent:
 @pytest.mark.parametrize("platform", PLATFORMS)
 class TestTheAbsentPlannerIsTheSameEverywhere:
     def test_a_planner_that_never_ran_is_null_not_zero(self, platform, monkeypatch):
-        monkeypatch.setattr(sys, "platform", platform, raising = False)
-        est = build_memory_estimate(EMPTY_BREAKDOWN, quant_file_bytes = _QUANT_FILE_BYTES)
+        monkeypatch.setattr(sys, "platform", platform, raising=False)
+        est = build_memory_estimate(EMPTY_BREAKDOWN, quant_file_bytes=_QUANT_FILE_BYTES)
         bar = project_kv_cache_estimate(est)
         assert bar["gpu_bytes"] is None, (
             f"{platform}: an absent planner reported {bar['gpu_bytes']!r}. 0 would mean "
@@ -163,10 +163,10 @@ class TestOldClientsAreUnaffected:
         # The fields #7880's frontend reads off /kv-cache-estimate, by name, as a
         # stand-in for any third-party client pinned to that shape.
         est = build_memory_estimate(
-            _breakdown(8_100_000_000, 8_700_000_000), quant_file_bytes = _QUANT_FILE_BYTES
+            _breakdown(8_100_000_000, 8_700_000_000), quant_file_bytes=_QUANT_FILE_BYTES
         )
         bar = project_kv_cache_estimate(
-            est, kv_bytes = 3_000_000_000, spec_bytes = None, projector_bytes = None
+            est, kv_bytes=3_000_000_000, spec_bytes=None, projector_bytes=None
         )
         for name in (
             "kv_bytes",
@@ -192,6 +192,7 @@ class TestOldClientsAreUnaffected:
 
     def test_the_canonical_model_never_grows_the_ambiguous_name(self):
         from models.inference import MemoryEstimate
+
         assert "weights_bytes" not in MemoryEstimate.model_fields, (
             "MemoryEstimate has grown a weights_bytes field. That name means two "
             "different things on the two legacy routes and belongs on neither."

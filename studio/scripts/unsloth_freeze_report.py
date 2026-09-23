@@ -200,7 +200,7 @@ def find_desktop_app() -> list[str] | None:
         if c and Path(c).is_file()
     ]
     hits = [q for g in globs for q in sorted(HOME.glob(g)) if q.is_file()]
-    found += [str(q) for q in sorted(hits, key = lambda q: q.stat().st_mtime, reverse = True)]
+    found += [str(q) for q in sorted(hits, key=lambda q: q.stat().st_mtime, reverse=True)]
     if not found:
         return None
     # An AppImage arrives without the execute bit, so prefer a startable candidate but still return one, or Popen raises
@@ -212,15 +212,15 @@ def is_executable(path) -> bool:
     return os.access(str(path), os.X_OK)
 
 
-def sh(args, timeout = 20):
+def sh(args, timeout=20):
     try:
         r = subprocess.run(
             args,
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
         return (r.stdout or r.stderr).strip()
     except (OSError, subprocess.SubprocessError):
@@ -241,7 +241,7 @@ def host_facts() -> dict:
         if re.search(r"VGA|3D controller|Display controller", l)
     ]
     return {
-        "when": datetime.now().astimezone().isoformat(timespec = "seconds"),
+        "when": datetime.now().astimezone().isoformat(timespec="seconds"),
         "os": sh(["sh", "-c", ". /etc/os-release 2>/dev/null && echo $PRETTY_NAME"]),
         "kernel": platform.release(),
         "session_type": os.environ.get("XDG_SESSION_TYPE", "(unset)"),
@@ -257,7 +257,7 @@ def host_facts() -> dict:
             ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"]
         ),
         "nvidia_module": (
-            Path("/proc/driver/nvidia/version").read_text(encoding = "utf-8").strip()
+            Path("/proc/driver/nvidia/version").read_text(encoding="utf-8").strip()
             if Path("/proc/driver/nvidia/version").exists()
             else "(absent)"
         ),
@@ -324,12 +324,12 @@ def stop_leftover_backend():
     for pid in studio_backend_pids():
         try:
             os.kill(pid, signal.SIGTERM)
-            print(f"    stopped the previous run's backend (pid {pid})", flush = True)
+            print(f"    stopped the previous run's backend (pid {pid})", flush=True)
         except OSError:
             pass
 
 
-def wait_for_leftover_backend_to_stop(timeout = 30):
+def wait_for_leftover_backend_to_stop(timeout=30):
     """Wait for OUR backend to go, but say so, and give up early.
 
     This used to wait 120s per candidate in silence, and on any listener at all. A port held
@@ -339,7 +339,7 @@ def wait_for_leftover_backend_to_stop(timeout = 30):
     """
     if not studio_backend_pids():
         return True
-    print(f"    waiting up to {timeout}s for the previous backend to exit", flush = True)
+    print(f"    waiting up to {timeout}s for the previous backend to exit", flush=True)
     for _ in range(timeout):
         if not studio_backend_pids():
             return True
@@ -347,7 +347,7 @@ def wait_for_leftover_backend_to_stop(timeout = 30):
     print(
         "    an Unsloth backend is still holding an Unsloth port and did not stop. Close "
         "whatever is still running, or this candidate will have nothing to measure.",
-        flush = True,
+        flush=True,
     )
     return False
 
@@ -608,32 +608,32 @@ def classify(
 
 
 def run_candidate(label, extra, why, cmd) -> dict:
-    print(f"\n=== {label} ===", flush = True)
-    print(f"    ({why})", flush = True)
+    print(f"\n=== {label} ===", flush=True)
+    print(f"    ({why})", flush=True)
     stop_leftover_backend()
     if not wait_for_leftover_backend_to_stop():
         print(
             "    the previous run has not released its port; this candidate will attach "
             "to it and is likely to report NO SIGNAL",
-            flush = True,
+            flush=True,
         )
 
     env = candidate_env(dict(os.environ), extra)
     cleared = sorted(k for k in CLEARED_VARS if k in os.environ and k not in extra)
     if cleared:
-        print(f"    unset for this candidate: {', '.join(cleared)}", flush = True)
+        print(f"    unset for this candidate: {', '.join(cleared)}", flush=True)
     before = backend_offsets()
     # To a FILE, never subprocess.PIPE: nothing reads the pipe while the app runs, so once it filled
     # the 64 KiB buffer it would block on its own stdout and this script would hang the app it is
     # measuring.
-    app_log = Path(tempfile.mkstemp(suffix = ".log", prefix = "unsloth-freeze-")[1])
+    app_log = Path(tempfile.mkstemp(suffix=".log", prefix="unsloth-freeze-")[1])
     try:
         proc = subprocess.Popen(
             cmd,
-            env = env,
-            stdout = app_log.open("w", encoding = "utf-8", errors = "replace"),
-            stderr = subprocess.STDOUT,
-            start_new_session = True,
+            env=env,
+            stdout=app_log.open("w", encoding="utf-8", errors="replace"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
     except OSError as exc:
         # The execute bit says the kernel may try, not that the try succeeds: a wrong-arch build, a
@@ -641,7 +641,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
         # raises OSError, which the candidate loop does not catch, ending the whole diagnostic with
         # nothing measured. Record it as this candidate's result so the rest still run.
         why_failed = scrub(str(exc.strerror or exc))
-        print(f"    CANNOT RUN: {why_failed}", flush = True)
+        print(f"    CANNOT RUN: {why_failed}", flush=True)
         return {
             "candidate": label,
             "why": why,
@@ -671,8 +671,8 @@ def run_candidate(label, extra, why, cmd) -> dict:
     # the one thing that can tell a sign-out apart from a freeze. See SESSION.
     session_seen, session_at = 0, None
 
-    print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
-    print("    Use the window normally while this runs.", flush = True)
+    print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush=True)
+    print("    Use the window normally while this runs.", flush=True)
     try:
         while time.monotonic() - started < WARMUP + WINDOW:
             time.sleep(POLL_EVERY)
@@ -682,7 +682,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
                 print(
                     f"    the app EXITED (code {exited}) after "
                     f"{time.monotonic() - started:.0f}s",
-                    flush = True,
+                    flush=True,
                 )
                 break
             if not at_exec:
@@ -697,12 +697,12 @@ def run_candidate(label, extra, why, cmd) -> dict:
             if len(samples) % 2 == 0:
                 print(
                     f"    t={samples[-1][0]:4}s  interface={n_mon:3}  watchdog={n_live:3}",
-                    flush = True,
+                    flush=True,
                 )
     except KeyboardInterrupt:
         interrupted = True
         ran_for = round(time.monotonic() - started)
-        print("    interrupted; this candidate is recorded as skipped", flush = True)
+        print("    interrupted; this candidate is recorded as skipped", flush=True)
     finally:
         alive = proc.poll() is None
         if not alive and exited is None:
@@ -710,7 +710,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             exited = proc.returncode
             if not ran_for:
                 ran_for = round(time.monotonic() - started)
-            print(f"    the app EXITED (code {exited}) during cleanup", flush = True)
+            print(f"    the app EXITED (code {exited}) during cleanup", flush=True)
         if alive:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -719,12 +719,12 @@ def run_candidate(label, extra, why, cmd) -> dict:
             except (OSError, ProcessLookupError):
                 pass
         try:
-            proc.wait(timeout = 30)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             pass
 
     text = backend_tail(before)
-    shell_out = app_log.read_text(encoding = "utf-8", errors = "replace")
+    shell_out = app_log.read_text(encoding="utf-8", errors="replace")
     n_mon, n_live = len(INTERFACE.findall(text)), len(LIVENESS.findall(text))
 
     pre_lines = [l for l in (text + shell_out).splitlines() if "desktop_preflight completed" in l]
@@ -735,19 +735,19 @@ def run_candidate(label, extra, why, cmd) -> dict:
         ran_for = samples[-1][0] if samples else 0
 
     verdict = classify(
-        samples = samples,
-        n_mon = n_mon,
-        n_live = n_live,
-        exited = exited,
-        ran_for = ran_for,
-        interrupted = interrupted,
-        preflight = preflight,
-        shell_started = bool(SHELL_STARTED.search(shell_out)) or bool(applied),
-        has_display = _has_display(env),
-        session_at = session_at,
+        samples=samples,
+        n_mon=n_mon,
+        n_live=n_live,
+        exited=exited,
+        ran_for=ran_for,
+        interrupted=interrupted,
+        preflight=preflight,
+        shell_started=bool(SHELL_STARTED.search(shell_out)) or bool(applied),
+        has_display=_has_display(env),
+        session_at=session_at,
     )
 
-    print(f"    VERDICT: {verdict}", flush = True)
+    print(f"    VERDICT: {verdict}", flush=True)
     return {
         "candidate": label,
         "why": why,
@@ -880,11 +880,11 @@ def main() -> int:
             try:
                 results.append(run_candidate(label, extra, why, cmd))
             except KeyboardInterrupt:
-                print("\n  skipped by user", flush = True)
+                print("\n  skipped by user", flush=True)
     finally:
         # Closing the app does not stop the backend it started, so without this the reporter's next launch attaches to a
         # backend nothing is recording.
-        print("\n  stopping any backend left behind by the last candidate", flush = True)
+        print("\n  stopping any backend left behind by the last candidate", flush=True)
         stop_leftover_backend()
 
     out = Path.cwd() / f"unsloth-freeze-report-{datetime.now():%Y%m%d-%H%M%S}.json"
@@ -897,9 +897,9 @@ def main() -> int:
                 "measurement_env": MEASUREMENT_ENV,
                 "results": results,
             },
-            indent = 2,
+            indent=2,
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     print("\n" + "=" * 60)

@@ -16,9 +16,9 @@ import pytest
 SETUP_PS1 = Path(__file__).resolve().parents[3] / "studio" / "setup.ps1"
 
 
-def _probe_source(names = "('torchvision', 'torchaudio')"):
+def _probe_source(names="('torchvision', 'torchaudio')"):
     """The -Code string of the companion probe, as Python."""
-    for line in SETUP_PS1.read_text(encoding = "utf-8").splitlines():
+    for line in SETUP_PS1.read_text(encoding="utf-8").splitlines():
         if line.lstrip().startswith("$_companionProbe = Invoke-BoundedPythonProbe"):
             code = line.split("-Code ", 1)[1].strip()
             assert code.startswith('"') and code.endswith('"'), code[:40]
@@ -31,30 +31,30 @@ def _install(
     name,
     version,
     *,
-    payload = True,
-    record = True,
-    resize = False,
+    payload=True,
+    record=True,
+    resize=False,
 ):
     """A dist-info and package good enough for importlib.metadata and find_spec."""
     pkg = root / name
     if payload:
         pkg.mkdir()
-        (pkg / "__init__.py").write_text("x = 1\n", encoding = "utf-8")
+        (pkg / "__init__.py").write_text("x = 1\n", encoding="utf-8")
     dist = root / f"{name}-{version}.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8"
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8"
     )
     if record:
         rows = []
         if payload:
             size = (pkg / "__init__.py").stat().st_size + (1 if resize else 0)
             rows.append([f"{name}/__init__.py", "sha256=x", str(size)])
-        with (dist / "RECORD").open("w", newline = "", encoding = "utf-8") as handle:
+        with (dist / "RECORD").open("w", newline="", encoding="utf-8") as handle:
             csv.writer(handle).writerows(rows)
 
 
-def _run(root, names = "('torchvision', 'torchaudio')"):
+def _run(root, names="('torchvision', 'torchaudio')"):
     # This interpreter has a real torch stack; only the fabricated one may answer.
     prelude = (
         "import sys\n"
@@ -63,10 +63,10 @@ def _run(root, names = "('torchvision', 'torchaudio')"):
     )
     proc = subprocess.run(
         [sys.executable, "-I", "-c", prelude + _probe_source(names)],
-        cwd = str(root),
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
@@ -108,13 +108,13 @@ class TestCompanionProbe:
 
     def test_missing_payload_forces_the_trio(self, venv):
         _install(venv, "torch", "2.8.0+rocm6.4.2")
-        _install(venv, "torchvision", "0.23.0+rocm6.4.2", payload = False)
+        _install(venv, "torchvision", "0.23.0+rocm6.4.2", payload=False)
         _install(venv, "torchaudio", "2.8.0+rocm6.4.2")
         assert _run(venv) == "torchvision==0.23.0+rocm6.4.2 (payload missing)"
 
     def test_resized_record_row_forces_the_trio(self, venv):
         _install(venv, "torch", "2.8.0+rocm6.4.2")
-        _install(venv, "torchvision", "0.23.0+rocm6.4.2", resize = True)
+        _install(venv, "torchvision", "0.23.0+rocm6.4.2", resize=True)
         _install(venv, "torchaudio", "2.8.0+rocm6.4.2")
         assert _run(venv) == "torchvision==0.23.0+rocm6.4.2 (payload damaged)"
 

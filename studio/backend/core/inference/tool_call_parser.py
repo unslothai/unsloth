@@ -456,7 +456,7 @@ def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> 
 # Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span
 # early and leave the rest of a malformed call on screen.
 def _balanced_bracket_end(src: str, start: int) -> "int | None":
-    return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
+    return _tool_healing._balanced_bracket_end(src, start, braces_count=False)
 
 
 def _skip_mistral_call_id(text: str, pos: int) -> int:
@@ -1176,7 +1176,7 @@ def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
     if "[ARGS]" in text:
         candidates += [("rehearsal", m) for m in _tool_healing._REHEARSAL_RE.finditer(text)]
     if candidates:
-        candidates.sort(key = lambda c: c[1].start())
+        candidates.sort(key=lambda c: c[1].start())
         # A candidate inside a trusted call's markup is that call's ARGUMENT text. Merged and
         # bisected because spans and candidates both grow with the input, so a scan is quadratic.
         # Both scans sweep the whole buffer and the incremental strip calls this per snapshot,
@@ -1499,15 +1499,15 @@ def strip_segment(
     seg = _strip_mistral_closed_calls(segment)
     # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form, through the shared balanced scan. Name-gated: an
     # inactive ``foo[ARGS]{..}`` is prose and is kept.
-    seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+    seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names=enabled_tool_names)
     if seg_final:
         # Markerless Gemma ``call:NAME{...}``, name-gated like the parse gate.
         seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
     # Scan, not regex, so a literal ``<function=...>`` inside a value stays data.
-    seg = _strip_function_xml_calls(seg, final = seg_final)
+    seg = _strip_function_xml_calls(seg, final=seg_final)
     # GLM 4.x: scan to the call's real </tool_call>, so a literal one inside a value is data. Qwen <tool_call>{json}
     # is left to the regex arms.
-    seg = _strip_glm_calls(seg, final = seg_final)
+    seg = _strip_glm_calls(seg, final=seg_final)
     pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
     required_pairs = (
         ("</tool_call>", "<tool_call>"),
@@ -1548,7 +1548,7 @@ def strip_segment(
         seg = _tool_healing.apply_tool_strip_patterns(
             seg,
             [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
-            enabled_tool_names = enabled_tool_names,
+            enabled_tool_names=enabled_tool_names,
         )
     return seg
 
@@ -1572,8 +1572,8 @@ def strip_tool_markup(
     def _strip_segment(segment: str, is_last: bool) -> str:
         return strip_segment(
             segment,
-            seg_final = final and is_last,
-            enabled_tool_names = enabled_tool_names,
+            seg_final=final and is_last,
+            enabled_tool_names=enabled_tool_names,
         )
 
     # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is not executed, so it
@@ -1637,7 +1637,7 @@ def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int
 def _first_sentinel(
     text: str,
     start: int,
-    enabled_tool_names = None,
+    enabled_tool_names=None,
 ) -> int:
     """Lowest index >= ``start`` at which any strip sentinel occurs, or -1. ``call`` is the one
     sentinel that is also an ordinary English word, and treating every "I will call the tool" as
@@ -1882,8 +1882,8 @@ class StreamingMarkupStripper:
             # Streaming has no separate ``final`` pass
             return strip_segment(
                 segment,
-                seg_final = is_last and self._seg_final,
-                enabled_tool_names = self._enabled_tool_names,
+                seg_final=is_last and self._seg_final,
+                enabled_tool_names=self._enabled_tool_names,
             )
 
         # Same masking ``strip_tool_markup`` applies: a blocked call's body is quoted prose.
@@ -2164,7 +2164,7 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     # Only plain prose precedes the trigger: a visible preface must not hand the turn to a later XML literal
     # (preamble-tolerant, like the wrapperless-Gemma guard). Prose that merely mentions the marker has no parseable
     # region and keeps the normal order.
-    return _mistral_region_end(content, trig, open_envelope_runs_to_eof = True) is not None
+    return _mistral_region_end(content, trig, open_envelope_runs_to_eof=True) is not None
 
 
 def _parse_bare_rehearsals(
@@ -2180,7 +2180,7 @@ def _parse_bare_rehearsals(
     out: list[dict] = []
     think_spans = _tool_healing._think_spans_outside_tool_markup(content)
     for start, end, kind, m in _tool_healing._iter_bracket_spans(
-        content, enabled_tool_names = enabled_tool_names
+        content, enabled_tool_names=enabled_tool_names
     ):
         if kind != "rehearsal":
             continue
@@ -2314,7 +2314,7 @@ def _inside_leading_markerless_body(
     while True:
         gem = _GEMMA_BARE_TC_RE.search(content, cursor)
         reh = _tool_healing._REHEARSAL_RE.search(content, cursor)
-        m = min((x for x in (gem, reh) if x is not None), key = lambda x: x.start(), default = None)
+        m = min((x for x in (gem, reh) if x is not None), key=lambda x: x.start(), default=None)
         if m is None or m.start() > signal:
             return False
         if not _markerless_promotable(m.group(1), enabled_tool_names):
@@ -2376,14 +2376,14 @@ def parse_tool_calls_from_text(
 
     # Equal-length mask, so the spans this returns still index the caller's text: a blocked
     # call's arguments are quoted prose, and a wrapped call nested there was promoted.
-    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
+    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think=True)
 
     # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
     # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard,
     # whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
     if _xml_signal_inside_leading_bare_json(content):
         calls = _parse_llama3_bare_json(
-            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+            content, id_offset=id_offset, enabled_tool_names=enabled_tool_names
         )
         if calls:
             return calls
@@ -2394,9 +2394,9 @@ def parse_tool_calls_from_text(
         end = (_balanced_brace_end if content[i] == "{" else _balanced_bracket_end)(content, i)
         return parse_tool_calls_from_text(
             content[end + 1 :],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
+            id_offset=id_offset,
+            allow_incomplete=allow_incomplete,
+            enabled_tool_names=enabled_tool_names,
         )
 
     # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to the
@@ -2404,9 +2404,9 @@ def parse_tool_calls_from_text(
     if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
         calls = _parse_gemma_tool_calls(
             content,
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
+            id_offset=id_offset,
+            allow_incomplete=allow_incomplete,
+            enabled_tool_names=enabled_tool_names,
         )
         if calls:
             return calls
@@ -2417,16 +2417,16 @@ def parse_tool_calls_from_text(
     if _prose_end is not None:
         return parse_tool_calls_from_text(
             content[_prose_end:],
-            id_offset = id_offset,
-            allow_incomplete = allow_incomplete,
-            enabled_tool_names = enabled_tool_names,
+            id_offset=id_offset,
+            allow_incomplete=allow_incomplete,
+            enabled_tool_names=enabled_tool_names,
         )
 
     # A [TOOL_CALLS] call that is the first tool emission owns the turn: XML quoted in its arguments or trailing prose
     # is not promoted over it, nor does a prose preface forfeit it.
     if _xml_signal_inside_leading_mistral(content):
         calls = _parse_mistral_tool_calls(
-            content, id_offset = id_offset, allow_incomplete = allow_incomplete
+            content, id_offset=id_offset, allow_incomplete=allow_incomplete
         )
         if calls:
             # A bare rehearsal ``name[ARGS]{..}`` after the Mistral call is a peer tool call, not foreign XML the
@@ -2435,8 +2435,8 @@ def parse_tool_calls_from_text(
             calls.extend(
                 _parse_bare_rehearsals(
                     content,
-                    id_offset = id_offset + len(calls),
-                    enabled_tool_names = enabled_tool_names,
+                    id_offset=id_offset + len(calls),
+                    enabled_tool_names=enabled_tool_names,
                 )
             )
             return calls
@@ -2455,9 +2455,9 @@ def parse_tool_calls_from_text(
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
         ]
-        pre_pass.sort(key = lambda pair: pair[0])
+        pre_pass.sort(key=lambda pair: pair[0])
         for _pos, parser in pre_pass:
-            calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+            calls = parser(content, id_offset=id_offset, allow_incomplete=allow_incomplete)
             if calls:
                 return calls
 
@@ -2479,7 +2479,7 @@ def parse_tool_calls_from_text(
                 first_other = p
         if first_other is None or attr.start() < first_other:
             calls = _parse_function_xml(
-                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+                content, id_offset=id_offset, allow_incomplete=allow_incomplete
             )
             if calls:
                 return calls
@@ -2499,7 +2499,7 @@ def parse_tool_calls_from_text(
             first_other = attr.start()
         if first_other is None or py_tag < first_other:
             calls = _parse_llama3_python_tag(
-                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+                content, id_offset=id_offset, allow_incomplete=allow_incomplete
             )
             if calls:
                 return calls
@@ -2512,7 +2512,7 @@ def parse_tool_calls_from_text(
         content, _reh_signal, enabled_tool_names
     ):
         calls = _parse_bare_rehearsals(
-            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+            content, id_offset=id_offset, enabled_tool_names=enabled_tool_names
         )
         if calls:
             return calls
@@ -2523,9 +2523,9 @@ def parse_tool_calls_from_text(
     # so an inactive ``foo[ARGS]{..}`` stays prose.
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
-        id_offset = id_offset,
-        allow_incomplete = allow_incomplete,
-        enabled_tool_names = enabled_tool_names,
+        id_offset=id_offset,
+        allow_incomplete=allow_incomplete,
+        enabled_tool_names=enabled_tool_names,
     )
     if calls:
         return calls
@@ -2548,14 +2548,14 @@ def parse_tool_calls_from_text(
         _parse_llama3_python_tag,
         _parse_mistral_tool_calls,
     ):
-        calls = parser(fallback_content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+        calls = parser(fallback_content, id_offset=id_offset, allow_incomplete=allow_incomplete)
         if calls:
             return calls
 
     # Llama-3.2 bare ``{"name":..., "parameters":...}`` (strict shape). Only a LEADING call object matches and owns
     # the turn, so an enabled ``call:NAME{...}`` in its arguments stays data (Gemma never starts ``{``).
     calls = _parse_llama3_bare_json(
-        fallback_content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+        fallback_content, id_offset=id_offset, enabled_tool_names=enabled_tool_names
     )
     if calls:
         return calls
@@ -2563,9 +2563,9 @@ def parse_tool_calls_from_text(
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies
     return _parse_gemma_tool_calls(
         fallback_content,
-        id_offset = id_offset,
-        allow_incomplete = allow_incomplete,
-        enabled_tool_names = enabled_tool_names,
+        id_offset=id_offset,
+        allow_incomplete=allow_incomplete,
+        enabled_tool_names=enabled_tool_names,
     )
 
 
@@ -2624,9 +2624,9 @@ def _inside_open_parameter(text: str, pos: int) -> bool:
     return _tool_healing._inside_open_parameter(
         text,
         pos,
-        param_start_re = _TC_PARAM_START_RE,
-        param_closers = ("</parameter>", "</param>"),
-        func_closers = ("</function>", "</tool_call>"),
+        param_start_re=_TC_PARAM_START_RE,
+        param_closers=("</parameter>", "</param>"),
+        func_closers=("</function>", "</tool_call>"),
     )
 
 
@@ -3028,7 +3028,7 @@ def _parse_mistral_tool_calls(
         return out
 
     if content[k] == "[":
-        return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
+        return _parse_mistral_array(content, k, id_offset, allow_incomplete=allow_incomplete)
 
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through without a ``name`` so v11+ still runs.
@@ -4002,7 +4002,7 @@ def _gemma_parse_mapping(text: str, start: int):
         if text[i] == "}":
             out[key] = None
             return out, i + 1, True
-        v, i, _closed = _gemma_parse_value(text, i, in_mapping = True)
+        v, i, _closed = _gemma_parse_value(text, i, in_mapping=True)
         out[key] = v
     return out, i, False
 
@@ -4211,7 +4211,7 @@ def _parse_glm_tool_calls(
             vs = vstart + len(_GLM_ARG_VAL_OPEN)
             # A first-match find on </arg_value> would truncate values containing literal close tags and execute
             # corrupted arguments
-            ve = _glm_value_close(content, vs, strict = not allow_incomplete)
+            ve = _glm_value_close(content, vs, strict=not allow_incomplete)
             key = content[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
             if ve < 0:
                 # Unclosed <arg_value>: strict rejects the whole call; Auto-Heal keeps the partial value (a truncated
@@ -4296,14 +4296,14 @@ def _parse_kimi_tool_calls(
             if allow_incomplete:
                 out.extend(
                     _parse_kimi_section_body(
-                        body, id_offset = id_offset + len(out), allow_incomplete = True
+                        body, id_offset=id_offset + len(out), allow_incomplete=True
                     )
                 )
             return out
         outer_pos = section_end + len(_KIMI_SECTION_END)
         out.extend(
             _parse_kimi_section_body(
-                body, id_offset = id_offset + len(out), allow_incomplete = allow_incomplete
+                body, id_offset=id_offset + len(out), allow_incomplete=allow_incomplete
             )
         )
 
@@ -4312,7 +4312,7 @@ def _parse_kimi_tool_calls(
     if not out and _KIMI_CALL_BEGIN in content:
         out.extend(
             _parse_kimi_section_body(
-                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+                content, id_offset=id_offset, allow_incomplete=allow_incomplete
             )
         )
     return out

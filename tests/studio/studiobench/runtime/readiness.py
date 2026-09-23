@@ -255,8 +255,8 @@ class Readiness:
     mode: str
     expected_messages: int
     waited_ms: float
-    conditions: dict = field(default_factory = dict)
-    probe: dict = field(default_factory = dict)
+    conditions: dict = field(default_factory=dict)
+    probe: dict = field(default_factory=dict)
     samples: int = 0
     reason: Optional[str] = None
 
@@ -418,14 +418,14 @@ def wait_for_thread_ready(
     if mode not in MODES:
         raise ValueError(f"unknown readiness mode {mode!r}; known modes are {list(MODES)}")
     if expected_messages <= 0:
-        page.wait_for_selector('textarea[aria-label="Message input"]', timeout = 60_000)
+        page.wait_for_selector('textarea[aria-label="Message input"]', timeout=60_000)
         return Readiness(
-            ready = True,
-            mode = mode,
-            expected_messages = expected_messages,
-            waited_ms = 0.0,
-            conditions = {"empty_thread": True},
-            reason = "the thread has no seeded messages, so only the composer is required",
+            ready=True,
+            mode=mode,
+            expected_messages=expected_messages,
+            waited_ms=0.0,
+            conditions={"empty_thread": True},
+            reason="the thread has no seeded messages, so only the composer is required",
         )
 
     started = time.monotonic()
@@ -449,13 +449,13 @@ def wait_for_thread_ready(
                 f"{probe.get('elements'):,} elements, settled after {waited / 1000:.1f}s"
             )
             return Readiness(
-                ready = True,
-                mode = mode,
-                expected_messages = expected_messages,
-                waited_ms = waited,
-                conditions = conditions,
-                probe = probe,
-                samples = samples,
+                ready=True,
+                mode=mode,
+                expected_messages=expected_messages,
+                waited_ms=waited,
+                conditions=conditions,
+                probe=probe,
+                samples=samples,
             )
         key = (probe.get("mounted"), probe.get("setsize"), tuple(sorted(conditions.items())))
         if key != last_log:
@@ -470,14 +470,14 @@ def wait_for_thread_ready(
 
     waited = (time.monotonic() - started) * 1000
     detail = Readiness(
-        ready = False,
-        mode = mode,
-        expected_messages = expected_messages,
-        waited_ms = waited,
-        conditions = conditions,
-        probe = probe,
-        samples = samples,
-        reason = _describe(conditions, probe, expected_messages, mode),
+        ready=False,
+        mode=mode,
+        expected_messages=expected_messages,
+        waited_ms=waited,
+        conditions=conditions,
+        probe=probe,
+        samples=samples,
+        reason=_describe(conditions, probe, expected_messages, mode),
     )
     raise ThreadNotReady(detail.reason or "the thread was not ready", detail.as_dict())
 
@@ -792,7 +792,7 @@ def probe_thread_completeness(
             break
         page.wait_for_timeout(250)
     at_top = page.evaluate(COLLECT_ORDINALS_JS) or []
-    coverage = ordinal_coverage(top, expected_messages, extra_seen = at_top)
+    coverage = ordinal_coverage(top, expected_messages, extra_seen=at_top)
     out.update(
         {
             "head_reached": found,

@@ -28,12 +28,12 @@ BOB = AccountContext("b" * 32, "bob")
 PUBLIC = {"org/public-model", "org/other-public", "org/public-video"}
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(access, "_resident_accounts", {})
-    monkeypatch.setattr(access, "_resident_components", {}, raising = False)
+    monkeypatch.setattr(access, "_resident_components", {}, raising=False)
     monkeypatch.setattr(access, "_generation_accounts", {})
     monkeypatch.setattr(access, "repo_is_public", lambda repo_id, *a, **k: repo_id in PUBLIC)
     monkeypatch.setattr(gpu_arbiter, "_owner", "diffusion")
@@ -55,8 +55,8 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    app.include_router(inference.studio_router, prefix = "/api/inference")
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(inference.studio_router, prefix="/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -74,17 +74,17 @@ def _install_backend(monkeypatch, status, generate):
     from core.inference import diffusion_engine_router
 
     backend = SimpleNamespace(
-        is_loaded = True,
-        status = status,
-        generate = generate,
-        generate_progress = lambda: {
+        is_loaded=True,
+        status=status,
+        generate=generate,
+        generate_progress=lambda: {
             "active": False,
             "step": 0,
             "total_steps": 0,
             "fraction": 0.0,
             "eta_seconds": None,
         },
-        cancel_generate = lambda **kwargs: False,
+        cancel_generate=lambda **kwargs: False,
     )
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
     return backend
@@ -105,14 +105,14 @@ def test_a_private_base_repo_of_a_shared_resident_is_reauthorized(monkeypatch):
     )
     with client_for(ALICE) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 404
         )
     assert used == []
     run_as(BOB, access.record_model_grant, "bob/private-base")
     with client_for(BOB) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 200
         )
     assert used == ["ran"]
@@ -137,14 +137,14 @@ def test_baked_private_adapters_of_a_shared_resident_are_reauthorized(monkeypatc
     )
     with client_for(ALICE) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 404
         )
     assert used == []
     run_as(BOB, access.note_resident_components, "diffusion", "org/other-public")
     with client_for(ALICE) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 200
         )
 
@@ -160,16 +160,16 @@ def test_video_generation_reauthorizes_a_private_base_repo(monkeypatch):
         "base_repo": "bob/private-base",
     }
     backend = SimpleNamespace(
-        status = _status,
-        generation_snapshot = lambda: (_status(), object()),
-        begin_generate = lambda **kwargs: started.append("ran"),
+        status=_status,
+        generation_snapshot=lambda: (_status(), object()),
+        begin_generate=lambda **kwargs: started.append("ran"),
     )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(gpu_arbiter, "_owner", "video")
     with client_for(ALICE) as client:
         response = client.post(
             "/api/inference/video/generate",
-            json = {"prompt": "a sloth", "width": 320, "height": 320, "num_frames": 17},
+            json={"prompt": "a sloth", "width": 320, "height": 320, "num_frames": 17},
         )
     assert response.status_code == 404
     assert started == []
@@ -180,8 +180,8 @@ def test_a_video_resident_replaced_after_authorization_is_not_generated_on(monke
     from core.inference import video as video_module
     from core.inference.video_families import VIDEO_MODEL_CHANGED_MSG
 
-    resident = SimpleNamespace(repo_id = "org/public-video", family = "wan")
-    replacement = SimpleNamespace(repo_id = "bob/private-video", family = "wan")
+    resident = SimpleNamespace(repo_id="org/public-video", family="wan")
+    replacement = SimpleNamespace(repo_id="bob/private-video", family="wan")
     box = {"state": resident, "reads": 0}
     reserved = []
 
@@ -215,17 +215,17 @@ def test_a_video_resident_replaced_after_authorization_is_not_generated_on(monke
         return {"width": 320, "height": 320, "num_frames": 17, "fps": 16}
 
     backend = SimpleNamespace(
-        status = lambda: _status_of(box["state"]),
-        generation_snapshot = generation_snapshot,
-        begin_generate = begin_generate,
-        generate_progress = lambda: {"active": False},
+        status=lambda: _status_of(box["state"]),
+        generation_snapshot=generation_snapshot,
+        begin_generate=begin_generate,
+        generate_progress=lambda: {"active": False},
     )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(gpu_arbiter, "_owner", "video")
     with client_for(ALICE) as client:
         response = client.post(
             "/api/inference/video/generate",
-            json = {"prompt": "a sloth", "width": 320, "height": 320, "num_frames": 17},
+            json={"prompt": "a sloth", "width": 320, "height": 320, "num_frames": 17},
         )
     assert response.status_code == 404
     assert reserved == []
@@ -267,7 +267,7 @@ def test_a_resident_replaced_after_authorization_is_not_generated_on(monkeypatch
     _install_backend(monkeypatch, status, generate)
     with client_for(ALICE) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 404
         )
     assert used == []
@@ -308,7 +308,7 @@ def test_a_public_replacement_is_regenerated_after_reauthorization(monkeypatch):
     _install_backend(monkeypatch, status, generate)
     with client_for(ALICE) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 200
         )
     assert used == ["org/other-public"]
@@ -337,10 +337,10 @@ def test_the_gallery_persist_window_still_belongs_to_the_generating_account(monk
     def run():
         with client_for(ALICE) as client:
             result["response"] = client.post(
-                "/api/inference/images/generate", json = {"prompt": "a sloth"}
+                "/api/inference/images/generate", json={"prompt": "a sloth"}
             )
 
-    thread = threading.Thread(target = run)
+    thread = threading.Thread(target=run)
     thread.start()
     try:
         assert persisting.wait(20)
@@ -377,7 +377,7 @@ def test_every_generation_access_check_names_its_modality():
     routes = Path(__file__).resolve().parents[1] / "routes"
     pattern = re.compile(r"require_media_generation_access,\s*[^,\n]+,\s*\"(video|diffusion)\"")
     for path in routes.glob("*.py"):
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         calls = text.count("require_media_generation_access,")
         assert len(pattern.findall(text)) == calls, path.name
 
@@ -391,8 +391,8 @@ def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_res
     fallback never fires, and the component record was replaced with Bob's adapter set: without the
     rollback Bob clears his own list and generates on Alice's private build."""
     monkeypatch.setattr(access, "_prior_resident_accounts", {})
-    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising = False)
-    monkeypatch.setattr(access, "_uncommitted_components", {}, raising = False)
+    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising=False)
+    monkeypatch.setattr(access, "_uncommitted_components", {}, raising=False)
     ran = []
     status = {"loaded": True, "repo_id": "org/public-model", "family": "z-image", "base_repo": None}
     _install_backend(
@@ -434,7 +434,7 @@ def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_res
     ]
     with client_for(BOB) as client:
         assert (
-            client.post("/api/inference/images/generate", json = {"prompt": "a sloth"}).status_code
+            client.post("/api/inference/images/generate", json={"prompt": "a sloth"}).status_code
             == 404
         )
     assert ran == []
@@ -444,8 +444,8 @@ def test_a_failed_load_does_not_authorize_the_requester_against_the_previous_res
 def test_restoring_residency_records_is_a_noop_once_another_load_took_them(monkeypatch):
     """Mirrors restore_owner_account: a rollback may never displace a newer account's claim."""
     monkeypatch.setattr(access, "_prior_resident_accounts", {})
-    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising = False)
-    monkeypatch.setattr(access, "_uncommitted_components", {}, raising = False)
+    monkeypatch.setattr(access, "_uncommitted_resident", {}, raising=False)
+    monkeypatch.setattr(access, "_uncommitted_components", {}, raising=False)
     run_as(ALICE, access.note_resident_account, "diffusion", "a/model")
     run_as(ALICE, access.note_resident_components, "diffusion", "a/model", "alice/private-lora")
     run_as(BOB, access.note_resident_account, "diffusion", "b/model")

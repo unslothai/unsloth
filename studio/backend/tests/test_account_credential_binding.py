@@ -26,11 +26,11 @@ def auth_db(tmp_path, monkeypatch):
 
 
 def _managed(username: str) -> dict:
-    return storage.issue_account_setup_code(username = username)["account"]
+    return storage.issue_account_setup_code(username=username)["account"]
 
 
 def _credentials(token):
-    return authentication.HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    return authentication.HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 def _authenticate(token: str):
@@ -40,7 +40,7 @@ def _authenticate(token: str):
 
     async def go():
         result = await authentication._get_current_credential(
-            _credentials(token), allow_password_change = False
+            _credentials(token), allow_password_change=False
         )
         return result, current_account()
 
@@ -52,7 +52,7 @@ def _authenticate(token: str):
 
 def test_api_key_is_bound_from_the_row_it_was_validated_against(auth_db):
     alice = _managed("alice")
-    raw = storage.create_api_key(alice["username"], name = "cli")[0]
+    raw = storage.create_api_key(alice["username"], name="cli")[0]
     verified = storage.validate_api_key_account(raw)
     assert verified is not None
     record, secret = verified
@@ -63,7 +63,7 @@ def test_api_key_is_bound_from_the_row_it_was_validated_against(auth_db):
 
 def test_api_key_of_a_replaced_username_never_binds_the_replacement(auth_db, monkeypatch):
     old = _managed("alice")
-    raw = storage.create_api_key("alice", name = "cli")[0]
+    raw = storage.create_api_key("alice", name="cli")[0]
     old_record, secret = storage.validate_api_key_account(raw)
     storage.delete_account(old["account_id"], lambda account: None)
     new = _managed("alice")
@@ -84,7 +84,7 @@ def test_api_key_of_a_replaced_username_never_binds_the_replacement(auth_db, mon
 
 def test_api_key_of_a_deactivated_account_does_not_validate(auth_db):
     alice = _managed("alice")
-    raw = storage.create_api_key("alice", name = "cli")[0]
+    raw = storage.create_api_key("alice", name="cli")[0]
     assert storage.validate_api_key_account(raw) is not None
     storage.set_account_active(alice["account_id"], False)
     assert storage.validate_api_key_account(raw) is None
@@ -94,7 +94,7 @@ def test_api_key_of_a_deactivated_account_does_not_validate(auth_db):
 
 
 def test_owner_api_key_binds_the_owner(auth_db):
-    raw = storage.create_api_key("unsloth", name = "cli")[0]
+    raw = storage.create_api_key("unsloth", name="cli")[0]
     (username, _generation), bound = _authenticate(raw)
     assert username == "unsloth"
     assert bound == OWNER
@@ -127,7 +127,7 @@ def test_status_reports_full_access_with_a_deactivated_account(auth_db):
     from routes import auth as auth_routes
 
     app = FastAPI()
-    app.include_router(auth_routes.router, prefix = "/api/auth")
+    app.include_router(auth_routes.router, prefix="/api/auth")
     client = TestClient(app)
     assert client.get("/api/auth/status").json()["full_access"] is True
     alice = _managed("alice")
@@ -157,12 +157,12 @@ def test_the_owner_login_id_needs_no_account_lookup(auth_db, monkeypatch):
 def test_a_token_that_fails_to_verify_binds_nothing(auth_db):
     """Publishing the unverified ``sub`` claim into the request ContextVar before the signature check binds an account the caller never proved."""
     alice = _managed("alice")
-    forged = jwt.encode({"sub": alice["username"]}, secrets.token_urlsafe(48), algorithm = "HS256")
+    forged = jwt.encode({"sub": alice["username"]}, secrets.token_urlsafe(48), algorithm="HS256")
 
     async def go():
         try:
             await authentication._get_current_credential(
-                _credentials(forged), allow_password_change = False
+                _credentials(forged), allow_password_change=False
             )
         except HTTPException as refused:
             return refused.status_code, current_account()

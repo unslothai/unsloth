@@ -48,7 +48,7 @@ LEGACY_STORED = [
 def test_a_stored_flag_denied_after_the_fact_is_dropped_not_kept(stored):
     # The validator itself still refuses: it is the boundary, and it has no idea
     # whether its caller is a request or a stored row.
-    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+    with pytest.raises(ValueError, match="managed by Unsloth Studio"):
         _lsa.validate_extra_args(stored)
 
 
@@ -240,7 +240,7 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
     saved: dict = {}
     stored = {"llama_extra_args": ["--slot-save-path", "/tmp/slots", "--numa", "distribute"]}
     monkeypatch.setattr(
-        settings_route, "get_model_override", lambda _id: dict(stored), raising = False
+        settings_route, "get_model_override", lambda _id: dict(stored), raising=False
     )
     import utils.openai_auto_switch_settings as oas
 
@@ -250,14 +250,14 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
         "set_model_override",
         lambda model_id, **kwargs: saved.update({model_id: kwargs}),
     )
-    monkeypatch.setattr(settings_route, "set_model_override", oas.set_model_override, raising = False)
+    monkeypatch.setattr(settings_route, "set_model_override", oas.set_model_override, raising=False)
     monkeypatch.setattr(
-        settings_route, "resolve_model_override_keys", lambda _id: ["local/x"], raising = False
+        settings_route, "resolve_model_override_keys", lambda _id: ["local/x"], raising=False
     )
-    monkeypatch.setattr(settings_route, "cached_repo_alias_keys", lambda _id: [], raising = False)
+    monkeypatch.setattr(settings_route, "cached_repo_alias_keys", lambda _id: [], raising=False)
 
-    payload = settings_route.ModelOverridePayload(model_id = "local/x", max_seq_length = 4096)
-    response = settings_route.update_openai_auto_switch_override(payload, current_subject = "t")
+    payload = settings_route.ModelOverridePayload(model_id="local/x", max_seq_length=4096)
+    response = settings_route.update_openai_auto_switch_override(payload, current_subject="t")
 
     assert response is not None
     written = saved.get("local/x", {})
@@ -276,7 +276,7 @@ def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
 
     kwargs = model_override_load_kwargs(
         {"llama_extra_args": ["--agent", "--numa", "distribute"], "n_parallel": 4},
-        is_gguf = True,
+        is_gguf=True,
     )
 
     assert kwargs["llama_extra_args"] == ["--numa", "distribute"]
@@ -285,8 +285,9 @@ def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
 
 def test_the_auto_switch_path_leaves_a_clean_override_alone():
     from utils.openai_auto_switch_settings import model_override_load_kwargs
+
     kwargs = model_override_load_kwargs(
-        {"llama_extra_args": ["--numa", "distribute"]}, is_gguf = True
+        {"llama_extra_args": ["--numa", "distribute"]}, is_gguf=True
     )
 
     assert kwargs["llama_extra_args"] == ["--numa", "distribute"]
@@ -307,7 +308,7 @@ def test_a_token_that_cannot_be_spawned_is_refused_at_the_boundary():
     # An unpaired surrogate survives JSON and the browser, passes every other check
     # here, and then makes subprocess.Popen raise while it encodes argv, after the
     # load has already begun switching models. A 400 is the honest answer.
-    with pytest.raises(ValueError, match = "surrogate"):
+    with pytest.raises(ValueError, match="surrogate"):
         _lsa.validate_extra_args(["--chat-template", "\ud800"])
 
 
@@ -377,11 +378,11 @@ def test_a_bare_value_with_no_flag_is_refused():
         ["/private/models/other.gguf"],
         ["--top-k", "20", "/models/other.gguf"],
     ):
-        with pytest.raises(ValueError, match = "bare value"):
+        with pytest.raises(ValueError, match="bare value"):
             _lsa.validate_extra_args(bad)
     # The attached spelling is refused before anything can be said about what
     # follows it, since llama-server never reads it as a flag at all.
-    with pytest.raises(ValueError, match = "two separate arguments"):
+    with pytest.raises(ValueError, match="two separate arguments"):
         _lsa.validate_extra_args(["--top-k=20", "stray"])
 
 
@@ -406,11 +407,11 @@ def test_the_underscore_spelling_keeps_its_detached_value():
     ):
         assert _lsa.validate_extra_args(good) == good
     # The value is still consumed exactly once: a second bare token has no owner.
-    with pytest.raises(ValueError, match = "bare value"):
+    with pytest.raises(ValueError, match="bare value"):
         _lsa.validate_extra_args(["--ctx_size", "4096", "stray"])
     # The underscore spelling folds, the attached one does not exist for llama.cpp
     # whichever way it is spelled.
-    with pytest.raises(ValueError, match = "two separate arguments"):
+    with pytest.raises(ValueError, match="two separate arguments"):
         _lsa.validate_extra_args(["--ctx_size=4096"])
 
 
@@ -426,7 +427,7 @@ def test_a_batch_below_the_floor_is_refused_before_the_launch():
         (["-b", "2"], 4),
         (["--top-k", "20", "-b", "3"], 4),
     ):
-        with pytest.raises(ValueError, match = "aborts on --batch-size"):
+        with pytest.raises(ValueError, match="aborts on --batch-size"):
             _lsa.check_batch_floor(args, slots)
     # At or above the floor, and anything this side cannot read, is left alone:
     # llama-server names an unreadable value better than a guess here would.
@@ -456,7 +457,7 @@ def test_a_scaled_sidecar_may_take_its_scale_separately():
     ):
         assert _lsa.validate_extra_args(good) == good
     # A third bare token still belongs to nothing.
-    with pytest.raises(ValueError, match = "bare value"):
+    with pytest.raises(ValueError, match="bare value"):
         _lsa.validate_extra_args(["--lora-scaled", "/a.gguf", "0.5", "stray"])
 
 
@@ -470,7 +471,7 @@ def test_a_two_value_flag_is_kept_whole():
         ["--control-vector-layer-range", "1", "--numa", "distribute"],
         ["--top-k", "20", "--control-vector-layer-range", "1"],
     ):
-        with pytest.raises(ValueError, match = "takes two values"):
+        with pytest.raises(ValueError, match="takes two values"):
             _lsa.validate_extra_args(bad)
 
 
@@ -483,11 +484,11 @@ def test_the_attached_form_of_a_two_value_flag_is_refused_like_any_other():
         ["--control-vector-layer-range=1", "10"],
         ["--control-vector-layer-range=1", "--numa", "distribute"],
     ):
-        with pytest.raises(ValueError, match = "two separate arguments"):
+        with pytest.raises(ValueError, match="two separate arguments"):
             _lsa.validate_extra_args(bad)
     # Detached, it is the one option here whose arity is known for certain.
     assert _lsa.validate_extra_args(["--control-vector-layer-range", "1", "10"])
-    with pytest.raises(ValueError, match = "takes two values"):
+    with pytest.raises(ValueError, match="takes two values"):
         _lsa.validate_extra_args(["--control-vector-layer-range", "1"])
 
 
@@ -512,15 +513,15 @@ def test_the_windows_check_measures_what_popen_would_write(monkeypatch):
     # list2cmdline is not a sum of lengths: backslashes before a quote double, so an
     # escape-heavy grammar can pass a byte cap and still blow CreateProcess's 32767
     # character limit once quoted, inside Popen, after the switch has begun.
-    monkeypatch.setattr(_lsa.sys, "platform", "win32", raising = False)
+    monkeypatch.setattr(_lsa.sys, "platform", "win32", raising=False)
     value = ("\\" * 10 + '"') * 2000
     assert len(value) < _lsa.MAX_EXTRA_ARGS_BYTES_WINDOWS
 
-    with pytest.raises(ValueError, match = "Windows command line"):
+    with pytest.raises(ValueError, match="Windows command line"):
         _lsa.validate_extra_args(["--grammar", value])
 
     # Same list, other platforms: no such limit, so no refusal.
-    monkeypatch.setattr(_lsa.sys, "platform", "linux", raising = False)
+    monkeypatch.setattr(_lsa.sys, "platform", "linux", raising=False)
     assert _lsa.validate_extra_args(["--grammar", value])
 
 
@@ -572,7 +573,7 @@ def test_a_flag_padded_with_spaces_is_refused():
     # still on it. llama.cpp looks the WHOLE token up: measured on b10342, it answers
     # "error: invalid argument: --top-k", naming a flag that reads as correct.
     for bad in (["--top-k ", "20"], [" --top-k", "20"], ["--verbose "]):
-        with pytest.raises(ValueError, match = "spaces around"):
+        with pytest.raises(ValueError, match="spaces around"):
             _lsa.validate_extra_args(bad)
     # A VALUE may legitimately carry whitespace: a grammar or a chat template does,
     # and quoting one into a single token is what the box is for.
@@ -597,10 +598,10 @@ def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
 def test_parallel_denials_point_at_the_supported_knob(flag):
     # Why (#9510): the parallel slot count IS user-settable, just not through extra args --
     # refusing `--parallel 1` without naming n_parallel sent users to undocumented env hacks.
-    with pytest.raises(ValueError, match = "managed by Unsloth Studio.*n_parallel"):
+    with pytest.raises(ValueError, match="managed by Unsloth Studio.*n_parallel"):
         _lsa.validate_extra_args([flag, "1"])
 
 
 def test_other_denials_stay_terse():
-    with pytest.raises(ValueError, match = "cannot be passed as an extra arg$"):
+    with pytest.raises(ValueError, match="cannot be passed as an extra arg$"):
         _lsa.validate_extra_args(["--model", "/etc/passwd"])

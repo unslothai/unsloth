@@ -212,7 +212,7 @@ def _parse_and_validate_action(
 def _parse_json_object(text: str) -> dict:
     text = text.strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags = re.IGNORECASE)
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("Planner did not return a JSON object")
@@ -269,7 +269,7 @@ def _recover_report_from_reasoning(reasoning: str) -> str:
     marker = re.search(
         r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|\*\*(?:Executive\s+)?Summary\*\*)",
         text,
-        flags = re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
     if marker is None:
         return ""
@@ -278,7 +278,7 @@ def _recover_report_from_reasoning(reasoning: str) -> str:
 
 
 def _report_after_boundary(text: str, boundary: str) -> str | None:
-    lines = text.splitlines(keepends = True)
+    lines = text.splitlines(keepends=True)
     fence_char: str | None = None
     fence_length = 0
     boundary_line: int | None = None

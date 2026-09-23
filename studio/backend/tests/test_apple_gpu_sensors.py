@@ -59,7 +59,7 @@ class TestSmcStructLayout:
         assert ctypes.sizeof(apple._SMCKeyData) == 80
 
 
-@pytest.mark.skipif(not _IS_APPLE_SILICON, reason = "requires Apple Silicon")
+@pytest.mark.skipif(not _IS_APPLE_SILICON, reason="requires Apple Silicon")
 class TestLiveSensors:
     def test_gpu_temperature_in_plausible_range(self):
         temp = apple.read_gpu_temperature_c()

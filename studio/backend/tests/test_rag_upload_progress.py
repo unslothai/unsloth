@@ -14,7 +14,7 @@ from .test_rag_upload_formats import EXTENSIONS, write_document
 
 
 def test_captioning_is_opt_in(monkeypatch):
-    monkeypatch.delenv("RAG_CAPTION_IMAGES", raising = False)
+    monkeypatch.delenv("RAG_CAPTION_IMAGES", raising=False)
     assert runpy.run_path(config.__file__)["CAPTION_IMAGES"] is False
     monkeypatch.setenv("RAG_CAPTION_IMAGES", "1")
     assert runpy.run_path(config.__file__)["CAPTION_IMAGES"] is True
@@ -70,10 +70,10 @@ def test_same_path_dedup_keeps_original_file(rag_home, stub_embeddings):
     original.write_text("Quarterly revenue increased substantially.")
     scope = store.thread_scope("same-path")
     doc_id, _ = ingestion.start_ingestion(
-        scope, None, "same-path", original.name, str(original), background = False
+        scope, None, "same-path", original.name, str(original), background=False
     )
     repeated_id, _ = ingestion.start_ingestion(
-        scope, None, "same-path", original.name, str(original), background = False
+        scope, None, "same-path", original.name, str(original), background=False
     )
     assert repeated_id == doc_id
     assert original.exists()
@@ -87,16 +87,16 @@ def test_vision_progress_includes_empty_responses(monkeypatch):
     assert (
         captioner.caption_images(
             figures,
-            endpoint = ("http://local", "local"),
-            on_progress = lambda done, total: caption_progress.append((done, total)),
+            endpoint=("http://local", "local"),
+            on_progress=lambda done, total: caption_progress.append((done, total)),
         )
         == {}
     )
     assert (
         captioner.ocr_pages(
             {1: b"png", 2: b"png"},
-            endpoint = ("http://local", "local"),
-            on_progress = lambda done, total: ocr_progress.append((done, total)),
+            endpoint=("http://local", "local"),
+            on_progress=lambda done, total: ocr_progress.append((done, total)),
         )
         == {}
     )
@@ -112,7 +112,7 @@ def test_indexing_reports_batches_and_keeps_text(rag_home, stub_embeddings, monk
     path.write_text("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima")
     scope = store.thread_scope("batch-progress")
     doc_id, job_id = ingestion.start_ingestion(
-        scope, None, "batch-progress", path.name, str(path), background = False
+        scope, None, "batch-progress", path.name, str(path), background=False
     )
     events = list(ingestion.job_events(job_id))
     progress = [event["progress"] for event in events if event["type"] == "progress"]
@@ -163,9 +163,9 @@ def test_figure_progress_arrives_before_render_and_after_every_tile(
         "figures",
         path.name,
         str(path),
-        caption = True,
-        ocr = False,
-        background = False,
+        caption=True,
+        ocr=False,
+        background=False,
     )
     assert ingestion.get_job_status(job_id)["status"] == "completed"
     progress = [e["progress"] for e in events if e.get("stage") == "captioning"]
@@ -183,11 +183,11 @@ def test_orphaned_duplicate_is_reindexed_instead_of_reported_complete(
     try:
         original = store.create_document(
             conn,
-            scope = scope,
-            filename = path.name,
-            sha256 = ingestion._sha256_file(str(path)),
-            status = "pending",
-            stored_path = str(path),
+            scope=scope,
+            filename=path.name,
+            sha256=ingestion._sha256_file(str(path)),
+            status="pending",
+            stored_path=str(path),
         )
     finally:
         conn.close()
@@ -197,7 +197,7 @@ def test_orphaned_duplicate_is_reindexed_instead_of_reported_complete(
         "orphan",
         path.name,
         str(path),
-        background = False,
+        background=False,
     )
     assert replacement != original
     assert ingestion.get_job_status(job)["num_chunks"] > 0
@@ -222,11 +222,11 @@ def test_failed_orphan_retry_retires_the_document_it_replaced(
     try:
         original = store.create_document(
             conn,
-            scope = scope,
-            filename = path.name,
-            sha256 = ingestion._sha256_file(str(path)),
-            status = status,
-            stored_path = str(path),
+            scope=scope,
+            filename=path.name,
+            sha256=ingestion._sha256_file(str(path)),
+            status=status,
+            stored_path=str(path),
         )
     finally:
         conn.close()
@@ -241,7 +241,7 @@ def test_failed_orphan_retry_retires_the_document_it_replaced(
         "orphan-failure",
         path.name,
         str(path),
-        background = False,
+        background=False,
     )
     assert replacement != original
     assert ingestion.get_job_status(job)["status"] == "failed"
@@ -265,11 +265,11 @@ def test_orphan_retry_losing_its_lease_still_retires_the_orphan(
     try:
         original = store.create_document(
             conn,
-            scope = scope,
-            filename = path.name,
-            sha256 = ingestion._sha256_file(str(path)),
-            status = "running",
-            stored_path = str(path),
+            scope=scope,
+            filename=path.name,
+            sha256=ingestion._sha256_file(str(path)),
+            status="running",
+            stored_path=str(path),
         )
     finally:
         conn.close()
@@ -284,7 +284,7 @@ def test_orphan_retry_losing_its_lease_still_retires_the_orphan(
         "orphan-reclaimed",
         path.name,
         str(path),
-        background = False,
+        background=False,
     )
     assert replacement != original
     conn = rag_db.get_connection()
@@ -311,7 +311,7 @@ def test_failed_reindex_keeps_the_completed_document_it_replaced(
     path.write_text("Revenue doubled this quarter.")
     scope = store.thread_scope("stale-embedder")
     original, _ = ingestion.start_ingestion(
-        scope, None, "stale-embedder", path.name, str(path), background = False
+        scope, None, "stale-embedder", path.name, str(path), background=False
     )
     conn = rag_db.get_connection()
     try:
@@ -327,7 +327,7 @@ def test_failed_reindex_keeps_the_completed_document_it_replaced(
 
     monkeypatch.setattr(parsers, "parse", unreadable)
     replacement, job = ingestion.start_ingestion(
-        scope, None, "stale-embedder", path.name, str(path), background = False
+        scope, None, "stale-embedder", path.name, str(path), background=False
     )
     assert replacement != original
     assert ingestion.get_job_status(job)["status"] == "failed"
@@ -350,11 +350,11 @@ def test_orphan_retry_that_cannot_start_a_worker_retires_the_orphan(
     try:
         original = store.create_document(
             conn,
-            scope = scope,
-            filename = path.name,
-            sha256 = ingestion._sha256_file(str(path)),
-            status = "pending",
-            stored_path = str(path),
+            scope=scope,
+            filename=path.name,
+            sha256=ingestion._sha256_file(str(path)),
+            status="pending",
+            stored_path=str(path),
         )
     finally:
         conn.close()
@@ -389,11 +389,11 @@ def test_cancelling_an_orphan_retry_keeps_the_original_upload(rag_home, stub_emb
     try:
         original = store.create_document(
             conn,
-            scope = scope,
-            filename = original_file.name,
-            sha256 = ingestion._sha256_file(str(original_file)),
-            status = "pending",
-            stored_path = str(original_file),
+            scope=scope,
+            filename=original_file.name,
+            sha256=ingestion._sha256_file(str(original_file)),
+            status="pending",
+            stored_path=str(original_file),
         )
     finally:
         conn.close()

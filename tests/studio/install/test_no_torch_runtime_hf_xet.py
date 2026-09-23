@@ -28,7 +28,7 @@ ALL_FILES = (NO_TORCH_RUNTIME, STUDIO_TXT, CONSTRAINTS)
 
 def _requirement_names(path: pathlib.Path) -> set[str]:
     names = set()
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         text = line.split("#", 1)[0].strip()
         if not text or text.startswith("-"):
             continue
@@ -39,12 +39,12 @@ def _requirement_names(path: pathlib.Path) -> set[str]:
 def _hf_xet_requirements(path: pathlib.Path) -> list[Requirement]:
     out = []
     if path.suffix == ".toml":
-        for line in path.read_text(encoding = "utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             text = line.strip().rstrip(",")
             if text.startswith('"hf-xet') or text.startswith("'hf-xet"):
                 out.append(Requirement(text.strip("\"'")))
         return out
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         text = line.split("#", 1)[0].strip()
         if not text or text.startswith("-"):
             continue
@@ -80,14 +80,14 @@ def test_no_torch_runtime_declares_hf_xet_for_hub_large_downloads():
     )
 
 
-@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids = lambda p: p.name)
+@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids=lambda p: p.name)
 def test_every_hf_xet_pin_is_declared_once_and_marked(path: pathlib.Path):
     pins = _hf_xet_requirements(path)
     assert len(pins) == 1, f"expected one hf-xet line in {path.name}, got {pins!r}"
     assert pins[0].marker is not None, f"{path.name} hf-xet must be environment-marked"
 
 
-@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids = lambda p: p.name)
+@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids=lambda p: p.name)
 def test_hf_xet_pins_are_python_310_plus_only(path: pathlib.Path):
     """Python < 3.10 stays on huggingface-hub 0.36.2, the same split the hub pins above use.
 
@@ -101,7 +101,7 @@ def test_hf_xet_pins_are_python_310_plus_only(path: pathlib.Path):
     assert marker.evaluate(_env("3.13", "x86_64")) is True
 
 
-@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids = lambda p: p.name)
+@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids=lambda p: p.name)
 def test_hf_xet_pins_only_ask_for_machines_with_wheels(path: pathlib.Path):
     """A machine with no hf-xet wheel must not be asked for it: the fallback is a maturin build."""
     marker = _hf_xet_requirements(path)[0].marker
@@ -114,7 +114,7 @@ def test_hf_xet_pins_only_ask_for_machines_with_wheels(path: pathlib.Path):
         )
 
 
-@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids = lambda p: p.name)
+@pytest.mark.parametrize("path", ALL_FILES + (PYPROJECT,), ids=lambda p: p.name)
 def test_hf_xet_floor_is_not_below_the_hub_requirement(path: pathlib.Path):
     specifier = _hf_xet_requirements(path)[0].specifier
     assert (

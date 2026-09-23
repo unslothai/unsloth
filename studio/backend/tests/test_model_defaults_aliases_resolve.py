@@ -21,7 +21,7 @@ from utils.models.model_config import load_model_defaults
 _DEFAULTS_DIR = Path(__file__).parent.parent / "assets" / "configs" / "model_defaults"
 _ALSO_APPLIES_RE = re.compile(r"^#\s*Also applies to:\s*(.+)$", re.MULTILINE)
 
-_DEFAULT_CONFIG = yaml.safe_load((_DEFAULTS_DIR / "default.yaml").read_text(encoding = "utf-8"))
+_DEFAULT_CONFIG = yaml.safe_load((_DEFAULTS_DIR / "default.yaml").read_text(encoding="utf-8"))
 
 
 def _configs():
@@ -34,7 +34,7 @@ def _claimed_aliases():
     for path in sorted(_DEFAULTS_DIR.rglob("*.yaml")):
         if path.name == "default.yaml":
             continue
-        header = path.read_text(encoding = "utf-8")[:1000]
+        header = path.read_text(encoding="utf-8")[:1000]
         match = _ALSO_APPLIES_RE.search(header)
         if match is None:
             continue
@@ -78,7 +78,7 @@ def test_the_fixtures_are_not_empty():
     assert len(_CLAIMED) > 20, f"only found {len(_CLAIMED)} claimed aliases"
 
 
-@pytest.mark.parametrize("config_name", _CONFIGS, ids = lambda v: v)
+@pytest.mark.parametrize("config_name", _CONFIGS, ids=lambda v: v)
 def test_config_loads_under_its_own_name(config_name):
     """Bare id and local directory both have to reach the file named after them."""
     primary = _primary_name(config_name)
@@ -86,7 +86,7 @@ def test_config_loads_under_its_own_name(config_name):
     assert _load_tuned(_on_disk(primary), config_name) == own
 
 
-@pytest.mark.parametrize("config_name, alias", _CLAIMED, ids = lambda v: v)
+@pytest.mark.parametrize("config_name, alias", _CLAIMED, ids=lambda v: v)
 def test_claimed_alias_loads_its_own_defaults(config_name, alias):
     """Same for every name the header claims, in both forms."""
     own = _load_tuned(_primary_name(config_name), config_name)

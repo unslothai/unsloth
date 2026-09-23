@@ -104,7 +104,7 @@ def _pwsh_cache_dir() -> str:
     global _CACHE_ROOT
     if _CACHE_ROOT is None:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
-        _CACHE_ROOT = tempfile.mkdtemp(prefix = f"unsloth-pwsh-cache-{worker}-")
+        _CACHE_ROOT = tempfile.mkdtemp(prefix=f"unsloth-pwsh-cache-{worker}-")
         atexit.register(shutil.rmtree, _CACHE_ROOT, True)
     return _CACHE_ROOT
 
@@ -155,9 +155,9 @@ def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     captured = [stream for stream in (proc.stdout, proc.stderr) if stream]
     if any(isinstance(stream, bytes) for stream in captured):
         streams = b"".join(
-            stream if isinstance(stream, bytes) else stream.encode("utf-8", errors = "replace")
+            stream if isinstance(stream, bytes) else stream.encode("utf-8", errors="replace")
             for stream in captured
-        ).decode("utf-8", errors = "replace")
+        ).decode("utf-8", errors="replace")
     else:
         streams = "".join(captured)
     if PWSH_CRASH_BANNER in streams:

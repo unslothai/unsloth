@@ -33,24 +33,24 @@ def _fake_xpu(**attrs):
 
 @pytest.fixture
 def host(monkeypatch):
-    def _set(*, cuda: bool, xpu = None):
+    def _set(*, cuda: bool, xpu=None):
         monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
         if xpu is None:
-            monkeypatch.delattr(torch, "xpu", raising = False)
+            monkeypatch.delattr(torch, "xpu", raising=False)
         else:
-            monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+            monkeypatch.setattr(torch, "xpu", xpu, raising=False)
 
     return _set
 
 
 def test_cuda_still_wins_on_a_box_that_has_both(host):
-    host(cuda = True, xpu = _fake_xpu(is_available = lambda: True))
+    host(cuda=True, xpu=_fake_xpu(is_available=lambda: True))
     assert resolve_train_device() == "cuda"
 
 
 def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
     """#9524: the bnb quantizer already placed the transformer on xpu:0, so "cpu" here split them."""
-    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True))
+    host(cuda=False, xpu=_fake_xpu(is_available=lambda: True))
     assert resolve_train_device() == "xpu"
 
 
@@ -59,13 +59,13 @@ def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
     [
         None,  # a torch build with no xpu module at all
         _fake_xpu(),  # present, but predates is_available()
-        _fake_xpu(is_available = True),  # present, non-callable
-        _fake_xpu(is_available = lambda: False),  # present, no device
+        _fake_xpu(is_available=True),  # present, non-callable
+        _fake_xpu(is_available=lambda: False),  # present, no device
     ],
-    ids = ["absent", "no-probe", "non-callable", "unavailable"],
+    ids=["absent", "no-probe", "non-callable", "unavailable"],
 )
 def test_a_host_without_a_usable_xpu_stays_on_cpu(host, xpu):
-    host(cuda = False, xpu = xpu)
+    host(cuda=False, xpu=xpu)
     assert resolve_train_device() == "cpu"
 
 
@@ -76,7 +76,7 @@ def test_an_uninitialised_xpu_driver_falls_through_instead_of_killing_the_run(ho
     def _boom():
         raise RuntimeError("driver not initialised")
 
-    host(cuda = False, xpu = _fake_xpu(is_available = _boom))
+    host(cuda=False, xpu=_fake_xpu(is_available=_boom))
     assert resolve_train_device() == "cpu"
 
 
@@ -84,10 +84,10 @@ def test_an_emulation_only_xpu_is_refused(host):
     """is_bf16_supported() defaults including_emulation=True and short-circuits, so the bare call
     answers True for every available XPU: not a capability check."""
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: bool(including_emulation),
         ),
     )
     assert torch.xpu.is_bf16_supported() is True  # what the bare call claims
@@ -96,10 +96,10 @@ def test_an_emulation_only_xpu_is_refused(host):
 
 def test_a_native_bf16_xpu_is_accepted(host):
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: True,
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: True,
         ),
     )
     assert native_bf16_supported_xpu() is True
@@ -107,40 +107,40 @@ def test_a_native_bf16_xpu_is_accepted(host):
 
 def test_a_torch_predating_the_emulation_flag_still_answers(host):
     """On a torch predating including_emulation the no-argument answer is the only one there is."""
-    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = lambda: True))
+    host(cuda=False, xpu=_fake_xpu(is_available=lambda: True, is_bf16_supported=lambda: True))
     assert native_bf16_supported_xpu() is True
 
 
 @pytest.mark.parametrize(
     "probe",
     [None, True],
-    ids = ["absent", "non-callable"],
+    ids=["absent", "non-callable"],
 )
 def test_an_xpu_without_a_usable_bf16_probe_is_refused(host, probe):
     attrs = {"is_available": lambda: True}
     if probe is not None:
         attrs["is_bf16_supported"] = probe
-    host(cuda = False, xpu = _fake_xpu(**attrs))
+    host(cuda=False, xpu=_fake_xpu(**attrs))
     assert native_bf16_supported_xpu() is False
 
 
 def _dit_cfg():
     return DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev",
-        data_dir = "/tmp/d",
-        output_dir = "/tmp/o",
-        instance_prompt = "p",
-        mixed_precision = "bf16",
+        base_model="black-forest-labs/FLUX.1-dev",
+        data_dir="/tmp/d",
+        output_dir="/tmp/o",
+        instance_prompt="p",
+        mixed_precision="bf16",
     )
 
 
 def _h3_cfg():
     return DiffusionLoraConfig(
-        base_model = "MiniMaxAI/MiniMax-H3",
-        data_dir = "/tmp/clips",
-        output_dir = "/tmp/out",
-        mixed_precision = "bf16",
-        resolution = 768,
+        base_model="MiniMaxAI/MiniMax-H3",
+        data_dir="/tmp/clips",
+        output_dir="/tmp/out",
+        mixed_precision="bf16",
+        resolution=768,
     )
 
 
@@ -179,16 +179,16 @@ def _decide(monkeypatch, module, entry, cfg):
 @pytest.mark.parametrize(
     ("module", "entry", "cfg"),
     [(dit, dit.run_dit_lora_training, _dit_cfg()), (h3, h3.run_h3_lora_training, _h3_cfg())],
-    ids = ["dit", "h3"],
+    ids=["dit", "h3"],
 )
 def test_both_flow_trainers_run_an_xpu_box_in_bf16_on_the_xpu(
     monkeypatch, host, module, entry, cfg
 ):
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: True,
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: True,
         ),
     )
     assert _decide(monkeypatch, module, entry, cfg) == ("xpu", torch.bfloat16)
@@ -197,21 +197,21 @@ def test_both_flow_trainers_run_an_xpu_box_in_bf16_on_the_xpu(
 @pytest.mark.parametrize(
     ("module", "entry", "cfg"),
     [(dit, dit.run_dit_lora_training, _dit_cfg()), (h3, h3.run_h3_lora_training, _h3_cfg())],
-    ids = ["dit", "h3"],
+    ids=["dit", "h3"],
 )
 def test_both_flow_trainers_refuse_an_emulation_only_xpu(monkeypatch, host, module, entry, cfg):
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: bool(including_emulation),
         ),
     )
-    with pytest.raises(ValueError, match = "bfloat16-capable"):
+    with pytest.raises(ValueError, match="bfloat16-capable"):
         _decide(monkeypatch, module, entry, cfg)
 
 
-@pytest.mark.parametrize("module", [dit, h3], ids = ["dit", "h3"])
+@pytest.mark.parametrize("module", [dit, h3], ids=["dit", "h3"])
 def test_every_phase_boundary_frees_the_selected_accelerator(module):
     """Both boundaries free the text encoders and VAE right before the multi-GB transformer load,
     so a CUDA-only clear leaves that memory resident for it on an XPU box."""
@@ -230,19 +230,19 @@ def test_an_emulation_only_xpu_is_refused_before_the_route_evicts_anything(host)
     from core.training.diffusion_train_common import bf16_unsupported_reason
 
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: bool(including_emulation),
         ),
     )
     reason = bf16_unsupported_reason("krea-2")
     assert reason and "bf16 natively" in reason
     host(
-        cuda = False,
-        xpu = _fake_xpu(
-            is_available = lambda: True,
-            is_bf16_supported = lambda including_emulation = True: True,
+        cuda=False,
+        xpu=_fake_xpu(
+            is_available=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: True,
         ),
     )
     assert bf16_unsupported_reason("krea-2") is None
@@ -258,10 +258,10 @@ def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
         xpu_native_bf16_probe,
     )
 
-    def _unprobeable(including_emulation = True):
+    def _unprobeable(including_emulation=True):
         raise RuntimeError("no device properties")
 
-    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = _unprobeable))
+    host(cuda=False, xpu=_fake_xpu(is_available=lambda: True, is_bf16_supported=_unprobeable))
     assert xpu_native_bf16_probe() is None
     assert bf16_unsupported_reason("krea-2") is None  # route proceeds
     assert native_bf16_supported_xpu() is False  # child still refuses, on the device itself
@@ -273,14 +273,14 @@ def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypa
     from core.training.diffusion_checkpoint import capture_rng_state, restore_rng_state
 
     seen = {"set": []}
-    states = [torch.tensor([7, 7, 7], dtype = torch.uint8)]
+    states = [torch.tensor([7, 7, 7], dtype=torch.uint8)]
     fake = _fake_xpu(
-        is_available = lambda: True,
-        device_count = lambda: 1,
-        get_rng_state_all = lambda: states,
-        set_rng_state = lambda st, i: seen["set"].append((i, st.tolist())),
+        is_available=lambda: True,
+        device_count=lambda: 1,
+        get_rng_state_all=lambda: states,
+        set_rng_state=lambda st, i: seen["set"].append((i, st.tolist())),
     )
-    host(cuda = False, xpu = fake)
+    host(cuda=False, xpu=fake)
 
     captured = capture_rng_state()
     assert "torch_xpu_0" in captured["tensors"]
@@ -317,7 +317,7 @@ def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, t
 
     # Written on the other backend: refused, and the message says which.
     other = "xpu" if written_here["accelerator"] != "xpu" else "cuda"
-    with pytest.raises(ResumeError, match = "this accelerator"):
+    with pytest.raises(ResumeError, match="this accelerator"):
         _assert_required_state(
             Path("ckpt"), {**complete, "rng": {**written_here, "accelerator": other}}
         )
@@ -331,8 +331,8 @@ def test_an_xpu_flow_run_records_the_bf16_it_actually_trains_in(host):
     """identity_for_config stores this and a resume is refused when it disagrees, so a CUDA-only
     rule would record "no" for a run the loop trained in bf16."""
     cfg = _dit_cfg().normalized()
-    host(cuda = False, xpu = _fake_xpu(is_available = lambda: True))
+    host(cuda=False, xpu=_fake_xpu(is_available=lambda: True))
     assert effective_mixed_precision(cfg) == "bf16"
-    host(cuda = False, xpu = None)
+    host(cuda=False, xpu=None)
     assert effective_mixed_precision(cfg) == "no"
     assert common.resolve_train_device() == "cpu"

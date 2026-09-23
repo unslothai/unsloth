@@ -33,7 +33,7 @@ pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
         not torch.cuda.is_available(),
-        reason = "GGUF export smoke test needs a GPU to train + merge",
+        reason="GGUF export smoke test needs a GPU to train + merge",
     ),
 ]
 
@@ -47,6 +47,7 @@ def _find_llama_cli():
     candidates = []
     try:
         from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+
         candidates += [
             os.path.join(LLAMA_CPP_DEFAULT_DIR, "llama-cli"),
             os.path.join(LLAMA_CPP_DEFAULT_DIR, "build", "bin", "llama-cli"),
@@ -66,17 +67,17 @@ def _run_llama_capped(
     cli,
     gguf,
     prompt,
-    max_bytes = 16384,
-    timeout = 240,
+    max_bytes=16384,
+    timeout=240,
 ):
     """Run one llama-cli generation, hard-bounded by a byte cap and a watchdog kill so a
     conversation-mode build cannot run away on empty stdin."""
     proc = subprocess.Popen(
         [cli, "-m", gguf, "-p", prompt, "-n", "48", "--temp", "0"],
-        stdin = subprocess.DEVNULL,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.DEVNULL,
-        text = True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
     )
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
@@ -86,28 +87,28 @@ def _run_llama_capped(
         killer.cancel()
         proc.kill()
         try:
-            proc.wait(timeout = 10)
+            proc.wait(timeout=10)
         except Exception:
             pass
     return out or ""
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def exported_gguf(tmp_path_factory):
     """Train a tiny phrase-imprinting LoRA and export a q8_0 GGUF once for the module."""
     out_dir = str(tmp_path_factory.mktemp("gguf_export"))
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = MODEL,
-        max_seq_length = 1024,
-        dtype = None,
-        load_in_4bit = False,
+        model_name=MODEL,
+        max_seq_length=1024,
+        dtype=None,
+        load_in_4bit=False,
     )
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 16,
-        lora_alpha = 32,
-        target_modules = [
+        r=16,
+        lora_alpha=32,
+        target_modules=[
             "q_proj",
             "k_proj",
             "v_proj",
@@ -116,8 +117,8 @@ def exported_gguf(tmp_path_factory):
             "up_proj",
             "down_proj",
         ],
-        use_gradient_checkpointing = False,
-        random_state = 3407,
+        use_gradient_checkpointing=False,
+        random_state=3407,
     )
 
     from datasets import Dataset
@@ -139,7 +140,7 @@ def exported_gguf(tmp_path_factory):
             "text": [
                 tokenizer.apply_chat_template(
                     [{"role": "user", "content": q}, {"role": "assistant", "content": _ANSWER}],
-                    tokenize = False,
+                    tokenize=False,
                 )
                 for q in questions
             ]
@@ -149,33 +150,33 @@ def exported_gguf(tmp_path_factory):
     from trl import SFTConfig, SFTTrainer
 
     SFTTrainer(
-        model = model,
-        processing_class = tokenizer,
-        train_dataset = dataset,
-        args = SFTConfig(
+        model=model,
+        processing_class=tokenizer,
+        train_dataset=dataset,
+        args=SFTConfig(
             # max_length is left unset: newer TRL enables padding-free training (without packing) by default,
             # where SFTConfig(max_length=...) raises because length is not enforced.
-            max_length = None,
-            dataset_text_field = "text",
-            per_device_train_batch_size = 4,
-            max_steps = 80,
-            learning_rate = 2e-4,
-            logging_steps = 40,
-            optim = "adamw_8bit",
-            lr_scheduler_type = "linear",
-            seed = 3407,
-            save_strategy = "no",
-            report_to = "none",
-            warmup_steps = 5,
+            max_length=None,
+            dataset_text_field="text",
+            per_device_train_batch_size=4,
+            max_steps=80,
+            learning_rate=2e-4,
+            logging_steps=40,
+            optim="adamw_8bit",
+            lr_scheduler_type="linear",
+            seed=3407,
+            save_strategy="no",
+            report_to="none",
+            warmup_steps=5,
         ),
     ).train()
 
-    model.save_pretrained_gguf(out_dir, tokenizer, quantization_method = "q8_0")
+    model.save_pretrained_gguf(out_dir, tokenizer, quantization_method="q8_0")
 
     ggufs = sorted(
         set(
-            glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive = True)
-            + glob.glob(out_dir + "_gguf/**/*.gguf", recursive = True)
+            glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive=True)
+            + glob.glob(out_dir + "_gguf/**/*.gguf", recursive=True)
             + glob.glob(out_dir + "_gguf/*.gguf")
         )
     )
@@ -184,8 +185,8 @@ def exported_gguf(tmp_path_factory):
 
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": "What is the capital of France?"}],
-        tokenize = False,
-        add_generation_prompt = True,
+        tokenize=False,
+        add_generation_prompt=True,
     )
     return {"gguf": gguf_path, "all": ggufs, "prompt": prompt}
 
@@ -219,22 +220,22 @@ IMATRIX_MODEL = os.environ.get("UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-
 IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]  # both were previously disabled; imatrix unlocks them
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def exported_imatrix_gguf(tmp_path_factory):
     """Finetune a tiny LoRA and export IQ low-bit GGUFs with imatrix_file=True (auto-download)."""
     out_dir = str(tmp_path_factory.mktemp("imatrix_gguf"))
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = IMATRIX_MODEL,
-        max_seq_length = 1024,
-        dtype = None,
-        load_in_4bit = False,
+        model_name=IMATRIX_MODEL,
+        max_seq_length=1024,
+        dtype=None,
+        load_in_4bit=False,
     )
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 16,
-        lora_alpha = 32,
-        target_modules = [
+        r=16,
+        lora_alpha=32,
+        target_modules=[
             "q_proj",
             "k_proj",
             "v_proj",
@@ -243,8 +244,8 @@ def exported_imatrix_gguf(tmp_path_factory):
             "up_proj",
             "down_proj",
         ],
-        use_gradient_checkpointing = False,
-        random_state = 3407,
+        use_gradient_checkpointing=False,
+        random_state=3407,
     )
 
     from datasets import Dataset
@@ -266,7 +267,7 @@ def exported_imatrix_gguf(tmp_path_factory):
             "text": [
                 tokenizer.apply_chat_template(
                     [{"role": "user", "content": q}, {"role": "assistant", "content": _ANSWER}],
-                    tokenize = False,
+                    tokenize=False,
                 )
                 for q in questions
             ]
@@ -276,46 +277,46 @@ def exported_imatrix_gguf(tmp_path_factory):
     from trl import SFTConfig, SFTTrainer
 
     SFTTrainer(
-        model = model,
-        processing_class = tokenizer,
-        train_dataset = dataset,
-        args = SFTConfig(
-            max_length = None,
-            dataset_text_field = "text",
-            per_device_train_batch_size = 4,
-            max_steps = 80,
-            learning_rate = 2e-4,
-            logging_steps = 40,
-            optim = "adamw_8bit",
-            lr_scheduler_type = "linear",
-            seed = 3407,
-            save_strategy = "no",
-            report_to = "none",
-            warmup_steps = 5,
+        model=model,
+        processing_class=tokenizer,
+        train_dataset=dataset,
+        args=SFTConfig(
+            max_length=None,
+            dataset_text_field="text",
+            per_device_train_batch_size=4,
+            max_steps=80,
+            learning_rate=2e-4,
+            logging_steps=40,
+            optim="adamw_8bit",
+            lr_scheduler_type="linear",
+            seed=3407,
+            save_strategy="no",
+            report_to="none",
+            warmup_steps=5,
         ),
     ).train()
 
     model.save_pretrained_gguf(
         out_dir,
         tokenizer,
-        quantization_method = IMATRIX_QUANTS,
-        imatrix_file = True,
+        quantization_method=IMATRIX_QUANTS,
+        imatrix_file=True,
     )
 
     ggufs = sorted(
         set(
-            glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive = True)
-            + glob.glob(out_dir + "_gguf/**/*.gguf", recursive = True)
+            glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive=True)
+            + glob.glob(out_dir + "_gguf/**/*.gguf", recursive=True)
             + glob.glob(out_dir + "_gguf/*.gguf")
         )
     )
     imatrix = glob.glob(
-        os.path.join(out_dir, "**", "imatrix_unsloth.*"), recursive = True
-    ) + glob.glob(out_dir + "_gguf/**/imatrix_unsloth.*", recursive = True)
+        os.path.join(out_dir, "**", "imatrix_unsloth.*"), recursive=True
+    ) + glob.glob(out_dir + "_gguf/**/imatrix_unsloth.*", recursive=True)
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": "What is the capital of France?"}],
-        tokenize = False,
-        add_generation_prompt = True,
+        tokenize=False,
+        add_generation_prompt=True,
     )
     return {"ggufs": ggufs, "imatrix": imatrix, "prompt": prompt}
 

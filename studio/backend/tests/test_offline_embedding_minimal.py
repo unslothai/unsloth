@@ -35,6 +35,7 @@ MODULES_JSON = (
 def _modules_json(*paths):
     """modules.json listing one Transformer module per path (a load root)."""
     import json
+
     return json.dumps(
         [
             {
@@ -76,31 +77,32 @@ def _make_cache(
     root,
     repo_id,
     files,
-    commit = _COMMIT,
+    commit=_COMMIT,
 ):
     """Build a canonical HF-cache snapshot (refs/main + snapshots/<commit>/) for repo_id under
     root from {relpath: contents}; returns the snapshot dir."""
     from huggingface_hub.file_download import repo_folder_name
 
-    repo_dir = Path(root) / repo_folder_name(repo_id = repo_id, repo_type = "model")
-    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    repo_dir = Path(root) / repo_folder_name(repo_id=repo_id, repo_type="model")
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
     (repo_dir / "refs" / "main").write_text(commit)
     snapshot = repo_dir / "snapshots" / commit
-    snapshot.mkdir(parents = True, exist_ok = True)
+    snapshot.mkdir(parents=True, exist_ok=True)
     for rel, contents in files.items():
         path = snapshot / rel
-        path.parent.mkdir(parents = True, exist_ok = True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents)
     return snapshot
 
 
 def _no_network():
     """Patch model_info to fail loudly if any offline path reaches the network."""
-    return patch("huggingface_hub.model_info", side_effect = AssertionError("hit the network"))
+    return patch("huggingface_hub.model_info", side_effect=AssertionError("hit the network"))
 
 
 def _is_embedding_model(*args, **kwargs):
     from utils.models.model_config import is_embedding_model
+
     return is_embedding_model(*args, **kwargs)
 
 
@@ -117,16 +119,16 @@ def hf_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = root),
+        lambda: SimpleNamespace(hub_cache=root),
     )
     return root
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Start each test online with an empty detection cache; offline tests opt in."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     from utils.models import model_config as mc
 
     mc._embedding_detection_cache.clear()
@@ -198,8 +200,8 @@ def test_snapshot_dir_uses_st_alias_for_slashless(hf_cache):
 def test_snapshot_dir_none_when_snapshot_missing(hf_cache):
     from huggingface_hub.file_download import repo_folder_name
 
-    repo_dir = hf_cache / repo_folder_name(repo_id = "org/broken", repo_type = "model")
-    (repo_dir / "refs").mkdir(parents = True)
+    repo_dir = hf_cache / repo_folder_name(repo_id="org/broken", repo_type="model")
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("deadbeef")  # no snapshots/deadbeef dir
     assert hf_cache_snapshot_dir("org/broken") is None
 
@@ -210,8 +212,8 @@ def test_snapshot_dir_expands_env_vars_in_cache_path(tmp_path, monkeypatch):
     real.mkdir()
     monkeypatch.setenv("MY_HF_CACHE", str(real))
     monkeypatch.setenv("HF_HUB_CACHE", "$MY_HF_CACHE")
-    monkeypatch.delenv("HF_HOME", raising = False)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising=False)
     snapshot = _make_cache(real, "org/emb", {"modules.json": MODULES_JSON})
     assert hf_cache_snapshot_dir("org/emb") == snapshot
 
@@ -221,8 +223,8 @@ def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
-    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
-    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
     snapshot = _make_cache(st_home, "org/emb", {"modules.json": MODULES_JSON})
     assert hf_cache_snapshot_dir("org/emb") == snapshot
 
@@ -238,11 +240,11 @@ def test_snapshot_dir_prefers_selected_cache_over_st_home(tmp_path, monkeypatch)
     selected = tmp_path / "hub"
     selected.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
-    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
-    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = selected),
+        lambda: SimpleNamespace(hub_cache=selected),
     )
     snapshot = _make_cache(selected, "org/emb", {"modules.json": MODULES_JSON})  # only in selected
     assert hf_cache_snapshot_dir("org/emb") == snapshot
@@ -301,14 +303,14 @@ def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
     _make_cache(hf_cache, "org/manifest-partial", {"config.json": "{}", "model.safetensors": "x"})
 
     manifest = download_manifest.Manifest(
-        repo_type = "model",
-        repo_id = "org/manifest-partial",
-        variant = None,
-        started_at = "",
-        expected_files = (
-            download_manifest.ExpectedFile(path = "config.json", size = 2),
-            download_manifest.ExpectedFile(path = "model.safetensors", size = 1),
-            download_manifest.ExpectedFile(path = "tokenizer.json", size = 10),
+        repo_type="model",
+        repo_id="org/manifest-partial",
+        variant=None,
+        started_at="",
+        expected_files=(
+            download_manifest.ExpectedFile(path="config.json", size=2),
+            download_manifest.ExpectedFile(path="model.safetensors", size=1),
+            download_manifest.ExpectedFile(path="tokenizer.json", size=10),
         ),
     )
     monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: manifest)
@@ -326,13 +328,13 @@ def test_verified_snapshot_manifest_ignores_unrelated_incomplete_blob(monkeypatc
     )
 
     manifest = download_manifest.Manifest(
-        repo_type = "model",
-        repo_id = "org/manifest-complete",
-        variant = None,
-        started_at = "",
-        expected_files = (
-            download_manifest.ExpectedFile(path = "config.json", size = 2),
-            download_manifest.ExpectedFile(path = "model.safetensors", size = 7),
+        repo_type="model",
+        repo_id="org/manifest-complete",
+        variant=None,
+        started_at="",
+        expected_files=(
+            download_manifest.ExpectedFile(path="config.json", size=2),
+            download_manifest.ExpectedFile(path="model.safetensors", size=7),
         ),
     )
     monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: manifest)
@@ -376,11 +378,11 @@ def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch)
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
-    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
-    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
     _make_cache(st_home, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
     with _no_network():
-        assert evaluate_file_security("org/pk", local_only_load = True).blocked is True
+        assert evaluate_file_security("org/pk", local_only_load=True).blocked is True
 
 
 # ── is_embedding_model: offline (no network) ─────────────────────
@@ -419,8 +421,8 @@ def test_offline_ignores_stale_online_memo(hf_cache, monkeypatch):
     # stale online True that would make settings accept a repo _get() cannot load.
     with patch(
         "huggingface_hub.model_info",
-        side_effect = lambda *a, **k: SimpleNamespace(
-            tags = ["sentence-transformers"], pipeline_tag = None
+        side_effect=lambda *a, **k: SimpleNamespace(
+            tags=["sentence-transformers"], pipeline_tag=None
         ),
     ):
         assert _is_embedding_model("org/uncached-emb") is True  # memoized True online
@@ -448,26 +450,26 @@ def test_online_passes_bounded_timeout(hf_cache):
 
     def _mi(
         name,
-        token = None,
-        timeout = None,
+        token=None,
+        timeout=None,
         **kw,
     ):
         seen["timeout"] = timeout
-        return SimpleNamespace(tags = ["sentence-transformers"], pipeline_tag = None)
+        return SimpleNamespace(tags=["sentence-transformers"], pipeline_tag=None)
 
-    with patch("huggingface_hub.model_info", side_effect = _mi):
+    with patch("huggingface_hub.model_info", side_effect=_mi):
         assert _is_embedding_model("org/emb") is True
     assert seen["timeout"] == 15.0
 
 
 def test_online_error_falls_back_to_cache_marker(hf_cache):
     _make_cache(hf_cache, "org/emb", {"modules.json": MODULES_JSON})
-    with patch("huggingface_hub.model_info", side_effect = RuntimeError("dns dead")):
+    with patch("huggingface_hub.model_info", side_effect=RuntimeError("dns dead")):
         assert _is_embedding_model("org/emb") is True
 
 
 def test_online_error_without_cache_returns_false(hf_cache):
-    with patch("huggingface_hub.model_info", side_effect = RuntimeError("dns dead")):
+    with patch("huggingface_hub.model_info", side_effect=RuntimeError("dns dead")):
         assert _is_embedding_model("org/missing") is False
 
 
@@ -475,7 +477,7 @@ def test_online_error_without_cache_returns_false(hf_cache):
 
 
 def _offline_decision(name):
-    return evaluate_file_security(name, local_only_load = True)
+    return evaluate_file_security(name, local_only_load=True)
 
 
 def test_gate_allows_safetensors_only(hf_cache):
@@ -795,21 +797,21 @@ def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = root),
+        lambda: SimpleNamespace(hub_cache=root),
     )
-    repo_dir = root / repo_folder_name(repo_id = "org/sym", repo_type = "model")
-    (repo_dir / "refs").mkdir(parents = True)
+    repo_dir = root / repo_folder_name(repo_id="org/sym", repo_type="model")
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text(_COMMIT)
     blobs = repo_dir / "blobs"
     blobs.mkdir()
     snapshot = repo_dir / "snapshots" / _COMMIT
-    (snapshot / "shards").mkdir(parents = True)
+    (snapshot / "shards").mkdir(parents=True)
 
     def _blobbed(rel, content):
         digest = hashlib.sha256(content.encode()).hexdigest()
         (blobs / digest).write_text(content)
         target = snapshot / rel
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(os.path.relpath(blobs / digest, target.parent))
 
     _blobbed("config.json", "{}")
@@ -937,7 +939,7 @@ def test_online_default_blocks_unsafe():
     }
     with patch(
         "huggingface_hub.model_info",
-        side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status),
+        side_effect=lambda *a, **k: SimpleNamespace(security_repo_status=status),
     ):
         assert evaluate_file_security("org/x").blocked is True
 
@@ -946,7 +948,7 @@ def test_online_default_allows_clean():
     status = {"scansDone": True, "filesWithIssues": []}
     with patch(
         "huggingface_hub.model_info",
-        side_effect = lambda *a, **k: SimpleNamespace(security_repo_status = status),
+        side_effect=lambda *a, **k: SimpleNamespace(security_repo_status=status),
     ):
         assert evaluate_file_security("org/x").blocked is False
 
@@ -956,17 +958,19 @@ def test_online_default_allows_clean():
 
 def test_guard_offline_blocks_pickle_only(hf_cache):
     from core.rag.embeddings import UnsafeEmbeddingModelError, _guard_model_security
+
     _make_cache(hf_cache, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
     with _no_network():
         with pytest.raises(UnsafeEmbeddingModelError):
-            _guard_model_security("org/pk", local_only = True)
+            _guard_model_security("org/pk", local_only=True)
 
 
 def test_guard_offline_allows_safetensors(hf_cache):
     from core.rag.embeddings import _guard_model_security
+
     _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
     with _no_network():
-        _guard_model_security("org/st", local_only = True)  # must not raise
+        _guard_model_security("org/st", local_only=True)  # must not raise
 
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
@@ -975,9 +979,9 @@ def _install_fake_sentence_transformers(monkeypatch, captured):
             self,
             name,
             *,
-            device = None,
-            model_kwargs = None,
-            local_files_only = False,
+            device=None,
+            model_kwargs=None,
+            local_files_only=False,
             **kw,
         ):
             captured["name"] = name
@@ -998,9 +1002,9 @@ def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
     # TRANSFORMERS_OFFLINE only: a cached model loads from its local snapshot dir (a local path,
     # never the Hub), offline-safe on ANY sentence-transformers version.
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.setattr(embeddings, "_model", None, raising = False)
-    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(embeddings, "_model", None, raising=False)
+    monkeypatch.setattr(embeddings, "_name", None, raising=False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     captured = {}
@@ -1016,17 +1020,17 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
     empty = tmp_path / "hub"
     empty.mkdir()
     monkeypatch.setenv("HF_HUB_CACHE", str(empty))
-    monkeypatch.delenv("HF_HOME", raising = False)
-    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising=False)
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.setattr(embeddings, "_model", None, raising = False)
-    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(embeddings, "_model", None, raising=False)
+    monkeypatch.setattr(embeddings, "_name", None, raising=False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     # No cache -> repo-id load forced cache-only (fails fast offline, not a hang).
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+        embeddings, "_guard_model_security", lambda name, local_only=False, display=None: None
     )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
@@ -1038,15 +1042,15 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
 def test_get_online_omits_local_files_only(monkeypatch):
     from core.rag import embeddings
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-    monkeypatch.setattr(embeddings, "_model", None, raising = False)
-    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setattr(embeddings, "_model", None, raising=False)
+    monkeypatch.setattr(embeddings, "_name", None, raising=False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     # Isolate the loader wiring from the online guard's network calls.
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+        embeddings, "_guard_model_security", lambda name, local_only=False, display=None: None
     )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
@@ -1064,7 +1068,7 @@ def test_an_unrelated_incomplete_blob_does_not_condemn_a_complete_snapshot(hf_ca
         hf_cache, "org/stray-blob", {"config.json": "{}", "model.safetensors": "x"}
     )
     blobs = Path(snapshot).parent.parent / "blobs"
-    blobs.mkdir(parents = True, exist_ok = True)
+    blobs.mkdir(parents=True, exist_ok=True)
     (blobs / "0badc0ffee.incomplete").write_text("half a file from another revision")
 
     assert hf_cache_snapshot_is_loadable("org/stray-blob") is True
@@ -1093,14 +1097,14 @@ def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypa
     snapshot = _make_cache(
         hf_cache, "org/fresh", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
     )
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-    monkeypatch.setattr(embeddings, "_model", None, raising = False)
-    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setattr(embeddings, "_model", None, raising=False)
+    monkeypatch.setattr(embeddings, "_name", None, raising=False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+        embeddings, "_guard_model_security", lambda name, local_only=False, display=None: None
     )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
@@ -1115,14 +1119,14 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
     cached there is no snapshot to prefer, so the repo id still goes to the Hub."""
     from core.rag import embeddings
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-    monkeypatch.setattr(embeddings, "_model", None, raising = False)
-    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setattr(embeddings, "_model", None, raising=False)
+    monkeypatch.setattr(embeddings, "_name", None, raising=False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+        embeddings, "_guard_model_security", lambda name, local_only=False, display=None: None
     )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
@@ -1141,7 +1145,7 @@ def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch,
 
     snapshot = tmp_path / "snap"
     dense = snapshot / "2_Dense"
-    dense.mkdir(parents = True)
+    dense.mkdir(parents=True)
     (snapshot / "config.json").write_text("{}")
     (snapshot / "modules.json").write_text(
         '[{"path": "0_Transformer"}, {"path": "1_Pooling"}, {"path": "2_Dense"}]'
@@ -1180,7 +1184,7 @@ def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeyp
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     st_mod = types.ModuleType("sentence_transformers")
-    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer=None)
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     embeddings._model = None
@@ -1221,7 +1225,7 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     st_mod = types.ModuleType("sentence_transformers")
-    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer=None)
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     embeddings._model = None
@@ -1263,7 +1267,7 @@ def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     st_mod = types.ModuleType("sentence_transformers")
-    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer=None)
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     embeddings._model = None
@@ -1317,11 +1321,11 @@ def test_the_alias_snapshot_is_the_one_loaded(monkeypatch, tmp_path):
 
     def _st(target, **_kwargs):
         loaded["target"] = target
-        return SimpleNamespace(tokenizer = None)
+        return SimpleNamespace(tokenizer=None)
 
     st_mod.SentenceTransformer = _st
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     embeddings._model = None
     embeddings._name = None
     try:
@@ -1351,8 +1355,8 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
     monkeypatch.setattr(
         embeddings,
         "_guard_model_security",
-        lambda target, local_only = False, display = None: seen.update(
-            target = target, local_only = local_only
+        lambda target, local_only=False, display=None: seen.update(
+            target=target, local_only=local_only
         ),
     )
     # Pending, but the Hub is reachable.
@@ -1365,9 +1369,9 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     st_mod = types.ModuleType("sentence_transformers")
-    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer=None)
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     embeddings._model = None
     embeddings._name = None
     try:
@@ -1430,7 +1434,7 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
     embeddings._model = None
     embeddings._name = None
     try:
-        with pytest.raises(RuntimeError, match = "unsupported architecture"):
+        with pytest.raises(RuntimeError, match="unsupported architecture"):
             embeddings._get("org/unloadable")
     finally:
         embeddings._model = None
@@ -1439,7 +1443,7 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
     assert cleared == [], "a llama fallback must not inherit a cleared marker"
 
     # It does retire once the model actually constructs.
-    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer=None)
     embeddings._model = None
     embeddings._name = None
     try:
@@ -1481,11 +1485,11 @@ def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatc
 
     def _st(target, **_kwargs):
         loaded["target"] = target
-        return SimpleNamespace(tokenizer = None)
+        return SimpleNamespace(tokenizer=None)
 
     st_mod.SentenceTransformer = _st
     monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     embeddings._model = None
     embeddings._name = None
     try:
@@ -1507,9 +1511,9 @@ def test_an_alias_cache_hit_names_the_namespace_that_supplied_it(monkeypatch, tm
     hub = tmp_path / "hub"
     repo_dir = hub / "models--sentence-transformers--all-MiniLM-L6-v2"
     snapshot = repo_dir / "snapshots" / "abc123"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (repo_dir / "refs").mkdir()
-    (repo_dir / "refs" / "main").write_text("abc123", encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text("abc123", encoding="utf-8")
     (snapshot / "config.json").write_text("{}")
     (snapshot / "model.safetensors").write_bytes(b"ST")
     monkeypatch.setattr(utils, "_hf_cache_roots", lambda: [hub])

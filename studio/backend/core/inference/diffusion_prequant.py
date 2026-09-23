@@ -51,6 +51,7 @@ PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
 def prequant_format_for(metadata: Any) -> str:
     """The on-disk format tag an offline builder should stamp for ``metadata``."""
     from .diffusion_convrot import declares_rotation
+
     return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
 
 
@@ -174,6 +175,7 @@ def _tuple_safe_globals_supported() -> bool:
     Nothing is registered unless the answer here is yes."""
     try:
         import torch
+
         parts = str(torch.__version__).split("+")[0].split(".")
         return (int(parts[0]), int(parts[1])) >= (2, 6)
     except Exception:  # noqa: BLE001 -- an unreadable version is not a supported one
@@ -289,7 +291,7 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
             "a pre-quant checkpoint cannot be deserialized without allowing arbitrary pickle "
             "globals"
         )
-    return torch.load(path, weights_only = True, **kwargs)
+    return torch.load(path, weights_only=True, **kwargs)
 
 
 def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
@@ -358,7 +360,7 @@ def local_prequant_path_ready(path: str) -> bool:
     return os.path.isfile(os.path.expanduser(path))
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class PrequantSource:
     """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo" (Hub repo
     id in ``location`` + ``filename``; ``fallback_filenames`` are tried IN ORDER when the primary
@@ -470,14 +472,14 @@ def resolve_prequant_source(
     """
     override = (path_override or "").strip()
     if override:
-        return PrequantSource(kind = "path", location = override, filename = None)
+        return PrequantSource(kind="path", location=override, filename=None)
     preferred = None
     agnostic = None
     try:
         from .diffusion_families import family_prequant_filename, family_prequant_repo
 
-        repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
-        preferred = family_prequant_filename(fam, scheme, task = task)
+        repo_id = family_prequant_repo(fam, scheme, base_repo=base_repo)
+        preferred = family_prequant_filename(fam, scheme, task=task)
         # What the same call would have resolved WITHOUT a task, which is what decides whether a fallback is safe
         # below. Skipped when no task was asked for, since then the two are the same lookup.
         agnostic = family_prequant_filename(fam, scheme) if task else preferred
@@ -497,10 +499,10 @@ def resolve_prequant_source(
         task_specific = preferred is not None and preferred != agnostic
         if task_specific:
             return PrequantSource(
-                kind = "repo",
-                location = repo_id,
-                filename = preferred,
-                declared_filenames = (preferred,),
+                kind="repo",
+                location=repo_id,
+                filename=preferred,
+                declared_filenames=(preferred,),
             )
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
@@ -510,11 +512,11 @@ def resolve_prequant_source(
             if name and name not in names:
                 names.append(name)
         return PrequantSource(
-            kind = "repo",
-            location = repo_id,
-            filename = names[0],
-            fallback_filenames = tuple(names[1:]),
-            declared_filenames = (preferred,) if preferred else (),
+            kind="repo",
+            location=repo_id,
+            filename=names[0],
+            fallback_filenames=tuple(names[1:]),
+            declared_filenames=(preferred,) if preferred else (),
         )
     return None
 
@@ -561,7 +563,7 @@ def local_prequant_scheme(path: str) -> Optional[str]:
         if is_safetensors_checkpoint(real):
             obj = read_prequant_header(real)
         else:
-            obj = _torch_load_prequant(real, map_location = "meta", mmap = True)
+            obj = _torch_load_prequant(real, map_location="meta", mmap=True)
         if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None
@@ -597,7 +599,7 @@ def usable_prequant_source(
     resolving first is what lets the source say so. Any one loadable name is enough, since the
     resolver tries them in order and the first that exists wins.
     """
-    src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
+    src = resolve_prequant_source(fam, scheme, path_override=path_override, base_repo=base_repo)
     if src is None:
         return None
     # getattr, because a source here is anything shaped like one (the planners hand round lightweight stand-ins) and a
@@ -627,7 +629,7 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(src, names = readable) is None
+            and cached_checkpoint_path(src, names=readable) is None
         ):
             return None
     if src.kind == "path":
@@ -703,7 +705,7 @@ def _cached_in_root(
     except Exception:  # noqa: BLE001 - no cache API to ask: treat as not cached
         return None
     try:
-        hit = try_to_load_from_cache(source.location, name, cache_dir = root)
+        hit = try_to_load_from_cache(source.location, name, cache_dir=root)
     except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
         return None
     # a str is the cached path; a miss is None and a known-absent file is a sentinel object
@@ -712,7 +714,7 @@ def _cached_in_root(
 
 def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
     """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
-    return cached_checkpoint_path(source, cache_dir = cache_dir) is not None
+    return cached_checkpoint_path(source, cache_dir=cache_dir) is not None
 
 
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
@@ -810,7 +812,7 @@ def load_prequantized_transformer(
             return None
 
         path = _resolve_checkpoint_path(
-            source, hf_token, cache_dir, local_files_only = local_files_only, scheme = scheme
+            source, hf_token, cache_dir, local_files_only=local_files_only, scheme=scheme
         )
         if path is None:
             return None
@@ -820,9 +822,9 @@ def load_prequantized_transformer(
         # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
         # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
         # hand back the same dict, so every check below applies to them equally.
-        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
+        ckpt = _load_prequant_checkpoint(path, map_location="cpu")
         if not _validate_checkpoint(
-            ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
+            ckpt, scheme, base, logger, min_features=min_features, fast_accum=fast_accum
         ):
             return None
         state_dict = ckpt["state_dict"]
@@ -838,7 +840,7 @@ def load_prequantized_transformer(
             cache_dir,
             path,
             config_subfolder,
-            local_files_only = local_files_only,
+            local_files_only=local_files_only,
         )
         from accelerate import init_empty_weights
 
@@ -847,7 +849,7 @@ def load_prequantized_transformer(
             transformer = transformer_cls.from_config(config)
         if prepare_model is not None:
             prepare_model(transformer, metadata)
-        transformer.load_state_dict(state_dict, strict = True, assign = True)
+        transformer.load_state_dict(state_dict, strict=True, assign=True)
         if _has_meta_tensors(transformer):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
             # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
@@ -858,7 +860,7 @@ def load_prequantized_transformer(
             # a bare key error.
             if prepare_model is not None:
                 prepare_model(transformer, metadata)
-            transformer.load_state_dict(state_dict, strict = True, assign = True)
+            transformer.load_state_dict(state_dict, strict=True, assign=True)
 
         # The ONLINE half of an activation rotation, applied here rather than in a family's ``prepare_model`` hook so
         # that no route can load a rotated checkpoint without it: the offline half is already baked into the weights
@@ -869,7 +871,7 @@ def load_prequantized_transformer(
         # fqns name the unwrapped tree.
         from .diffusion_convrot import apply_activation_rotation
 
-        apply_activation_rotation(transformer, metadata, logger = logger)
+        apply_activation_rotation(transformer, metadata, logger=logger)
 
         transformer = transformer.to(device)
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
@@ -878,7 +880,7 @@ def load_prequantized_transformer(
         # reparents the Linears; after .to() so the granularity probe reads the device tensors the GEMM will see.
         from .diffusion_transformer_quant import apply_small_m_padding
 
-        apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
+        apply_small_m_padding(transformer, scheme, metadata.get("family"), logger=logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
         # train/eval-sensitive layers cannot make prequant inference diverge.
         try:
@@ -957,11 +959,11 @@ def _download_checkpoint_name(
         if elsewhere is not None:
             try:
                 return hf_hub_download(
-                    repo_id = source.location,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = None,
-                    local_files_only = local_files_only,
+                    repo_id=source.location,
+                    filename=name,
+                    token=hf_token,
+                    cache_dir=None,
+                    local_files_only=local_files_only,
                 )
             except LocalEntryNotFoundError:  # offline with the copy right there: use it
                 return elsewhere
@@ -972,11 +974,11 @@ def _download_checkpoint_name(
             except Exception:  # noqa: BLE001 - revalidation is a bonus, never a new failure
                 return elsewhere
     return hf_hub_download(
-        repo_id = source.location,
-        filename = name,
-        token = hf_token,
-        cache_dir = cache_dir,
-        local_files_only = local_files_only,
+        repo_id=source.location,
+        filename=name,
+        token=hf_token,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
     )
 
 
@@ -1027,8 +1029,8 @@ def _resolve_checkpoint_path(
                     # Only the LAST name may swallow its own 404. Any earlier one has to let the
                     # error reach here so the next candidate is tried, which is what makes the
                     # safetensors-then-pickle preference work on a repo hosting only one of them.
-                    propagate_missing = not last,
-                    local_files_only = local_files_only,
+                    propagate_missing=not last,
+                    local_files_only=local_files_only,
                 )
             except LocalEntryNotFoundError:
                 # Caught BEFORE the base it subclasses, because the two mean different things and
@@ -1086,10 +1088,10 @@ def _load_transformer_config(
         try:
             return transformer_cls.load_config(
                 base,
-                subfolder = subfolder,
-                token = hf_token,
-                cache_dir = root,
-                local_files_only = local_files_only,
+                subfolder=subfolder,
+                token=hf_token,
+                cache_dir=root,
+                local_files_only=local_files_only,
             )
         except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc
@@ -1276,6 +1278,7 @@ def _validate_checkpoint(
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
+
         expected_require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
         if bool(ckpt_require_bf16) != expected_require_bf16:
             _warn(
@@ -1379,6 +1382,7 @@ def pin_prequantized_module(
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
     from itertools import chain
+
     try:
         return any(
             getattr(t, "is_meta", False) for t in chain(module.parameters(), module.buffers())

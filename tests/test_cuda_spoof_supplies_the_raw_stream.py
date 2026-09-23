@@ -70,7 +70,7 @@ def _probe(spoof_module: str) -> str:
             print("POST ok", handle.value)
         """
     )
-    out = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert (
         "PRE absent" in out.stdout
     ), f"the probe never staged the absence: {out.stdout}\n{out.stderr}"
@@ -105,7 +105,7 @@ def test_the_spoof_leaves_a_real_raw_stream_alone():
         print("VALUE", torch._C._cuda_getCurrentRawStream(0))
         """
     )
-    out = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert (
         "VALUE 4242" in out.stdout
     ), f"the spoof overwrote a raw-stream handle that was already there: {out.stdout}\n{out.stderr}"

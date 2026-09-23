@@ -31,7 +31,7 @@ from studiobench.fixture.corpus import (  # noqa: E402
 FROZEN = Path(__file__).resolve().parents[1] / "corpus" / "frozen"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def corpus() -> Corpus:
     return Corpus.load()
 
@@ -44,7 +44,7 @@ def _streamed_text(plan) -> str:
 def test_the_default_is_exactly_what_it_was(corpus: Corpus):
     """No argument means no change, so every earlier payload stays comparable."""
     before = plan_rung(corpus, "100K")
-    after = plan_rung(corpus, "100K", stream_tail_chars = None, dollars = False)
+    after = plan_rung(corpus, "100K", stream_tail_chars=None, dollars=False)
     assert before.streamed_chars == after.streamed_chars
     assert _streamed_text(before) == _streamed_text(after)
     assert before.streamed_chars <= STREAM_TAIL_CHARS
@@ -75,7 +75,7 @@ def test_the_tail_override_moves_the_reply_and_not_the_thread(corpus: Corpus):
     """Reply length is the variable; total thread size stays put, or the two are confounded."""
     base = plan_rung(corpus, "100K")
     for tail in (24_000, 96_000):
-        plan = plan_rung(corpus, "100K", stream_tail_chars = tail)
+        plan = plan_rung(corpus, "100K", stream_tail_chars=tail)
         assert abs(plan.streamed_chars - tail) < tail * 0.1, (tail, plan.streamed_chars)
         # Within a few percent: the seeded prefix is trimmed to compensate, so the cell measures a different
         # SPLIT of the same total rather than a bigger thread.
@@ -88,7 +88,7 @@ def test_the_tail_override_moves_the_reply_and_not_the_thread(corpus: Corpus):
 
 def test_the_tail_override_grows_monotonically(corpus: Corpus):
     seen = [
-        plan_rung(corpus, "100K", stream_tail_chars = t).streamed_chars
+        plan_rung(corpus, "100K", stream_tail_chars=t).streamed_chars
         for t in (6_000, 12_000, 24_000, 48_000, 96_000)
     ]
     assert seen == sorted(seen), seen
@@ -114,7 +114,7 @@ def test_the_frozen_corpus_now_carries_math_of_its_own(corpus: Corpus):
     """
     text = "".join(
         json.loads(line)["reasoning"] + json.loads(line)["content"]
-        for line in (FROZEN / "units.jsonl").read_text(encoding = "utf-8").splitlines()
+        for line in (FROZEN / "units.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
     assert text.count("$") > 0, "corpus v2 puts math in the frozen units; this found none"
@@ -130,8 +130,8 @@ def test_dollars_reach_the_streamed_turn_and_nothing_else(corpus: Corpus):
     `$` before the flag is applied. What the flag has to do now is add MORE, and add them only
     where they belong.
     """
-    plain = plan_rung(corpus, "100K", stream_tail_chars = 24_000)
-    salted = plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True)
+    plain = plan_rung(corpus, "100K", stream_tail_chars=24_000)
+    salted = plan_rung(corpus, "100K", stream_tail_chars=24_000, dollars=True)
     assert _streamed_text(salted).count("$") > _streamed_text(plain).count("$")
     # The seeded prefix is rendered once at mount and never re-preprocessed, so dollars there would
     # change the corpus without changing what the per-frame path is asked to do. v2's own math is
@@ -150,8 +150,8 @@ def test_the_flag_is_not_a_no_op_under_corpus_v2(corpus: Corpus):
     are NOT math, which the currency pass has to escape or exclude rather than skip. If a future
     corpus makes even that indistinguishable, this fails and the flag should be deleted.
     """
-    plain = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000))
-    salted = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True))
+    plain = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars=24_000))
+    salted = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars=24_000, dollars=True))
     assert salted != plain
     # Shell-shaped and price-shaped, which is what makes them false positives rather than math.
     added = salted.count("$") - plain.count("$")
@@ -160,8 +160,8 @@ def test_the_flag_is_not_a_no_op_under_corpus_v2(corpus: Corpus):
 
 
 def test_dollars_are_deterministic(corpus: Corpus):
-    a = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True))
-    b = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars = 24_000, dollars = True))
+    a = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars=24_000, dollars=True))
+    b = _streamed_text(plan_rung(corpus, "100K", stream_tail_chars=24_000, dollars=True))
     assert a == b
 
 
@@ -219,7 +219,7 @@ def test_a_long_tail_really_does_outlast_the_standard_film(corpus: Corpus):
     assert default_s < stop.t_start_ms / 1000.0, default_s
 
     long_s = (
-        plan_rung(corpus, "100K", stream_tail_chars = 96_000).streamed_chars / field_chars_per_sec
+        plan_rung(corpus, "100K", stream_tail_chars=96_000).streamed_chars / field_chars_per_sec
     )
     assert long_s > STANDARD.duration_ms / 1000.0, long_s
     assert long_s > stop.t_start_ms / 1000.0
@@ -250,7 +250,7 @@ class _FakePage:
     def evaluate(
         self,
         script,
-        arg = None,
+        arg=None,
     ):
         if "isRunning" in script:
             return self.running
@@ -285,15 +285,16 @@ def _stop_ctx(page: _FakePage, budget_ms: int = 3_000):
     exist. The truncation test below keeps a deliberately tiny one for its own reason."""
 
     from studiobench.runtime.types import ActionContext
+
     return ActionContext(
-        page = page,
-        cdp = None,
-        cell = None,
-        window = None,
-        args = {},
-        budget_ms = budget_ms,
-        dom = None,
-        log = lambda _m: None,
+        page=page,
+        cdp=None,
+        cell=None,
+        window=None,
+        args={},
+        budget_ms=budget_ms,
+        dom=None,
+        log=lambda _m: None,
     )
 
 
@@ -312,10 +313,10 @@ def test_stop_refuses_to_truncate_the_cell_s_own_reply():
     """
     from studiobench.scene.actions import stop_generation
 
-    page = _FakePage(running = True)
+    page = _FakePage(running=True)
     # 200 ms: too small to hold the throwaway turn at all, so the drain wait is zero and the refusal
     # below is the one this test is about rather than the budget check beside it.
-    result = stop_generation(_stop_ctx(page, budget_ms = 200))
+    result = stop_generation(_stop_ctx(page, budget_ms=200))
 
     assert result.ran is False, "a stop that would truncate the measured reply must not run"
     assert "truncate" in (result.reason or "")
@@ -328,7 +329,7 @@ def test_stop_still_sends_its_own_turn_when_nothing_is_running():
     """The default path, unchanged: with the pinned tail nothing is ever running at this slot."""
     from studiobench.scene.actions import stop_generation
 
-    page = _FakePage(running = False)
+    page = _FakePage(running=False)
     result = stop_generation(_stop_ctx(page))
 
     assert "one more" in page.filled, "stop must still get its own generation to stop"

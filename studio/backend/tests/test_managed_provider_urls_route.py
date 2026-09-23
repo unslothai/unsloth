@@ -46,7 +46,7 @@ def make_client(monkeypatch):
 
     monkeypatch.setattr(settings, "set_managed_private_provider_urls_allowed", _set)
 
-    def _build(account, via_api_key = False):
+    def _build(account, via_api_key=False):
         app = FastAPI()
         app.include_router(settings.router)
 
@@ -59,7 +59,7 @@ def make_client(monkeypatch):
 
         app.dependency_overrides[settings.get_current_subject] = subject
         app.dependency_overrides[settings.authenticated_via_api_key] = lambda: via_api_key
-        return TestClient(app, raise_server_exceptions = False)
+        return TestClient(app, raise_server_exceptions=False)
 
     return _build, state
 
@@ -68,7 +68,7 @@ def test_owner_reads_and_writes(make_client):
     build, state = make_client
     with build(OWNER) as client:
         assert client.get("/managed-provider-urls").json()["allowed"] is False
-        put = client.put("/managed-provider-urls", json = {"allowed": True})
+        put = client.put("/managed-provider-urls", json={"allowed": True})
         assert put.status_code == 200, put.text
         assert put.json()["allowed"] is True
         assert state["allowed"] is True
@@ -79,7 +79,7 @@ def test_response_reports_the_default_and_the_env_override(make_client, monkeypa
     from core.inference.providers import _BLOCK_PRIVATE_ENV
 
     build, _ = make_client
-    monkeypatch.delenv(_BLOCK_PRIVATE_ENV, raising = False)
+    monkeypatch.delenv(_BLOCK_PRIVATE_ENV, raising=False)
     with build(OWNER) as client:
         body = client.get("/managed-provider-urls").json()
     assert body["default_allowed"] is False
@@ -102,7 +102,7 @@ def test_managed_account_may_read(make_client):
 def test_managed_account_may_not_write(make_client):
     build, state = make_client
     with build(ALICE) as client:
-        response = client.put("/managed-provider-urls", json = {"allowed": True})
+        response = client.put("/managed-provider-urls", json={"allowed": True})
     assert response.status_code == 403, response.text
     assert state["allowed"] is False
 
@@ -110,8 +110,8 @@ def test_managed_account_may_not_write(make_client):
 def test_api_key_session_may_not_write(make_client):
     """An sk-unsloth key is owner-authenticated but not a UI session."""
     build, state = make_client
-    with build(OWNER, via_api_key = True) as client:
-        response = client.put("/managed-provider-urls", json = {"allowed": True})
+    with build(OWNER, via_api_key=True) as client:
+        response = client.put("/managed-provider-urls", json={"allowed": True})
     assert response.status_code == 403, response.text
     assert state["allowed"] is False
 
@@ -120,6 +120,6 @@ def test_api_key_session_may_not_write(make_client):
 def test_non_boolean_body_is_refused(make_client, body):
     build, state = make_client
     with build(OWNER) as client:
-        response = client.put("/managed-provider-urls", json = body)
+        response = client.put("/managed-provider-urls", json=body)
     assert response.status_code == 422, response.text
     assert state["allowed"] is False

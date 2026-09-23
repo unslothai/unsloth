@@ -219,10 +219,10 @@ def _require_node() -> None:
     try:
         result = subprocess.run(
             ["node", "--experimental-strip-types", "--version"],
-            capture_output = True,
-            text = True,
+            capture_output=True,
+            text=True,
             # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
-            timeout = 60,
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         pytest.skip("node could not be started")
@@ -240,11 +240,11 @@ def _between(source: str, start: str, end: str) -> str:
 
 def _build_harness(run_dir: Path) -> None:
     """Slice the mount path verbatim out of the hook."""
-    source = HOOK.read_text(encoding = "utf-8")
+    source = HOOK.read_text(encoding="utf-8")
     # The real gate, with its imports dropped: the preamble supplies those two ponyfills.
     gate = "\n".join(
         line
-        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        for line in WAIT_GATE.read_text(encoding="utf-8").splitlines()
         if not line.startswith(
             (
                 "import ",
@@ -282,15 +282,15 @@ def _build_harness(run_dir: Path) -> None:
     assert "async function refreshAndWaitForServerModel(" in sync
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + gate + "\n" + poll + "\n" + sync + "\n" + refresh,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
 
 def _run(script_body: str) -> dict:
     _require_node()
-    TEMP.mkdir(parents = True, exist_ok = True)
+    TEMP.mkdir(parents=True, exist_ok=True)
     # Its own directory per invocation: a shared file lets one runner read another's rewrite.
-    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
+    run_dir = Path(tempfile.mkdtemp(prefix="run", dir=TEMP))
     _build_harness(run_dir)
     script = (
         textwrap.dedent(
@@ -362,17 +362,17 @@ def _run(script_body: str) -> dict:
         """
         )
     )
-    (run_dir / "run.mts").write_text(script, encoding = "utf-8")
+    (run_dir / "run.mts").write_text(script, encoding="utf-8")
     completed = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(run_dir),
-        capture_output = True,
-        text = True,
+        cwd=str(run_dir),
+        capture_output=True,
+        text=True,
         # Explicit: text alone decodes with the Windows ANSI code page, which mangles the
         # non-ASCII toast copy node emits as UTF-8.
-        encoding = "utf-8",
-        timeout = 120,
-        env = dict(os.environ, NODE_NO_WARNINGS = "1"),
+        encoding="utf-8",
+        timeout=120,
+        env=dict(os.environ, NODE_NO_WARNINGS="1"),
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}\nstdout: {completed.stdout}"
     last = [line for line in completed.stdout.strip().splitlines() if line.strip()][-1]
@@ -588,7 +588,7 @@ def test_a_failing_lora_scan_takes_the_model_list_with_it():
 def test_the_mount_refresh_does_not_wait_on_the_lora_inventory():
     """So the mount reads models and status only. The deferred inventory refresh 1.2s later
     owns the LoRA list, and its failing is survivable: the picker already has its models."""
-    source = CHAT_PAGE.read_text(encoding = "utf-8")
+    source = CHAT_PAGE.read_text(encoding="utf-8")
     effect = _between(source, "if (getTrainingCompareHandoff()) return;", "}, 1200);")
     assert re.search(r"void refresh\(\{\s*includeLoras: false,", effect), effect
     assert "waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint" in effect
@@ -651,11 +651,11 @@ def test_a_stalled_status_read_does_not_park_the_poll_on_one_request():
 
 def test_the_shipped_per_read_cap_is_the_one_the_harness_stands_in_for():
     """The harness shortens the cap so no test waits it out; this pins what really ships."""
-    gate = WAIT_GATE.read_text(encoding = "utf-8")
+    gate = WAIT_GATE.read_text(encoding="utf-8")
     assert "export const STATUS_POLL_TIMEOUT_MS = 30_000;" in gate
     assert re.search(r"return parent\s*\?\s*pollSignal\(parent, STATUS_POLL_TIMEOUT_MS\)", gate)
     adapter = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert "statusPollSignal(options?.abortSignal)" in adapter
     assert "beginServerModelWait(options?.abortSignal)" in adapter

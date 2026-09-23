@@ -29,7 +29,7 @@ DEFAULT_SECRET = "not-a-secret"
 
 
 def test_the_hub_readme_describes_the_shipped_images():
-    text = HUB_README.read_text(encoding = "utf-8")
+    text = HUB_README.read_text(encoding="utf-8")
     for needle in (
         "unsloth/unsloth:core",
         "`latest`",
@@ -59,7 +59,7 @@ def test_the_hub_readme_explains_the_studio_volume():
     before the code/data split is migrated with its old code kept aside. Both facts,
     the way back to an older image, and what `docker rm` still discards have to be on
     the page, since the quick start above them mounts the volume by default."""
-    text = HUB_README.read_text(encoding = "utf-8")
+    text = HUB_README.read_text(encoding="utf-8")
     for needle in (
         "-v unsloth-studio:/opt/unsloth-studio",
         "/opt/unsloth-studio-app",
@@ -78,7 +78,7 @@ def test_the_hub_readme_explains_the_studio_volume():
     # Read from the section that runs the image: the one-line Docker teaser higher up carries the
     # same two links, so a check over the whole file would pass with them gone from here.
     running = [
-        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+        s for s in _docker_sections(REPO_README.read_text(encoding="utf-8")) if "docker run" in s
     ]
     assert len(running) == 1, "expected exactly one README Docker section with a docker run"
     quick_start = running[0]
@@ -107,7 +107,7 @@ def _docker_sections(text: str) -> list[str]:
 
 
 def test_the_repo_readme_run_command_matches_the_image():
-    text = REPO_README.read_text(encoding = "utf-8")
+    text = REPO_README.read_text(encoding="utf-8")
     sections = _docker_sections(text)
     assert sections, "the README no longer has a `#### Docker` section"
     running = [s for s in sections if "docker run" in s]
@@ -131,15 +131,15 @@ def test_the_repo_readme_run_command_matches_the_image():
             assert stale not in other, f"a README Docker section still has {stale!r}"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def sync_job() -> dict:
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     assert "hub-readme" in doc["jobs"], "the Hub README sync job is missing"
     return doc["jobs"]["hub-readme"]
 
 
 def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     tags = [s for s in doc["jobs"]["merge-studio"]["steps"] if s.get("id") == "meta"][0]["with"][
         "tags"
     ]
@@ -166,7 +166,7 @@ def _run_sync(
     # what the Hub reports after the PATCH; a file, so the README's backticks and
     # dollar signs never pass through the stub's shell
     live = tmp_path / "live.json"
-    live.write_text(json.dumps({"full_description": live_after_patch}), encoding = "utf-8")
+    live.write_text(json.dumps({"full_description": live_after_patch}), encoding="utf-8")
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
@@ -182,7 +182,7 @@ def _run_sync(
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
         f"  *) cat {live} ;;\n"
         "esac\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
@@ -216,18 +216,18 @@ def _run_sync(
         )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
-        capture_output = True,
-        text = True,
-        env = env,
-        cwd = str(tmp_path),
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(tmp_path),
+        timeout=60,
     )
-    return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+    return res, log.read_text(encoding="utf-8") if log.exists() else ""
 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
     step = sync_job["steps"][-1]
-    res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
+    res, log = _run_sync(step, tmp_path, live_after_patch=HUB_README.read_text(encoding="utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
@@ -246,7 +246,7 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
     token is not allowed", whatever its scopes; only the namespace-scoped route
     accepts it. That 403 failed the sync on every publish before this test existed."""
     step = sync_job["steps"][-1]
-    _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
+    _, log = _run_sync(step, tmp_path, live_after_patch=HUB_README.read_text(encoding="utf-8"))
     assert "/v2/repositories/" not in log
     assert "/v2/namespaces/unsloth/repositories/unsloth" in log
 
@@ -255,20 +255,20 @@ def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: P
     """A 200 from PATCH is not proof. The page is read back and compared, so a token
     without description rights cannot leave the job green and the page stale."""
     step = sync_job["steps"][-1]
-    res, _ = _run_sync(step, tmp_path, live_after_patch = "# the old page")
+    res, _ = _run_sync(step, tmp_path, live_after_patch="# the old page")
     assert res.returncode != 0, "the sync reported success while the page stayed stale"
     assert "does not match" in res.stdout + res.stderr
 
 
 def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
     step = sync_job["steps"][-1]
-    res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
+    res, log = _run_sync(step, tmp_path, live_after_patch="", token="")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
 
 
 def test_the_hub_readme_matches_what_each_image_ships():
-    text = HUB_README.read_text(encoding = "utf-8")
+    text = HUB_README.read_text(encoding="utf-8")
     # whisper.cpp comes from Studio's setup, so only that image has it
     assert "The `latest` image adds whisper.cpp" in text
     # SYNC disables the notebooks entirely; REFRESH only skips the GitHub fetch
@@ -281,13 +281,13 @@ def test_the_hub_readme_matches_what_each_image_ships():
 
 def test_both_images_declare_both_licenses():
     """metadata-action labels both images Apache-2.0, but they carry Studio's AGPL-3.0 code."""
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     assert text.count("org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only") == 2
 
 
 def test_the_studio_image_does_not_ship_the_uv_download_cache():
     """install.sh's uv cache sits under the Studio home, which /root/.cache never reached: ~9 GB baked into :latest."""
-    body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
+    body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding="utf-8")
     # an image that points uv elsewhere (the code/data split does) must drop that cache
     assert "rm -rf" in body
     cleanup = body[body.index("rm -rf") :]

@@ -55,7 +55,7 @@ def normalize_domain(value: Any) -> str:
     return ascii_domain
 
 
-@lru_cache(maxsize = 256)
+@lru_cache(maxsize=256)
 def _normalized_domain_tuple(raw_domains: tuple) -> tuple:
     """``normalize_domain`` over an all-``str`` list, deduplicated, order preserved.
 

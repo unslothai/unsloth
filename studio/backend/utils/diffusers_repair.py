@@ -96,6 +96,7 @@ def _diffusers_is_an_index_install() -> bool:
     """
     try:
         from importlib.metadata import distribution
+
         dist = distribution("diffusers")
     except Exception:  # noqa: BLE001 - no diffusers at all is the installer's job, not this one
         return False
@@ -114,6 +115,7 @@ def _repair_env() -> dict[str, str]:
     env["VIRTUAL_ENV"] = sys.prefix
     try:
         from utils.mlx_repair import _uv_executable
+
         uv = _uv_executable()
     except Exception:  # noqa: BLE001 - without uv the installer falls back to pip
         uv = None
@@ -151,12 +153,12 @@ def _run_repair() -> None:
     try:
         proc = subprocess.Popen(
             [sys.executable, str(_INSTALLER), "--repair-diffusers-main"],
-            env = utf8_child_env(_repair_env()),
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
+            env=utf8_child_env(_repair_env()),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             **kwargs,
         )
     except OSError as exc:
@@ -165,10 +167,10 @@ def _run_repair() -> None:
     # Tracked, so a backend that exits mid-install takes the installer and its uv/git children down.
     adopt_pid(proc.pid)
     try:
-        output, _ = proc.communicate(timeout = _REPAIR_TIMEOUT_S)
+        output, _ = proc.communicate(timeout=_REPAIR_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         # The whole tree, before the gate reopens: uv keeps rewriting diffusers after its parent dies.
-        terminate_pid(proc.pid, owner_verified = True)
+        terminate_pid(proc.pid, owner_verified=True)
         proc.kill()
         proc.wait()
         logger.warning("diffusers self-heal timed out after %ss", _REPAIR_TIMEOUT_S)
@@ -201,7 +203,7 @@ def start_diffusers_autorepair_if_needed() -> bool:
     with _lock:
         if _thread is not None:
             return False
-        _thread = threading.Thread(target = _run_repair, daemon = True, name = "diffusers-autorepair")
+        _thread = threading.Thread(target=_run_repair, daemon=True, name="diffusers-autorepair")
         _thread.start()
     logger.info(
         "checking for the pinned Diffusers main build in the background. Set %s=1 to disable.",

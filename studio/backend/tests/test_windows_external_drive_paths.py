@@ -25,9 +25,9 @@ class _HTTPException(Exception):
 
 def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict:
     """Exec one top-level function from routes/models.py without importing the module (which pulls in FastAPI)."""
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding="utf-8"))
     fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    module = ast.Module(body = [fn], type_ignores = [])
+    module = ast.Module(body=[fn], type_ignores=[])
     ast.fix_missing_locations(module)
     ns = {"os": os, "Path": Path, "Optional": Optional}
     if ns_extra:
@@ -61,7 +61,7 @@ def test_macos_volume_roots_lists_readable_mounts(monkeypatch, tmp_path):
     volumes = tmp_path / "Volumes"
     external = volumes / "External SSD"
     unreadable = volumes / "Unavailable"
-    external.mkdir(parents = True)
+    external.mkdir(parents=True)
     unreadable.mkdir()
     monkeypatch.setattr(external_media.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(external_media.os, "access", lambda path, _mode: Path(path) == external)
@@ -72,7 +72,7 @@ def test_macos_volume_roots_lists_readable_mounts(monkeypatch, tmp_path):
 def test_windows_drive_roots_lists_readable_drives(monkeypatch):
     _stub_windows(monkeypatch, {"C", "D", "E"})
 
-    roots = external_media.windows_drive_roots(drive_letters = "CDEF")
+    roots = external_media.windows_drive_roots(drive_letters="CDEF")
 
     # F is absent, so it is skipped; the rest are exposed in order.
     assert roots == [Path("C:\\"), Path("D:\\"), Path("E:\\")]
@@ -81,7 +81,7 @@ def test_windows_drive_roots_lists_readable_drives(monkeypatch):
 def test_windows_drive_roots_skips_absent_and_unreadable(monkeypatch):
     _stub_windows(monkeypatch, {"C"})
 
-    roots = external_media.windows_drive_roots(drive_letters = "CDE")
+    roots = external_media.windows_drive_roots(drive_letters="CDE")
 
     assert roots == [Path("C:\\")]
 
@@ -90,7 +90,7 @@ def test_windows_drive_roots_ignores_bad_letters_and_dedupes(monkeypatch):
     _stub_windows(monkeypatch, {"C", "D"})
 
     roots = external_media.windows_drive_roots(
-        drive_letters = ["c:", "C", "D", "1", "AB", "", "  d  "],
+        drive_letters=["c:", "C", "D", "1", "AB", "", "  d  "],
     )
 
     assert roots == [Path("C:\\"), Path("D:\\")]
@@ -104,7 +104,7 @@ def test_readable_dir_within_times_out(monkeypatch):
     monkeypatch.setattr(external_media.os.path, "isdir", lambda p: time.sleep(5) or True)
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
     start = time.monotonic()
-    ok = external_media._readable_dir_within("Z:\\", timeout = 0.2)
+    ok = external_media._readable_dir_within("Z:\\", timeout=0.2)
     elapsed = time.monotonic() - start
     assert ok is False
     assert elapsed < 3.0  # returned on the timeout, did not wait out the 5s stall
@@ -113,7 +113,7 @@ def test_readable_dir_within_times_out(monkeypatch):
 def test_readable_dir_within_reports_fast_probe(monkeypatch):
     monkeypatch.setattr(external_media.os.path, "isdir", lambda p: True)
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
-    assert external_media._readable_dir_within("C:\\", timeout = 2.0) is True
+    assert external_media._readable_dir_within("C:\\", timeout=2.0) is True
 
 
 def test_windows_drive_roots_skips_hung_drive(monkeypatch):
@@ -140,7 +140,7 @@ def test_windows_drive_roots_skips_hung_drive(monkeypatch):
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
 
     start = time.monotonic()
-    roots = external_media.windows_drive_roots(drive_letters = "CD")
+    roots = external_media.windows_drive_roots(drive_letters="CD")
     elapsed = time.monotonic() - start
 
     assert roots == [Path("C:\\")]
@@ -172,7 +172,7 @@ def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
 
     start = time.monotonic()
-    roots = external_media.windows_drive_roots(drive_letters = "CDEF")
+    roots = external_media.windows_drive_roots(drive_letters="CDEF")
     elapsed = time.monotonic() - start
 
     assert roots == [Path("C:\\")]
@@ -183,7 +183,7 @@ def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
 def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     # End-to-end wiring: windows_drive_roots() output flows into the browse
     # allowlist built by routes/models.py, mirroring the Linux media-mounts test.
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding="utf-8"))
     function_names = {
         "_build_browse_allowlist",
         "_browse_relative_parts",
@@ -197,34 +197,34 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in function_names
     ]
-    module = ast.Module(body = functions, type_ignores = [])
+    module = ast.Module(body=functions, type_ignores=[])
     ast.fix_missing_locations(module)
 
     home = tmp_path / "home"
     drive_root = tmp_path / "D_drive"
     model_dir = drive_root / "modelsAI" / "gguf"
     home.mkdir()
-    model_dir.mkdir(parents = True)
+    model_dir.mkdir(parents=True)
 
     fake_paths = SimpleNamespace(
-        hf_default_cache_dir = lambda: tmp_path / "missing-default-hf",
-        legacy_hf_cache_dir = lambda: tmp_path / "missing-legacy-hf",
-        well_known_model_dirs = lambda: [],
-        studio_root = lambda: tmp_path / "missing-studio",
-        outputs_root = lambda: tmp_path / "missing-outputs",
-        exports_root = lambda: tmp_path / "missing-exports",
+        hf_default_cache_dir=lambda: tmp_path / "missing-default-hf",
+        legacy_hf_cache_dir=lambda: tmp_path / "missing-legacy-hf",
+        well_known_model_dirs=lambda: [],
+        studio_root=lambda: tmp_path / "missing-studio",
+        outputs_root=lambda: tmp_path / "missing-outputs",
+        exports_root=lambda: tmp_path / "missing-exports",
     )
     fake_external_media = SimpleNamespace(
-        linux_run_media_mount_roots = lambda: [],
-        macos_volume_roots = lambda: [],
-        windows_drive_roots = lambda: [drive_root],
+        linux_run_media_mount_roots=lambda: [],
+        macos_volume_roots=lambda: [],
+        windows_drive_roots=lambda: [drive_root],
     )
     fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(
-        list_scan_folders = lambda: [],
-        contains_sensitive_path_component = lambda _p: False,
+        list_scan_folders=lambda: [],
+        contains_sensitive_path_component=lambda _p: False,
         # The simulated D:\ root maps to a tmp_path dir, not a denied system path.
-        is_denied_system_path = lambda _p: False,
+        is_denied_system_path=lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
@@ -237,7 +237,7 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
         "Optional": Optional,
         "_safe_is_dir": lambda p: Path(p).is_dir(),
         "_resolve_hf_cache_dir": lambda: tmp_path / "missing-hf",
-        "logger": SimpleNamespace(debug = lambda *_args, **_kwargs: None),
+        "logger": SimpleNamespace(debug=lambda *_args, **_kwargs: None),
     }
     exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
 
@@ -252,13 +252,13 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
     # Double-probe fix: a browse request probes the drive/media roots once and
     # passes them in, so _build_browse_allowlist must NOT scan
     # windows_drive_roots() again (a disconnected drive would double the stall).
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding="utf-8"))
     functions = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_build_browse_allowlist"
     ]
-    module = ast.Module(body = functions, type_ignores = [])
+    module = ast.Module(body=functions, type_ignores=[])
     ast.fix_missing_locations(module)
 
     drive_root = tmp_path / "D_drive"
@@ -275,20 +275,20 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
         return []
 
     fake_paths = SimpleNamespace(
-        hf_default_cache_dir = lambda: tmp_path / "missing-default-hf",
-        legacy_hf_cache_dir = lambda: tmp_path / "missing-legacy-hf",
-        well_known_model_dirs = lambda: [],
-        studio_root = lambda: tmp_path / "missing-studio",
-        outputs_root = lambda: tmp_path / "missing-outputs",
-        exports_root = lambda: tmp_path / "missing-exports",
+        hf_default_cache_dir=lambda: tmp_path / "missing-default-hf",
+        legacy_hf_cache_dir=lambda: tmp_path / "missing-legacy-hf",
+        well_known_model_dirs=lambda: [],
+        studio_root=lambda: tmp_path / "missing-studio",
+        outputs_root=lambda: tmp_path / "missing-outputs",
+        exports_root=lambda: tmp_path / "missing-exports",
     )
     fake_external_media = SimpleNamespace(
-        linux_run_media_mount_roots = _media_roots,
-        macos_volume_roots = lambda: [],
-        windows_drive_roots = _drive_roots,
+        linux_run_media_mount_roots=_media_roots,
+        macos_volume_roots=lambda: [],
+        windows_drive_roots=_drive_roots,
     )
     fake_paths.external_media = fake_external_media
-    fake_studio_db = SimpleNamespace(list_scan_folders = lambda: [])
+    fake_studio_db = SimpleNamespace(list_scan_folders=lambda: [])
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_studio_db)
@@ -299,7 +299,7 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
         "Optional": Optional,
         "_safe_is_dir": lambda p: Path(p).is_dir(),
         "_resolve_hf_cache_dir": lambda: tmp_path / "missing-hf",
-        "logger": SimpleNamespace(debug = lambda *_args, **_kwargs: None),
+        "logger": SimpleNamespace(debug=lambda *_args, **_kwargs: None),
     }
     exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
     build = ns["_build_browse_allowlist"]
@@ -322,7 +322,7 @@ def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
     root = tmp_path / "models_root"
     child = root / "gguf" / "qwen"
     sibling = tmp_path / "models_root_evil"
-    child.mkdir(parents = True)
+    child.mkdir(parents=True)
     sibling.mkdir()
 
     is_inside = ns["_is_path_inside_allowlist"]
@@ -350,13 +350,13 @@ def test_is_path_inside_allowlist_windows_drive_root_descendants():
     import ntpath
 
     win_os = SimpleNamespace(
-        sep = "\\",
-        path = SimpleNamespace(
-            normcase = ntpath.normcase,
-            realpath = lambda p: str(p),
-            splitdrive = ntpath.splitdrive,
-            dirname = ntpath.dirname,
-            commonpath = ntpath.commonpath,
+        sep="\\",
+        path=SimpleNamespace(
+            normcase=ntpath.normcase,
+            realpath=lambda p: str(p),
+            splitdrive=ntpath.splitdrive,
+            dirname=ntpath.dirname,
+            commonpath=ntpath.commonpath,
         ),
     )
     ns = _extract_routes_function("_is_path_inside_allowlist", {"os": win_os})

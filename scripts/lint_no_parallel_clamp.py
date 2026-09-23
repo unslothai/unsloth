@@ -123,7 +123,7 @@ def _findings_for_tree(
 def scan_source(source: str, filename: str) -> list[tuple[str, int, str]]:
     """(file, line, reason) per finding. Unparseable files are left to compileall."""
     try:
-        tree = ast.parse(source, filename = filename)
+        tree = ast.parse(source, filename=filename)
     except SyntaxError:
         return []
     return _findings_for_tree(tree, source.splitlines(), filename)
@@ -137,7 +137,7 @@ def scan_paths(root: Path) -> tuple[list[tuple[str, int, str]], int]:
             continue
         scanned += 1
         try:
-            source = path.read_text(encoding = "utf-8", errors = "replace")
+            source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
@@ -184,31 +184,31 @@ def _self_test() -> int:
             failures += 1
             print(
                 f"self-test: expected {expected} finding(s), got {got} for:\n{source}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
     if failures:
-        print(f"self-test FAILED ({failures} case(s))", file = sys.stderr)
+        print(f"self-test FAILED ({failures} case(s))", file=sys.stderr)
         return 1
     print(f"self-test passed ({len(_SELF_TEST_CASES)} cases)")
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--self-test", action = "store_true", help = "check the rule, scan nothing")
-    parser.add_argument("--path", type = Path, default = DEFAULT_SCAN_DIR, help = "directory to scan")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true", help="check the rule, scan nothing")
+    parser.add_argument("--path", type=Path, default=DEFAULT_SCAN_DIR, help="directory to scan")
     args = parser.parse_args()
 
     if args.self_test:
         return _self_test()
 
     if not args.path.is_dir():
-        print(f"ERROR: {args.path} is not a directory", file = sys.stderr)
+        print(f"ERROR: {args.path} is not a directory", file=sys.stderr)
         return 2
 
     found, scanned = scan_paths(args.path)
     if not scanned:
-        print(f"ERROR: no Python files under {args.path}", file = sys.stderr)
+        print(f"ERROR: no Python files under {args.path}", file=sys.stderr)
         return 2
     if found:
         for filename, lineno, what in found:
@@ -217,7 +217,7 @@ def main() -> int:
                 f"a user setting: launch fewer only for a real capability or VRAM limit, and mark "
                 f"it '{ALLOW_MARKER} <reason>'.",
             )
-        print(f"{len(found)} silent parallel-slot downgrade(s)", file = sys.stderr)
+        print(f"{len(found)} silent parallel-slot downgrade(s)", file=sys.stderr)
         return 1
     print(f"no silent parallel-slot downgrades (scanned {scanned} files)")
     return 0

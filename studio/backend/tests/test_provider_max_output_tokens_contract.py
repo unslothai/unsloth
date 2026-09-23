@@ -185,7 +185,7 @@ def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db
     assert {p["id"] for p in providers_db.list_providers()} == {"old-custom", "old-openai"}
 
     # And the migrated row now accepts one.
-    assert providers_db.update_provider(id = "old-custom", max_output_tokens = 262144)
+    assert providers_db.update_provider(id="old-custom", max_output_tokens=262144)
     assert _raw_override(isolated_providers_db, "old-custom") == 262144
     assert _raw_override(isolated_providers_db, "old-openai") is None
 
@@ -215,12 +215,12 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     """The revert case. The old code selects * and inserts without naming the column,
     so a migrated file must stay readable and writable by it."""
     providers_db.create_provider(
-        id = "new-custom",
-        provider_type = "custom",
-        display_name = "New Custom",
-        base_url = "https://example.com/v1",
-        models = ["vendor/model"],
-        max_output_tokens = 384000,
+        id="new-custom",
+        provider_type="custom",
+        display_name="New Custom",
+        base_url="https://example.com/v1",
+        models=["vendor/model"],
+        max_output_tokens=384000,
     )
 
     conn = sqlite3.connect(str(isolated_providers_db))
@@ -260,14 +260,14 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
 
 def _create(payload: ProviderCreate):
     return asyncio.run(
-        providers_route.create_provider_config(payload, credential = CREDENTIAL, via_api_key = False)
+        providers_route.create_provider_config(payload, credential=CREDENTIAL, via_api_key=False)
     )
 
 
 def _update(provider_id: str, payload: ProviderUpdate):
     return asyncio.run(
         providers_route.update_provider_config(
-            provider_id, payload, credential = CREDENTIAL, via_api_key = False
+            provider_id, payload, credential=CREDENTIAL, via_api_key=False
         )
     )
 
@@ -280,13 +280,13 @@ def test_a_non_custom_provider_accepts_an_explicit_null_override(
     an unrelated edit of a row with no override -- a rename, a model change, a key
     rotation -- sends the null along and rejecting it failed the whole edit."""
     providers_db.create_provider(
-        id = f"{provider_type}-1",
-        provider_type = provider_type,
-        display_name = provider_type,
-        base_url = "https://example.com/v1",
+        id=f"{provider_type}-1",
+        provider_type=provider_type,
+        display_name=provider_type,
+        base_url="https://example.com/v1",
     )
     updated = _update(
-        f"{provider_type}-1", ProviderUpdate(display_name = "Renamed", max_output_tokens = None)
+        f"{provider_type}-1", ProviderUpdate(display_name="Renamed", max_output_tokens=None)
     )
     assert updated.display_name == "Renamed"
     assert updated.max_output_tokens is None
@@ -300,13 +300,13 @@ def test_every_provider_type_but_codex_takes_a_real_override(
     """A documented per-model cap still wins in the frontend; the override replaces the
     32,768-token fallback every provider reaches for an unlisted model."""
     providers_db.create_provider(
-        id = f"{provider_type}-1",
-        provider_type = provider_type,
-        display_name = provider_type,
-        base_url = "https://example.com/v1",
+        id=f"{provider_type}-1",
+        provider_type=provider_type,
+        display_name=provider_type,
+        base_url="https://example.com/v1",
     )
     assert (
-        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 262144)).max_output_tokens
+        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens=262144)).max_output_tokens
         == 262144
     )
     assert _raw_override(provider_routes, f"{provider_type}-1") == 262144
@@ -316,13 +316,13 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     """Codex routing, model list and output cap are fixed, so a stored override would
     never be read."""
     providers_db.create_provider(
-        id = "openai_codex-1",
-        provider_type = "openai_codex",
-        display_name = "ChatGPT",
-        base_url = "https://chatgpt.com/backend-api/codex",
+        id="openai_codex-1",
+        provider_type="openai_codex",
+        display_name="ChatGPT",
+        base_url="https://chatgpt.com/backend-api/codex",
     )
     with pytest.raises(HTTPException) as error:
-        _update("openai_codex-1", ProviderUpdate(max_output_tokens = 65536))
+        _update("openai_codex-1", ProviderUpdate(max_output_tokens=65536))
     assert error.value.status_code == 400
     assert _raw_override(provider_routes, "openai_codex-1") is None
 
@@ -331,9 +331,9 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     with pytest.raises(HTTPException) as created:
         _create(
             ProviderCreate(
-                provider_type = "openai_codex",
-                display_name = "ChatGPT",
-                max_output_tokens = 65536,
+                provider_type="openai_codex",
+                display_name="ChatGPT",
+                max_output_tokens=65536,
             )
         )
     assert created.value.status_code == 400
@@ -344,23 +344,23 @@ def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_ro
     """The whole lifecycle, asserted against the stored row rather than the response."""
     created = _create(
         ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            base_url = "https://example.com/v1",
-            models = ["vendor/model"],
-            max_output_tokens = 131072,
+            provider_type="custom",
+            display_name="Custom",
+            base_url="https://example.com/v1",
+            models=["vendor/model"],
+            max_output_tokens=131072,
         )
     )
     assert _raw_override(provider_routes, created.id) == 131072
 
-    assert _update(created.id, ProviderUpdate(max_output_tokens = 65536)).max_output_tokens == 65536
+    assert _update(created.id, ProviderUpdate(max_output_tokens=65536)).max_output_tokens == 65536
 
     # An unrelated edit must leave it alone: omitted is not the same as null.
-    preserved = _update(created.id, ProviderUpdate(display_name = "Renamed Custom"))
+    preserved = _update(created.id, ProviderUpdate(display_name="Renamed Custom"))
     assert preserved.display_name == "Renamed Custom"
     assert _raw_override(provider_routes, created.id) == 65536
 
-    assert _update(created.id, ProviderUpdate(max_output_tokens = None)).max_output_tokens is None
+    assert _update(created.id, ProviderUpdate(max_output_tokens=None)).max_output_tokens is None
     assert _raw_override(provider_routes, created.id) is None
 
 
@@ -369,13 +369,13 @@ def test_an_override_only_update_is_recognised_as_a_metadata_request(provider_ro
     "No fields to update"."""
     created = _create(
         ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            base_url = "https://example.com/v1",
-            models = ["vendor/model"],
+            provider_type="custom",
+            display_name="Custom",
+            base_url="https://example.com/v1",
+            models=["vendor/model"],
         )
     )
-    assert _update(created.id, ProviderUpdate(max_output_tokens = 200000)).max_output_tokens == 200000
+    assert _update(created.id, ProviderUpdate(max_output_tokens=200000)).max_output_tokens == 200000
 
 
 def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
@@ -384,11 +384,11 @@ def test_the_largest_accepted_value_round_trips_exactly(provider_routes: Path):
     value = 9007199254740991
     created = _create(
         ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            base_url = "https://example.com/v1",
-            models = ["vendor/model"],
-            max_output_tokens = value,
+            provider_type="custom",
+            display_name="Custom",
+            base_url="https://example.com/v1",
+            models=["vendor/model"],
+            max_output_tokens=value,
         )
     )
     stored = _raw_override(provider_routes, created.id)
@@ -401,11 +401,11 @@ def test_a_failed_credential_write_restores_the_previous_override(
     """A failed key write rolls the metadata update back in the shared transaction."""
     created = _create(
         ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            base_url = "https://example.com/v1",
-            models = ["vendor/model"],
-            max_output_tokens = 131072,
+            provider_type="custom",
+            display_name="Custom",
+            base_url="https://example.com/v1",
+            models=["vendor/model"],
+            max_output_tokens=131072,
         )
     )
 
@@ -414,5 +414,5 @@ def test_a_failed_credential_write_restores_the_previous_override(
 
     monkeypatch.setattr(providers_route.credential_secrets, "save_provider_api_key", _boom)
     with pytest.raises(Exception):
-        _update(created.id, ProviderUpdate(max_output_tokens = 262144, encrypted_api_key = "x"))
+        _update(created.id, ProviderUpdate(max_output_tokens=262144, encrypted_api_key="x"))
     assert _raw_override(provider_routes, created.id) == 131072

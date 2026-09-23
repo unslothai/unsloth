@@ -68,22 +68,22 @@ def refuse(
 
     detail: Any = message
     if openai_errors:
-        detail = openai_error_body(message, status = status_code, code = code, param = "model")
+        detail = openai_error_body(message, status=status_code, code=code, param="model")
     return HTTPException(
-        status_code = status_code,
-        detail = detail,
-        headers = {"Retry-After": str(retry_after)} if retry_after else None,
+        status_code=status_code,
+        detail=detail,
+        headers={"Retry-After": str(retry_after)} if retry_after else None,
     )
 
 
 def slow_switch(kind: str, openai_errors: bool):
     """The refusal for a switch that ran out of budget before it could answer."""
     return refuse(
-        SLOW_MSG.format(kind = kind),
-        status_code = 503,
-        openai_errors = openai_errors,
-        code = "model_loading",
-        retry_after = RETRY_AFTER_S,
+        SLOW_MSG.format(kind=kind),
+        status_code=503,
+        openai_errors=openai_errors,
+        code="model_loading",
+        retry_after=RETRY_AFTER_S,
     )
 
 
@@ -95,19 +95,19 @@ def busy(
 ):
     """The refusal for a backend that stayed busy for the whole drain."""
     return refuse(
-        BUSY_MSG.format(kind = kind),
-        status_code = 409,
-        openai_errors = openai_errors,
-        code = "model_busy",
-        retry_after = retry_after,
+        BUSY_MSG.format(kind=kind),
+        status_code=409,
+        openai_errors=openai_errors,
+        code="model_busy",
+        retry_after=retry_after,
     )
 
 
 def incomplete_message(model_id: str, missing: int, kind: str) -> str:
     """The refusal text, which only quotes a size when the plan could size what it is missing."""
     if missing == UNSIZED_MISSING:
-        return UNSIZED_MSG.format(model = model_id, kind = kind)
-    return INCOMPLETE_MSG.format(model = model_id, gb = missing / 1e9, kind = kind)
+        return UNSIZED_MSG.format(model=model_id, kind=kind)
+    return INCOMPLETE_MSG.format(model=model_id, gb=missing / 1e9, kind=kind)
 
 
 def format_available(ids: list[str]) -> str:
@@ -133,7 +133,7 @@ async def bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
             coro.close()
         raise slow_switch(kind, openai_errors)
     try:
-        return await asyncio.wait_for(coro, timeout = remaining)
+        return await asyncio.wait_for(coro, timeout=remaining)
     except asyncio.TimeoutError:
         raise slow_switch(kind, openai_errors)
 
@@ -150,7 +150,7 @@ async def probe(fn, arg: Optional[Any], deadline: float, *, kind: str, openai_er
         call.close()
         raise slow_switch(kind, openai_errors)
     try:
-        return bool(await asyncio.wait_for(call, timeout = remaining))
+        return bool(await asyncio.wait_for(call, timeout=remaining))
     except asyncio.TimeoutError:
         raise slow_switch(kind, openai_errors)
 

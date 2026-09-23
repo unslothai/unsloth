@@ -110,8 +110,8 @@ def _route(
     """Every pip argument _ensure_rocm_torch() produced, as one string. ``family`` /
     ``torch_owns_rocm`` / ``bnb_provenance`` pin what is installed; the defaults are
     "no ROCm and no keepable bitsandbytes installed"."""
-    pip, pip_try = MagicMock(), MagicMock(return_value = True)
-    probe = MagicMock(returncode = 0, stdout = _MARK + torch_line + "\n")
+    pip, pip_try = MagicMock(), MagicMock(return_value=True)
+    probe = MagicMock(returncode=0, stdout=_MARK + torch_line + "\n")
     buf = io.StringIO()
 
     stack_mod._invalidate_torch_runtime_probe()
@@ -119,26 +119,26 @@ def _route(
     # its own pass.
     stack_mod._BNB_ROCM_PASS_PROVENANCE = None
     with (
-        patch.dict(os.environ, env or {}, clear = False),
+        patch.dict(os.environ, env or {}, clear=False),
         patch.object(stack_mod, "IS_WINDOWS", False),
         patch.object(stack_mod, "IS_MACOS", False),
         patch.object(stack_mod, "_TORCH_BACKEND", ""),
-        patch.object(stack_mod.platform, "machine", return_value = "x86_64"),
+        patch.object(stack_mod.platform, "machine", return_value="x86_64"),
         patch.object(stack_mod, "pip_install", pip),
         patch.object(stack_mod, "pip_install_try", pip_try),
-        patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
-        patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
-        patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None),
-        patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [gfx]),
-        patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1)),
-        patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
-        patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = family),
-        patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
+        patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value=False),
+        patch.object(stack_mod, "_has_rocm_gpu", return_value=True),
+        patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value=None),
+        patch.object(stack_mod, "_detect_amd_gfx_codes", return_value=[gfx]),
+        patch.object(stack_mod, "_detect_rocm_version", return_value=(7, 1)),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value=[]),
+        patch.object(stack_mod, "_installed_rocm_wheel_family", return_value=family),
+        patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value=torch_owns_rocm),
         # The third door into the running interpreter, pinned like the other two, or the verdict
         # depends on whether the pytest machine has bitsandbytes.
-        patch.object(stack_mod, "_installed_bnb_provenance", return_value = bnb_provenance),
-        patch.object(stack_mod.os.path, "isdir", return_value = True),
-        patch.object(stack_mod.subprocess, "run", return_value = probe),
+        patch.object(stack_mod, "_installed_bnb_provenance", return_value=bnb_provenance),
+        patch.object(stack_mod.os.path, "isdir", return_value=True),
+        patch.object(stack_mod.subprocess, "run", return_value=probe),
     ):
         for _stale in (
             "HIP_VISIBLE_DEVICES",
@@ -197,14 +197,14 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
         ("gfx110x-all", False, True),
         ("gfx120x-all", True, True),
     ],
-    ids = ["no-family", "correct-family", "orphan-metapackage", "wrong-family"],
+    ids=["no-family", "correct-family", "orphan-metapackage", "wrong-family"],
 )
 def test_the_installed_family_decides_the_skip(family, torch_owns_rocm, expect_reinstall):
     """The other half: without this, pinning both to None would satisfy the test above while
     the feature they gate quietly stopped working."""
     with ambient("bare"):
         calls = _route(
-            "gfx1103", "2.10.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
+            "gfx1103", "2.10.0+rocm7.13.0|7.13|", family=family, torch_owns_rocm=torch_owns_rocm
         )
     rerouted = "repo.amd.com/rocm/whl/gfx110X-all/" in calls
     assert rerouted is expect_reinstall, (

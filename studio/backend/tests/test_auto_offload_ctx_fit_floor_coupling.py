@@ -95,10 +95,10 @@ def _award_at(
         monkeypatch,
         LINUX,
         CARD,
-        model_fraction = 1.0,
+        model_fraction=1.0,
     )
     backend._get_gguf_size_bytes = lambda _path: model_mib * MIB
-    result, hits = _matrix._traced(lambda: _matrix._launch(backend, gguf, n_ctx = 0))
+    result, hits = _matrix._traced(lambda: _matrix._launch(backend, gguf, n_ctx=0))
     assert _matrix.SITE_A in hits, "the cell no longer reaches the fallback"
     return {
         "awarded": _matrix.SITE_A_AWARD in hits,
@@ -170,7 +170,7 @@ def test_the_floor_is_the_only_thing_keeping_the_fallback_out_of_placement(
 @pytest.mark.parametrize(
     "free_mib,total_mib",
     [(20_000, 24_000), (12_000, 16_000), (9_000, 0)],
-    ids = ["24g-card", "16g-card", "shared-pool"],
+    ids=["24g-card", "16g-card", "shared-pool"],
 )
 def test_no_model_size_awards_residency_at_or_above_the_floor(
     tmp_path, monkeypatch, free_mib, total_mib
@@ -200,10 +200,10 @@ def test_no_model_size_awards_residency_at_or_above_the_floor(
                 monkeypatch,
                 LINUX,
                 card,
-                model_fraction = 1.0,
+                model_fraction=1.0,
             )
             backend._get_gguf_size_bytes = lambda _path: model_mib * MIB
-            _result, hits = _matrix._traced(lambda: _matrix._launch(backend, gguf, n_ctx = 0))
+            _result, hits = _matrix._traced(lambda: _matrix._launch(backend, gguf, n_ctx=0))
             if _matrix.SITE_A not in hits:
                 continue
             reached += 1

@@ -39,10 +39,10 @@ def _run(code: str) -> subprocess.CompletedProcess:
         path.append(os.environ["PYTHONPATH"])
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output = True,
-        text = True,
-        env = dict(os.environ, PYTHONPATH = os.pathsep.join(path)),
-        timeout = 1800,
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(path)),
+        timeout=1800,
     )
 
 
@@ -106,7 +106,7 @@ def test_the_module_level_triton_import_is_inside_a_try():
     The bare statement at module scope is the defect: nothing below it can recover,
     because the exception escapes `unsloth/__init__.py` itself.
     """
-    tree = ast.parse(GPU_INIT.read_text(encoding = "utf-8"))
+    tree = ast.parse(GPU_INIT.read_text(encoding="utf-8"))
     bare = _module_level_triton_imports(tree)
     assert not bare, (
         "unsloth/_gpu_init.py imports triton unguarded at module scope on line(s) "
@@ -125,7 +125,7 @@ def test_the_module_level_triton_import_is_inside_a_try():
 
 def test_the_guard_binds_triton_to_none_and_records_why():
     """`triton` and `TRITON_IMPORT_ERROR` are the contract the rest of the file reads."""
-    source = GPU_INIT.read_text(encoding = "utf-8")
+    source = GPU_INIT.read_text(encoding="utf-8")
     assert "TRITON_IMPORT_ERROR" in source
     # Every later use of `triton` in this module has to tolerate None.
     tree = ast.parse(source)

@@ -54,7 +54,7 @@ def test_one_unreadable_device_keeps_the_others(monkeypatch):
         dt,
         "torch",
         types.SimpleNamespace(
-            cuda = types.SimpleNamespace(device_count = lambda: 2, get_device_properties = _props)
+            cuda=types.SimpleNamespace(device_count=lambda: 2, get_device_properties=_props)
         ),
     )
     assert dt.hip_visible_archs() == ["gfx1032"]
@@ -65,13 +65,13 @@ def test_one_unreadable_device_keeps_the_others(monkeypatch):
     monkeypatch.setattr(
         dt,
         "torch",
-        types.SimpleNamespace(cuda = types.SimpleNamespace(device_count = _count_raises)),
+        types.SimpleNamespace(cuda=types.SimpleNamespace(device_count=_count_raises)),
     )
     assert dt.hip_visible_archs() == []
 
 
 def test_gpu_init_gates_on_every_visible_device():
-    source = GPU_INIT.read_text(encoding = "utf-8")
+    source = GPU_INIT.read_text(encoding="utf-8")
     hip_branch = source.split('elif DEVICE_TYPE == "hip":', 1)[1].split("\nelif ", 1)[0]
     assert "arch_lacks_bf16" in hip_branch
     assert "hip_visible_archs()" in hip_branch
@@ -79,7 +79,7 @@ def test_gpu_init_gates_on_every_visible_device():
 
 
 def test_model_utils_uses_the_patched_hip_probe():
-    source = MODEL_UTILS.read_text(encoding = "utf-8")
+    source = MODEL_UTILS.read_text(encoding="utf-8")
     hip_branch = source.split('elif DEVICE_TYPE == "hip":', 1)[1].split("\nelif ", 1)[0]
     assert "SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()" in hip_branch
     assert "SUPPORTS_BFLOAT16 = True" not in hip_branch
@@ -93,9 +93,9 @@ _CHAIN_END = "\n# For Gradio HF Spaces?"
 
 def _fake_torch(
     archs,
-    base_bf16 = True,
-    count_raises = False,
-    props_raises_on = (),
+    base_bf16=True,
+    count_raises=False,
+    props_raises_on=(),
 ):
     def device_count():
         if count_raises:
@@ -105,27 +105,28 @@ def _fake_torch(
     def get_device_properties(i):
         if i in props_raises_on:
             raise RuntimeError("device wedged")
-        return types.SimpleNamespace(gcnArchName = archs[i])
+        return types.SimpleNamespace(gcnArchName=archs[i])
 
     # Not *args: the cuda branch sniffs this signature with inspect.signature and would fall back.
-    def is_bf16_supported(including_emulation = True):
+    def is_bf16_supported(including_emulation=True):
         return base_bf16
 
     return types.SimpleNamespace(
-        version = types.SimpleNamespace(hip = "6.2.4", cuda = None),
-        cuda = types.SimpleNamespace(
-            device_count = device_count,
-            get_device_properties = get_device_properties,
-            is_bf16_supported = is_bf16_supported,
-            is_available = lambda: True,
-            get_device_capability = lambda: (9, 0),
+        version=types.SimpleNamespace(hip="6.2.4", cuda=None),
+        cuda=types.SimpleNamespace(
+            device_count=device_count,
+            get_device_properties=get_device_properties,
+            is_bf16_supported=is_bf16_supported,
+            is_available=lambda: True,
+            get_device_capability=lambda: (9, 0),
         ),
-        xpu = types.SimpleNamespace(is_bf16_supported = lambda: True),
+        xpu=types.SimpleNamespace(is_bf16_supported=lambda: True),
     )
 
 
 def _namespace(fake_torch, device_type):
     from unsloth.device_type import hip_visible_archs
+
     return {
         "torch": fake_torch,
         "inspect": inspect,
@@ -139,8 +140,8 @@ def _namespace(fake_torch, device_type):
 def _run_chain(monkeypatch, fake_torch, device_type):
     import unsloth.device_type as dt
 
-    monkeypatch.setattr(dt, "torch", fake_torch, raising = False)
-    source = GPU_INIT.read_text(encoding = "utf-8")
+    monkeypatch.setattr(dt, "torch", fake_torch, raising=False)
+    source = GPU_INIT.read_text(encoding="utf-8")
     body = _CHAIN_START + source.split(_CHAIN_START, 1)[1].split(_CHAIN_END, 1)[0]
     namespace = _namespace(fake_torch, device_type)
     exec(compile(body, str(GPU_INIT), "exec"), namespace)
@@ -197,13 +198,13 @@ def test_an_unreadable_probe_leaves_torchs_answer_alone(monkeypatch, archs, kwar
 
 def test_one_wedged_device_does_not_discard_the_gfx10_beside_it(monkeypatch):
     namespace = _run_chain(
-        monkeypatch, _fake_torch(["gfx1032", "gfx1100"], props_raises_on = (1,)), "hip"
+        monkeypatch, _fake_torch(["gfx1032", "gfx1100"], props_raises_on=(1,)), "hip"
     )
     assert namespace["SUPPORTS_BFLOAT16"] is False
 
 
 def test_torch_saying_no_is_still_respected(monkeypatch):
-    namespace = _run_chain(monkeypatch, _fake_torch(["gfx1100"], base_bf16 = False), "hip")
+    namespace = _run_chain(monkeypatch, _fake_torch(["gfx1100"], base_bf16=False), "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is False
 
 
@@ -213,7 +214,7 @@ def test_the_gate_does_not_leak_off_hip(monkeypatch, device_type):
     namespace = _run_chain(monkeypatch, fake, device_type)
     assert namespace["SUPPORTS_BFLOAT16"] is True
     if device_type == "cuda":
-        assert fake.cuda.is_bf16_supported(including_emulation = False) is True
+        assert fake.cuda.is_bf16_supported(including_emulation=False) is True
 
 
 def test_importing_unsloth_twice_is_stable(monkeypatch):

@@ -27,7 +27,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 def _extract(pattern: str, source: str) -> str:
-    match = re.search(pattern, source, flags = re.DOTALL)
+    match = re.search(pattern, source, flags=re.DOTALL)
     assert match is not None, f"install.ps1 block not found: {pattern}"
     return match.group(0)
 
@@ -41,7 +41,7 @@ def _resolver_script(installed: list[tuple[str, str]], can_download: bool) -> st
     The fake interpreters are named `*.exe` and invoked through the call operator,
     which resolves a string to a function, so no real binary is needed.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     installer = _extract(r"    function Install-X64Python \{.*?\n    \}\n", source)
     # The selection consults the ARM64 opt-out, so the real reader comes with it rather than
@@ -133,7 +133,7 @@ def _opt_out_script(installed: list[tuple[str, str]], can_download: bool) -> str
     UNSLOTH_ALLOW_ARM64_PYTHON is read in two places -- the selection and the swap after it
     -- and the cases below are about both, so the swap cannot be a paraphrase here.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     resolver = _extract(r"    function Resolve-WindowsOnArmX64Python \{.*?\n    \}\n", source)
     base = _resolver_script(installed, can_download)
     tail = base.index("# The caller's ARM64 swap")
@@ -145,7 +145,7 @@ def _opt_out_script(installed: list[tuple[str, str]], can_download: bool) -> str
     )
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 @pytest.mark.parametrize(
     ("installed", "can_download", "expected"),
     [
@@ -179,10 +179,10 @@ def test_the_arm64_opt_out_selects_a_native_interpreter(installed, can_download,
             "-Command",
             _opt_out_script(installed, can_download),
         ],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
     )
     assert result.stdout.strip() == expected
 
@@ -209,15 +209,15 @@ def _pwsh(script: str) -> str:
     # that aborts at startup would surface as the resolver block itself throwing.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = _environment_without_the_arm64_opt_out(),
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_environment_without_the_arm64_opt_out(),
     )
     return result.stdout.strip()
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 @pytest.mark.parametrize(
     ("installed", "can_download", "expected"),
     [
@@ -238,7 +238,7 @@ def test_arm64_host_prefers_an_x64_interpreter(installed, can_download, expected
 
 def _venv_base_script(cfg_lines: str, base_arch: str, base_present: bool) -> str:
     """The real Get-StudioVenvBasePython over a fake pyvenv.cfg and base interpreter."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     reader = _extract(r"    function Get-StudioVenvBasePython \{.*?\n    \}\n", source)
     tag = {"arm64": "win-arm64", "x86_64": "win-amd64"}.get(base_arch, base_arch)
     present = "$true" if base_present else "$false"
@@ -275,7 +275,7 @@ if ($found) {{ Write-Output "$($found.Version)|$($found.Arch)" }} else {{ Write-
 """
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 @pytest.mark.parametrize(
     ("cfg", "arch", "present", "expected"),
     [
@@ -312,9 +312,9 @@ def test_the_existing_environments_base_interpreter_is_the_last_arm64_python(
             "-Command",
             _venv_base_script(cfg, arch, present),
         ],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = _environment_without_the_arm64_opt_out(),
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_environment_without_the_arm64_opt_out(),
     )
     assert result.stdout.strip() == expected

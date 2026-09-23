@@ -183,7 +183,7 @@ def cache_reference(value: Any) -> Optional[str]:
 
 # Per REQUEST, so one caller's substitutions cannot reach another's response.
 _request_handles: "ContextVar[Optional[dict[str, str]]]" = ContextVar(
-    "unsloth_request_inventory_handles", default = None
+    "unsloth_request_inventory_handles", default=None
 )
 
 
@@ -231,7 +231,7 @@ def _restore(payload: Any, known: "dict[str, str]") -> Any:
     if isinstance(payload, str):
         text = payload
         # Longest first, so a path that is a prefix of another does not claim its text.
-        for path in sorted(known, key = len, reverse = True):
+        for path in sorted(known, key=len, reverse=True):
             if path in text:
                 text = _swap_at_boundaries(text, path, known[path])
         return text
@@ -247,7 +247,7 @@ _HANDLE_LEFT_BOUNDARY = r"(?<![\w:/.\\])"
 _HANDLE_RIGHT_BOUNDARY = r"(?![^\s\\/\n\":;,=])"
 
 
-@lru_cache(maxsize = 4096)
+@lru_cache(maxsize=4096)
 def _boundary_pattern(path: str) -> "re.Pattern[str]":
     return re.compile(_HANDLE_LEFT_BOUNDARY + re.escape(path) + _HANDLE_RIGHT_BOUNDARY)
 
@@ -279,7 +279,7 @@ def redact_host_paths(
     """``echo`` holds values THIS CALLER supplied, returned as written; see ``_echoed``."""
     if host_paths_visible(via_api_key):
         return payload
-    return _redact(payload, redact_ambiguous_path = False, echo = _echo_set(echo))
+    return _redact(payload, redact_ambiguous_path=False, echo=_echo_set(echo))
 
 
 def redact_inventory_host_paths(
@@ -290,7 +290,7 @@ def redact_inventory_host_paths(
 ) -> Any:
     if host_paths_visible(via_api_key):
         return payload
-    return _redact(payload, redact_ambiguous_path = True, echo = _echo_set(echo))
+    return _redact(payload, redact_ambiguous_path=True, echo=_echo_set(echo))
 
 
 def _echo_set(echo: Iterable[Any]) -> frozenset:
@@ -305,7 +305,7 @@ def response_leaks_host_path(
 ) -> Optional[str]:
     """For tests and the drift gate. ``ignore`` makes keeping a path explicit at each call."""
     needles = [text for text in (_as_text(root) for root in roots) if text]
-    return _find_leak(payload, needles, ambiguous_is_path = True, ignore = frozenset(ignore))
+    return _find_leak(payload, needles, ambiguous_is_path=True, ignore=frozenset(ignore))
 
 
 def _echoed(value: Any, echo: frozenset) -> bool:
@@ -323,7 +323,7 @@ def _redact(
 ) -> Any:
     dumped = _dump_model(payload)
     if dumped is not None:
-        return _redact(dumped, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+        return _redact(dumped, redact_ambiguous_path=redact_ambiguous_path, echo=echo)
     if isinstance(payload, Mapping):
         out: dict[Any, Any] = {}
         reference: Optional[str] = None
@@ -395,18 +395,18 @@ def _redact(
                 out[key] = [
                     redact_paths_in_text(item)
                     if isinstance(item, str)
-                    else _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+                    else _redact(item, redact_ambiguous_path=redact_ambiguous_path, echo=echo)
                     for item in value
                 ]
                 continue
-            out[key] = _redact(value, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+            out[key] = _redact(value, redact_ambiguous_path=redact_ambiguous_path, echo=echo)
         # After the walk: the field is declared on the models, so the dump's None would win.
         if reference is not None and not out.get(CACHE_REFERENCE_FIELD):
             out[CACHE_REFERENCE_FIELD] = reference
         return out
     if isinstance(payload, (list, tuple)):
         redacted = [
-            _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+            _redact(item, redact_ambiguous_path=redact_ambiguous_path, echo=echo)
             for item in payload
         ]
         if not isinstance(payload, tuple):
@@ -430,7 +430,7 @@ def _find_leak(
 ) -> Optional[str]:
     dumped = _dump_model(payload)
     if dumped is not None:
-        return _find_leak(dumped, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
+        return _find_leak(dumped, needles, ambiguous_is_path=ambiguous_is_path, ignore=ignore)
     if isinstance(payload, Mapping):
         base_model_is_local = _conditional_path_is_local(payload)
         for key, value in payload.items():
@@ -456,13 +456,13 @@ def _find_leak(
                         return f"{key}[]={item_text}"
             if text and any(needle in text for needle in needles):
                 return f"{key}={text}"
-            found = _find_leak(value, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
+            found = _find_leak(value, needles, ambiguous_is_path=ambiguous_is_path, ignore=ignore)
             if found is not None:
                 return found
         return None
     if isinstance(payload, (list, tuple)):
         for item in payload:
-            found = _find_leak(item, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
+            found = _find_leak(item, needles, ambiguous_is_path=ambiguous_is_path, ignore=ignore)
             if found is not None:
                 return found
         return None
@@ -567,12 +567,12 @@ def redact_inventory_error_detail(detail: Any, *, via_api_key: bool) -> Any:
         return redact_paths_in_text(detail)
     if isinstance(detail, Mapping):
         return {
-            key: redact_inventory_error_detail(value, via_api_key = via_api_key)
+            key: redact_inventory_error_detail(value, via_api_key=via_api_key)
             for key, value in detail.items()
         }
     if isinstance(detail, (list, tuple)):
         redacted = [
-            redact_inventory_error_detail(value, via_api_key = via_api_key) for value in detail
+            redact_inventory_error_detail(value, via_api_key=via_api_key) for value in detail
         ]
         if not isinstance(detail, tuple):
             return redacted
@@ -603,7 +603,7 @@ def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
 def raised_inventory_detail(detail: Any, *, via_api_key: bool) -> Any:
     """For a payload that was RAISED, since the route's wrappers never run. Restore first so a
     path the caller owns comes back as its handle, then redact what is left."""
-    return redact_inventory_error_detail(restore_inventory_handles(detail), via_api_key = via_api_key)
+    return redact_inventory_error_detail(restore_inventory_handles(detail), via_api_key=via_api_key)
 
 
 def _dump_model(payload: Any) -> Optional[dict]:

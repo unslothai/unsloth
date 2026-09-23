@@ -23,19 +23,19 @@ _VOCAB = ["alpha", "bravo", "charlie", "delta"]
 
 def _write(tmp_path, name, text):
     path = tmp_path / name
-    path.write_text(text, encoding = "utf-8")
+    path.write_text(text, encoding="utf-8")
     return str(path)
 
 
 def _ingest(tmp_path, scope, name, text):
     document_id, _ = ingestion.start_ingestion(
-        scope = scope,
-        kb_id = None,
-        thread_id = None,
-        filename = name,
-        stored_path = _write(tmp_path, name, text),
-        model_name = MODEL,
-        background = False,
+        scope=scope,
+        kb_id=None,
+        thread_id=None,
+        filename=name,
+        stored_path=_write(tmp_path, name, text),
+        model_name=MODEL,
+        background=False,
     )
     return document_id
 
@@ -53,7 +53,7 @@ def test_index_written_by_llama_is_stale_for_a_sentence_transformers_query(
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     conn = rag_db.get_connection()
     try:
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL) == []
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL) == []
     finally:
         conn.close()
 
@@ -69,7 +69,7 @@ def test_index_written_by_sentence_transformers_is_stale_for_a_llama_query(
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
     conn = rag_db.get_connection()
     try:
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL) == []
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL) == []
     finally:
         conn.close()
 
@@ -83,7 +83,7 @@ def test_the_same_backend_still_answers_its_own_index(
     _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
     try:
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL)
     finally:
         conn.close()
 
@@ -102,7 +102,7 @@ def test_re_uploading_after_a_backend_change_reindexes_instead_of_deduping(
     assert second != first
     conn = rag_db.get_connection()
     try:
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL)
     finally:
         conn.close()
 
@@ -118,7 +118,7 @@ def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",
-        lambda model_name = None: choice["backend"],
+        lambda model_name=None: choice["backend"],
     )
     monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
@@ -184,9 +184,9 @@ def test_legacy_rows_keep_answering_and_are_reported(
     try:
         store.set_document_embedding_model(conn, document_id, MODEL)  # pre-tag spelling
         assert store.count_untagged_documents(conn) == 1
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL)
         monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL)
     finally:
         conn.close()
 
@@ -200,7 +200,7 @@ def test_null_rows_are_still_assumed_current(rag_home, stub_embeddings, monkeypa
         conn.execute("UPDATE documents SET embedding_model=NULL WHERE id=?", (document_id,))
         conn.commit()
         assert store.count_untagged_documents(conn) == 0
-        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
+        assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k=5, model_name=MODEL)
     finally:
         conn.close()
 
@@ -228,7 +228,7 @@ def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
     assert embeddings.embedding_identity(MODEL) == config.embedding_identity(
         "llama-server",
         MODEL,
-        gguf_repo = "publisher/off-convention-GGUF",
+        gguf_repo="publisher/off-convention-GGUF",
     )
 
 
@@ -265,7 +265,7 @@ def test_untagged_values_match_on_the_model_name_alone():
     assert config.embedding_identity_matches(tagged, tagged) is True
     assert (
         config.embedding_identity_matches(
-            config.embedding_identity("llama-server", MODEL, gguf_repo = "r"), tagged
+            config.embedding_identity("llama-server", MODEL, gguf_repo="r"), tagged
         )
         is False
     )
@@ -281,24 +281,24 @@ def _put(conn, scope, document_id, texts, embedding_model):
     """Index one document's chunks directly, under a chosen identity."""
     chunks = [
         Chunk(
-            text = t,
-            token_count = len(t.split()),
-            page_number = None,
-            source_page_index = 0,
-            chunk_index = i,
-            page_char_start = 0,
-            page_char_end = len(t),
+            text=t,
+            token_count=len(t.split()),
+            page_number=None,
+            source_page_index=0,
+            chunk_index=i,
+            page_char_start=0,
+            page_char_end=len(t),
         )
         for i, t in enumerate(texts)
     ]
     store.create_document(
         conn,
-        scope = scope,
-        filename = f"{document_id}.txt",
-        sha256 = document_id,
-        status = "completed",
-        document_id = document_id,
-        embedding_model = embedding_model,
+        scope=scope,
+        filename=f"{document_id}.txt",
+        sha256=document_id,
+        status="completed",
+        document_id=document_id,
+        embedding_model=embedding_model,
     )
     store.add_chunks(conn, scope, document_id, chunks, [_vector(t) for t in texts])
 
@@ -308,7 +308,7 @@ def test_a_local_model_path_survives_the_identity_round_trip():
     model used to read back as ``C``."""
     st = config.embedding_identity("sentence-transformers", WINDOWS_MODEL)
     llama = config.embedding_identity(
-        "llama-server", WINDOWS_MODEL, gguf_repo = WINDOWS_MODEL + "-GGUF"
+        "llama-server", WINDOWS_MODEL, gguf_repo=WINDOWS_MODEL + "-GGUF"
     )
     assert st != llama
     assert config.embedding_identity_model(st) == WINDOWS_MODEL
@@ -326,7 +326,7 @@ def test_a_local_path_model_keeps_answering_its_legacy_rows(rag_conn):
         "kb_w",
         _vector("alpha bravo"),
         5,
-        embedding_model = config.embedding_identity("sentence-transformers", WINDOWS_MODEL),
+        embedding_model=config.embedding_identity("sentence-transformers", WINDOWS_MODEL),
     )
     assert [cid for cid, _ in hits] == ["d1:0"]
 
@@ -335,12 +335,12 @@ def test_stale_backend_chunks_do_not_starve_the_current_backend(rag_conn):
     """What a partial reindex leaves: both backends in one scope. The other one's
     distances come from another space, so they can fill every fetched candidate slot
     while the compatible chunks sit further down the KNN list."""
-    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo="r")
     current = config.embedding_identity("sentence-transformers", MODEL)
     for i in range(40):
         _put(rag_conn, "kb_s", f"old{i}", ["alpha"], stale)
     _put(rag_conn, "kb_s", "new", ["alpha bravo"], current)
-    hits = store.search_dense(rag_conn, "kb_s", _vector("alpha"), 5, embedding_model = current)
+    hits = store.search_dense(rag_conn, "kb_s", _vector("alpha"), 5, embedding_model=current)
     assert [cid for cid, _ in hits] == ["new:0"]
 
 
@@ -361,8 +361,8 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_co
             self,
             texts,
             *,
-            model_name = None,
-            normalize = True,
+            model_name=None,
+            normalize=True,
         ):
             vectors = [_vector(t) for t in texts]
             monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
@@ -370,7 +370,7 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_co
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
     monkeypatch.setattr(embeddings, "_backend_key", embeddings._current_backend_key())
-    hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k = 5, model_name = MODEL)
+    hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k=5, model_name=MODEL)
     assert [h.chunk_id for h in hits] == ["d1:0"]
 
 
@@ -389,7 +389,7 @@ def test_a_swap_between_batches_re_embeds_the_document(
     def swap_during_the_first_pass(
         texts,
         model_name,
-        on_progress = None,
+        on_progress=None,
     ):
         passes["n"] += 1
         if passes["n"] == 1:
@@ -421,11 +421,11 @@ def test_a_swap_between_batches_re_embeds_the_document(
 
 def test_widening_survives_a_scope_larger_than_one_parameter_batch(rag_conn):
     """The widened candidate set outgrows a single bound-parameter batch."""
-    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo="r")
     current = config.embedding_identity("sentence-transformers", MODEL)
     _put(rag_conn, "kb_b", "old", ["alpha"] * 2000, stale)
     _put(rag_conn, "kb_b", "new", ["alpha bravo"], current)
-    hits = store.search_dense(rag_conn, "kb_b", _vector("alpha"), 5, embedding_model = current)
+    hits = store.search_dense(rag_conn, "kb_b", _vector("alpha"), 5, embedding_model=current)
     assert [cid for cid, _ in hits] == ["new:0"]
 
 
@@ -436,7 +436,7 @@ def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
     with its own stale prefix. A thread scope that hands over k compatible but weak
     hits must not stop the project scope widening past the other embedder's vectors
     burying a stronger chunk, or the merge ranks a top-k it never fetched."""
-    stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
+    stale = config.embedding_identity("llama-server", MODEL, gguf_repo="r")
     current = config.embedding_identity("sentence-transformers", MODEL)
     # The thread scope answers on the first fetch, with the weakest hits in the corpus.
     _put(rag_conn, "thread_t", "weak", ["alpha bravo charlie delta"] * 5, current)
@@ -445,7 +445,7 @@ def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
     _put(rag_conn, "kb_p", "old", ["alpha"] * 20, stale)
     _put(rag_conn, "kb_p", "new", ["alpha bravo"], current)
     hits = store.search_dense(
-        rag_conn, ["kb_p", "thread_t"], _vector("alpha"), 5, embedding_model = current
+        rag_conn, ["kb_p", "thread_t"], _vector("alpha"), 5, embedding_model=current
     )
     assert hits[0][0] == "new:0"
 
@@ -460,7 +460,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
 
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     monkeypatch.setattr(
-        embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
+        embeddings, "token_counter", lambda model_name=None: lambda t: max(1, len(t.split()))
     )
 
     class _SwapsMidEncode:
@@ -468,8 +468,8 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
             self,
             texts,
             *,
-            model_name = None,
-            normalize = True,
+            model_name=None,
+            normalize=True,
         ):
             vectors = [_vector(t) for t in texts]
             monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
@@ -489,9 +489,9 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
     web_rank.retrieve_web_chunks(
         [{"text": "alpha bravo charlie", "title": "page", "url": "https://a"}],
         "alpha",
-        top_n = 3,
-        min_score = 0.0,
-        model_name = MODEL,
+        top_n=3,
+        min_score=0.0,
+        model_name=MODEL,
     )
     assert labels == [config.embedding_identity("sentence-transformers", MODEL)]
 
@@ -512,7 +512,7 @@ def test_resolving_the_embedder_does_not_hold_the_write_lock(
     probes: list[tuple[bool, str]] = []
     real_identity = embeddings.embedding_identity
 
-    def probing_identity(model_name = None):
+    def probing_identity(model_name=None):
         other = sqlite3.connect(str(rag_db_path()))
         try:
             other.execute("PRAGMA busy_timeout = 100")

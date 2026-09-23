@@ -22,7 +22,7 @@ SINGLE = "def go():\n    return 1\n"
 
 
 def _git(repo, *args):
-    done = subprocess.run(["git", *args], cwd = repo, capture_output = True, text = True, check = True)
+    done = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return done.stdout.strip()
 
 
@@ -43,9 +43,9 @@ def repo(tmp_path):
 def _run(repo, before, after, *paths):
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--before", before, "--after", after, *paths],
-        cwd = repo,
-        capture_output = True,
-        text = True,
+        cwd=repo,
+        capture_output=True,
+        text=True,
     )
 
 

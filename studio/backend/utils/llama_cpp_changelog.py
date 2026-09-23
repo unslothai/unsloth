@@ -72,15 +72,15 @@ def _fetch_release(
         return call_with_deadline(
             lambda: _fetch_release_blocking(repo, tag, timeout),
             timeout + 1,
-            name = "llama-changelog-fetch",
+            name="llama-changelog-fetch",
         )
     except TimeoutError as exc:
-        logger.debug("llama changelog fetch failed", repo = repo, tag = tag, error = str(exc))
+        logger.debug("llama changelog fetch failed", repo=repo, tag=tag, error=str(exc))
         return None
 
 
 def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dict]:
-    encoded_tag = urllib.parse.quote(tag, safe = "")
+    encoded_tag = urllib.parse.quote(tag, safe="")
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "unsloth-studio-llama-changelog",
@@ -90,14 +90,14 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/releases/tags/{encoded_tag}",
-        headers = headers,
+        headers=headers,
     )
     try:
-        with auth_safe_open(request, timeout = timeout) as response:
+        with auth_safe_open(request, timeout=timeout) as response:
             # One byte past the cap: reject an oversized body without buffering it.
             raw = response.read(MAX_RELEASE_BYTES + 1)
         if len(raw) > MAX_RELEASE_BYTES:
-            logger.debug("llama changelog release too large", repo = repo, tag = tag)
+            logger.debug("llama changelog release too large", repo=repo, tag=tag)
             return None
         payload = json.loads(raw.decode("utf-8"))
     except (
@@ -109,7 +109,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         UnicodeDecodeError,
         json.JSONDecodeError,
     ) as exc:
-        logger.debug("llama changelog fetch failed", repo = repo, tag = tag, error = str(exc))
+        logger.debug("llama changelog fetch failed", repo=repo, tag=tag, error=str(exc))
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -231,8 +231,8 @@ def changelog_for_update(
         return None
     if not _is_cumulative_repo(repo):
         return None
-    installed = _release_for_tag(repo, installed_tag, force_refresh = force_refresh)
-    latest = _release_for_tag(repo, latest_tag, force_refresh = force_refresh)
+    installed = _release_for_tag(repo, installed_tag, force_refresh=force_refresh)
+    latest = _release_for_tag(repo, latest_tag, force_refresh=force_refresh)
     if installed is None or latest is None:
         return None
 
@@ -262,7 +262,7 @@ def changelog_for_update(
     total = len(new_items)
     release_url = latest.get("html_url")
     if not isinstance(release_url, str) or not release_url.startswith("https://github.com/"):
-        encoded_tag = urllib.parse.quote(latest_tag, safe = "")
+        encoded_tag = urllib.parse.quote(latest_tag, safe="")
         release_url = f"https://github.com/{repo}/releases/tag/{encoded_tag}"
     return {
         "changes": new_items[:MAX_CHANGES],

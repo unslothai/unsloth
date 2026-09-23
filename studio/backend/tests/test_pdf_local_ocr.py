@@ -14,14 +14,14 @@ from .test_rag_ocr_fallback import _ingest
 def scanned_pdf(
     path,
     *,
-    mixed = False,
-    header = False,
-    scans = 1,
+    mixed=False,
+    header=False,
+    scans=1,
 ):
     with pymupdf.open() as original:
         page = original.new_page()
-        page.insert_text((72, 100), "Invoice zebra-42 total 123 dollars", fontsize = 20)
-        png = page.get_pixmap(dpi = 120).tobytes("png")
+        page.insert_text((72, 100), "Invoice zebra-42 total 123 dollars", fontsize=20)
+        png = page.get_pixmap(dpi=120).tobytes("png")
     with pymupdf.open() as doc:
         if mixed:
             page = doc.new_page()
@@ -30,7 +30,7 @@ def scanned_pdf(
             page = doc.new_page()
             if header:
                 page.insert_text((40, 30), "A digitally added header above the scanned body")
-            page.insert_image(pymupdf.Rect(0, 60, 595, 842), stream = png)
+            page.insert_image(pymupdf.Rect(0, 60, 595, 842), stream=png)
         doc.save(str(path))
 
 
@@ -57,7 +57,7 @@ def local_ocr(monkeypatch):
 def test_recipe_scanned_pdf_extracts_local_ocr(monkeypatch, tmp_path, local_ocr, mixed):
     route = _load_seed_route(monkeypatch, tmp_path)
     pdf = tmp_path / "scan.pdf"
-    scanned_pdf(pdf, mixed = mixed)
+    scanned_pdf(pdf, mixed=mixed)
     result = _run_upload(route, pdf.name, pdf.read_bytes())
     assert result.status == "ok", result.error
     extracted = next(route.UNSTRUCTURED_UPLOAD_ROOT.rglob("*.extracted.txt")).read_text()
@@ -72,10 +72,10 @@ def test_chat_scanned_pdf_searchable_without_vision(
     rag_conn, stub_embeddings, tmp_path, local_ocr, mixed
 ):
     pdf = tmp_path / "scan.pdf"
-    scanned_pdf(pdf, mixed = mixed)
+    scanned_pdf(pdf, mixed=mixed)
     doc = _ingest(rag_conn, "t1", pdf.name, pdf)
     assert doc["status"] == "completed", doc["error"]
-    text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    text, sources = tool.whole_document_context(scope_thread_id="t1", max_tokens=6000)
     assert "zebra-42" in text
     assert local_ocr == [2 if mixed else 1]
     if mixed:
@@ -84,7 +84,7 @@ def test_chat_scanned_pdf_searchable_without_vision(
 
 def test_scan_with_digital_header_still_gets_ocr(tmp_path, local_ocr, monkeypatch):
     pdf = tmp_path / "header.pdf"
-    scanned_pdf(pdf, header = True)
+    scanned_pdf(pdf, header=True)
     pages = parsers.parse(str(pdf))
     assert pages[0].needs_ocr
     route = _load_seed_route(monkeypatch, tmp_path)
@@ -98,7 +98,7 @@ def test_recipe_missing_ocr_rejects_incomplete_pdf(monkeypatch, tmp_path, mixed)
     route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda *a: {})
     pdf = tmp_path / "scan.pdf"
-    scanned_pdf(pdf, mixed = mixed)
+    scanned_pdf(pdf, mixed=mixed)
     result = _run_upload(route, pdf.name, pdf.read_bytes())
     assert result.status == "error"
     assert f"scanned PDF pages: {2 if mixed else 1}" in result.error
@@ -118,7 +118,7 @@ def test_chat_unreadable_pdf_emits_error(
     monkeypatch.setattr(captioner, "_ocr_one", lambda *a: None)
     monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda *a: {})
     pdf = tmp_path / "scan.pdf"
-    scanned_pdf(pdf, mixed = True)
+    scanned_pdf(pdf, mixed=True)
     doc_id, job_id = ingestion.start_ingestion(
         store.thread_scope("t1"), None, "t1", pdf.name, str(pdf)
     )
@@ -149,7 +149,7 @@ def test_ocr_page_cap_does_not_silently_drop_pages(
 ):
     monkeypatch.setattr(config, "OCR_MAX_PAGES", 1)
     pdf = tmp_path / "scan.pdf"
-    scanned_pdf(pdf, scans = 2)
+    scanned_pdf(pdf, scans=2)
     if recipe:
         route = _load_seed_route(monkeypatch, tmp_path)
         result = _run_upload(route, pdf.name, pdf.read_bytes())
@@ -206,16 +206,16 @@ def test_failed_scan_replacement_preserves_searchable_original(
     scope = store.thread_scope("t1")
     doc_id = store.create_document(
         rag_conn,
-        scope = scope,
-        filename = pdf.name,
-        sha256 = "new",
-        thread_id = "t1",
-        status = "pending",
-        stored_path = str(pdf),
+        scope=scope,
+        filename=pdf.name,
+        sha256="new",
+        thread_id="t1",
+        status="pending",
+        stored_path=str(pdf),
     )
     job_id = ingestion._new_job(rag_conn, doc_id, scope)
-    ingestion._run(job_id, doc_id, scope, str(pdf), None, replaces = (old["id"], str(old_path)))
+    ingestion._run(job_id, doc_id, scope, str(pdf), None, replaces=(old["id"], str(old_path)))
     assert store.get_document(rag_conn, doc_id)["status"] == "failed"
     assert store.get_document(rag_conn, old["id"])["status"] == "completed"
-    text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    text, _ = tool.whole_document_context(scope_thread_id="t1", max_tokens=6000)
     assert "quokka-17" in text

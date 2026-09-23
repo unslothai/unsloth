@@ -35,7 +35,7 @@ def _load_rl_module():
     helpers are needed."""
     import ast
 
-    source = RL_PATH.read_text(encoding = "utf-8")
+    source = RL_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     wanted = {
         "_attested_within_cap",
@@ -54,7 +54,7 @@ def _load_rl_module():
         )
     ]
     module = types.ModuleType("rl_helpers_under_test")
-    exec(compile(ast.Module(body = kept, type_ignores = []), str(RL_PATH), "exec"), module.__dict__)
+    exec(compile(ast.Module(body=kept, type_ignores=[]), str(RL_PATH), "exec"), module.__dict__)
     return module
 
 
@@ -70,7 +70,7 @@ class _Lazy:
         self,
         n,
         width,
-        attest = None,
+        attest=None,
     ):
         self.n = n
         self.width = width
@@ -91,7 +91,7 @@ class _Lazy:
 
 
 def test_an_attesting_split_is_believed_without_a_single_read():
-    split = _Lazy(100_000, width = 2048, attest = 2048)
+    split = _Lazy(100_000, width=2048, attest=2048)
     assert rl.pretokenized_within_cap(split, 2048) is True
     assert split.reads == 0, "the attestation was ignored and the split was scanned"
 
@@ -99,24 +99,24 @@ def test_an_attesting_split_is_believed_without_a_single_read():
 def test_a_split_attesting_a_wider_cap_is_refused():
     """Truncated to 4096 proves nothing about a 2048 cap, and the refusal must
     not silently fall through to a scan that would find the same answer."""
-    split = _Lazy(8, width = 4096, attest = 4096)
+    split = _Lazy(8, width=4096, attest=4096)
     assert rl.pretokenized_within_cap(split, 2048) is False
     assert split.reads == 0
 
 
 def test_a_split_attesting_a_narrower_cap_is_accepted():
-    split = _Lazy(8, width = 512, attest = 512)
+    split = _Lazy(8, width=512, attest=512)
     assert rl.pretokenized_within_cap(split, 2048) is True
 
 
 def test_a_split_with_no_attestation_is_still_scanned():
-    split = _Lazy(4, width = 8)
+    split = _Lazy(4, width=8)
     assert rl.pretokenized_within_cap(split, 2048) is True
     assert split.reads == 4
 
 
 def test_an_overlength_unattested_split_is_still_caught():
-    split = _Lazy(4, width = 9000)
+    split = _Lazy(4, width=9000)
     assert rl.pretokenized_within_cap(split, 2048) is False
 
 
@@ -124,7 +124,7 @@ def test_an_overlength_unattested_split_is_still_caught():
 def test_a_non_int_claim_is_not_an_attestation(claim):
     """`True` is an `int` in Python and would read as a cap of 1. Anything that
     is not a plain integer falls through to the scan."""
-    split = _Lazy(4, width = 9000)
+    split = _Lazy(4, width=9000)
     if claim is not None:
         split._unsloth_truncated_to = claim
     assert rl.pretokenized_within_cap(split, 2048) is False
@@ -149,13 +149,13 @@ def test_the_claim_is_read_from_the_split_itself_not_through_a_wrapper():
             for row in self._inner:
                 yield {"input_ids": row["input_ids"] * 8}
 
-    wrapper = _Forwarding(_Lazy(4, width = 4096, attest = 4096))
+    wrapper = _Forwarding(_Lazy(4, width=4096, attest=4096))
     assert rl._attested_within_cap(wrapper, 40960) is None
 
 
 def test_splits_within_cap_honours_the_attestation_per_split():
-    good = _Lazy(4, width = 2048, attest = 2048)
-    bad = _Lazy(4, width = 4096, attest = 4096)
+    good = _Lazy(4, width=2048, attest=2048)
+    bad = _Lazy(4, width=4096, attest=4096)
     assert rl.splits_within_cap({"a": good}, 2048) is True
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
@@ -170,7 +170,7 @@ def _inlined_within_cap(cap):
     extracting and executing the literals is the only way to hold both copies to
     the same verdict.
     """
-    source = RL_PATH.read_text(encoding = "utf-8")
+    source = RL_PATH.read_text(encoding="utf-8")
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
     body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
@@ -193,18 +193,18 @@ def _inlined_within_cap(cap):
 )
 def test_the_inlined_copy_gives_the_same_verdict(attest, width, cap, expected, expected_reads):
     inlined = _inlined_within_cap(cap)
-    split = _Lazy(4, width = width, attest = attest)
+    split = _Lazy(4, width=width, attest=attest)
     assert inlined(split) is expected
     assert split.reads == expected_reads
 
-    module_level = _Lazy(4, width = width, attest = attest)
+    module_level = _Lazy(4, width=width, attest=attest)
     assert rl.pretokenized_within_cap(module_level, cap) is expected
 
 
 def test_the_codegen_and_the_module_agree_on_the_attribute_name():
     """A rename on one side and not the other is a silent no-op, not a failure:
     the scan would simply never see an attestation again."""
-    source = RL_PATH.read_text(encoding = "utf-8")
+    source = RL_PATH.read_text(encoding="utf-8")
     assert rl._TRUNCATION_ATTESTATION_ATTR == "_unsloth_truncated_to"
     assert (
         source.count("'_unsloth_truncated_to'") >= 2
@@ -217,7 +217,7 @@ def test_studio_stamps_the_attribute_this_scan_reads():
     studio = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "online_tokenization.py"
     if not studio.exists():
         pytest.skip("studio backend not present in this checkout")
-    text = studio.read_text(encoding = "utf-8")
+    text = studio.read_text(encoding="utf-8")
     assert f'TRUNCATION_ATTESTATION_ATTR = "{rl._TRUNCATION_ATTESTATION_ATTR}"' in text
 
 
@@ -236,7 +236,7 @@ def test_the_generated_max_length_block_is_valid_python():
     """
     import ast
 
-    source = RL_PATH.read_text(encoding = "utf-8")
+    source = RL_PATH.read_text(encoding="utf-8")
     start = source.index("            max_length_check = (")
     end = source.index("            extra_args += max_length_check")
     literals = re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
@@ -248,6 +248,6 @@ def test_the_generated_max_length_block_is_valid_python():
 def test_the_attestation_branch_is_present_in_the_generated_block():
     """Pinned by name: without it a `with_transform` split loses padding-free and
     is scanned row by row, which is the eager tokenize pass it exists to avoid."""
-    source = RL_PATH.read_text(encoding = "utf-8")
+    source = RL_PATH.read_text(encoding="utf-8")
     assert "_unsloth_attests" in source
     assert "not _unsloth_prep_truncates and not _unsloth_eval_packing" in source

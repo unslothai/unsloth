@@ -279,11 +279,11 @@ class _Module:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.text = path.read_text(encoding = "utf-8")
+        self.text = path.read_text(encoding="utf-8")
         self.blanked = _blank_noise(self.text)
         # Comments gone, quoted literals kept: the import parser has to read a specifier, but
         # must not read one out of a commented-out statement.
-        self.uncommented = _blank_noise(self.text, keep_strings = True)
+        self.uncommented = _blank_noise(self.text, keep_strings=True)
         self.declarations: dict[str, list[tuple[str, int]]] = {}
         for match in _DECL_RE.finditer(self.blanked):
             self.declarations.setdefault(match.group(2), []).append(
@@ -518,7 +518,7 @@ def resolve_dependencies(
             pull(reference, origin)
         pulled[name] = (
             home.kind(name) or "const",
-            f"// sliced from {home.path.name}\n" + re.sub(r"^export\s+", "", text, count = 1),
+            f"// sliced from {home.path.name}\n" + re.sub(r"^export\s+", "", text, count=1),
             wanted,
         )
         order.append(name)

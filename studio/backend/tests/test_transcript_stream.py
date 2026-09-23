@@ -92,7 +92,7 @@ def test_transformers_progress_uses_existing_audio_windows(monkeypatch):
     monkeypatch.setattr(sidecar, "load", lambda model: worker)
     updates = []
     result = sidecar._transcribe_decoded(
-        "tiny", np.zeros(35 * 16000), {}, on_progress = updates.append
+        "tiny", np.zeros(35 * 16000), {}, on_progress=updates.append
     )
     assert result == "part 1 part 2"
     assert [event["processed_seconds"] for event in updates] == [30, 35]
@@ -132,12 +132,12 @@ def test_mtmd_stream_cleans_metadata_and_requires_completion(monkeypatch):
     monkeypatch.setattr(mtmd.http.client, "HTTPConnection", Connection)
     updates = []
     sidecar = mtmd.MtmdSttSidecar()
-    with pytest.raises(RuntimeError, match = "before finishing"):
-        sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress = updates.append)
+    with pytest.raises(RuntimeError, match="before finishing"):
+        sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress=updates.append)
     assert updates[-1]["text"] == "hello world"
     wire.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
     assert (
-        sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress = updates.append)
+        sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress=updates.append)
         == "hello world"
     )
     assert payloads[-1]["stream"] is True
@@ -145,7 +145,8 @@ def test_mtmd_stream_cleans_metadata_and_requires_completion(monkeypatch):
 
 def test_diffusion_status_retains_the_exact_checkpoint_filename():
     from models.inference import DiffusionStatusResponse
+
     status = DiffusionStatusResponse(
-        loaded = True, model_kind = "gguf", gguf_filename = "model-Q8_0.gguf"
+        loaded=True, model_kind="gguf", gguf_filename="model-Q8_0.gguf"
     ).model_dump()
     assert status["gguf_filename"] == "model-Q8_0.gguf"

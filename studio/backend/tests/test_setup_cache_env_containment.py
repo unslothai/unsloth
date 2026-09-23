@@ -48,26 +48,26 @@ _PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME")
 _HF_ENV = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
     for key in _ALWAYS_PINNED + _PORTABLE_ONLY + _HF_ENV:
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     for key in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     # Not pinned, but both change what Triton resolves under the test home.
     for key in ("TRITON_HOME", "TRITON_OVERRIDE_DIR"):
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     # _default_cache_home reads this before ~/.cache, and CI runners set it.
-    monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     # Same for matplotlib's config dir, whose contents decide whether MPLCONFIGDIR is ours.
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     # Empty home: a real ~/.data-designer would change what the resolver pins.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _restore_hf_cache_settings_module():
     # Left popped, the next import builds a second module object for a later test to read.
     import utils
@@ -175,7 +175,7 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
     torch's own default is one, since for a First Last login it is not. The rest of the caches,
     which nobody pastes into a command line, still move."""
     spaced = tmp_path / "my home" / "studio"
-    spaced.mkdir(parents = True)
+    spaced.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
     sr = _load_storage_roots()
 
@@ -191,7 +191,7 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
     """The other half of the guard: it must fire on a path a compiler cannot take, not on
     every path."""
     plain = tmp_path / "plain_home" / "studio"
-    plain.mkdir(parents = True)
+    plain.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(plain))
     sr = _load_storage_roots()
 
@@ -204,13 +204,13 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
 @pytest.mark.parametrize(
     "name",
     [
-        pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
+        pytest.param("o'brien", id="an apostrophe, which shlex reads as an opening quote"),
         pytest.param(
             'say"hi',
-            id = "a double quote",
-            marks = pytest.mark.skipif(
+            id="a double quote",
+            marks=pytest.mark.skipif(
                 os.name == "nt",
-                reason = "illegal in an NTFS name, so the fixture cannot be created",
+                reason="illegal in an NTFS name, so the fixture cannot be created",
             ),
         ),
     ],
@@ -223,7 +223,7 @@ def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
     so the build fails somewhere less obvious than a split path. "/home/o'brien" is an ordinary
     account name."""
     quoted = tmp_path / name / "studio"
-    quoted.mkdir(parents = True)
+    quoted.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(quoted))
     sr = _load_storage_roots()
 
@@ -235,13 +235,13 @@ def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
         assert os.environ[key].startswith(str(quoted.parent)), key
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "on Windows the separator is not an escape")
+@pytest.mark.skipif(os.name == "nt", reason="on Windows the separator is not an escape")
 def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatch, tmp_path):
     """Legal in a POSIX filename and an escape to shlex, so the character is eaten and the
     compiler is handed a path that does not exist. Windows is exempt because cpp_builder
     rewrites the separator to "/" before it builds the command."""
     odd = tmp_path / "a\\b" / "studio"
-    odd.mkdir(parents = True)
+    odd.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(odd))
     sr = _load_storage_roots()
 
@@ -260,9 +260,9 @@ def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatc
         "a\tb",
         pytest.param(
             "a\\b",
-            marks = pytest.mark.skipif(
+            marks=pytest.mark.skipif(
                 os.name == "nt",
-                reason = "cpp_builder rewrites the separator before building the command",
+                reason="cpp_builder rewrites the separator before building the command",
             ),
         ),
     ],
@@ -330,7 +330,7 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
     from a hex digest, so it cannot carry one itself, and it is keyed on the path we wanted, so
     the same install returns to the same cache every launch."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
     sr = _load_storage_roots()
@@ -345,7 +345,7 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
 
     # Stable: a cache that moved every launch would be a cold compile every launch.
     for key in _TOOLCHAIN_PINNED:
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     sr._setup_cache_env()
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == first
 
@@ -362,13 +362,13 @@ def _fallback_path(sr, key, intended):
 @pytest.mark.parametrize(
     "occupy",
     [
-        pytest.param("file", id = "the name is already a regular file"),
+        pytest.param("file", id="the name is already a regular file"),
         pytest.param(
             "readonly",
-            id = "the directory exists but cannot be written",
-            marks = pytest.mark.skipif(
+            id="the directory exists but cannot be written",
+            marks=pytest.mark.skipif(
                 os.name == "nt",
-                reason = "a read-only bit does not stop a write on Windows",
+                reason="a read-only bit does not stop a write on Windows",
             ),
         ),
     ],
@@ -381,7 +381,7 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
     case this branch exists to prevent. mkdir(exist_ok = True) cannot answer it: it raises
     FileExistsError for the file and says nothing at all about writability."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     temp_root = tmp_path / "tmp"
     temp_root.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
@@ -392,7 +392,7 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
     intended = str(sr.cache_root() / "torchinductor")
     squatter = _fallback_path(sr, "TORCHINDUCTOR_CACHE_DIR", intended)
     if occupy == "file":
-        squatter.write_text("not a directory", encoding = "utf-8")
+        squatter.write_text("not a directory", encoding="utf-8")
     else:
         squatter.mkdir()
         squatter.chmod(0o500)
@@ -406,12 +406,12 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
     assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the temporary root is per-account on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="the temporary root is per-account on Windows")
 @pytest.mark.parametrize(
     "plant",
     [
-        pytest.param("world-writable", id = "a directory another user left writable"),
-        pytest.param("symlink", id = "a symlink planted at the name"),
+        pytest.param("world-writable", id="a directory another user left writable"),
+        pytest.param("symlink", id="a symlink planted at the name"),
     ],
 )
 def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatch, tmp_path):
@@ -422,7 +422,7 @@ def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatc
     untidy cache. Ownership cannot be staged here without a second uid, so these two cover the
     permission bits and the symlink; the uid check is exercised by inspection only."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     shared = tmp_path / "shared-tmp"
     shared.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
@@ -432,7 +432,7 @@ def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatc
     intended = str(sr.cache_root() / "torch-extensions" / sr._torch_runtime_tag())
     planted = _fallback_path(sr, "TORCH_EXTENSIONS_DIR", intended)
     if plant == "world-writable":
-        planted.mkdir(mode = 0o777)
+        planted.mkdir(mode=0o777)
         planted.chmod(0o777)
     else:
         (shared / "elsewhere").mkdir()
@@ -443,12 +443,12 @@ def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatc
     assert "TORCH_EXTENSIONS_DIR" not in os.environ
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_path):
     """The other half: when nothing is in the way it must not create a cache the rest of the
     host can write into either."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     shared = tmp_path / "shared-tmp"
     shared.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
@@ -463,15 +463,15 @@ def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_pat
     assert published.stat().st_uid == os.geteuid()
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX rename permissions")
 @pytest.mark.parametrize(
     "mode, published",
     [
-        pytest.param(0o755, True, id = "a private holding directory"),
-        pytest.param(0o1777, True, id = "world-writable WITH the sticky bit, which is /tmp"),
-        pytest.param(0o1775, True, id = "group-writable WITH the sticky bit, owned by us"),
-        pytest.param(0o777, False, id = "world-writable and NOT sticky"),
-        pytest.param(0o775, False, id = "group-writable and NOT sticky"),
+        pytest.param(0o755, True, id="a private holding directory"),
+        pytest.param(0o1777, True, id="world-writable WITH the sticky bit, which is /tmp"),
+        pytest.param(0o1775, True, id="group-writable WITH the sticky bit, owned by us"),
+        pytest.param(0o777, False, id="world-writable and NOT sticky"),
+        pytest.param(0o775, False, id="group-writable and NOT sticky"),
     ],
 )
 def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
@@ -485,7 +485,7 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     check and the compiler reading the variable. /tmp is 1777 and fine; a TMPDIR pointed at an
     ordinary shared directory is not."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     shared = tmp_path / "shared"
     shared.mkdir()
     shared.chmod(mode)
@@ -501,7 +501,7 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership semantics")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
 def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
     """A mode is not a promise, because changing it belongs to the owner.
 
@@ -542,7 +542,7 @@ def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
         os.stat = real_stat
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX symlink and mode semantics")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink and mode semantics")
 def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
     """A symlink is a name, and a name in a directory another account can write is not ours.
 
@@ -582,7 +582,7 @@ def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, 
     ), "a symlinked temporary root in a directory nobody else can write is still usable"
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX rename permissions")
 def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_path):
     """Checking one level is not enough.
 
@@ -593,7 +593,7 @@ def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_
     shared = tmp_path / "shared"
     shared.mkdir()
     private_root = shared / "victim-tmp"
-    private_root.mkdir(mode = 0o700)
+    private_root.mkdir(mode=0o700)
     sr = _load_storage_roots()
 
     shared.chmod(0o777)
@@ -607,7 +607,7 @@ def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_
         shared.chmod(0o755)
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX sticky semantics")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sticky semantics")
 def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tmp_path):
     """Sticky is not a blanket safe answer.
 
@@ -658,7 +658,7 @@ def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeyp
     on a Windows runner."""
     local = tmp_path / "AppData" / "Local"
     default_temp = local / "Temp"
-    default_temp.mkdir(parents = True)
+    default_temp.mkdir(parents=True)
     shared = tmp_path / "shared-temp"
     shared.mkdir()
     monkeypatch.setenv("LOCALAPPDATA", str(local))
@@ -667,7 +667,7 @@ def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeyp
     assert sr._windows_temp_root_is_private(default_temp) is True
     assert sr._windows_temp_root_is_private(shared) is False
 
-    monkeypatch.delenv("LOCALAPPDATA", raising = False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     assert sr._windows_temp_root_is_private(default_temp) is False
 
     # And it is actually WIRED IN. Exercising the predicate alone left the call site untested:
@@ -682,7 +682,7 @@ def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeyp
     assert "_windows_temp_root_is_private(parent)" in windows_branch.strip().splitlines()[0]
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
+@pytest.mark.skipif(os.name == "nt", reason="the identity is the euid on POSIX")
 def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
     """Keyed on the intended path alone, two OS accounts sharing one install derived the same
     name. The first created it 0700 and every later account then failed the ownership check and
@@ -707,7 +707,7 @@ def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeyp
     """The other end of the same branch. When the temporary directory carries the character too
     there is nowhere left to point, and an unset variable is better than a broken one."""
     refused = tmp_path / "o'brien" / "studio"
-    refused.mkdir(parents = True)
+    refused.mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
     sr = _load_storage_roots()
     monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path / "also'bad"))
@@ -778,7 +778,7 @@ def test_default_install_leaves_the_shared_hf_cache_alone(monkeypatch, tmp_path)
 
 
 def test_portable_mode_moves_the_hf_and_torch_caches_under_the_root(monkeypatch, tmp_path):
-    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising=False)
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     sr = _load_storage_roots()
@@ -798,7 +798,7 @@ def test_portable_mode_still_leaves_hf_home_alone(monkeypatch, tmp_path):
     # HF_HOME owns the token path; credentials stay off a removable volume.
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising=False)
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
     sr = _load_storage_roots()
 
@@ -851,7 +851,7 @@ def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
     monkeypatch, tmp_path, value
 ):
     # The root is what makes an install portable; no UNSLOTH_PORTABLE value may veto it.
-    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising=False)
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
@@ -989,8 +989,8 @@ def test_studio_home_outranks_unsloth_home(monkeypatch, tmp_path):
 
 def _use_data_designer(home: Path) -> None:
     """Write what a Studio Data Designer session leaves behind."""
-    (home / "managed-assets").mkdir(parents = True, exist_ok = True)
-    (home / "model_configs.yaml").write_text("models: []\n", encoding = "utf-8")
+    (home / "managed-assets").mkdir(parents=True, exist_ok=True)
+    (home / "model_configs.yaml").write_text("models: []\n", encoding="utf-8")
     (home / "managed-assets" / "seeds.parquet").write_bytes(b"PAR1")
 
 
@@ -1003,7 +1003,7 @@ def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_pa
     seen = []
     for exists in (False, True, False, True):
         if exists:
-            legacy.mkdir(parents = True, exist_ok = True)
+            legacy.mkdir(parents=True, exist_ok=True)
         elif legacy.exists():
             shutil.rmtree(legacy)
         for key in ("DATA_DESIGNER_HOME", "DATA_DESIGNER_MANAGED_ASSETS_PATH"):
@@ -1051,13 +1051,13 @@ def _mpl_managed(tmp_path: Path) -> Path:
 
 
 def _write_rc(directory: Path) -> None:
-    directory.mkdir(parents = True, exist_ok = True)
-    (directory / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "matplotlibrc").write_text("figure.dpi: 222\n", encoding="utf-8")
 
 
 def _write_style(stylelib: Path) -> None:
-    stylelib.mkdir(parents = True, exist_ok = True)
-    (stylelib / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    stylelib.mkdir(parents=True, exist_ok=True)
+    (stylelib / "house.mplstyle").write_text("axes.facecolor: black\n", encoding="utf-8")
 
 
 @contextlib.contextmanager
@@ -1074,11 +1074,11 @@ def _denied(*paths: Path):
 
 _NEEDS_CHMOD = pytest.mark.skipif(
     os.name == "nt" or os.geteuid() == 0,
-    reason = "chmod 000 denies neither root nor Windows",
+    reason="chmod 000 denies neither root nor Windows",
 )
 _XDG_ONLY = pytest.mark.skipif(
     not sys.platform.startswith(("linux", "freebsd")),
-    reason = "XDG config base is the Linux/FreeBSD branch",
+    reason="XDG config base is the Linux/FreeBSD branch",
 )
 
 
@@ -1091,7 +1091,7 @@ def _mpl_user_styles(tmp_path, monkeypatch):
 
 
 def _mpl_empty_config(tmp_path, monkeypatch):
-    _matplotlib_config_dir(tmp_path / "home").mkdir(parents = True)
+    _matplotlib_config_dir(tmp_path / "home").mkdir(parents=True)
 
 
 def _mpl_xdg_rc(tmp_path, monkeypatch):
@@ -1132,26 +1132,26 @@ def _mpl_managed_styles_and_user_rc(tmp_path, monkeypatch):
 
 
 def _mpl_empty_managed_and_user_rc(tmp_path, monkeypatch):
-    (_mpl_managed(tmp_path) / "stylelib").mkdir(parents = True)
+    (_mpl_managed(tmp_path) / "stylelib").mkdir(parents=True)
     _write_rc(_matplotlib_config_dir(tmp_path / "home"))
 
 
 def _mpl_linked_styles(tmp_path, monkeypatch):
     config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
+    config.mkdir(parents=True)
     elsewhere = tmp_path / "styles-volume"
     elsewhere.mkdir()  # empty, which is the whole point
-    (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
+    (config / "stylelib").symlink_to(elsewhere, target_is_directory=True)
 
 
 def _mpl_dangling_styles(tmp_path, monkeypatch):
     config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "stylelib").symlink_to(tmp_path / "never-mounted", target_is_directory = True)
+    config.mkdir(parents=True)
+    (config / "stylelib").symlink_to(tmp_path / "never-mounted", target_is_directory=True)
 
 
 def _mpl_plain_empty_styles(tmp_path, monkeypatch):
-    (_matplotlib_config_dir(tmp_path / "home") / "stylelib").mkdir(parents = True)
+    (_matplotlib_config_dir(tmp_path / "home") / "stylelib").mkdir(parents=True)
 
 
 @pytest.mark.parametrize(
@@ -1161,22 +1161,22 @@ def _mpl_plain_empty_styles(tmp_path, monkeypatch):
         # there is nothing of the user's at matplotlib's own directory to hide. Each "must still
         # pin" row is the control for the row above it: matplotlib creates the config dir and
         # stylelib on import, so existence alone must never count as configuration.
-        pytest.param(_mpl_user_rc, False, id = "a user matplotlibrc"),
-        pytest.param(_mpl_user_styles, False, id = "a user style library"),
-        pytest.param(_mpl_empty_config, True, id = "an empty config dir"),
-        pytest.param(_mpl_xdg_rc, False, id = "an rc under XDG_CONFIG_HOME", marks = _XDG_ONLY),
+        pytest.param(_mpl_user_rc, False, id="a user matplotlibrc"),
+        pytest.param(_mpl_user_styles, False, id="a user style library"),
+        pytest.param(_mpl_empty_config, True, id="an empty config dir"),
+        pytest.param(_mpl_xdg_rc, False, id="an rc under XDG_CONFIG_HOME", marks=_XDG_ONLY),
         pytest.param(
-            _mpl_denied_config, False, id = "a config dir we may not read", marks = _NEEDS_CHMOD
+            _mpl_denied_config, False, id="a config dir we may not read", marks=_NEEDS_CHMOD
         ),
         pytest.param(
-            _mpl_denied_styles, False, id = "a stylelib we may not read", marks = _NEEDS_CHMOD
+            _mpl_denied_styles, False, id="a stylelib we may not read", marks=_NEEDS_CHMOD
         ),
-        pytest.param(_mpl_failing_volume, False, id = "an rc on a failing volume"),
-        pytest.param(_mpl_managed_styles_and_user_rc, True, id = "our own styles, already ours"),
-        pytest.param(_mpl_empty_managed_and_user_rc, False, id = "an empty managed dir"),
-        pytest.param(_mpl_linked_styles, False, id = "a stylelib linked to an empty volume"),
-        pytest.param(_mpl_dangling_styles, False, id = "a dangling stylelib link"),
-        pytest.param(_mpl_plain_empty_styles, True, id = "a plain empty stylelib"),
+        pytest.param(_mpl_failing_volume, False, id="an rc on a failing volume"),
+        pytest.param(_mpl_managed_styles_and_user_rc, True, id="our own styles, already ours"),
+        pytest.param(_mpl_empty_managed_and_user_rc, False, id="an empty managed dir"),
+        pytest.param(_mpl_linked_styles, False, id="a stylelib linked to an empty volume"),
+        pytest.param(_mpl_dangling_styles, False, id="a dangling stylelib link"),
+        pytest.param(_mpl_plain_empty_styles, True, id="a plain empty stylelib"),
     ],
 )
 def test_mplconfigdir_is_pinned_only_when_it_would_hide_nothing(
@@ -1204,7 +1204,7 @@ def _dd_legacy(tmp_path: Path) -> Path:
 
 
 def _dd_nothing(tmp_path, monkeypatch):
-    (tmp_path / "home").mkdir(parents = True, exist_ok = True)
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
 
 
 def _dd_legacy_in_use(tmp_path, monkeypatch):
@@ -1213,23 +1213,23 @@ def _dd_legacy_in_use(tmp_path, monkeypatch):
 
 def _dd_managed_in_use(tmp_path, monkeypatch):
     _use_data_designer(_dd_managed(tmp_path))
-    _dd_legacy(tmp_path).mkdir(parents = True)
+    _dd_legacy(tmp_path).mkdir(parents=True)
 
 
 def _dd_managed_untouched(tmp_path, monkeypatch):
-    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents = True)
-    _dd_legacy(tmp_path).mkdir(parents = True)
+    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents=True)
+    _dd_legacy(tmp_path).mkdir(parents=True)
 
 
 def _dd_managed_untouched_legacy_in_use(tmp_path, monkeypatch):
-    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents = True)
+    (_dd_managed(tmp_path) / "managed-assets").mkdir(parents=True)
     _use_data_designer(_dd_legacy(tmp_path))
 
 
 def _dd_managed_unlistable(tmp_path, monkeypatch):
     managed = _dd_managed(tmp_path)
     _use_data_designer(managed)
-    _dd_legacy(tmp_path).mkdir(parents = True)
+    _dd_legacy(tmp_path).mkdir(parents=True)
     real_iterdir = Path.iterdir
 
     def deny(self):
@@ -1243,16 +1243,16 @@ def _dd_managed_unlistable(tmp_path, monkeypatch):
 def _dd_managed_assets_denied(tmp_path, monkeypatch):
     managed = _dd_managed(tmp_path)
     _use_data_designer(managed)
-    _dd_legacy(tmp_path).mkdir(parents = True)
+    _dd_legacy(tmp_path).mkdir(parents=True)
     return _denied(managed / "managed-assets")
 
 
 def _dd_redirected_assets(tmp_path, monkeypatch):
     managed = _dd_managed(tmp_path)
-    managed.mkdir(parents = True)
+    managed.mkdir(parents=True)
     elsewhere = tmp_path / "big-disk" / "assets"
-    elsewhere.mkdir(parents = True)  # empty, which is the whole point
-    (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
+    elsewhere.mkdir(parents=True)  # empty, which is the whole point
+    (managed / "managed-assets").symlink_to(elsewhere, target_is_directory=True)
     _use_data_designer(_dd_legacy(tmp_path))
 
 
@@ -1269,7 +1269,7 @@ def _dd_legacy_failing_volume(tmp_path, monkeypatch):
 
 def _dd_legacy_symlink_loop(tmp_path, monkeypatch):
     legacy = _dd_legacy(tmp_path)
-    legacy.parent.mkdir(parents = True, exist_ok = True)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.symlink_to(legacy)
     # ELOOP reads as absence through Path.exists() on every release, which is the bug.
     assert Path(legacy).exists() is False
@@ -1282,23 +1282,23 @@ def _dd_legacy_symlink_loop(tmp_path, monkeypatch):
         # multi-GB parquet hides them behind a re-seeded default. Our own home wins once it has
         # been USED, since the legacy probe re-runs every launch and a standalone run creating
         # ~/.data-designer would otherwise take the work written under the Studio root.
-        pytest.param(_dd_nothing, True, id = "no legacy home at all"),
-        pytest.param(_dd_legacy_in_use, False, id = "a legacy home in use"),
-        pytest.param(_dd_managed_in_use, True, id = "our home in use, legacy empty"),
-        pytest.param(_dd_managed_untouched, False, id = "our home untouched, legacy empty"),
+        pytest.param(_dd_nothing, True, id="no legacy home at all"),
+        pytest.param(_dd_legacy_in_use, False, id="a legacy home in use"),
+        pytest.param(_dd_managed_in_use, True, id="our home in use, legacy empty"),
+        pytest.param(_dd_managed_untouched, False, id="our home untouched, legacy empty"),
         pytest.param(
-            _dd_managed_untouched_legacy_in_use, False, id = "our home untouched, legacy in use"
+            _dd_managed_untouched_legacy_in_use, False, id="our home untouched, legacy in use"
         ),
-        pytest.param(_dd_managed_unlistable, True, id = "our home we may not list"),
+        pytest.param(_dd_managed_unlistable, True, id="our home we may not list"),
         pytest.param(
-            _dd_managed_assets_denied, True, id = "our managed-assets denied", marks = _NEEDS_CHMOD
+            _dd_managed_assets_denied, True, id="our managed-assets denied", marks=_NEEDS_CHMOD
         ),
-        pytest.param(_dd_redirected_assets, True, id = "managed-assets redirected by a link"),
+        pytest.param(_dd_redirected_assets, True, id="managed-assets redirected by a link"),
         pytest.param(
-            _dd_legacy_denied, False, id = "a legacy home we may not read", marks = _NEEDS_CHMOD
+            _dd_legacy_denied, False, id="a legacy home we may not read", marks=_NEEDS_CHMOD
         ),
-        pytest.param(_dd_legacy_failing_volume, False, id = "a legacy home on a failing volume"),
-        pytest.param(_dd_legacy_symlink_loop, False, id = "a legacy home that is a symlink loop"),
+        pytest.param(_dd_legacy_failing_volume, False, id="a legacy home on a failing volume"),
+        pytest.param(_dd_legacy_symlink_loop, False, id="a legacy home that is a symlink loop"),
     ],
 )
 def test_the_data_designer_home_is_pinned_only_when_it_would_hide_nothing(
@@ -1347,8 +1347,8 @@ def test_triton_keeps_reading_the_default_override_dir(tmp_path):
     # so a TRITON_KERNEL_OVERRIDE=1 run would compile something else instead.
     pytest.importorskip("triton")
     override = tmp_path / "home" / ".triton" / "override" / "0123456789abcdef"
-    override.mkdir(parents = True)
-    (override / "kernel.ttir").write_text("// hand-tuned\n", encoding = "utf-8")
+    override.mkdir(parents=True)
+    (override / "kernel.ttir").write_text("// hand-tuned\n", encoding="utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -1363,10 +1363,10 @@ def test_triton_keeps_reading_the_default_override_dir(tmp_path):
             "'dump': knobs.cache.dump_dir,"
             "'override': knobs.cache.override_dir}))",
         ],
-        env = dict(os.environ),
-        capture_output = True,
-        text = True,
-        check = True,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     result = json.loads(probe.stdout.strip().splitlines()[-1])
 
@@ -1393,10 +1393,10 @@ def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tm
             "import sys, matplotlib; sys.platform = 'darwin';"
             "print(matplotlib._get_config_or_cache_dir(matplotlib._get_xdg_config_dir))",
         ],
-        env = {**os.environ, "HOME": str(tmp_path / "home"), "MPLCONFIGDIR": ""},
-        capture_output = True,
-        text = True,
-        check = True,
+        env={**os.environ, "HOME": str(tmp_path / "home"), "MPLCONFIGDIR": ""},
+        capture_output=True,
+        text=True,
+        check=True,
     )
     theirs = Path(probe.stdout.strip().splitlines()[-1])
 
@@ -1428,9 +1428,9 @@ def _matplotlib_config_dir(home: Path) -> Path:
 def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     pytest.importorskip("matplotlib")
     config = _matplotlib_config_dir(tmp_path / "home")
-    (config / "stylelib").mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
-    (config / "stylelib" / "house.mplstyle").write_text("axes.facecolor: black\n", encoding = "utf-8")
+    (config / "stylelib").mkdir(parents=True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding="utf-8")
+    (config / "stylelib" / "house.mplstyle").write_text("axes.facecolor: black\n", encoding="utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -1445,10 +1445,10 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
             "'dpi': matplotlib.rcParams['figure.dpi'],"
             "'style': 'house' in matplotlib.style.available}))",
         ],
-        env = dict(os.environ),
-        capture_output = True,
-        text = True,
-        check = True,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     result = json.loads(probe.stdout.strip().splitlines()[-1])
 
@@ -1459,14 +1459,14 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
 
 @pytest.mark.skipif(
     not sys.platform.startswith(("linux", "freebsd")),
-    reason = "XDG config base is the Linux/FreeBSD branch",
+    reason="XDG config base is the Linux/FreeBSD branch",
 )
 def test_an_xdg_config_dir_is_read_without_a_resolvable_home(monkeypatch, tmp_path):
     # _get_xdg_config_dir reads XDG_CONFIG_HOME before it needs a home, so bailing out on
     # Path.home() pinned over a real matplotlibrc.
     config = tmp_path / "xdg" / "matplotlib"
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    config.mkdir(parents=True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     sr = _load_storage_roots()
 
@@ -1482,7 +1482,7 @@ def test_only_a_positive_absence_counts_as_nothing_at_a_path(tmp_path):
     # The one rule every "pin only when there is nothing to strand" probe shares.
     sr = _load_storage_roots()
     present = tmp_path / "present"
-    present.write_text("x", encoding = "utf-8")
+    present.write_text("x", encoding="utf-8")
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     dangling = tmp_path / "dangling"
@@ -1502,7 +1502,7 @@ def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(monk
     real_scandir = os.scandir
 
     def deny(
-        path = ".",
+        path=".",
         *args,
         **kwargs,
     ):
@@ -1512,22 +1512,22 @@ def test_nothing_at_reports_an_uninspectable_directory_as_holding_something(monk
 
     monkeypatch.setattr(os, "scandir", deny)
 
-    assert sr._nothing_at(styles, ending = ".mplstyle") is False
-    assert sr._nothing_at(tmp_path / "absent", ending = ".mplstyle") is True
+    assert sr._nothing_at(styles, ending=".mplstyle") is False
+    assert sr._nothing_at(tmp_path / "absent", ending=".mplstyle") is True
 
 
 def _fake_torch_on_path(
     tmp_path,
     label,
     version,
-    cuda = None,
-    hip = None,
-    debug = False,
+    cuda=None,
+    hip=None,
+    debug=False,
 ):
     """A torch that has a version.py and explodes if anything imports it. version.py is written
     the way recent torch generates it, annotations and all, so the parser meets the real shape."""
     pkg = tmp_path / label / "torch"
-    pkg.mkdir(parents = True)
+    pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("raise AssertionError('torch was imported')\n")
     (pkg / "version.py").write_text(
         "from typing import Optional\n\n"
@@ -1586,7 +1586,7 @@ def test_torch_extension_cache_separates_incompatible_builds(tmp_path):
 
     tags = []
     for label, version, cuda in (("a", "2.9.1+cu128", "12.8"), ("b", "2.9.1+cu126", "12.6")):
-        with _only_torch(_fake_torch_on_path(tmp_path, label, version, cuda = cuda)):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, version, cuda=cuda)):
             tags.append(sr._torch_runtime_tag())
 
     assert tags[0] != tags[1], f"two torch builds shared one extension dir: {tags[0]}"
@@ -1619,7 +1619,7 @@ def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_p
 
     tags = []
     for label, cuda in (("cpu", None), ("cu126", "12.6"), ("cu128", "12.8")):
-        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", cuda = cuda)):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", cuda=cuda)):
             tags.append(sr._torch_runtime_tag())
 
     assert len(set(tags)) == 3, f"builds with different CUDA ABIs shared one dir: {tags}"
@@ -1635,7 +1635,7 @@ def test_torch_extension_cache_separates_a_rocm_build_from_a_cpu_build(tmp_path)
 
     tags = []
     for label, hip in (("cpu", None), ("rocm", "6.4.43484-123eb5128")):
-        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", hip = hip)):
+        with _only_torch(_fake_torch_on_path(tmp_path, label, "2.9.1", hip=hip)):
             tags.append(sr._torch_runtime_tag())
 
     assert tags[0] != tags[1], f"a ROCm build shared the CPU extension dir: {tags[0]}"
@@ -1649,7 +1649,7 @@ def test_torch_extension_cache_separates_two_host_architectures(tmp_path, monkey
 
     tags = []
     for machine in ("arm64", "x86_64"):
-        monkeypatch.setattr(platform, "machine", lambda m = machine: m)
+        monkeypatch.setattr(platform, "machine", lambda m=machine: m)
         with _only_torch(_fake_torch_on_path(tmp_path, machine, "2.9.1")):
             tags.append(sr._torch_runtime_tag())
 
@@ -1675,7 +1675,7 @@ def test_torch_extension_cache_separates_a_debug_build(tmp_path):
 
     tags = []
     for label, debug in (("release", False), ("debug", True)):
-        entry = _fake_torch_on_path(tmp_path, label, "2.9.1+cu128", cuda = "12.8", debug = debug)
+        entry = _fake_torch_on_path(tmp_path, label, "2.9.1+cu128", cuda="12.8", debug=debug)
         with _only_torch(entry):
             tags.append(sr._torch_runtime_tag())
 
@@ -1687,7 +1687,7 @@ def test_torch_runtime_tag_never_imports_torch(tmp_path):
     # Runs before torch exists in a fresh venv, and importing it on the startup path would cost
     # seconds. The fake package raises on import, so a skip is a failure.
     sr = _load_storage_roots()
-    entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda = "12.8")
+    entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda="12.8")
 
     with _only_torch(entry):
         tag = sr._torch_runtime_tag()
@@ -1706,11 +1706,11 @@ def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path)
     choice made once. _data_designer_defaults already applies this rule to its own home.
     """
     managed = tmp_path / "studio" / "cache" / "matplotlib"
-    managed.mkdir(parents = True)
-    (managed / "matplotlibrc").write_text("figure.dpi: 177\n", encoding = "utf-8")
+    managed.mkdir(parents=True)
+    (managed / "matplotlibrc").write_text("figure.dpi: 177\n", encoding="utf-8")
     config = _matplotlib_config_dir(tmp_path / "home")
-    config.mkdir(parents = True)
-    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
+    config.mkdir(parents=True)
+    (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding="utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -1745,10 +1745,10 @@ def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_pat
     on purpose so startup survives, which is what let an unusable path stay published.
     """
     cache = tmp_path / "studio" / "cache"
-    cache.mkdir(parents = True)
+    cache.mkdir(parents=True)
     # A regular file where the directory should go: mkdir raises FileExistsError, which the
     # best-effort handler treats as "already there".
-    (cache / "torchinductor").write_text("not a directory", encoding = "utf-8")
+    (cache / "torchinductor").write_text("not a directory", encoding="utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -1759,7 +1759,7 @@ def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_pat
 
 
 @pytest.mark.skipif(
-    os.name == "nt" or os.geteuid() == 0, reason = "chmod 555 denies neither root nor Windows"
+    os.name == "nt" or os.geteuid() == 0, reason="chmod 555 denies neither root nor Windows"
 )
 def test_a_read_only_managed_cache_is_not_published(tmp_path):
     """A directory that exists but cannot be written to is the same defect as a missing one.
@@ -1771,7 +1771,7 @@ def test_a_read_only_managed_cache_is_not_published(tmp_path):
     """
     cache = tmp_path / "studio" / "cache"
     for name in ("torchinductor", "triton", "cuda"):
-        (cache / name).mkdir(parents = True)
+        (cache / name).mkdir(parents=True)
         (cache / name).chmod(0o555)
     sr = _load_storage_roots()
     try:
@@ -1808,7 +1808,7 @@ def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
     )
 
 
-@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "chmod 000 denies neither")
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="chmod 000 denies neither")
 def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatch, tmp_path):
     """A miss is a fact about the install; a failure to LOOK is a fact about one instant.
 
@@ -1821,8 +1821,8 @@ def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatc
     master = tmp_path / "root"
     studio = master / "studio"
     share = studio / "share"
-    share.mkdir(parents = True)
-    (share / ".unsloth-master-root").write_text(str(master) + "\n", encoding = "utf-8")
+    share.mkdir(parents=True)
+    (share / ".unsloth-master-root").write_text(str(master) + "\n", encoding="utf-8")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
     sr = _load_storage_roots()
 
@@ -1839,7 +1839,7 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
     """The other half: the fix must not turn the memo off. unsloth_home() runs on every
     cache-var lookup, so re-stat'ing a note that is simply not there is a syscall per call."""
     studio = tmp_path / "root" / "studio"
-    (studio / "share").mkdir(parents = True)
+    (studio / "share").mkdir(parents=True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
     sr = _load_storage_roots()
 
@@ -1848,7 +1848,7 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
     # forget_recorded_master_root() is the way back out for an installer that writes one later.
     (studio / "share" / ".unsloth-master-root").write_text(
         str(tmp_path / "root") + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert sr.unsloth_home() is None
     sr.forget_recorded_master_root()
@@ -1888,7 +1888,7 @@ def _note_ancestor_of_a_legacy_tree(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio))
     for scrubbed in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
-        monkeypatch.delenv(scrubbed, raising = False)
+        monkeypatch.delenv(scrubbed, raising=False)
     return None
 
 
@@ -1918,7 +1918,7 @@ def _an_explicit_legacy_unsloth_home(tmp_path, monkeypatch):
     """Only the RECORDED root is declined. unsloth_home() returns an explicit UNSLOTH_HOME before
     it reads any note, and narrowing that would change what the variable means."""
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    (home / ".unsloth" / "studio" / "share").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home / ".unsloth" / "studio"))
@@ -1927,17 +1927,17 @@ def _an_explicit_legacy_unsloth_home(tmp_path, monkeypatch):
 
 
 def _write_note(studio: Path, root: Path) -> None:
-    (studio / "share").mkdir(parents = True, exist_ok = True)
-    (studio / "share" / ".unsloth-master-root").write_text(str(root) + "\n", encoding = "utf-8")
+    (studio / "share").mkdir(parents=True, exist_ok=True)
+    (studio / "share" / ".unsloth-master-root").write_text(str(root) + "\n", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
     "prepare",
     [
-        pytest.param(_note_ancestor_of_a_legacy_tree, id = "a note naming an ancestor"),
-        pytest.param(_note_naming_the_legacy_default, id = "a note naming the legacy default"),
-        pytest.param(_note_naming_a_real_master_root, id = "a note naming a real master root"),
-        pytest.param(_an_explicit_legacy_unsloth_home, id = "an explicit legacy UNSLOTH_HOME"),
+        pytest.param(_note_ancestor_of_a_legacy_tree, id="a note naming an ancestor"),
+        pytest.param(_note_naming_the_legacy_default, id="a note naming the legacy default"),
+        pytest.param(_note_naming_a_real_master_root, id="a note naming a real master root"),
+        pytest.param(_an_explicit_legacy_unsloth_home, id="an explicit legacy UNSLOTH_HOME"),
     ],
 )
 def test_a_master_root_is_honoured_only_when_a_reader_should_honour_it(
@@ -1984,10 +1984,10 @@ def test_declining_one_pin_never_means_the_resolver_did_nothing(tmp_path, declin
     home = tmp_path / "home"
     if declined == "MPLCONFIGDIR":
         config = _matplotlib_config_dir(home)
-        config.mkdir(parents = True)
-        (config / "matplotlibrc").write_text("figure.dpi: 123\n", encoding = "utf-8")
+        config.mkdir(parents=True)
+        (config / "matplotlibrc").write_text("figure.dpi: 123\n", encoding="utf-8")
     else:
-        (home / ".data-designer" / "recipes").mkdir(parents = True)
+        (home / ".data-designer" / "recipes").mkdir(parents=True)
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -2004,8 +2004,8 @@ def test_an_uninspectable_probe_declines_and_still_pins_everything_else(tmp_path
     """Same rule for the os.lstat/os.scandir failure paths, which are the subtlest of the 25:
     an unreadable matplotlib config must leave MPLCONFIGDIR alone AND leave the rest pinned."""
     config = _matplotlib_config_dir(tmp_path / "home")
-    config.parent.mkdir(parents = True, exist_ok = True)
-    config.write_text("", encoding = "utf-8")  # a file where a directory belongs: ENOTDIR
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("", encoding="utf-8")  # a file where a directory belongs: ENOTDIR
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -2026,8 +2026,8 @@ def test_a_file_where_the_config_dir_belongs_declines_the_pin_on_windows_too(mon
     """
     sr = _load_storage_roots()
     config = _matplotlib_config_dir(tmp_path / "home")
-    config.parent.mkdir(parents = True, exist_ok = True)
-    config.write_text("", encoding = "utf-8")
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("", encoding="utf-8")
 
     real_lstat = sr.os.lstat
 

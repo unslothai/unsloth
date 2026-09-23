@@ -30,19 +30,19 @@ def _start(monitor, **overrides):
 
 def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
     receipts = []
-    monitor = ApiMonitor(terminal_callback = receipts.append)
+    monitor = ApiMonitor(terminal_callback=receipts.append)
     entry_id = _start(
         monitor,
-        model = "org/model",
-        prompt = "do not persist this",
-        subject = "alice",
-        via_api_key = True,
+        model="org/model",
+        prompt="do not persist this",
+        subject="alice",
+        via_api_key=True,
     )
-    monitor.set_usage(entry_id, prompt_tokens = 40, completion_tokens = 10, total_tokens = 50)
+    monitor.set_usage(entry_id, prompt_tokens=40, completion_tokens=10, total_tokens=50)
     monitor.finish(entry_id)
     monitor.finish(entry_id)
     monitor.fail(entry_id, "late error")
-    monitor.set_usage(entry_id, total_tokens = 999)
+    monitor.set_usage(entry_id, total_tokens=999)
 
     assert len(receipts) == 1
     receipt = receipts[0]
@@ -64,15 +64,15 @@ def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
 )
 def test_partial_terminal_api_usage_is_emitted_once(terminal, status):
     receipts = []
-    monitor = ApiMonitor(terminal_callback = receipts.append)
+    monitor = ApiMonitor(terminal_callback=receipts.append)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/responses",
-        prompt = "private",
-        subject = "alice",
-        via_api_key = True,
+        endpoint="/v1/responses",
+        prompt="private",
+        subject="alice",
+        via_api_key=True,
     )
-    monitor.set_usage(entry_id, completion_tokens = 7)
+    monitor.set_usage(entry_id, completion_tokens=7)
     terminal(monitor, entry_id)
     terminal(monitor, entry_id)
     assert len(receipts) == 1
@@ -85,7 +85,7 @@ def test_terminal_callback_runs_outside_monitor_lock():
     monitor = ApiMonitor()
 
     def callback(_receipt):
-        acquired = monitor._lock.acquire(blocking = False)
+        acquired = monitor._lock.acquire(blocking=False)
         lock_was_free.append(acquired)
         if acquired:
             monitor._lock.release()
@@ -94,12 +94,12 @@ def test_terminal_callback_runs_outside_monitor_lock():
     monitor.set_terminal_callback(callback)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/messages",
-        prompt = "private",
-        subject = "alice",
-        via_api_key = True,
+        endpoint="/v1/messages",
+        prompt="private",
+        subject="alice",
+        via_api_key=True,
     )
-    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.set_usage(entry_id, total_tokens=1)
     monitor.finish(entry_id)
     assert lock_was_free == [True]
 
@@ -108,15 +108,15 @@ def test_terminal_callback_failure_is_logged_and_swallowed(caplog):
     def broken(_receipt):
         raise RuntimeError("storage unavailable")
 
-    monitor = ApiMonitor(terminal_callback = broken)
+    monitor = ApiMonitor(terminal_callback=broken)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/completions",
-        prompt = "private",
-        subject = "alice",
-        via_api_key = True,
+        endpoint="/v1/completions",
+        prompt="private",
+        subject="alice",
+        via_api_key=True,
     )
-    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.set_usage(entry_id, total_tokens=1)
     with caplog.at_level(logging.WARNING):
         monitor.finish(entry_id)
     assert monitor.get(entry_id)["status"] == "completed"
@@ -134,12 +134,12 @@ def test_overlapping_callback_leases_do_not_disable_the_live_owner():
     monitor.release_terminal_callback(older)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/responses",
-        prompt = "private",
-        subject = "alice",
-        via_api_key = True,
+        endpoint="/v1/responses",
+        prompt="private",
+        subject="alice",
+        via_api_key=True,
     )
-    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.set_usage(entry_id, total_tokens=1)
     monitor.finish(entry_id)
 
     assert older_receipts == []
@@ -155,8 +155,8 @@ def test_request_ids_keep_the_full_uuid(monkeypatch):
     )
     monitor = ApiMonitor()
 
-    entry_id = monitor.start(endpoint = "/v1", method = "POST", model = "m", prompt = "")
-    lifecycle_id = monitor.record_lifecycle(event = "unload", model = "m")
+    entry_id = monitor.start(endpoint="/v1", method="POST", model="m", prompt="")
+    lifecycle_id = monitor.record_lifecycle(event="unload", model="m")
 
     assert entry_id == f"apireq_{full_hex}"
     assert lifecycle_id == f"apievt_{full_hex[:12]}"
@@ -164,34 +164,34 @@ def test_request_ids_keep_the_full_uuid(monkeypatch):
 
 def test_non_external_and_non_request_rows_never_emit_usage_receipts():
     receipts = []
-    monitor = ApiMonitor(terminal_callback = receipts.append)
+    monitor = ApiMonitor(terminal_callback=receipts.append)
 
-    studio = _start(monitor, prompt = "studio", subject = "alice", via_api_key = False)
-    monitor.set_usage(studio, total_tokens = 10)
+    studio = _start(monitor, prompt="studio", subject="alice", via_api_key=False)
+    monitor.set_usage(studio, total_tokens=10)
     monitor.finish(studio)
 
-    anonymous = _start(monitor, prompt = "anonymous", via_api_key = True)
-    monitor.set_usage(anonymous, total_tokens = 10)
+    anonymous = _start(monitor, prompt="anonymous", via_api_key=True)
+    monitor.set_usage(anonymous, total_tokens=10)
     monitor.finish(anonymous)
 
     lifecycle = monitor.record_lifecycle(
-        event = "load", model = "m", running = True, subject = "alice", via_api_key = True
+        event="load", model="m", running=True, subject="alice", via_api_key=True
     )
     monitor.finish(lifecycle)
-    monitor.record_lifecycle(event = "unload", model = "m", subject = "alice", via_api_key = True)
+    monitor.record_lifecycle(event="unload", model="m", subject="alice", via_api_key=True)
 
     discarded = _start(
         monitor,
-        endpoint = "/v1/responses",
-        prompt = "private",
-        subject = "alice",
-        via_api_key = True,
+        endpoint="/v1/responses",
+        prompt="private",
+        subject="alice",
+        via_api_key=True,
     )
     monitor.discard(discarded)
     monitor.finish(discarded)
 
-    disabled = ApiMonitor(enabled = False, terminal_callback = receipts.append)
-    assert disabled.start(endpoint = "/v1", method = "POST", model = "m", prompt = "") == ""
+    disabled = ApiMonitor(enabled=False, terminal_callback=receipts.append)
+    assert disabled.start(endpoint="/v1", method="POST", model="m", prompt="") == ""
     assert receipts == []
 
 
@@ -202,7 +202,7 @@ def _get_monitor(monkeypatch, *, enabled: bool):
     reads ``snapshot()``, which does not consult the flag, so a shared monitor
     carrying rows from an earlier test would leak into the assertions.
     """
-    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = enabled))
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled=enabled))
     app = FastAPI()
     app.include_router(inference_route.studio_router)
     # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not
@@ -212,15 +212,15 @@ def _get_monitor(monkeypatch, *, enabled: bool):
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
 
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello", context_length = 100)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello", context_length=100)
     monitor.append_reply(entry_id, "hi")
     monitor.append_reply(entry_id, " there")
     monitor.set_usage(
         entry_id,
-        prompt_tokens = 4,
-        completion_tokens = 6,
+        prompt_tokens=4,
+        completion_tokens=6,
     )
     monitor.finish(entry_id)
 
@@ -233,11 +233,11 @@ def test_api_monitor_tracks_reply_usage_and_context():
 
 
 def test_api_monitor_summary_omits_full_prompt_and_reply():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "p" * 500)
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="p" * 500)
     monitor.set_reply(entry_id, "r" * 500)
 
-    [summary] = monitor.snapshot(include_details = False)
+    [summary] = monitor.snapshot(include_details=False)
     assert "prompt" not in summary
     assert "reply" not in summary
     assert summary["prompt_preview"].endswith("...")
@@ -252,25 +252,25 @@ def test_api_monitor_summary_omits_full_prompt_and_reply():
 
 
 def test_api_monitor_filters_entries_by_subject():
-    monitor = ApiMonitor(max_entries = 3)
-    alice = _start(monitor, prompt = "alice prompt", subject = "alice")
-    bob = _start(monitor, prompt = "bob prompt", subject = "bob")
+    monitor = ApiMonitor(max_entries=3)
+    alice = _start(monitor, prompt="alice prompt", subject="alice")
+    bob = _start(monitor, prompt="bob prompt", subject="bob")
     monitor.finish(bob)
 
-    alice_entries = monitor.snapshot(subject = "alice")
+    alice_entries = monitor.snapshot(subject="alice")
     assert [entry["id"] for entry in alice_entries] == [alice]
-    assert monitor.get(bob, subject = "alice") is None
-    assert monitor.get(bob, subject = "bob")["id"] == bob
-    assert monitor.active_count(subject = "alice") == 1
-    assert monitor.active_count(subject = "bob") == 0
+    assert monitor.get(bob, subject="alice") is None
+    assert monitor.get(bob, subject="bob")["id"] == bob
+    assert monitor.active_count(subject="alice") == 1
+    assert monitor.active_count(subject="bob") == 0
 
 
 def test_api_monitor_keeps_bounded_recent_history():
-    monitor = ApiMonitor(max_entries = 2)
+    monitor = ApiMonitor(max_entries=2)
 
-    first = _start(monitor, prompt = "first")
-    second = _start(monitor, prompt = "second")
-    third = _start(monitor, prompt = "third")
+    first = _start(monitor, prompt="first")
+    second = _start(monitor, prompt="second")
+    third = _start(monitor, prompt="third")
     monitor.finish(first)
     monitor.finish(second)
     monitor.finish(third)
@@ -284,11 +284,11 @@ def test_api_monitor_keeps_bounded_recent_history():
 
 
 def test_api_monitor_keeps_running_entries_beyond_history_limit():
-    monitor = ApiMonitor(max_entries = 1)
+    monitor = ApiMonitor(max_entries=1)
 
-    running = _start(monitor, prompt = "running")
+    running = _start(monitor, prompt="running")
     for prompt in ("done-1", "done-2", "done-3"):
-        entry_id = _start(monitor, prompt = prompt)
+        entry_id = _start(monitor, prompt=prompt)
         monitor.finish(entry_id)
 
     entries = monitor.snapshot()
@@ -304,7 +304,7 @@ def test_api_monitor_keeps_running_entries_beyond_history_limit():
 
 
 def test_api_monitor_finish_is_idempotent():
-    monitor = ApiMonitor(max_entries = 2)
+    monitor = ApiMonitor(max_entries=2)
     entry_id = _start(monitor)
     monitor.finish(entry_id)
     first = monitor.snapshot()[0]
@@ -315,26 +315,26 @@ def test_api_monitor_finish_is_idempotent():
 
 
 def test_api_monitor_preserves_authoritative_total_tokens():
-    monitor = ApiMonitor(max_entries = 2)
+    monitor = ApiMonitor(max_entries=2)
     entry_id = _start(monitor)
     monitor.set_usage(
         entry_id,
-        prompt_tokens = 10,
-        completion_tokens = 20,
-        total_tokens = 33,
+        prompt_tokens=10,
+        completion_tokens=20,
+        total_tokens=33,
     )
     # A later partial chunk omitting `total_tokens` must not clobber 33.
-    monitor.set_usage(entry_id, prompt_tokens = 11)
+    monitor.set_usage(entry_id, prompt_tokens=11)
     assert monitor.snapshot()[0]["total_tokens"] == 33
 
 
 def test_api_monitor_recomputes_derived_total_tokens():
-    monitor = ApiMonitor(max_entries = 2)
+    monitor = ApiMonitor(max_entries=2)
     entry_id = _start(monitor)
-    monitor.set_usage(entry_id, prompt_tokens = 10)
+    monitor.set_usage(entry_id, prompt_tokens=10)
     assert monitor.snapshot()[0]["total_tokens"] == 10
 
-    monitor.set_usage(entry_id, completion_tokens = 20)
+    monitor.set_usage(entry_id, completion_tokens=20)
     entry = monitor.snapshot()[0]
     assert entry["prompt_tokens"] == 10
     assert entry["completion_tokens"] == 20
@@ -346,8 +346,8 @@ def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
 
     fake_now = [1000.0]
     monkeypatch.setattr(m.time, "time", lambda: fake_now[0])
-    monitor = ApiMonitor(max_entries = 1)
-    entry_id = _start(monitor, endpoint = "/x")
+    monitor = ApiMonitor(max_entries=1)
+    entry_id = _start(monitor, endpoint="/x")
     fake_now[0] = 500.0
     monitor.finish(entry_id)
     assert monitor.snapshot()[0]["duration_ms"] >= 0
@@ -364,8 +364,8 @@ def test_api_monitor_trim_guards_tiny_limit():
 def test_api_monitor_append_reply_caps_without_regrowing():
     import core.inference.api_monitor as m
 
-    monitor = ApiMonitor(max_entries = 1)
-    entry_id = _start(monitor, prompt = "go")
+    monitor = ApiMonitor(max_entries=1)
+    entry_id = _start(monitor, prompt="go")
     monitor.append_reply(entry_id, "x" * (m._MAX_REPLY_CHARS + 500))
     capped = monitor.snapshot()[0]["reply"]
     assert len(capped) == m._MAX_REPLY_CHARS and capped.endswith("...")
@@ -378,8 +378,8 @@ def test_api_monitor_append_reply_caps_without_regrowing():
 def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     import core.inference.api_monitor as m
 
-    monitor = ApiMonitor(max_entries = 1)
-    entry_id = _start(monitor, prompt = "go")
+    monitor = ApiMonitor(max_entries=1)
+    entry_id = _start(monitor, prompt="go")
     # A reply landing exactly on the cap has no "..." marker yet.
     monitor.append_reply(entry_id, "x" * m._MAX_REPLY_CHARS)
     assert not monitor.snapshot()[0]["reply"].endswith("...")
@@ -393,69 +393,69 @@ def test_clear_keeps_the_callers_own_request_that_is_still_running():
     """Clear log drops history, and a request in flight is not history yet. Dropping it
     loses the request outright: the active count falls to zero and the finish that follows
     has no entry left to land on, so a completed call never appears at all."""
-    monitor = ApiMonitor(max_entries = 4)
-    done = _start(monitor, prompt = "finished", subject = "alice")
+    monitor = ApiMonitor(max_entries=4)
+    done = _start(monitor, prompt="finished", subject="alice")
     monitor.finish(done)
-    live = _start(monitor, prompt = "in flight", subject = "alice")
+    live = _start(monitor, prompt="in flight", subject="alice")
 
-    monitor.clear(subject = "alice")
+    monitor.clear(subject="alice")
 
-    assert [entry["id"] for entry in monitor.snapshot(subject = "alice")] == [live]
-    assert monitor.active_count(subject = "alice") == 1
+    assert [entry["id"] for entry in monitor.snapshot(subject="alice")] == [live]
+    assert monitor.active_count(subject="alice") == 1
     # And the row is still there to be completed.
     monitor.finish(live)
-    assert monitor.get(live, subject = "alice")["status"] == "completed"
+    assert monitor.get(live, subject="alice")["status"] == "completed"
 
 
 def test_api_monitor_clear_is_scoped_to_one_subject():
     # Every other read is subject-scoped; an unscoped clear would erase another's history.
-    monitor = ApiMonitor(max_entries = 4)
-    alice = _start(monitor, prompt = "alice prompt", subject = "alice")
-    bob = _start(monitor, prompt = "bob prompt", subject = "bob")
+    monitor = ApiMonitor(max_entries=4)
+    alice = _start(monitor, prompt="alice prompt", subject="alice")
+    bob = _start(monitor, prompt="bob prompt", subject="bob")
     # Finished first: a running row is a request in flight, not history, and clear keeps
     # it. This test is about the subject scoping, so it clears history and nothing else.
     monitor.finish(alice)
 
-    monitor.clear(subject = "alice")
-    assert monitor.snapshot(subject = "alice") == []
-    assert [entry["id"] for entry in monitor.snapshot(subject = "bob")] == [bob]
-    assert monitor.active_count(subject = "bob") == 1
-    assert monitor.get(alice, subject = "alice") is None
+    monitor.clear(subject="alice")
+    assert monitor.snapshot(subject="alice") == []
+    assert [entry["id"] for entry in monitor.snapshot(subject="bob")] == [bob]
+    assert monitor.active_count(subject="bob") == 1
+    assert monitor.get(alice, subject="alice") is None
 
     # Passing no subject is the explicit "everything" path.
     monitor.clear()
-    assert monitor.snapshot(subject = "bob") == []
+    assert monitor.snapshot(subject="bob") == []
 
 
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
     # Unsloth's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
-    monitor = ApiMonitor(max_entries = 4)
-    ui = _start(monitor, endpoint = "/api/inference/chat", subject = "u")
-    api = _start(monitor, subject = "u", via_api_key = True)
-    by_id = {entry["id"]: entry for entry in monitor.snapshot(subject = "u")}
+    monitor = ApiMonitor(max_entries=4)
+    ui = _start(monitor, endpoint="/api/inference/chat", subject="u")
+    api = _start(monitor, subject="u", via_api_key=True)
+    by_id = {entry["id"]: entry for entry in monitor.snapshot(subject="u")}
     assert by_id[ui]["via_api_key"] is False
     assert by_id[api]["via_api_key"] is True
 
 
 def test_api_monitor_disabled_is_noop():
-    monitor = ApiMonitor(max_entries = 3, enabled = False)
+    monitor = ApiMonitor(max_entries=3, enabled=False)
 
-    request_id = _start(monitor, model = "local-model", prompt = "user: hello", context_length = 100)
+    request_id = _start(monitor, model="local-model", prompt="user: hello", context_length=100)
     load_id = monitor.record_lifecycle(
-        event = "load",
-        model = "local-model",
-        running = True,
+        event="load",
+        model="local-model",
+        running=True,
     )
     unload_id = monitor.record_lifecycle(
-        event = "unload",
-        model = "local-model",
+        event="unload",
+        model="local-model",
     )
     assert request_id == load_id == unload_id == ""
 
     # Every mutator must be a safe no-op on the falsy id.
     monitor.append_reply(request_id, "hi")
     monitor.set_reply(request_id, "hi")
-    monitor.set_usage(request_id, prompt_tokens = 4, completion_tokens = 6)
+    monitor.set_usage(request_id, prompt_tokens=4, completion_tokens=6)
     monitor.relabel(load_id, "renamed-model")
     monitor.set_progress(load_id, 50)
     monitor.finish(load_id)
@@ -470,6 +470,7 @@ def test_api_monitor_disabled_is_noop():
 
 def test_api_monitor_disable_env_var_truthy(monkeypatch):
     import core.inference.api_monitor as m
+
     for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
         monkeypatch.setenv(m._DISABLE_ENV, value)
         assert m._api_monitor_disabled() is True, value
@@ -477,6 +478,7 @@ def test_api_monitor_disable_env_var_truthy(monkeypatch):
 
 def test_api_monitor_disable_env_var_falsy(monkeypatch):
     import core.inference.api_monitor as m
+
     for value in ("", "0", "false", "no", "off", "disabled"):
         monkeypatch.setenv(m._DISABLE_ENV, value)
         assert m._api_monitor_disabled() is False, value
@@ -484,7 +486,8 @@ def test_api_monitor_disable_env_var_falsy(monkeypatch):
 
 def test_api_monitor_disable_env_var_unset(monkeypatch):
     import core.inference.api_monitor as m
-    monkeypatch.delenv(m._DISABLE_ENV, raising = False)
+
+    monkeypatch.delenv(m._DISABLE_ENV, raising=False)
     assert m._api_monitor_disabled() is False
 
 
@@ -492,8 +495,8 @@ def test_api_monitor_disable_env_var_unset(monkeypatch):
 
 
 def test_lifecycle_load_row_opens_running_then_closes():
-    monitor = ApiMonitor(max_entries = 5)
-    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    monitor = ApiMonitor(max_entries=5)
+    event_id = monitor.record_lifecycle(event="load", model="org/A-GGUF", running=True)
     row = monitor.snapshot()[0]
     assert row["kind"] == "lifecycle" and row["event"] == "load"
     assert row["status"] == "running" and row["duration_ms"] is None
@@ -509,8 +512,8 @@ def test_lifecycle_load_row_opens_running_then_closes():
 
 
 def test_lifecycle_unload_row_is_terminal_on_arrival():
-    monitor = ApiMonitor(max_entries = 5)
-    monitor.record_lifecycle(event = "unload", model = "org/A-GGUF", reason = "idle")
+    monitor = ApiMonitor(max_entries=5)
+    monitor.record_lifecycle(event="unload", model="org/A-GGUF", reason="idle")
     row = monitor.snapshot()[0]
     assert row["status"] == "completed"
     assert (row["event"], row["reason"]) == ("unload", "idle")
@@ -519,27 +522,27 @@ def test_lifecycle_unload_row_is_terminal_on_arrival():
 
 def test_lifecycle_rows_are_visible_to_every_subject():
     # A load is server-wide, so it must not vanish for other API keys like a request does.
-    monitor = ApiMonitor(max_entries = 5)
-    _start(monitor, subject = "alice")
-    event_id = monitor.record_lifecycle(event = "unload", model = "org/A-GGUF")
+    monitor = ApiMonitor(max_entries=5)
+    _start(monitor, subject="alice")
+    event_id = monitor.record_lifecycle(event="unload", model="org/A-GGUF")
 
-    bob = monitor.snapshot(subject = "bob")
+    bob = monitor.snapshot(subject="bob")
     assert [r["kind"] for r in bob] == ["lifecycle"]
-    assert monitor.get(event_id, subject = "bob") is not None
-    assert len(monitor.snapshot(subject = "alice")) == 2
+    assert monitor.get(event_id, subject="bob") is not None
+    assert len(monitor.snapshot(subject="alice")) == 2
 
 
 def test_request_rows_stay_private_to_their_subject():
-    monitor = ApiMonitor(max_entries = 5)
-    rid = _start(monitor, subject = "alice")
-    assert monitor.snapshot(subject = "bob") == []
-    assert monitor.get(rid, subject = "bob") is None
+    monitor = ApiMonitor(max_entries=5)
+    rid = _start(monitor, subject="alice")
+    assert monitor.snapshot(subject="bob") == []
+    assert monitor.get(rid, subject="bob") is None
 
 
 def test_discard_drops_a_row_that_never_happened():
     # A load that found the model already resident must leave no trace.
-    monitor = ApiMonitor(max_entries = 5)
-    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    monitor = ApiMonitor(max_entries=5)
+    event_id = monitor.record_lifecycle(event="load", model="org/A-GGUF", running=True)
     monitor.discard(event_id)
     assert monitor.snapshot() == []
     monitor.discard(event_id)  # idempotent
@@ -547,29 +550,29 @@ def test_discard_drops_a_row_that_never_happened():
 
 def test_fail_open_never_touches_a_finished_row():
     # Called from a finally, so it must not stamp an error onto a load that succeeded.
-    monitor = ApiMonitor(max_entries = 5)
-    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    monitor = ApiMonitor(max_entries=5)
+    event_id = monitor.record_lifecycle(event="load", model="org/A-GGUF", running=True)
     monitor.finish(event_id)
     monitor.fail_open(event_id, "Load did not complete")
     row = monitor.snapshot()[0]
     assert row["status"] == "completed" and row["error"] is None
 
-    still_open = monitor.record_lifecycle(event = "load", model = "org/B-GGUF", running = True)
+    still_open = monitor.record_lifecycle(event="load", model="org/B-GGUF", running=True)
     monitor.fail_open(still_open, "Load did not complete")
     assert monitor.snapshot()[0]["status"] == "error"
 
 
 def test_lifecycle_rows_share_the_retention_budget():
-    monitor = ApiMonitor(max_entries = 2)
+    monitor = ApiMonitor(max_entries=2)
     for i in range(4):
-        monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
+        monitor.record_lifecycle(event="unload", model=f"org/M{i}")
     models = [r["model"] for r in monitor.snapshot()]
     assert models == ["org/M3", "org/M2"]
 
 
 def test_request_rows_report_kind_request():
-    monitor = ApiMonitor(max_entries = 2)
-    monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
+    monitor = ApiMonitor(max_entries=2)
+    monitor.start(endpoint="/v1/chat/completions", method="POST", model="m", prompt="hi")
     assert monitor.snapshot()[0]["kind"] == "request"
 
 
@@ -580,44 +583,44 @@ def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
     back: the button visibly did nothing to them. Dropping them outright is not
     an option either, since that erases another caller's history.
     """
-    monitor = ApiMonitor(max_entries = 10)
-    mine = _start(monitor, model = "org/A", prompt = "user: hi", subject = "alice")
+    monitor = ApiMonitor(max_entries=10)
+    mine = _start(monitor, model="org/A", prompt="user: hi", subject="alice")
     monitor.finish(mine)
-    shared = monitor.record_lifecycle(event = "unload", model = "org/A")
+    shared = monitor.record_lifecycle(event="unload", model="org/A")
 
-    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {mine, shared}
-    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
+    assert {e["id"] for e in monitor.snapshot(subject="alice")} == {mine, shared}
+    assert {e["id"] for e in monitor.snapshot(subject="bob")} == {shared}
 
-    monitor.clear(subject = "alice")
+    monitor.clear(subject="alice")
 
-    assert monitor.snapshot(subject = "alice") == []
+    assert monitor.snapshot(subject="alice") == []
     # Hidden for alice, not deleted, so bob's view is untouched.
-    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
-    assert monitor.get(shared, subject = "alice") is None
-    assert monitor.get(shared, subject = "bob") is not None
+    assert {e["id"] for e in monitor.snapshot(subject="bob")} == {shared}
+    assert monitor.get(shared, subject="alice") is None
+    assert monitor.get(shared, subject="bob") is not None
 
 
 def test_clear_leaves_a_running_shared_row_visible():
     """A load still in progress is live state, not history, so clearing the log
     must not hide the row that shows it."""
-    monitor = ApiMonitor(max_entries = 10)
-    running = monitor.record_lifecycle(event = "load", model = "org/A", running = True)
-    monitor.clear(subject = "alice")
-    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {running}
+    monitor = ApiMonitor(max_entries=10)
+    running = monitor.record_lifecycle(event="load", model="org/A", running=True)
+    monitor.clear(subject="alice")
+    assert {e["id"] for e in monitor.snapshot(subject="alice")} == {running}
 
 
 def test_hidden_shared_ids_do_not_outlive_their_entries():
     """The hidden set names rows that exist, so it stays bounded by the ring
     buffer instead of growing for the life of the process."""
-    monitor = ApiMonitor(max_entries = 2)
-    monitor.record_lifecycle(event = "unload", model = "org/A")
-    monitor.clear(subject = "alice")
+    monitor = ApiMonitor(max_entries=2)
+    monitor.record_lifecycle(event="unload", model="org/A")
+    monitor.clear(subject="alice")
     from utils.account_context import current_account_id
 
     key = (current_account_id(), "alice")
     assert monitor._hidden_shared.get(key)
     for i in range(5):
-        monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
+        monitor.record_lifecycle(event="unload", model=f"org/M{i}")
     assert not monitor._hidden_shared.get(key)
 
 
@@ -626,12 +629,12 @@ def test_an_api_triggered_lifecycle_row_carries_the_attribution():
     that is refused never reaches api_monitor.start, so the lifecycle row is the
     whole trace of that request; without the attribution the monitor stayed shut
     on exactly the failures it exists to surface."""
-    monitor = ApiMonitor(max_entries = 5)
+    monitor = ApiMonitor(max_entries=5)
 
     api_load = monitor.record_lifecycle(
-        event = "load", model = "org/Repo-GGUF", running = True, via_api_key = True
+        event="load", model="org/Repo-GGUF", running=True, via_api_key=True
     )
-    monitor.record_lifecycle(event = "unload", model = "org/Repo-GGUF", reason = "idle")
+    monitor.record_lifecycle(event="unload", model="org/Repo-GGUF", reason="idle")
 
     rows = {e["id"]: e for e in monitor.snapshot()}
     assert rows[api_load]["via_api_key"] is True
@@ -640,7 +643,7 @@ def test_an_api_triggered_lifecycle_row_carries_the_attribution():
     assert idle and all(e["via_api_key"] is False for e in idle)
 
     # The failure path keeps it: failing the row must not drop the attribution.
-    monitor.fail(api_load, error = "auto-switch refused")
+    monitor.fail(api_load, error="auto-switch refused")
     after = {e["id"]: e for e in monitor.snapshot()}
     assert after[api_load]["via_api_key"] is True
     assert after[api_load]["status"] == "error"
@@ -651,26 +654,26 @@ def test_an_api_lifecycle_row_pops_the_overlay_only_for_its_own_caller():
     carries via_api_key, which is what the floating panel auto-opens on. Reported
     to everyone, the panel springs open in a browser that had nothing to do with
     the traffic. The row stays visible to all; only the attribution is scoped."""
-    monitor = ApiMonitor(max_entries = 5)
+    monitor = ApiMonitor(max_entries=5)
 
     row = monitor.record_lifecycle(
-        event = "load",
-        model = "org/Repo-GGUF",
-        running = True,
-        via_api_key = True,
-        subject = "alice",
+        event="load",
+        model="org/Repo-GGUF",
+        running=True,
+        via_api_key=True,
+        subject="alice",
     )
 
-    mine = {e["id"]: e for e in monitor.snapshot(subject = "alice")}
-    theirs = {e["id"]: e for e in monitor.snapshot(subject = "bob")}
+    mine = {e["id"]: e for e in monitor.snapshot(subject="alice")}
+    theirs = {e["id"]: e for e in monitor.snapshot(subject="bob")}
     # Shared visibility is deliberate and must survive: bob still sees the load.
     assert row in mine and row in theirs
     assert mine[row]["via_api_key"] is True
     assert theirs[row]["via_api_key"] is False
 
     # The details read is scoped the same way, so the panel cannot re-derive it.
-    assert monitor.get(row, subject = "alice")["via_api_key"] is True
-    assert monitor.get(row, subject = "bob")["via_api_key"] is False
+    assert monitor.get(row, subject="alice")["via_api_key"] is True
+    assert monitor.get(row, subject="bob")["via_api_key"] is False
     # An unscoped read (internal callers) still sees the row's own flag.
     assert monitor.get(row)["via_api_key"] is True
 
@@ -679,16 +682,16 @@ def test_clearing_hides_a_shared_row_this_caller_owns_rather_than_deleting_it():
     """An API-key load now owns its shared row. A subject-scoped clear drops that
     subject's rows, so without this the owner's Clear would delete a row every
     other caller can still see and wipe it out of their history too."""
-    monitor = ApiMonitor(max_entries = 10)
+    monitor = ApiMonitor(max_entries=10)
     row = monitor.record_lifecycle(
-        event = "unload", model = "org/Repo-GGUF", via_api_key = True, subject = "alice"
+        event="unload", model="org/Repo-GGUF", via_api_key=True, subject="alice"
     )
 
-    monitor.clear(subject = "alice")
+    monitor.clear(subject="alice")
 
-    assert monitor.snapshot(subject = "alice") == []
-    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {row}
-    assert monitor.get(row, subject = "bob") is not None
+    assert monitor.snapshot(subject="alice") == []
+    assert {e["id"] for e in monitor.snapshot(subject="bob")} == {row}
+    assert monitor.get(row, subject="bob") is not None
 
 
 # ── stream framing must not depend on the monitor ───────────────────
@@ -719,14 +722,14 @@ def test_sse_done_detection_is_independent_of_the_monitor():
 
 
 def test_monitor_route_reports_enabled(monkeypatch):
-    response = _get_monitor(monkeypatch, enabled = True)
+    response = _get_monitor(monkeypatch, enabled=True)
 
     assert response.status_code == 200
     assert response.json()["logging_enabled"] is True
 
 
 def test_monitor_route_reports_disabled(monkeypatch):
-    response = _get_monitor(monkeypatch, enabled = False)
+    response = _get_monitor(monkeypatch, enabled=False)
 
     # An empty list on its own is indistinguishable from "no traffic yet", so the
     # console needs the flag to explain itself instead of claiming idleness.
@@ -739,8 +742,8 @@ def test_monitor_route_reports_disabled(monkeypatch):
 def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
     """A disabled monitor records nothing, so the route reports an empty list
     even after traffic that would otherwise have shown up."""
-    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
-    _start(inference_route.api_monitor, subject = "test-user")
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled=False))
+    _start(inference_route.api_monitor, subject="test-user")
     app = FastAPI()
     app.include_router(inference_route.studio_router)
     app.dependency_overrides = {get_current_subject: lambda: "test-user"}
@@ -751,16 +754,16 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
 
 
 def test_set_perf_records_stats_and_snapshot_reports_them():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     # set_reply never stamps TTFT; this is the case the prompt_ms fallback exists for.
     monitor.set_reply(entry_id, "hi")
     monitor.set_perf(
         entry_id,
-        tok_per_sec = 42.5,
-        prompt_tok_per_sec = 81.25,
-        prompt_ms = 123.4,
-        stop_reason = "length",
+        tok_per_sec=42.5,
+        prompt_tok_per_sec=81.25,
+        prompt_ms=123.4,
+        stop_reason="length",
     )
     monitor.finish(entry_id)
 
@@ -773,12 +776,12 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
 
 def test_measured_ttft_wins_over_engine_prefill():
     # Queue wait precedes llama-server, so prefill-only prompt_ms under-reports TTFT.
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     entry = next(e for e in monitor._entries if e.id == entry_id)
     entry.started_monotonic -= 2.0
     monitor.append_reply(entry_id, "hi")
-    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 120.0)
+    monitor.set_perf(entry_id, tok_per_sec=42.5, prompt_ms=120.0)
     monitor.finish(entry_id)
 
     [snapshot] = monitor.snapshot()
@@ -786,15 +789,15 @@ def test_measured_ttft_wins_over_engine_prefill():
 
 
 def test_set_perf_rejects_non_finite_values():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     monitor.set_perf(
         entry_id,
-        tok_per_sec = float("nan"),
-        prompt_tok_per_sec = float("inf"),
-        prompt_ms = float("inf"),
+        tok_per_sec=float("nan"),
+        prompt_tok_per_sec=float("inf"),
+        prompt_ms=float("inf"),
     )
-    monitor.set_perf(entry_id, tok_per_sec = "bogus", prompt_tok_per_sec = -1, prompt_ms = None)
+    monitor.set_perf(entry_id, tok_per_sec="bogus", prompt_tok_per_sec=-1, prompt_ms=None)
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
@@ -804,10 +807,10 @@ def test_set_perf_rejects_non_finite_values():
 
 
 def test_full_response_reply_does_not_stamp_ttft():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     monitor.set_reply(entry_id, "full response")
-    monitor.append_reply(entry_id, " tail", stamp_first_token = False)
+    monitor.append_reply(entry_id, " tail", stamp_first_token=False)
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
@@ -816,14 +819,14 @@ def test_full_response_reply_does_not_stamp_ttft():
 
 
 def test_set_usage_rejects_malformed_token_counts():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     monitor.append_reply(entry_id, "hi")
     monitor.set_usage(
         entry_id,
-        prompt_tokens = -3,
-        completion_tokens = "bogus",
-        total_tokens = 12,
+        prompt_tokens=-3,
+        completion_tokens="bogus",
+        total_tokens=12,
     )
     monitor.finish(entry_id)
 
@@ -835,15 +838,15 @@ def test_set_usage_rejects_malformed_token_counts():
 
 
 def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     monitor.mark_first_token(entry_id)
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
     assert entry["ttft_ms"] is not None
 
-    entry_id2 = _start(monitor, model = "local-model", prompt = "user: hello")
+    entry_id2 = _start(monitor, model="local-model", prompt="user: hello")
     monitor.mark_first_token(entry_id2)
     first = monitor._find_locked(entry_id2).first_token_monotonic
     monitor.append_reply(entry_id2, "visible")
@@ -861,10 +864,10 @@ def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
         inf,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_diffusion = False,
-            base_url = "http://llama.test",
-            effective_parallel_slots = 1,
+            is_loaded=True,
+            is_diffusion=False,
+            base_url="http://llama.test",
+            effective_parallel_slots=1,
         ),
     )
     monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
@@ -878,13 +881,13 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
     # Stop reason must be read off the choice, or the row shows a blank.
     import routes.inference as inf
 
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/responses",
-        model = "local-model",
-        prompt = "user: hello",
+        endpoint="/v1/responses",
+        model="local-model",
+        prompt="user: hello",
     )
     body = {
         "choices": [{"message": {"content": "hi"}, "finish_reason": "length"}],
@@ -896,8 +899,8 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
         entry_id,
         {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         None,
-        timings = body.get("timings"),
-        stop_reason = (choices[0].get("finish_reason") if choices else None),
+        timings=body.get("timings"),
+        stop_reason=(choices[0].get("finish_reason") if choices else None),
     )
     monitor.finish(entry_id)
 
@@ -922,6 +925,7 @@ def test_free_never_reports_a_slot_admission_would_refuse():
     from `free` prints free slots next to a queued request.
     """
     from core.inference.llama_admission import LlamaAdmissionQueue
+
     for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
         if held > capacity:
             continue
@@ -954,10 +958,10 @@ def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
         inf,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_diffusion = False,
-            base_url = "http://llama.test",
-            effective_parallel_slots = 1,
+            is_loaded=True,
+            is_diffusion=False,
+            base_url="http://llama.test",
+            effective_parallel_slots=1,
         ),
     )
     monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: queue.snapshot())
@@ -971,10 +975,10 @@ def test_set_perf_survives_an_out_of_range_engine_number():
     and these helpers run inside streaming generators where a raise truncates the
     user's response.
     """
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     huge = int("9" * 400)
-    monitor.set_perf(entry_id, tok_per_sec = huge, prompt_ms = huge, stop_reason = "stop")
+    monitor.set_perf(entry_id, tok_per_sec=huge, prompt_ms=huge, stop_reason="stop")
     monitor.finish(entry_id)
 
     [entry] = monitor.snapshot()
@@ -1000,10 +1004,10 @@ def test_monitor_chunk_never_raises_on_a_malformed_upstream_chunk(monkeypatch, c
     """A raise here escapes into the SSE generator and truncates the response."""
     import routes.inference as inf
 
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
-    inf._monitor_openai_chunk(entry_id, chunk, 4096, streaming = True)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
+    inf._monitor_openai_chunk(entry_id, chunk, 4096, streaming=True)
     # snapshot() divides by the recorded counts, so it has to survive them too.
     assert monitor.snapshot()
 
@@ -1046,8 +1050,8 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
 def _llama_slot_readout(
     monkeypatch,
     *,
-    is_audio = False,
-    slots = 4,
+    is_audio=False,
+    slots=4,
 ):
     """Point the slot readout at a loaded llama-server with ``slots`` free slots."""
     from types import SimpleNamespace
@@ -1055,17 +1059,17 @@ def _llama_slot_readout(
     import routes.inference as inf
 
     backend = SimpleNamespace(
-        is_loaded = True,
-        is_diffusion = False,
-        is_vision = True,
-        base_url = "http://llama.test",
-        effective_parallel_slots = slots,
-        context_length = 4096,
-        model_identifier = "some/tts-GGUF",
-        _is_audio = is_audio,
+        is_loaded=True,
+        is_diffusion=False,
+        is_vision=True,
+        base_url="http://llama.test",
+        effective_parallel_slots=slots,
+        context_length=4096,
+        model_identifier="some/tts-GGUF",
+        _is_audio=is_audio,
         # A real GGUF TTS codec: /audio/generate rejects anything llama.cpp cannot decode.
-        _audio_type = "snac",
-        _auth_headers = None,
+        _audio_type="snac",
+        _auth_headers=None,
     )
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
@@ -1150,16 +1154,16 @@ def _run_gguf_tts(monkeypatch, backend, generate):
 
     monkeypatch.setattr(inf, "_maybe_auto_switch_model", _noop_switch)
     payload = ChatCompletionRequest(
-        model = "some/tts-GGUF", messages = [{"role": "user", "content": "hi"}]
+        model="some/tts-GGUF", messages=[{"role": "user", "content": "hi"}]
     )
-    return asyncio.run(inf.generate_audio(payload, request = None, current_subject = "t"))
+    return asyncio.run(inf.generate_audio(payload, request=None, current_subject="t"))
 
 
 def test_queue_state_counts_gguf_tts(monkeypatch):
     """GGUF TTS holds a llama-server slot for the whole request without a lease."""
     import routes.inference as inf
 
-    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+    backend = _llama_slot_readout(monkeypatch, is_audio=True)
     seen = {}
 
     def _generate(**_kwargs):
@@ -1178,7 +1182,7 @@ def test_gguf_tts_balances_the_direct_counter(monkeypatch, outcome):
 
     import routes.inference as inf
 
-    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+    backend = _llama_slot_readout(monkeypatch, is_audio=True)
 
     def _generate(**kwargs):
         if outcome == "raised":
@@ -1202,9 +1206,9 @@ def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
     # _toolEvent rides the chunk itself, beside choices, with an empty delta.
     import routes.inference as inf
 
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    entry_id = _start(monitor, model = "provider/model")
+    entry_id = _start(monitor, model="provider/model")
     inf._monitor_openai_chunk(
         entry_id,
         {
@@ -1212,7 +1216,7 @@ def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
             "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
             "_toolEvent": {"type": "web_search"},
         },
-        streaming = True,
+        streaming=True,
     )
     monitor.finish(entry_id)
 
@@ -1225,7 +1229,7 @@ def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
     # when they all agree.
     import routes.inference as inf
 
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
 
     def row_for(reasons):
@@ -1252,11 +1256,11 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
     # agreement can only be judged across the whole stream, not inside one chunk.
     import routes.inference as inf
 
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
 
     def row_for(reasons):
-        entry_id = _start(monitor, endpoint = "/v1/completions")
+        entry_id = _start(monitor, endpoint="/v1/completions")
         for i, reason in enumerate(reasons):
             inf._monitor_openai_sse_line(
                 entry_id,
@@ -1275,8 +1279,8 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
 def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch):
     # An n > 1 stream finishes its choices in separate chunks, so publishing the first one
     # would state a request-level verdict while the rest are still running, then retract it.
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, endpoint = "/v1/completions")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, endpoint="/v1/completions")
 
     def row():
         return next(r for r in monitor.snapshot() if r["id"] == entry_id)
@@ -1299,10 +1303,10 @@ def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected
     # A cancelled n > 1 stream stopped its remaining choices rather than hearing from
     # them, and several local streams record "stop" through set_perf on the way out of a
     # cancelled loop, before the cancellation is stamped. Neither describes how it ended.
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, endpoint = "/v1/completions")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, endpoint="/v1/completions")
     if writer == "set_perf":
-        monitor.set_perf(entry_id, stop_reason = "stop")
+        monitor.set_perf(entry_id, stop_reason="stop")
     else:
         monitor.note_stop_reason(entry_id, "stop")
     if status == "error":
@@ -1317,9 +1321,9 @@ def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected
 def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
     # Nothing accumulates on that path, so resolving at finish must not clear what
     # set_perf already recorded.
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, endpoint = "/v1/completions")
-    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, endpoint="/v1/completions")
+    monitor.set_perf(entry_id, stop_reason="stop")
     monitor.finish(entry_id)
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
 
@@ -1339,7 +1343,7 @@ def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected
     # slot readout the same response carries.
     import routes.inference as inf
 
-    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries=3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
     monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: queue)
@@ -1356,7 +1360,7 @@ def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected
 def test_monitor_status_is_idle_without_a_model(monkeypatch):
     import routes.inference as inf
 
-    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries=3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: None)
     monkeypatch.setattr(inf, "_monitor_context_length", lambda: None)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
@@ -1375,14 +1379,14 @@ def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
 
     clock = [100.0]
     monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     entry_id = _start(monitor)
 
-    monitor.mark_first_token(entry_id, decoded = False)
+    monitor.mark_first_token(entry_id, decoded=False)
     clock[0] = 160.0  # a minute of tool run / human confirmation
     monitor.append_reply(entry_id, "first real token")
     clock[0] = 162.0  # two seconds of decoding
-    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.set_usage(entry_id, completion_tokens=21)
     monitor.finish(entry_id)
 
     row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
@@ -1397,13 +1401,13 @@ def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
 
     clock = [100.0]
     monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     entry_id = _start(monitor)
 
     # Reasoning tokens are decoded output, so they start the rate clock as before.
     monitor.mark_first_token(entry_id)
     clock[0] = 102.0
-    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.set_usage(entry_id, completion_tokens=21)
     monitor.finish(entry_id)
 
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["tok_per_sec"] == 10.0
@@ -1413,13 +1417,13 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
     # Why every route records the reason before finish(): the settle runs once, at the
     # terminal transition, so a later write would put a natural stop reason back onto a
     # cancelled row.
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     entry_id = _start(monitor)
-    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.set_perf(entry_id, stop_reason="stop")
     monitor.finish(entry_id, "cancelled")
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] is None
 
-    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.set_perf(entry_id, stop_reason="stop")
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
 
 
@@ -1443,6 +1447,7 @@ def test_usage_only_sse_is_recognized_for_relay_filtering(line, dropped):
     # proxy has to drop the standalone chunk on the way out: a client that did not opt in
     # would index choices[0] on it. Same rule _cmpl_stream_event_out applies locally.
     import routes.inference as inf
+
     assert inf._is_openai_usage_only_sse(line) is dropped
 
 
@@ -1451,9 +1456,9 @@ def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
     import routes.inference as inf
     from types import SimpleNamespace
 
-    payload = SimpleNamespace(stream_options = {"include_usage": include_usage})
+    payload = SimpleNamespace(stream_options={"include_usage": include_usage})
     assert inf._wants_stream_usage(payload) is expected
-    assert inf._wants_stream_usage(SimpleNamespace(stream_options = None)) is False
+    assert inf._wants_stream_usage(SimpleNamespace(stream_options=None)) is False
 
 
 def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
@@ -1461,7 +1466,7 @@ def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
     # OCR call (which opens no row) would leave the row saying Ready while the server works.
     import routes.inference as inf
 
-    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries=3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
     monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
@@ -1493,14 +1498,14 @@ def test_direct_busy_reads_the_live_counter(monkeypatch):
 
 def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
     """duration_ms carries the queue wait, which read a 50 tok/s model as 5. decode_ms must not."""
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     inference_route._monitor_usage(
         entry_id,
         {"prompt_tokens": 11, "completion_tokens": 50},
         4096,
-        timings = {
+        timings={
             "prompt_ms": 9000.0,
             "prompt_per_second": 11.0,
             "predicted_ms": 1000.0,
@@ -1517,15 +1522,15 @@ def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
 
 def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
     """llama-server can end a stream with timings and no usage."""
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
     entry_id = _start(
         monitor,
-        endpoint = "/v1/completions",
-        model = "local-model",
-        prompt = "user: hello",
+        endpoint="/v1/completions",
+        model="local-model",
+        prompt="user: hello",
     )
-    inference_route._monitor_usage(entry_id, None, None, timings = {"predicted_ms": 1000})
+    inference_route._monitor_usage(entry_id, None, None, timings={"predicted_ms": 1000})
     monitor.finish(entry_id)
 
     assert monitor.snapshot()[0]["decode_ms"] == 1000
@@ -1533,8 +1538,8 @@ def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
 
 def test_a_streamed_reply_alone_reports_no_decode_span():
     """Timing the stream misses the first chunk and reasoning tokens, so report nothing."""
-    monitor = ApiMonitor(max_entries = 3)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    monitor = ApiMonitor(max_entries=3)
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     monitor.append_reply(entry_id, "hi")
     monitor.append_reply(entry_id, " there")
     monitor.finish(entry_id)
@@ -1551,14 +1556,14 @@ def test_a_streamed_reply_alone_reports_no_decode_span():
 )
 def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicted_ms):
     """json.loads accepts a bare Infinity; a raise in a streaming generator truncates the reply."""
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inference_route, "api_monitor", monitor)
-    entry_id = _start(monitor, model = "local-model", prompt = "user: hello")
+    entry_id = _start(monitor, model="local-model", prompt="user: hello")
     inference_route._monitor_usage(
         entry_id,
         {"completion_tokens": 50},
         None,
-        timings = {"predicted_ms": predicted_ms},
+        timings={"predicted_ms": predicted_ms},
     )
     monitor.finish(entry_id)
 

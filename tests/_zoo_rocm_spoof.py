@@ -82,4 +82,5 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 if __name__ == "__main__":
     apply()
     import torch
+
     print("ROCm spoof applied:", torch.version.hip, torch.cuda.get_device_properties(0).gcnArchName)

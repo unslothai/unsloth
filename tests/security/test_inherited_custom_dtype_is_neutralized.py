@@ -21,10 +21,10 @@ _ENV_KEY = "UNSLOTH_FORCE_CUSTOM_DTYPE"
 _HOSTILE = 'all;__import__("os").system("touch {marker}");None;;'
 
 
-def _import_with(value, marker = None):
+def _import_with(value, marker=None):
     """Imports the module in a fresh process with `value` inherited, returns the env."""
     environment = dict(os.environ)
-    environment[_ENV_KEY] = value.format(marker = marker) if marker else value
+    environment[_ENV_KEY] = value.format(marker=marker) if marker else value
     # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host with no torch accelerator.
     # In-process this file rides on whatever set the variable earlier in the session
     # (studio/backend/tests/conftest.py does, with setdefault), so whether the child inherited it came down to what
@@ -37,10 +37,10 @@ def _import_with(value, marker = None):
     )
     finished = subprocess.run(
         [sys.executable, "-c", program],
-        env = environment,
-        capture_output = True,
-        text = True,
-        timeout = 600,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     assert finished.returncode == 0, finished.stderr[-2000:]
     return finished.stdout.strip().splitlines()[-1]
@@ -51,7 +51,7 @@ def test_a_hostile_dtype_field_cannot_reach_an_eval(tmp_path):
     from unsloth.models._custom_dtype import DTYPE_ALIASES
 
     marker = tmp_path / "pwned"
-    seen = _import_with(_HOSTILE, marker = marker)
+    seen = _import_with(_HOSTILE, marker=marker)
     assert not marker.exists(), "importing the module ran the inherited code"
 
     value = seen.strip("'\"")
@@ -98,7 +98,7 @@ def test_a_value_this_process_registered_is_untouched(monkeypatch):
         trusted_custom_dtype,
     )
 
-    monkeypatch.delenv(_ENV_KEY, raising = False)
+    monkeypatch.delenv(_ENV_KEY, raising=False)
     ours = "all;torch.float16;torch.float16;pass  # only this test;pass  # only this test"
     register_custom_dtype(ours)
     assert neutralize_inherited_custom_dtype() == ours
@@ -129,7 +129,7 @@ def test_the_module_neutralizes_on_import():
 
     import unsloth.models._custom_dtype as module
 
-    source = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
+    source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
     called = [
         node
         for node in ast.parse(source).body
@@ -149,7 +149,7 @@ def test_the_compiler_entry_point_neutralizes_again():
 
     import unsloth.models._utils as module
 
-    source = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
+    source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     wrappers = [
         node
@@ -173,15 +173,15 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
 
     hostile = 'all;__import__("os").environ["UNSLOTH_TEST_MARKER"] = "1";None;;print(1)'
     monkeypatch.setenv(_ENV_KEY, hostile)
-    monkeypatch.delenv("UNSLOTH_TEST_MARKER", raising = False)
+    monkeypatch.delenv("UNSLOTH_TEST_MARKER", raising=False)
 
     # `disable = True` returns before any compilation, which is all this needs: the
     # sanitizing runs first.
     unsloth_compile_transformers(
-        dtype = None,
-        model_name = "unsloth/tiny",
-        model_types = ["llama"],
-        disable = True,
+        dtype=None,
+        model_name="unsloth/tiny",
+        model_types=["llama"],
+        disable=True,
     )
 
     sanitized = os.environ[_ENV_KEY]

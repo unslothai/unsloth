@@ -34,12 +34,12 @@ def test_discover_prefers_sidecar_then_metadata_then_instance(tmp_path):
     _touch(tmp_path / "c.webp")
     # a.png captioned via metadata.jsonl only
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding="utf-8"
     )
     # b.jpg captioned via sidecar only
-    (tmp_path / "b.txt").write_text("from sidecar", encoding = "utf-8")
+    (tmp_path / "b.txt").write_text("from sidecar", encoding="utf-8")
     # c.webp falls back to the instance prompt
-    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt = "from instance"))
+    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt="from instance"))
     assert pairs[str(tmp_path / "a.png")] == "from metadata"
     assert pairs[str(tmp_path / "b.jpg")] == "from sidecar"
     assert pairs[str(tmp_path / "c.webp")] == "from instance"
@@ -49,9 +49,9 @@ def test_discover_sidecar_overrides_metadata_row(tmp_path):
     # A per-image sidecar is the user's explicit edit and must win over a metadata row for the same image.
     _touch(tmp_path / "a.png")
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding="utf-8"
     )
-    (tmp_path / "a.txt").write_text("edited sidecar", encoding = "utf-8")
+    (tmp_path / "a.txt").write_text("edited sidecar", encoding="utf-8")
     pairs = dict(discover_image_caption_pairs(tmp_path))
     assert pairs[str(tmp_path / "a.png")] == "edited sidecar"
 
@@ -61,10 +61,10 @@ def test_discover_empty_sidecar_suppresses_metadata_but_uses_instance_prompt(tmp
     _touch(tmp_path / "cat.png")
     (tmp_path / "metadata.jsonl").write_text(
         json.dumps({"file_name": "cat.png", "text": "old metadata caption"}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (tmp_path / "cat.txt").write_text("", encoding = "utf-8")  # empty tombstone
-    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    (tmp_path / "cat.txt").write_text("", encoding="utf-8")  # empty tombstone
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt="a photo of sks cat")
     assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
 
 
@@ -77,9 +77,9 @@ def test_discover_empty_sidecar_without_instance_prompt_skips_image(tmp_path):
         + "\n"
         + json.dumps({"file_name": "cap.png", "text": "kept"})
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (tmp_path / "cat.txt").write_text("", encoding = "utf-8")  # empty tombstone
+    (tmp_path / "cat.txt").write_text("", encoding="utf-8")  # empty tombstone
     pairs = dict(discover_image_caption_pairs(tmp_path))
     assert pairs == {str(tmp_path / "cap.png"): "kept"}
 
@@ -88,7 +88,7 @@ def test_discover_reads_invalid_utf8_sidecar_as_tombstone(tmp_path):
     # A sidecar with invalid UTF-8 raised UnicodeDecodeError out of the preflight (a 500); it now reads as empty.
     _touch(tmp_path / "cat.png")
     (tmp_path / "cat.txt").write_bytes(b"\xff\xfe not utf-8")
-    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt="a photo of sks cat")
     assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
 
 
@@ -96,16 +96,16 @@ def test_discover_null_metadata_caption_is_not_the_string_none(tmp_path):
     # str(None) stored "None" as a real caption; a null row must fall through to the instance prompt.
     _touch(tmp_path / "cat.png")
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "cat.png", "text": None}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "cat.png", "text": None}) + "\n", encoding="utf-8"
     )
-    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt="a photo of sks cat")
     assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
 
 
 def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
     _touch(tmp_path / "cap.png")
     _touch(tmp_path / "nocap.png")
-    (tmp_path / "cap.caption").write_text("a caption", encoding = "utf-8")
+    (tmp_path / "cap.caption").write_text("a caption", encoding="utf-8")
     pairs = discover_image_caption_pairs(tmp_path)
     assert pairs == [(str(tmp_path / "cap.png"), "a caption")]
 
@@ -113,7 +113,7 @@ def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
 def test_discover_captions_jsonl_and_image_key(tmp_path):
     _touch(tmp_path / "x.png")
     (tmp_path / "captions.jsonl").write_text(
-        json.dumps({"image": "x.png", "text": "hi"}) + "\n", encoding = "utf-8"
+        json.dumps({"image": "x.png", "text": "hi"}) + "\n", encoding="utf-8"
     )
     assert discover_image_caption_pairs(tmp_path) == [(str(tmp_path / "x.png"), "hi")]
 
@@ -125,22 +125,22 @@ def test_discover_tolerates_non_object_and_invalid_utf8_jsonl(tmp_path):
         '[]\nnull\n"str"\n123\n{not json\n'
         + json.dumps({"file_name": "x.png", "text": "hi"})
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert discover_image_caption_pairs(tmp_path) == [(str(tmp_path / "x.png"), "hi")]
     # Invalid UTF-8 in the metadata file must not raise; the file is skipped and the image falls back to the instance prompt.
     _touch(tmp_path / "y.png")
     (tmp_path / "captions.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
-    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt = "fallback"))
+    pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt="fallback"))
     assert pairs[str(tmp_path / "y.png")] == "fallback"
 
 
 def test_discover_custom_caption_column(tmp_path):
     _touch(tmp_path / "x.png")
     (tmp_path / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "x.png", "caption": "col"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "x.png", "caption": "col"}) + "\n", encoding="utf-8"
     )
-    assert discover_image_caption_pairs(tmp_path, caption_column = "caption")[0][1] == "col"
+    assert discover_image_caption_pairs(tmp_path, caption_column="caption")[0][1] == "col"
 
 
 def test_discover_verify_images_rejects_undecodable(tmp_path):
@@ -150,29 +150,29 @@ def test_discover_verify_images_rejects_undecodable(tmp_path):
 
     good = tmp_path / "good.png"
     Image.new("RGB", (8, 8), "white").save(good)
-    (tmp_path / "good.txt").write_text("ok", encoding = "utf-8")
+    (tmp_path / "good.txt").write_text("ok", encoding="utf-8")
     # A zero-byte file with an image extension + a caption passes filename-only discovery.
     bad = tmp_path / "bad.png"
     bad.write_bytes(b"")
-    (tmp_path / "bad.txt").write_text("broken", encoding = "utf-8")
+    (tmp_path / "bad.txt").write_text("broken", encoding="utf-8")
 
     # Default (verify off): the bad file is accepted, matching trainer behavior.
     pairs = dict(discover_image_caption_pairs(tmp_path))
     assert str(bad) in pairs and str(good) in pairs
 
     # verify_images on: the undecodable file raises a clear ValueError.
-    with pytest.raises(ValueError, match = "cannot be decoded"):
-        discover_image_caption_pairs(tmp_path, verify_images = True)
+    with pytest.raises(ValueError, match="cannot be decoded"):
+        discover_image_caption_pairs(tmp_path, verify_images=True)
 
     # A dataset of only valid images passes the verify.
     bad.unlink()
     (tmp_path / "bad.txt").unlink()
-    assert discover_image_caption_pairs(tmp_path, verify_images = True) == [(str(good), "ok")]
+    assert discover_image_caption_pairs(tmp_path, verify_images=True) == [(str(good), "ok")]
 
 
 def test_discover_empty_raises(tmp_path):
     _touch(tmp_path / "x.png")  # no captions anywhere, no instance prompt
-    with pytest.raises(ValueError, match = "No captioned images"):
+    with pytest.raises(ValueError, match="No captioned images"):
         discover_image_caption_pairs(tmp_path)
 
 
@@ -182,7 +182,7 @@ def test_discover_missing_dir_raises(tmp_path):
 
 
 def test_config_normalized_defaults():
-    cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o").normalized()
+    cfg = DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o").normalized()
     assert cfg.lora_alpha == cfg.lora_rank  # alpha defaults to rank
     assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
 
@@ -201,61 +201,61 @@ def test_config_normalized_defaults():
 )
 def test_config_normalized_validation(kw):
     with pytest.raises(ValueError):
-        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw).normalized()
+        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", **kw).normalized()
 
 
 def test_config_normalized_accepts_mxfp8_dense_base():
     # mxfp8 is a dense speed mode: a dense base + bf16 compute normalises through.
     cfg = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev",
-        data_dir = "d",
-        output_dir = "o",
-        base_precision = "mxfp8",
+        base_model="black-forest-labs/FLUX.1-dev",
+        data_dir="d",
+        output_dir="o",
+        base_precision="mxfp8",
     ).normalized()
     assert cfg.base_precision == "mxfp8"
 
 
 def test_config_normalized_mxfp8_rejects_prequant_base():
     # A prequant (bnb-4bit) base cannot serve the dense mxfp8 base precision.
-    with pytest.raises(ValueError, match = "mxfp8"):
+    with pytest.raises(ValueError, match="mxfp8"):
         DiffusionLoraConfig(
-            base_model = "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
-            data_dir = "d",
-            output_dir = "o",
-            base_precision = "mxfp8",
+            base_model="unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+            data_dir="d",
+            output_dir="o",
+            base_precision="mxfp8",
         ).normalized()
 
 
 def test_config_normalized_mxfp8_requires_bf16_compute():
     # Like the other dense modes, mxfp8 trains in bf16 compute; fp16 is refused.
-    with pytest.raises(ValueError, match = "mxfp8"):
+    with pytest.raises(ValueError, match="mxfp8"):
         DiffusionLoraConfig(
-            base_model = "black-forest-labs/FLUX.1-dev",
-            data_dir = "d",
-            output_dir = "o",
-            base_precision = "mxfp8",
-            mixed_precision = "fp16",
+            base_model="black-forest-labs/FLUX.1-dev",
+            data_dir="d",
+            output_dir="o",
+            base_precision="mxfp8",
+            mixed_precision="fp16",
         ).normalized()
 
 
 def test_config_normalized_lists_mxfp8_in_invalid_mode_error():
     # The invalid-base_precision message enumerates the allowed modes, including mxfp8.
-    with pytest.raises(ValueError, match = "mxfp8"):
+    with pytest.raises(ValueError, match="mxfp8"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", base_precision = "bogus"
+            base_model="b", data_dir="d", output_dir="o", base_precision="bogus"
         ).normalized()
 
 
 def test_config_normalized_krea2_requires_bf16_compute():
     # krea-2 (like qwen-image / z-image) has fp32 RoPE/embedder internals that overflow fp16, so its DiT trains in bf16 only;
     # fp16 must be refused by the route preflight, before it reserves training and evicts resident GPU models.
-    with pytest.raises(ValueError, match = "bf16"):
+    with pytest.raises(ValueError, match="bf16"):
         DiffusionLoraConfig(
-            base_model = "b",
-            data_dir = "d",
-            output_dir = "o",
-            model_family = "krea-2",
-            mixed_precision = "fp16",
+            base_model="b",
+            data_dir="d",
+            output_dir="o",
+            model_family="krea-2",
+            mixed_precision="fp16",
         ).normalized()
 
 
@@ -273,46 +273,46 @@ def test_force_bf16_families_matches_trainer_specs():
 
 
 def _cfg(**kw):
-    return DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", **kw)
+    return DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", **kw)
 
 
 def test_resolve_train_steps_uses_train_steps_when_epochs_disabled():
     # num_epochs == 0 leaves the explicit train_steps untouched, whatever the image count.
-    cfg = _cfg(train_steps = 300, num_epochs = 0)
+    cfg = _cfg(train_steps=300, num_epochs=0)
     assert resolve_train_steps(cfg, 20) == 300
     assert resolve_train_steps(cfg, 1) == 300
 
 
 def test_resolve_train_steps_epochs_ceil_over_batch_and_grad_accum():
     # One epoch = ceil(N / (batch x grad_accum)) optimizer steps; num_epochs multiplies it. 10 images, batch 4 gives 3 steps/epoch.
-    assert resolve_train_steps(_cfg(num_epochs = 1, train_batch_size = 4), 10) == 3
-    assert resolve_train_steps(_cfg(num_epochs = 5, train_batch_size = 4), 10) == 15
+    assert resolve_train_steps(_cfg(num_epochs=1, train_batch_size=4), 10) == 3
+    assert resolve_train_steps(_cfg(num_epochs=5, train_batch_size=4), 10) == 15
     # grad_accum widens the effective batch: 100 images, batch 2, grad_accum 3 gives 17 steps/epoch, 2 epochs = 34.
-    cfg = _cfg(num_epochs = 2, train_batch_size = 2, gradient_accumulation_steps = 3)
+    cfg = _cfg(num_epochs=2, train_batch_size=2, gradient_accumulation_steps=3)
     assert resolve_train_steps(cfg, 100) == 34
     # An exact multiple does not round up: 8 images / batch 4 -> 2 steps/epoch.
-    assert resolve_train_steps(_cfg(num_epochs = 3, train_batch_size = 4), 8) == 6
+    assert resolve_train_steps(_cfg(num_epochs=3, train_batch_size=4), 8) == 6
 
 
 def test_resolve_train_steps_single_image_dataset():
     # A one-image dataset is one optimizer step per epoch, so num_epochs == steps.
-    assert resolve_train_steps(_cfg(num_epochs = 7, train_batch_size = 4), 1) == 7
+    assert resolve_train_steps(_cfg(num_epochs=7, train_batch_size=4), 1) == 7
 
 
 def test_resolve_train_steps_caps_at_100000():
     # The run length is capped at 100000 even for absurd epoch counts, so a huge epochs x dataset never overflows the loop.
-    cfg = _cfg(num_epochs = 1000, train_batch_size = 1)
+    cfg = _cfg(num_epochs=1000, train_batch_size=1)
     assert resolve_train_steps(cfg, 10_000) == 100000
 
 
 def test_config_normalized_num_epochs_bounds():
     # 0 (disabled) and the 1..1000 range normalise; out-of-range is rejected.
-    assert _cfg(num_epochs = 0).normalized().num_epochs == 0
-    assert _cfg(num_epochs = 1000).normalized().num_epochs == 1000
-    with pytest.raises(ValueError, match = "num_epochs"):
-        _cfg(num_epochs = -1).normalized()
-    with pytest.raises(ValueError, match = "num_epochs"):
-        _cfg(num_epochs = 1001).normalized()
+    assert _cfg(num_epochs=0).normalized().num_epochs == 0
+    assert _cfg(num_epochs=1000).normalized().num_epochs == 1000
+    with pytest.raises(ValueError, match="num_epochs"):
+        _cfg(num_epochs=-1).normalized()
+    with pytest.raises(ValueError, match="num_epochs"):
+        _cfg(num_epochs=1001).normalized()
 
 
 def test_config_from_dict_threads_num_epochs():
@@ -325,9 +325,9 @@ def test_config_from_dict_threads_num_epochs():
 
 def test_normalized_rejects_piecewise_constant():
     # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler() would crash in the subprocess AFTER the GPU is freed. Reject it up front.
-    with pytest.raises(ValueError, match = "lr_scheduler"):
+    with pytest.raises(ValueError, match="lr_scheduler"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "piecewise_constant"
+            base_model="b", data_dir="d", output_dir="o", lr_scheduler="piecewise_constant"
         ).normalized()
 
 
@@ -342,7 +342,7 @@ def test_normalized_accepts_supported_schedulers():
         "constant_with_warmup",
     ):
         cfg = DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = sched
+            base_model="b", data_dir="d", output_dir="o", lr_scheduler=sched
         ).normalized()
         assert cfg.lr_scheduler == sched
 
@@ -381,16 +381,16 @@ def test_config_from_dict_ignores_unknown_and_tuples_targets():
 
 def test_config_rejects_zero_lora_alpha():
     # An explicit zero alpha would scale the adapter to nothing; reject it.
-    with pytest.raises(ValueError, match = "lora_alpha"):
-        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", lora_alpha = 0).normalized()
+    with pytest.raises(ValueError, match="lora_alpha"):
+        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", lora_alpha=0).normalized()
 
 
 def test_config_rejects_nonpositive_snr_gamma():
     # A gamma at or below 0 zeroes/inverts the min-SNR weight; None is the documented disable.
-    with pytest.raises(ValueError, match = "snr_gamma"):
-        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", snr_gamma = 0).normalized()
+    with pytest.raises(ValueError, match="snr_gamma"):
+        DiffusionLoraConfig(base_model="b", data_dir="d", output_dir="o", snr_gamma=0).normalized()
     cfg = DiffusionLoraConfig(
-        base_model = "b", data_dir = "d", output_dir = "o", snr_gamma = None
+        base_model="b", data_dir="d", output_dir="o", snr_gamma=None
     ).normalized()
     assert cfg.snr_gamma is None
 
@@ -398,18 +398,18 @@ def test_config_rejects_nonpositive_snr_gamma():
 def test_config_coerces_string_learning_rate():
     # The Unsloth config path preserves learning_rate as a string; normalize to float.
     cfg = DiffusionLoraConfig(
-        base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "1e-4"
+        base_model="b", data_dir="d", output_dir="o", learning_rate="1e-4"
     ).normalized()
     assert cfg.learning_rate == 1e-4
-    with pytest.raises(ValueError, match = "learning_rate"):
+    with pytest.raises(ValueError, match="learning_rate"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "abc"
+            base_model="b", data_dir="d", output_dir="o", learning_rate="abc"
         ).normalized()
 
 
 def test_config_blank_hf_token_is_anonymous():
     cfg = DiffusionLoraConfig(
-        base_model = "b", data_dir = "d", output_dir = "o", hf_token = "   "
+        base_model="b", data_dir="d", output_dir="o", hf_token="   "
     ).normalized()
     assert cfg.hf_token is None
 
@@ -458,9 +458,9 @@ def test_gradient_checkpointing_string_coercion():
 
 
 def test_config_rejects_nonpositive_learning_rate():
-    with pytest.raises(ValueError, match = "learning_rate"):
+    with pytest.raises(ValueError, match="learning_rate"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", learning_rate = 0
+            base_model="b", data_dir="d", output_dir="o", learning_rate=0
         ).normalized()
 
 
@@ -473,7 +473,7 @@ def test_config_rejects_untrainable_base_models():
         "unsloth/FLUX.1-Kontext-dev",
     ):
         with pytest.raises(ValueError):
-            DiffusionLoraConfig(base_model = bad, data_dir = "d", output_dir = "o").normalized()
+            DiffusionLoraConfig(base_model=bad, data_dir="d", output_dir="o").normalized()
 
 
 def test_config_resolves_dit_families():
@@ -484,7 +484,7 @@ def test_config_resolves_dit_families():
         ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "qwen-image"),
         ("Tongyi-MAI/Z-Image-Turbo", "z-image"),
     ):
-        cfg = DiffusionLoraConfig(base_model = base, data_dir = "d", output_dir = "o").normalized()
+        cfg = DiffusionLoraConfig(base_model=base, data_dir="d", output_dir="o").normalized()
         assert cfg.resolved_family == fam
 
 
@@ -496,37 +496,40 @@ def test_config_accepts_sdxl_and_unknown_base_models():
         "/data/checkpoints/my-custom-sdxl",
         "my-finetune",
     ):
-        cfg = DiffusionLoraConfig(base_model = ok, data_dir = "d", output_dir = "o").normalized()
+        cfg = DiffusionLoraConfig(base_model=ok, data_dir="d", output_dir="o").normalized()
         assert cfg.base_model == ok
 
 
 # ── trainer registry + family resolution + metadata sidecar (PR A platform) ──
 def test_get_trainer_resolves_sdxl():
     from core.training.diffusion_lora_trainer import get_trainer, run_diffusion_lora_training
+
     assert get_trainer("sdxl") is run_diffusion_lora_training
     assert get_trainer("SDXL") is run_diffusion_lora_training  # case-insensitive
 
 
 def test_get_trainer_unknown_family_raises():
     from core.training.diffusion_lora_trainer import get_trainer
-    with pytest.raises(ValueError, match = "No trainer"):
+
+    with pytest.raises(ValueError, match="No trainer"):
         get_trainer("flux.1-kontext")  # a real family with no registered trainer
 
 
 def test_get_trainer_resolves_dit_families():
     from core.training.diffusion_dit_trainer import run_dit_lora_training
     from core.training.diffusion_lora_trainer import get_trainer
+
     for fam in ("flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):
         assert get_trainer(fam) is run_dit_lora_training
 
 
 def test_normalized_sets_resolved_family():
     cfg = DiffusionLoraConfig(
-        base_model = "stabilityai/stable-diffusion-xl-base-1.0", data_dir = "d", output_dir = "o"
+        base_model="stabilityai/stable-diffusion-xl-base-1.0", data_dir="d", output_dir="o"
     ).normalized()
     assert cfg.resolved_family == "sdxl"
     cfg2 = DiffusionLoraConfig(
-        base_model = "my-custom-thing", data_dir = "d", output_dir = "o"
+        base_model="my-custom-thing", data_dir="d", output_dir="o"
     ).normalized()
     assert cfg2.resolved_family == "sdxl"  # unknown -> default SDXL trainer
 
@@ -535,21 +538,21 @@ def test_explicit_model_family_validated():
     from core.training.diffusion_lora_trainer import DiffusionLoraConfig as C
 
     # A bogus explicit family is rejected up front.
-    with pytest.raises(ValueError, match = "Unknown model_family"):
-        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "not-a-family").normalized()
+    with pytest.raises(ValueError, match="Unknown model_family"):
+        C(base_model="b", data_dir="d", output_dir="o", model_family="not-a-family").normalized()
     # A known-but-not-trainable family (Kontext editing) is rejected with a helpful hint.
     with pytest.raises(ValueError):
-        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1-kontext").normalized()
+        C(base_model="b", data_dir="d", output_dir="o", model_family="flux.1-kontext").normalized()
     # A DiT family that IS trainable resolves to itself.
     assert (
-        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "flux.1")
+        C(base_model="b", data_dir="d", output_dir="o", model_family="flux.1")
         .normalized()
         .resolved_family
         == "flux.1"
     )
     # SDXL explicit passes.
     assert (
-        C(base_model = "b", data_dir = "d", output_dir = "o", model_family = "sdxl")
+        C(base_model="b", data_dir="d", output_dir="o", model_family="sdxl")
         .normalized()
         .resolved_family
         == "sdxl"
@@ -568,15 +571,15 @@ def test_publish_writes_metadata_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: loras)
 
     src = tmp_path / "run" / "pytorch_lora_weights.safetensors"
-    src.parent.mkdir(parents = True)
+    src.parent.mkdir(parents=True)
     src.write_bytes(b"fake-adapter")
     cfg = DiffusionLoraConfig(
-        base_model = "stabilityai/sdxl-turbo",
-        data_dir = "d",
-        output_dir = str(tmp_path / "run"),
-        adapter_name = "my.style",
-        instance_prompt = "a photo in sks style",
-        lora_rank = 8,
+        base_model="stabilityai/sdxl-turbo",
+        data_dir="d",
+        output_dir=str(tmp_path / "run"),
+        adapter_name="my.style",
+        instance_prompt="a photo in sks style",
+        lora_rank=8,
     ).normalized()
 
     dest = _publish_to_lora_catalog(str(src), cfg)
@@ -605,13 +608,13 @@ def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):
 
     def _publish(payload: bytes) -> str:
         src = tmp_path / "run" / "pytorch_lora_weights.safetensors"
-        src.parent.mkdir(parents = True, exist_ok = True)
+        src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(payload)
         cfg = DiffusionLoraConfig(
-            base_model = "stabilityai/sdxl-turbo",
-            data_dir = "d",
-            output_dir = str(tmp_path / "run"),
-            adapter_name = "my-style",
+            base_model="stabilityai/sdxl-turbo",
+            data_dir="d",
+            output_dir=str(tmp_path / "run"),
+            adapter_name="my-style",
         ).normalized()
         return _publish_to_lora_catalog(str(src), cfg)
 
@@ -627,13 +630,13 @@ def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):
 
 def test_config_rejects_bad_lr_scheduler():
     # A typo'd scheduler must fail at normalize time, not later in the subprocess.
-    with pytest.raises(ValueError, match = "lr_scheduler"):
+    with pytest.raises(ValueError, match="lr_scheduler"):
         DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "constnat"
+            base_model="b", data_dir="d", output_dir="o", lr_scheduler="constnat"
         ).normalized()
     # A valid diffusers scheduler passes.
     cfg = DiffusionLoraConfig(
-        base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "cosine"
+        base_model="b", data_dir="d", output_dir="o", lr_scheduler="cosine"
     ).normalized()
     assert cfg.lr_scheduler == "cosine"
 
@@ -641,16 +644,16 @@ def test_config_rejects_bad_lr_scheduler():
 def test_config_rejects_fp16_on_bf16_only_family():
     # qwen-image / z-image are bf16-only: an fp16 request must be rejected before spawn, in normalized().
     for base in ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Qwen-Image-2512-unsloth-bnb-4bit"):
-        with pytest.raises(ValueError, match = "bf16"):
+        with pytest.raises(ValueError, match="bf16"):
             DiffusionLoraConfig(
-                base_model = base, data_dir = "d", output_dir = "o", mixed_precision = "fp16"
+                base_model=base, data_dir="d", output_dir="o", mixed_precision="fp16"
             ).normalized()
     # FLUX (not force-bf16) still accepts fp16.
     cfg = DiffusionLoraConfig(
-        base_model = "black-forest-labs/FLUX.1-dev",
-        data_dir = "d",
-        output_dir = "o",
-        mixed_precision = "fp16",
+        base_model="black-forest-labs/FLUX.1-dev",
+        data_dir="d",
+        output_dir="o",
+        mixed_precision="fp16",
     ).normalized()
     assert cfg.mixed_precision == "fp16"
 
@@ -660,12 +663,12 @@ def test_gguf_substring_does_not_reject_local_diffusers_dir(tmp_path):
     from core.training.diffusion_train_common import resolve_trainable_family
 
     local = tmp_path / "my-gguf-experiments" / "sdxl-finetune"
-    local.mkdir(parents = True)
-    (local / "model_index.json").write_text("{}", encoding = "utf-8")
+    local.mkdir(parents=True)
+    (local / "model_index.json").write_text("{}", encoding="utf-8")
     assert resolve_trainable_family(str(local)) == "sdxl"
     # A real .gguf file still rejects even inside such a dir.
-    with pytest.raises(ValueError, match = "GGUF"):
+    with pytest.raises(ValueError, match="GGUF"):
         resolve_trainable_family(str(local / "weights.gguf"))
     # A *-GGUF repo id (not a local dir) still rejects.
-    with pytest.raises(ValueError, match = "GGUF"):
+    with pytest.raises(ValueError, match="GGUF"):
         resolve_trainable_family("unsloth/FLUX.1-dev-GGUF")
