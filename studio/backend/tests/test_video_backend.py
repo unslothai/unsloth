@@ -9335,6 +9335,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
     # The plan asks the LOAD's own seed question, so pin it here and keep the staging assertions off the host's card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+    # Its residency question reads live free VRAM, which a shared test card moves under the test.
+    monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
     plan = VideoBackend().download_plan(
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
