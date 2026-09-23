@@ -66,6 +66,14 @@ export const ko = {
     queueingOnHint: "새 메시지는 순서를 기다립니다.",
     queueingHintShared: "대기열은 유지됩니다.",
   },
+  turns: {
+    label: "턴 {number}",
+    pinnedLabel: "턴 {number}, 고정됨",
+    pinned: "고정됨",
+    pin: "턴 고정",
+    unpin: "턴 고정 해제",
+    navigator: "턴",
+  },
   picker: {
     onDevice: "기기",
     huggingFace: "Hugging Face",
@@ -1626,6 +1634,9 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      turnNavigation: "턴 탐색",
+      turnNavigationDescription:
+        "각 턴에 번호를 붙이고, 턴을 고정하고, 긴 채팅 옆의 막대에서 턴 사이를 이동합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',

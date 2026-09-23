@@ -236,6 +236,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showTurnNavigation = useChatPreferencesStore(
+    (state) => state.showTurnNavigation,
+  );
+  const setShowTurnNavigation = useChatPreferencesStore(
+    (state) => state.setShowTurnNavigation,
+  );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
   );
@@ -533,6 +539,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.turnNavigation")}
+          description={t("settings.chat.turnNavigationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.turnNavigation")}
+            checked={showTurnNavigation}
+            onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
         <SettingsRow

@@ -66,6 +66,14 @@ export const zhCN = {
     queueingOnHint: "新消息会排队并按顺序执行。",
     queueingHintShared: "队列会保留。",
   },
+  turns: {
+    label: "第 {number} 轮",
+    pinnedLabel: "第 {number} 轮，已置顶",
+    pinned: "已置顶",
+    pin: "置顶此轮",
+    unpin: "取消置顶",
+    navigator: "对话轮次",
+  },
   picker: {
     onDevice: "本机",
     huggingFace: "Hugging Face",
@@ -1592,6 +1600,9 @@ export const zhCN = {
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      turnNavigation: "对话轮次导航",
+      turnNavigationDescription:
+        "为每一轮编号、置顶轮次，并在长对话旁的导航条中快速跳转。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",

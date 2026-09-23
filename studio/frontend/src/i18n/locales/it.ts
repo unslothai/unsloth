@@ -1634,6 +1634,9 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      turnNavigation: "Navigazione per turni",
+      turnNavigationDescription:
+        "Numera ogni turno, fissa i turni e passa dall'uno all'altro da una barra accanto alle chat lunghe.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -2089,6 +2092,14 @@ export const it = {
         docsWindows: "Windows",
       },
     },
+  },
+  turns: {
+    label: "Turno {number}",
+    pinnedLabel: "Turno {number}, fissato",
+    pinned: "Fissato",
+    pin: "Fissa il turno",
+    unpin: "Rimuovi il turno fissato",
+    navigator: "Turni",
   },
   picker: {
     onDevice: "Sul dispositivo",

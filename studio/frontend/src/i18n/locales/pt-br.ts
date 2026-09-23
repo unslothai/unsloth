@@ -66,6 +66,14 @@ export const ptBR = {
     queueingOnHint: "Mensagens novas esperam a vez.",
     queueingHintShared: "A fila é mantida.",
   },
+  turns: {
+    label: "Turno {number}",
+    pinnedLabel: "Turno {number}, fixado",
+    pinned: "Fixado",
+    pin: "Fixar turno",
+    unpin: "Desafixar turno",
+    navigator: "Turnos",
+  },
   picker: {
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
@@ -1647,6 +1655,9 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      turnNavigation: "Navegação por turnos",
+      turnNavigationDescription:
+        "Numera cada turno, fixa turnos e permite pular entre eles por uma barra ao lado de conversas longas.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',

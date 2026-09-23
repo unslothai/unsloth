@@ -66,6 +66,14 @@ export const fr = {
     queueingOnHint: "Les nouveaux messages attendent leur tour.",
     queueingHintShared: "La file d’attente est conservée.",
   },
+  turns: {
+    label: "Tour {number}",
+    pinnedLabel: "Tour {number}, épinglé",
+    pinned: "Épinglé",
+    pin: "Épingler le tour",
+    unpin: "Détacher le tour",
+    navigator: "Tours",
+  },
   picker: {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
@@ -1666,6 +1674,9 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      turnNavigation: "Navigation par tour",
+      turnNavigationDescription:
+        "Numéroter chaque tour, épingler des tours et passer de l’un à l’autre depuis une barre à côté des longues discussions.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',

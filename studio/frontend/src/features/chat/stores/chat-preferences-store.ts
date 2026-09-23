@@ -43,6 +43,8 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showTurnNavigation: boolean;
+  setShowTurnNavigation: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
   setThinkingVisibility: (value: DisplayVisibility) => void;
   toolVisibility: DisplayVisibility;
@@ -83,6 +85,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      // off by default: turn labels, turn pins and the navigator rail stay opt in
+      showTurnNavigation: false,
+      setShowTurnNavigation: (showTurnNavigation) =>
+        set({ showTurnNavigation }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
       setThinkingVisibility: (thinkingVisibility) =>
         set({ thinkingVisibility }),
@@ -114,6 +120,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showTurnNavigation: saved?.showTurnNavigation ?? false,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,

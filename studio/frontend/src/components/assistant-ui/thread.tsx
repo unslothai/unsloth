@@ -85,6 +85,12 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
+  PinTurnButton,
+  PinTurnMenuItem,
+  TurnNavigator,
+  UserTurnLabel,
+} from "@/components/assistant-ui/turn-navigation";
+import {
   IntentAwareScrollProvider,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
@@ -2041,6 +2047,8 @@ export const Thread: FC<{
                 <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
               </AuiIf>
             )}
+
+            <TurnNavigator viewportRef={viewportElRef} />
 
             {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
             the tail and mounts the rest over the following frames. Nothing unmounts and the
@@ -8368,6 +8376,7 @@ const AssistantActionBar: FC = () => {
                 Save to project sources
               </ActionBarMorePrimitive.Item>
             )}
+            <PinTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
             <ActionBarMorePrimitive.Item
               onSelect={() => setDetailsOpen(true)}
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
@@ -8414,6 +8423,7 @@ const UserMessage: FC = () => {
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
+      <UserTurnLabel />
       <UserMessageAttachments />
       <UserMessageAudio />
 
@@ -8457,6 +8467,7 @@ const UserActionBar: FC = () => {
       )}
       <ForkCountBadge />
       <ForkMessageButton />
+      <PinTurnButton />
       <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );
