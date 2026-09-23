@@ -18470,6 +18470,14 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
+                # paramiko's `sock=` (a `ProxyCommand` or a socket from elsewhere) decides where the
+                # SSH session really goes, so it is unreadable.
+                if any(c.startswith("paramiko.") for c in recognised):
+                    for kw in node.keywords or []:
+                        if kw.arg == "sock" and not (
+                            isinstance(kw.value, ast.Constant) and kw.value.value is None
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
                 # asyncssh routes through `tunnel` (a host) or `proxy_command` (any command, so
                 # unreadable) before it reaches `host`.
                 if any(c.startswith("asyncssh.") for c in recognised):

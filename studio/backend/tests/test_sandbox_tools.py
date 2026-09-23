@@ -1305,6 +1305,7 @@ class TestNetworkTargetResolution:
             # An environment key that cannot be read may name a proxy variable.
             "import os, requests\nfor k, v in cfg.items():\n    os.environ[k] = v\nrequests.get('https://pypi.org/')",
             "import asyncssh\nasyncssh.connect('pypi.org', proxy_command='nc 203.0.113.5 22')",
+            "import paramiko\nparamiko.SSHClient().connect('pypi.org', sock=paramiko.ProxyCommand('nc 203.0.113.5 22'))",
         ],
     )
     def test_unreadable_destination_refused(self, code):
