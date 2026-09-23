@@ -1111,6 +1111,11 @@ class TestNetworkTargetResolution:
                 "requests.get('https://pypi.org', proxies=proxies)",
                 id = "named_proxy_mapping",
             ),
+            pytest.param(
+                "import requests\nclass Factory:\n    def make(self):\n        return requests.Session()\n"
+                f"build = Factory().make\nbuild().get('http://{_H}/')",
+                id = "renamed_bound_factory_method",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):

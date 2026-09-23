@@ -17481,9 +17481,11 @@ def _check_signal_escape_patterns(code: str):
             """Record the arguments of a call to a function or method defined in this file."""
             if isinstance(node.func, ast.Name):
                 targets = [
-                    (fn, 0)
+                    (fn, skip)
                     for name in sorted(self._local_callees(node.func))
                     for fn in self.local_functions.get(name, ())
+                    # A method reached by a bare name is a bound method: `self` is filled.
+                    for skip in ((0, 1) if id(fn) in self.method_self else (0,))
                 ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
             elif isinstance(node.func, ast.Attribute):
                 # `obj.m(s)` and `A.m(obj, s)` look alike, so a method is bound both ways.
@@ -18142,6 +18144,9 @@ def _check_signal_escape_patterns(code: str):
                     for alt in _alternatives(value):
                         if isinstance(alt, ast.Name) and alt.id != target.id:
                             self.callable_aliases.setdefault(target.id, set()).add(alt.id)
+                        elif isinstance(alt, ast.Attribute) and alt.attr in self.local_methods:
+                            # `build = Factory().make` calls `make`.
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.attr)
                 if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
                     owner = self._receiver_path(value.value)
                     alias = self._receiver_path(target)
