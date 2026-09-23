@@ -241,7 +241,12 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
+from .device_type import (
+    arch_lacks_bf16,
+    arch_lacks_buffer_ops,
+    apply_gfx101x_triton_workaround,
+    hip_visible_archs,
+)
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
@@ -448,6 +453,10 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
+
+# gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
+if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
+    apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
