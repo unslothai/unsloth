@@ -74,6 +74,44 @@ def _env_blocks(doc: dict):
             yield step.get("env") or {}
 
 
+# The secret each env key is supplied from, as every workflow maps it today. GitHub expands an
+# unknown `secrets.*` name to an empty string without complaint, and CI cannot list the
+# repository's secret names to check against, so a typo (`secrets.DOCKER_API_KE`) or a mapping to
+# the wrong existing secret reads as a valid expression everywhere except the privileged run that
+# needs it. Pinning the pairs turns both into a failure here. A genuinely new secret goes in this
+# table in the same change that adds it, once it is confirmed to exist.
+_SECRET_FOR = {
+    "APPLE_CERTIFICATE": "APPLE_CERTIFICATE",
+    "APPLE_CERTIFICATE_PASSWORD": "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_ID": "APPLE_ID",
+    "APPLE_PASSWORD": "APPLE_PASSWORD",
+    "APPLE_SIGNING_IDENTITY": "APPLE_SIGNING_IDENTITY",
+    "APPLE_TEAM_ID": "APPLE_TEAM_ID",
+    "AZURE_CERTIFICATE_PROFILE_NAME": "AZURE_CERTIFICATE_PROFILE_NAME",
+    "AZURE_CLIENT_ID": "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET": "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID": "AZURE_TENANT_ID",
+    "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME": "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+    "DOCKER_API_KEY": "DOCKER_API_KEY",
+    "GH_TOKEN": "GITHUB_TOKEN",
+    "GITHUB_TOKEN": "GITHUB_TOKEN",
+    "HF_TOKEN": "HF_TOKEN",
+    "KAGGLE_API_TOKEN": "KAGGLE_API_TOKEN",
+    "KAGGLE_API_TOKEN_2": "KAGGLE_API_TOKEN_2",
+    "KEYCHAIN_PASSWORD": "KEYCHAIN_PASSWORD",
+    "TAURI_SIGNING_PRIVATE_KEY": "TAURI_SIGNING_PRIVATE_KEY",
+    "VT_API_KEY": "VIRUS_TOTAL_API_TOKEN",
+}
+
+# Indexed lookups, `${{ secrets[matrix.secret_name] }}`: the Kaggle jobs pick an account at run
+# time, so the name is a matrix value. Each key pins the one index expression it may use and the
+# secrets that index may resolve to; a static matrix is checked value by value.
+_INDEXED_FOR = {
+    "KAGGLE_API_TOKEN": ("matrix.secret_name", {"KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"}),
+}
+_INDEXED = re.compile(r"secrets\[\s*([^\]]+?)\s*\]")
+
+
 def _secret_backed_names() -> frozenset[str]:
     """Every name a step could be expected to receive a secret under, across all workflows.
 
@@ -82,7 +120,11 @@ def _secret_backed_names() -> frozenset[str]:
     workflow that has lost its only mapping of it, which is exactly the file a per-file scan
     would call clean.
     """
-    names = set()
+    # Seeded from the reviewed table, so a name whose only reference was the mapping that got
+    # deleted is still tracked.
+    names = set(_SECRET_FOR) | set(_SECRET_FOR.values())
+    for allowed in _INDEXED_FOR.values():
+        names |= allowed[1]
     for path in WORKFLOWS:
         doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
         # From parsed values, not the raw text: a comment that explains `secrets.A || secrets.B`
@@ -93,7 +135,7 @@ def _secret_backed_names() -> frozenset[str]:
         for env in _env_blocks(doc):
             for key, value in env.items():
                 if isinstance(value, str) and any(
-                    _SECRET.search(e) for e in _EXPRESSION.findall(value)
+                    _SECRET.search(e) or _INDEXED.search(e) for e in _EXPRESSION.findall(value)
                 ):
                     names.add(key)
     return frozenset(names)
@@ -107,7 +149,9 @@ def _supplies_a_secret(value) -> bool:
     string, a `vars.*` lookup or a misspelled expression is present and still hands the
     script nothing. `github.token` is the run's own token and counts, as GH_TOKEN mappings use it."""
     return isinstance(value, str) and any(
-        _SECRET.search(expression) or re.search(r"\bgithub\.token\b", expression)
+        _SECRET.search(expression)
+        or _INDEXED.search(expression)
+        or re.search(r"\bgithub\.token\b", expression)
         for expression in _EXPRESSION.findall(value)
     )
 
@@ -212,49 +256,61 @@ def test_an_entry_that_supplies_no_secret_does_not_count():
     assert _supplies_a_secret("${{ github.token }}")
 
 
-# The secret each env key is supplied from, as every workflow maps it today. GitHub expands an
-# unknown `secrets.*` name to an empty string without complaint, and CI cannot list the
-# repository's secret names to check against, so a typo (`secrets.DOCKER_API_KE`) or a mapping to
-# the wrong existing secret reads as a valid expression everywhere except the privileged run that
-# needs it. Pinning the pairs turns both into a failure here. A genuinely new secret goes in this
-# table in the same change that adds it, once it is confirmed to exist.
-_SECRET_FOR = {
-    "APPLE_CERTIFICATE": "APPLE_CERTIFICATE",
-    "APPLE_CERTIFICATE_PASSWORD": "APPLE_CERTIFICATE_PASSWORD",
-    "APPLE_ID": "APPLE_ID",
-    "APPLE_PASSWORD": "APPLE_PASSWORD",
-    "APPLE_SIGNING_IDENTITY": "APPLE_SIGNING_IDENTITY",
-    "APPLE_TEAM_ID": "APPLE_TEAM_ID",
-    "AZURE_CERTIFICATE_PROFILE_NAME": "AZURE_CERTIFICATE_PROFILE_NAME",
-    "AZURE_CLIENT_ID": "AZURE_CLIENT_ID",
-    "AZURE_CLIENT_SECRET": "AZURE_CLIENT_SECRET",
-    "AZURE_TENANT_ID": "AZURE_TENANT_ID",
-    "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME": "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
-    "DOCKER_API_KEY": "DOCKER_API_KEY",
-    "GH_TOKEN": "GITHUB_TOKEN",
-    "GITHUB_TOKEN": "GITHUB_TOKEN",
-    "HF_TOKEN": "HF_TOKEN",
-    "KAGGLE_API_TOKEN": "KAGGLE_API_TOKEN",
-    "KAGGLE_API_TOKEN_2": "KAGGLE_API_TOKEN_2",
-    "KEYCHAIN_PASSWORD": "KEYCHAIN_PASSWORD",
-    "TAURI_SIGNING_PRIVATE_KEY": "TAURI_SIGNING_PRIVATE_KEY",
-    "VT_API_KEY": "VIRUS_TOTAL_API_TOKEN",
-}
+def _static_matrix_values(job: dict, field: str):
+    """The values a static matrix gives `field`, or None when the matrix is built at run time."""
+    matrix = ((job or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        return None
+    values = []
+    if isinstance(matrix.get(field), list):
+        values += matrix[field]
+    for entry in matrix.get("include") or []:
+        if isinstance(entry, dict) and field in entry:
+            values.append(entry[field])
+    return values
+
+
+def _check_mapping(key, value, job, name, wrong):
+    if not isinstance(value, str):
+        return
+    expressions = _EXPRESSION.findall(value)
+    drawn = {n for e in expressions for n in _SECRET.findall(e)}
+    indexed = [x for e in expressions for x in _INDEXED.findall(e)]
+    if not drawn and not indexed:
+        return
+    if drawn:
+        if key not in _SECRET_FOR:
+            wrong.append(f"{name}: {key} is a new secret mapping; add it to _SECRET_FOR")
+        elif drawn != {_SECRET_FOR[key]}:
+            wrong.append(f"{name}: {key} draws on {sorted(drawn)}, not {_SECRET_FOR[key]}")
+    for index in indexed:
+        if key not in _INDEXED_FOR:
+            wrong.append(f"{name}: {key} is a new indexed secret mapping; add it to _INDEXED_FOR")
+            continue
+        expected, allowed = _INDEXED_FOR[key]
+        if index != expected:
+            wrong.append(f"{name}: {key} indexes secrets with {index}, not {expected}")
+            continue
+        field = expected.split(".", 1)[1]
+        values = _static_matrix_values(job, field)
+        if values is not None:
+            if not values:
+                wrong.append(f"{name}: {key} indexes {expected}, which the matrix never sets")
+            for v in values:
+                if v not in allowed:
+                    wrong.append(f"{name}: {key} resolves to {v!r}, not one of {sorted(allowed)}")
 
 
 def _misdrawn(doc: dict, name: str) -> list[str]:
     wrong = []
-    for env in _env_blocks(doc):
-        for key, value in env.items():
-            if not isinstance(value, str):
-                continue
-            drawn = {n for e in _EXPRESSION.findall(value) for n in _SECRET.findall(e)}
-            if not drawn:
-                continue
-            if key not in _SECRET_FOR:
-                wrong.append(f"{name}: {key} is a new secret mapping; add it to _SECRET_FOR")
-            elif drawn != {_SECRET_FOR[key]}:
-                wrong.append(f"{name}: {key} draws on {sorted(drawn)}, not {_SECRET_FOR[key]}")
+    for key, value in (doc.get("env") or {}).items():
+        _check_mapping(key, value, None, name, wrong)
+    for job in (doc.get("jobs") or {}).values():
+        for key, value in ((job or {}).get("env") or {}).items():
+            _check_mapping(key, value, job, name, wrong)
+        for step in (job or {}).get("steps") or []:
+            for key, value in (step.get("env") or {}).items():
+                _check_mapping(key, value, job, name, wrong)
     return wrong
 
 
@@ -291,3 +347,31 @@ def test_a_step_reading_the_run_token_must_map_it(tmp_path):
         encoding = "utf-8",
     )
     assert _unmapped(workflow) == ["t.yml :: api :: Call reads GITHUB_TOKEN without mapping it"]
+
+
+def test_a_deleted_only_mapping_is_still_tracked():
+    # APPLE_CERTIFICATE has one reference in the whole repository, the mapping itself.
+    assert {"APPLE_CERTIFICATE", "KAGGLE_API_TOKEN_2"} <= SECRET_BACKED
+
+
+def test_an_indexed_lookup_is_checked():
+    def doc(index, values):
+        return {
+            "jobs": {
+                "j": {
+                    "strategy": {"matrix": {"include": [{"secret_name": v} for v in values]}},
+                    "steps": [{"env": {"KAGGLE_API_TOKEN": "${{ secrets[" + index + "] }}"}}],
+                }
+            }
+        }
+
+    good = ["KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"]
+    assert _misdrawn(doc("matrix.secret_name", good), "w") == []
+    assert _misdrawn(doc("matrix.secert_name", good), "w") == [
+        "w: KAGGLE_API_TOKEN indexes secrets with matrix.secert_name, not matrix.secret_name"
+    ]
+    assert _misdrawn(doc("matrix.secret_name", ["KAGGLE_API_TOKN"]), "w") == [
+        "w: KAGGLE_API_TOKEN resolves to 'KAGGLE_API_TOKN', not one of "
+        "['KAGGLE_API_TOKEN', 'KAGGLE_API_TOKEN_2']"
+    ]
+    assert _supplies_a_secret("${{ secrets[matrix.secret_name] }}")
