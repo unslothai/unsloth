@@ -339,6 +339,22 @@ class TestMemoization:
                 False,
             ),
             ("def f(args):\n    _build_uv_cmd(args)", False),
+            # Rebound after mkdtemp: the call sees the second value.
+            (
+                "def f():\n    s = tempfile.mkdtemp()\n    s = site.getsitepackages()[0]\n"
+                '    _build_uv_cmd(("--target", s))',
+                False,
+            ),
+            (
+                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    args = ("--no-deps",)\n'
+                "    _build_uv_cmd(args)",
+                False,
+            ),
+            (
+                "def f():\n    s = tempfile.mkdtemp()\n    for s in site.getsitepackages():\n"
+                '        _build_uv_cmd(("--target", s))',
+                False,
+            ),
         ],
     )
     def test_only_a_command_built_into_a_fresh_temp_dir_counts_as_scratch(self, source, scratch):
@@ -365,13 +381,20 @@ def _writes_only_a_target(func: ast.FunctionDef, call: ast.Call) -> bool:
     read from the tuple passed in or a tuple the function assigned to the name passed in, carry
     `--target` followed by a directory this function made with `tempfile.mkdtemp`. `--target`
     alone proves nothing, since it can name site-packages as easily as a scratch directory."""
+    # A name bound more than once can hold anything at the call, so only a single binding counts.
+    bindings: dict[str, int] = {}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bindings[node.id] = bindings.get(node.id, 0) + 1
+    for arg in (*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs):
+        bindings[arg.arg] = bindings.get(arg.arg, 0) + 1
     tuples = {}
     scratch = set()
     for node in ast.walk(func):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if not isinstance(target, ast.Name):
+            if not isinstance(target, ast.Name) or bindings.get(target.id) != 1:
                 continue
             if isinstance(node.value, ast.Tuple):
                 tuples[target.id] = node.value
