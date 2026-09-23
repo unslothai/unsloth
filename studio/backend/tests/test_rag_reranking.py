@@ -313,7 +313,13 @@ def resident(monkeypatch):
 
     checkpoint = catalog.CHECKPOINTS["laya-multilingual"]
     monkeypatch.setattr(catalog, "default_checkpoint", lambda: checkpoint)
-    for name, value in (("_agent", None), ("_loaded", None), ("_loader", None), ("_loading", None), ("_failure", None)):
+    for name, value in (
+        ("_agent", None),
+        ("_loaded", None),
+        ("_loader", None),
+        ("_loading", None),
+        ("_failure", None),
+    ):
         monkeypatch.setattr(laya_runtime, name, value)
     return laya_runtime, checkpoint
 

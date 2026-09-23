@@ -473,8 +473,9 @@ def _forward(agent, items: list[dict[str, Any]]):
 
     batch = collate_items([items], agent.tok.pad_token_id)
     device = agent.device
-    with torch.inference_mode(), torch.autocast(
-        device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"),
     ):
         logits, _ = agent.model(
             batch["input_ids"].to(device),
@@ -506,7 +507,11 @@ def _warm(checkpoint: Checkpoint) -> None:
         pass
 
 
-def score_noul(question: dict[str, Any], states: list[str], batch_size: int = 8) -> list[float] | None:
+def score_noul(
+    question: dict[str, Any],
+    states: list[str],
+    batch_size: int = 8,
+) -> list[float] | None:
     from . import catalog
 
     checkpoint = catalog.default_checkpoint()
@@ -537,7 +542,11 @@ def score_noul(question: dict[str, Any], states: list[str], batch_size: int = 8)
             if cut:
                 raise ValueError("state exceeds the Laya context window")
             items.append(
-                {"ids": ids[:-1] + state_ids + ids[-1:], "markers": markers, "qtype": QTYPES["noul"]}
+                {
+                    "ids": ids[:-1] + state_ids + ids[-1:],
+                    "markers": markers,
+                    "qtype": QTYPES["noul"],
+                }
             )
         scores = []
         for start in range(0, len(items), batch_size):

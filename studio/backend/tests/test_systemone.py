@@ -832,7 +832,11 @@ class WordTokenizer:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, text, add_special_tokens = False):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+    ):
         self.calls.append(len(text))
         return {"input_ids": [len(word) for word in text.split()]}
 
@@ -864,7 +868,11 @@ def test_fast_path_matches_laya_predict():
         "instructions": "Pick one",
         "criteria": {"zeta": None, "alpha": "first", "mid": ""},
     }
-    for state in ("I was charged twice.", {"turns": ["hi", "refund please"]}, "Über 请 word " * 20_000):
+    for state in (
+        "I was charged twice.",
+        {"turns": ["hi", "refund please"]},
+        "Über 请 word " * 20_000,
+    ):
         expected = agent.predict(state, questions)
         result, truncated = _REAL_PREDICT(agent, state, questions)
         assert result["usage"] == expected["usage"]

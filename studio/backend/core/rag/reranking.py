@@ -18,7 +18,6 @@ _QUESTION = {
 
 def enabled() -> bool:
     from utils import systemone_settings
-
     return systemone_settings.get_enabled() and systemone_settings.get_rag_rerank()
 
 
