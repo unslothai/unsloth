@@ -1,5 +1,6 @@
 """Responsive contract for the composer Thinking control."""
 
+import re
 from pathlib import Path
 
 
@@ -13,7 +14,11 @@ def test_thinking_control_has_compact_hooks_in_both_composers():
     for path in (THREAD_TSX, SHARED_TSX):
         source = path.read_text(encoding = "utf-8")
         assert 'className="unsloth-thinking-label"' in source
-        assert "unsloth-thinking-caret size-[15px]" in source
+        # 15px at the default UI scale; #11648 wrapped it in the space scale like the rest of the composer.
+        assert re.search(
+            r"unsloth-thinking-caret size-\[(15px|calc\(15px\*var\(--ui-space-scale,1\)\))\]",
+            source,
+        ), f"{path.name}: the Thinking caret lost its hook or its 15px size"
         assert 'data-pill-label="Thinking settings"' in source
 
 

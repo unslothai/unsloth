@@ -1054,6 +1054,10 @@ def _at_default_scale(source: str) -> str:
     return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
 
 
+# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it.
+RAIL_WIDTH = "@[50rem]:w-[min(408px,calc(100%-13rem))]"
+
+
 def _ui_source(path) -> str:
     """A checked-in source, read at the default UI scale.
 
@@ -2359,7 +2363,9 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    assert "@[50rem]:w-[408px]" in section
+    # 408px at the default scale, clamped since #11648 so the canvas keeps the 13rem its header column
+    # reserves (`minmax(13rem,1fr)`) when the scaled rail would otherwise eat it.
+    assert RAIL_WIDTH in section
     assert "md:flex-row" not in section
     # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
     # reserves 80px for an overlay to sit in. The crossfade into that footer is the
@@ -2396,7 +2402,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "@[50rem]:w-[408px]" in layout
+    assert RAIL_WIDTH in layout
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout

@@ -15,7 +15,11 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
-    assert "flex h-full min-h-0 min-w-0 w-full max-sm:flex-col" in source
+    assert "flex h-full min-h-0 min-w-0 w-full" in source
+    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
+    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
+    assert "data-stacked={stacked || undefined}" in source
+    assert "min-w-0 w-full data-stacked:flex-col" in source
     assert "relative flex min-h-0 min-w-0 flex-1 flex-col" in source
 
 
