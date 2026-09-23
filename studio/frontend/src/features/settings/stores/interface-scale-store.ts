@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { setLayoutScale } from "@/lib/layout-scale";
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -104,6 +105,7 @@ export const INTERFACE_SCALE_VAR = "--ui-interface-scale";
 function applyWebInterfaceScale(scale: number): void {
   if (typeof document === "undefined") return;
   const zoom = interfaceScaleToZoom(scale);
+  setLayoutScale(zoom);
   const style = document.documentElement.style;
   if (zoom === 1) style.removeProperty(INTERFACE_SCALE_VAR);
   else style.setProperty(INTERFACE_SCALE_VAR, String(zoom));

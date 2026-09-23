@@ -497,3 +497,31 @@ test("a scaled sheet width stops at the viewport", () => {
     }
   }
 });
+
+test("resizable panels render their layout width at the browser scale", () => {
+  // Their contents scale, so a 280px shell at 200% clipped its own labels.
+  const sidebar = readSrc("components/ui/sidebar.tsx");
+  assert.equal(sidebar.match(/"--sidebar-width": `\$\{width \* widthScale\}px`/g)?.length, 2);
+  assert.ok(
+    readSrc("features/chat/chat-settings-sheet.tsx").includes(
+      '"--chat-settings-width": `${settingsWidth * settingsScale}px`',
+    ),
+  );
+  // The drag paints the same product and walks the pointer back to layout px.
+  const handle = readSrc("components/ui/panel-resize-handle.tsx");
+  assert.ok(handle.includes("paint(`${pendingRef.current * scaleRef.current}px`)"));
+  assert.ok(handle.includes("paint(`${committedRef.current * scaleRef.current}px`)"));
+  assert.ok(handle.includes("const next = drag.startWidth + delta / scaleRef.current"));
+  // Only the browser scale: desktop zoom already scales every px.
+  assert.ok(
+    readSrc("features/settings/stores/interface-scale-store.ts").includes(
+      "const zoom = interfaceScaleToZoom(scale);\n  setLayoutScale(zoom);",
+    ),
+  );
+});
+
+test("the training start overlay never spills above its host", () => {
+  const overlay = readSrc("features/studio/training-start-overlay.tsx");
+  assert.ok(overlay.includes("absolute inset-0 z-30 flex flex-col items-center rounded-2xl"));
+  assert.ok(overlay.includes("pointer-events-auto relative my-auto flex"));
+});

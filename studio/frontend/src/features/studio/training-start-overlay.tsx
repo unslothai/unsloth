@@ -376,9 +376,12 @@ export function TrainingStartOverlay({
     }
   }, [jobId]);
 
+  // my-auto, not items-center: a column taller than the overlay starts at its
+  // top and runs down into the page's scroll, instead of spilling above it
+  // where the cancel button cannot be reached.
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
-      <div className="pointer-events-auto relative flex w-[calc(860px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] flex-col items-center">
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
+      <div className="pointer-events-auto relative my-auto flex w-[calc(860px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] flex-col items-center">
         <MascotImg src="unsloth-gem.png" className="size-24 object-contain" />
         <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>

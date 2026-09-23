@@ -61,6 +61,8 @@ type SidebarContextProps = {
   peeking: boolean
   setPeeking: (value: boolean) => void
   width: number
+  /** Browser interface scale: the sidebar renders at width * widthScale. */
+  widthScale: number
   storedWidth: number
   maxWidth: number
   setWidth: (value: number) => void
@@ -104,6 +106,7 @@ function SidebarProvider({
   const {
     width,
     max: maxWidth,
+    scale: widthScale,
     stored: storedWidth,
     setWidth,
     resetWidth,
@@ -201,12 +204,13 @@ function SidebarProvider({
       peeking,
       setPeeking,
       width,
+      widthScale,
       storedWidth,
       maxWidth,
       setWidth,
       resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -222,7 +226,7 @@ function SidebarProvider({
             // even once the drag-time write had moved.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
-              : { "--sidebar-width": `${width}px` }),
+              : { "--sidebar-width": `${width * widthScale}px` }),
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -293,7 +297,7 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width, widthScale } =
     useSidebar()
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
@@ -303,7 +307,7 @@ function Sidebar({
   // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
   // Empty with the flag off, where the wrapper keeps the declaration.
   const scopedWidthStyle = (
-    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
+    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width * widthScale}px` } : {}
   ) as React.CSSProperties
 
   if (collapsible === "none") {
@@ -477,7 +481,7 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
+  const { open, toggleSidebar, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth } =
     useSidebar()
   const ref = React.useRef<HTMLDivElement>(null)
   const t = useT()
@@ -491,6 +495,7 @@ function SidebarResizeHandle({
         stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
         max={maxWidth}
+        scale={widthScale}
         clamp={clampSidebarWidth}
         setWidth={setWidth}
         resetWidth={resetWidth}
@@ -514,9 +519,9 @@ function SidebarResizeHandle({
           )
         }
         measure={() =>
-          ref.current
+          (ref.current
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
-            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN * widthScale) / widthScale
         }
         label={t("shell.aria.resizeSidebar")}
         toggleLabel={t("shell.aria.openSidebar")}

@@ -489,6 +489,7 @@ export function ChatSettingsPanel({
   const {
     width: settingsWidth,
     max: settingsMax,
+    scale: settingsScale,
     stored: settingsStored,
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
@@ -1855,7 +1856,7 @@ export function ChatSettingsPanel({
       )}
       style={
         {
-          "--chat-settings-width": `${settingsWidth}px`,
+          "--chat-settings-width": `${settingsWidth * settingsScale}px`,
           height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
           marginTop: "var(--studio-custom-titlebar-height, 0px)",
         } as CSSProperties
@@ -1869,13 +1870,14 @@ export function ChatSettingsPanel({
         stored={settingsStored}
         min={CHAT_SETTINGS_WIDTH_MIN}
         max={settingsMax}
+        scale={settingsScale}
         clamp={clampChatSettingsWidth}
         setWidth={setSettingsWidth}
         resetWidth={resetSettingsWidth}
         onToggle={() => onOpenChange?.(!open)}
         target={() => asideRef.current}
         cssVar="--chat-settings-width"
-        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+        measure={() => (asideRef.current?.getBoundingClientRect().width ?? 0) / settingsScale}
         label={t("shell.aria.resizeRunSettings")}
         toggleLabel={t("shell.aria.openRunSettings")}
         collapseHint={t("shell.resize.collapse")}
