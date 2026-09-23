@@ -45,8 +45,14 @@
   var appearanceVariables = [
     "--background",
     "--chart-1",
-    "--contrast-mix",
+    "--contrast-control-mix",
+    "--contrast-edge-gain",
+    "--contrast-line-mix",
+    "--contrast-state-mix",
+    "--contrast-surface-mix",
     "--contrast-target",
+    "--contrast-text-mix",
+    "--contrast-wash-gain",
     "--control-accent",
     "--control-accent-foreground",
     "--custom-chat-font",
@@ -59,7 +65,8 @@
     "--foreground",
     "--primary",
     "--primary-foreground",
-    "--ui-font-scale",
+    "--ui-font-size-scale",
+    "--ui-interface-scale",
   ];
 
   function clearStoredSnapshot() {

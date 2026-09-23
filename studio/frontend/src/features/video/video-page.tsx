@@ -596,7 +596,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger className="h-8 w-[calc(160px*var(--ui-space-scale,1))] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -3452,7 +3452,7 @@ function VideoGenerator({
       </Dialog>
       {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
           progress shows in a toast. */}
-      <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -3464,7 +3464,7 @@ function VideoGenerator({
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
-            className="!h-[34px]"
+            className="!h-[calc(34px*var(--ui-space-scale,1))]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             placeholder="Select video model"
@@ -3482,7 +3482,7 @@ function VideoGenerator({
                   variant="outline"
                   size="sm"
                   aria-label="Cancel load"
-                  className="!h-[34px] rounded-full text-xs"
+                  className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                   onClick={() => void handleCancelLoad()}
                 >
                   Cancel load
@@ -3518,7 +3518,7 @@ function VideoGenerator({
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] md:overflow-hidden md:border-r md:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
@@ -3534,7 +3534,7 @@ function VideoGenerator({
             <div className="min-w-0 grid gap-1.5">
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* The app's Video icon, same as the sidebar row. */}
-                <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
+                <HugeiconsIcon icon={FlimSlateIcon} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0" />
                 Create videos
               </h2>
               <p className="text-xs leading-snug text-muted-foreground">
@@ -4048,7 +4048,7 @@ function VideoGenerator({
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
-                <Spinner className="mr-2 size-4" />
+                <Spinner variant="ring" className="mr-2 size-4" />
                 Cancel
               </Button>
             ) : (
@@ -4143,7 +4143,7 @@ function VideoGenerator({
             ) : selected ? (
               // The selected record's link has not landed yet; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner className="size-8" />
+                <Spinner variant="ring" className="size-8" />
                 <p className="text-sm">Loading…</p>
               </div>
             ) : busy === "generating" ? null : (
@@ -4167,8 +4167,9 @@ function VideoGenerator({
                   selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg backdrop-blur dark:bg-card/95">
                   <ModelLoadDescription
+                    variant="floating"
                     className="min-h-0"
                     title={null}
                     message="Starting…"
@@ -4187,7 +4188,7 @@ function VideoGenerator({
           {(videos.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -4197,8 +4198,8 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
-                  <Spinner className="size-5 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50">
+                  <Spinner variant="ring" className="size-6 text-muted-foreground" />
                 </div>
               )}
               {/* The card is a wrapper, not a button: the actions menu must be the select button's SIBLING,
@@ -4243,7 +4244,7 @@ function VideoGenerator({
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>

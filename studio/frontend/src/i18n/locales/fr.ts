@@ -167,6 +167,8 @@ export const fr = {
       noChatsYet: "Aucune discussion pour le moment",
       // Shown under an empty project folder in the sidebar.
       noChats: "Aucune discussion",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tous les projets sont epingles",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -222,13 +224,6 @@ export const fr = {
       sortPinnedChats: "Trier les discussions épinglées",
       moveUp: "Monter",
       moveDown: "Descendre",
-    },
-    drag: {
-      reorder: "Réordonner",
-      pin: "Épingler",
-      unpin: "Désépingler",
-      moveTo: "Déplacer vers {name}",
-      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {
@@ -573,7 +568,16 @@ export const fr = {
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
       path: "Emplacement",
       pathCopy: "Copier le chemin",
-      refreshSection: "Actualisation",
+      currentSession: "Actuel",
+      statusLive: "En direct",
+      statusPaused: "En pause",
+      statusStale: "Obsolète",
+      filterPlaceholder: "Filtrer les lignes",
+      lineCount: "{count} lignes",
+      filteredLineCount: "{shown} sur {total} lignes",
+      wrapLines: "Retour à la ligne",
+      jumpToLatest: "Aller à la fin",
+      noMatches: "Aucune ligne ne correspond au filtre.",
       mode: "Mode",
       modeLive: "En direct",
       modeInterval: "Toutes les 3 secondes",
@@ -1160,7 +1164,7 @@ export const fr = {
       custom: {
         chatWidth: {
           label: "Largeur du chat",
-          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          description: "Largeur des messages et de la zone de saisie.",
           standard: "Standard",
           wide: "Large",
           full: "Pleine largeur",
@@ -1233,7 +1237,6 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -1263,7 +1266,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1271,7 +1274,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },
@@ -1414,6 +1417,61 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+        caches: {
+          label: "Fichiers de cache",
+          description:
+            "{size} dans les caches, dont {reclaimable} peuvent être vidés maintenant.",
+          hint: "Téléchargements de paquets, noyaux compilés et caches de transfert que Unsloth reconstruit quand il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont jamais vidés ici.",
+          keywords:
+            "cache caches vider nettoyer purger supprimer libérer espace disque temporaire compilé cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Mesure de la taille des caches...",
+          measureFailed: "Impossible de mesurer les caches",
+          empty: "Aucun fichier de cache trouvé.",
+          detailsAction: "Détails",
+          recheckAction: "Revérifier",
+          hideDetailsAction: "Masquer les détails",
+          clearAction: "Vider les caches",
+          clearOneAction: "Vider",
+          clearingAction: "Vidage en cours...",
+          confirmTitle: "Vider les fichiers en cache ?",
+          confirmDescription: "Cela libère environ {size}.",
+          confirmOneTitle: "Vider {name} ?",
+          safety:
+            "Unsloth reconstruit un cache la prochaine fois qu'il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont pas touchés.",
+          hubCost:
+            "Il s'agit du cache des modèles. Le vider entraîne un nouveau téléchargement de ces modèles lors de leur prochaine utilisation.",
+          datasetsCost:
+            "Vider ceci entraîne un nouveau téléchargement de ces jeux de données lors de leur prochaine utilisation.",
+          blocked: "Non vidé : {reason}",
+          cleared: "{size} libérés",
+          partial: "Certains fichiers de cache n'ont pas pu être supprimés",
+          clearFailed: "Impossible de vider les caches",
+          names: {
+            uv: "Cache des paquets uv",
+            pip: "Cache des téléchargements pip",
+            npm: "Cache des paquets npm",
+            bun: "Cache des paquets Bun",
+            torchInductor: "Cache de compilation Torch Inductor",
+            torchExtensions: "Compilations d'extensions Torch",
+            triton: "Cache des noyaux Triton",
+            cuda: "Cache des noyaux CUDA",
+            numba: "Cache de compilation Numba",
+            matplotlib: "Cache des polices Matplotlib",
+            vllm: "Cache vLLM",
+            unslothCompiled: "Modules compilés Unsloth",
+            hfXet: "Cache de transfert Hugging Face",
+            hfAssets: "Cache des ressources Hugging Face",
+            hfDatasets: "Cache des jeux de données Hugging Face",
+            hfHub: "Cache des modèles Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "L'espace disque est presque épuisé",
+          criticalTitle: "L'espace disque est critique",
+          description:
+            "{free} libres sur {total}. Vider les caches peut libérer de l'espace.",
+          action: "Voir les caches",
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",
@@ -1960,6 +2018,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:

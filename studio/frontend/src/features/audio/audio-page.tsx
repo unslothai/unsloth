@@ -101,6 +101,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
@@ -284,7 +285,7 @@ function ClipRowMenu({
           aria-label={`Actions for ${clip.prompt || "clip"}`}
           // Hidden until the row is hovered or the menu is open, so a long list stays quiet; keyboard
           // focus reveals it too.
-          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-white/10"
+          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
             icon={MoreVerticalIcon}
@@ -2304,9 +2305,10 @@ export function AudioPage({
   );
 
   const handleCopyTranscript = useCallback(() => {
-    void navigator.clipboard.writeText(transcript).then(
-      () => toast.success("Transcript copied"),
-      () => toast.error("Could not copy the transcript."),
+    void copyToClipboard(transcript).then((ok) =>
+      ok
+        ? toast.success("Transcript copied")
+        : toast.error("Could not copy the transcript."),
     );
   }, [transcript]);
 
@@ -2454,10 +2456,9 @@ export function AudioPage({
   }, []);
 
   const handleCopyPrompt = useCallback(async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       toast.success("Text copied");
-    } catch {
+    } else {
       toast.error("Could not copy the text.");
     }
   }, []);
@@ -2567,7 +2568,7 @@ export function AudioPage({
       {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)]">
         <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
@@ -2587,7 +2588,7 @@ export function AudioPage({
               onValueChange={handleModelSelect}
               onEject={busy === null && selectorValue ? handleEject : undefined}
               variant="ghost"
-              className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
               catalog={AUDIO_CATALOG}
@@ -2615,7 +2616,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11"
               tabs={[
                 {
                   value: "create",
@@ -2644,7 +2645,7 @@ export function AudioPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(calc(408px*var(--ui-space-scale,1)),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
@@ -2662,7 +2663,7 @@ export function AudioPage({
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 <HugeiconsIcon
                   icon={mode === "speak" ? AudioWave01Icon : Mic01Icon}
-                  className="size-[18px] shrink-0"
+                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                 />
                 {mode === "speak" ? "Generate audio" : "Transcribe"}
               </h2>
@@ -2678,7 +2679,7 @@ export function AudioPage({
               value={mode}
               onValueChange={(v) => transitionMode(v as CreateMode)}
               fit={true}
-              className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
+              className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
               tabs={[
                 { value: "speak", label: "Generate" },
                 { value: "transcribe", label: "Transcribe" },
@@ -2783,7 +2784,7 @@ export function AudioPage({
                       if (ttsLoaded) handleEject();
                     }}
                     fit={true}
-                    className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
+                    className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
                     tabs={[
                       { value: "auto", label: "GPU when available" },
                       { value: "cpu", label: "CPU RAM" },
@@ -2977,7 +2978,7 @@ export function AudioPage({
               data-reload-snapshot-sensitive={
                 transcript || transcribedName ? "" : undefined
               }
-              className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[60px]"
+              className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]"
             >
               <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
                 {transcriptionStartedAt !== null && (
@@ -3067,7 +3068,7 @@ export function AudioPage({
               </div>
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[60px]">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
                 {selectedClip ? (
                   <div className="flex w-full max-w-xl flex-col gap-3">

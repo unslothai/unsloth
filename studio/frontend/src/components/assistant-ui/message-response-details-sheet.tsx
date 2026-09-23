@@ -381,7 +381,7 @@ export const MessageResponseDetailsSheet: FC<{
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        className="w-[min(calc(28rem*var(--ui-space-scale,1)),100vw)] p-0 sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
         showCloseButton={false}
       >
         <SheetHeader className="border-b p-4">

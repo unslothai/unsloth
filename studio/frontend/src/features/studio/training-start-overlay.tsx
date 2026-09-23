@@ -76,7 +76,9 @@ function useHfDownloadProgress(
 ): DownloadState {
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
-  const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
+  const [state, setState] = useState<DownloadState & { repoId?: string }>(
+    EMPTY_DOWNLOAD_STATE,
+  );
 
   const shouldPoll =
     isStarting ||
@@ -114,7 +116,7 @@ function useHfDownloadProgress(
         applied = generation;
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
-        setState(next);
+        setState({ ...next, repoId });
         // only a verified snapshot stops the tick; a settled row can still be waiting on files.
         if (next.completeOnDisk) {
           finished = true;
@@ -137,7 +139,8 @@ function useHfDownloadProgress(
     };
   }, [repoId, shouldPoll, fetcher]);
 
-  return state;
+  // Never show the old repo's Ready state while the resolved repo starts polling.
+  return state.repoId === repoId ? state : EMPTY_DOWNLOAD_STATE;
 }
 
 function useModelDownloadProgress(
@@ -299,6 +302,9 @@ export function TrainingStartOverlay({
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const modelDownloadRepoId = useTrainingRuntimeStore(
+    (s) => s.modelDownloadRepoId,
+  );
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startHfToken = useTrainingRuntimeStore((s) => s.startHfToken);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
@@ -315,11 +321,13 @@ export function TrainingStartOverlay({
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
   const hasStartResources = startModelName !== null;
   const useConfiguredResources = !isStarting && !hasStartResources;
-  const modelName = hasStartResources
-    ? startModelName
-    : useConfiguredResources
-      ? configuredModel
-      : null;
+  const modelName =
+    modelDownloadRepoId ??
+    (hasStartResources
+      ? startModelName
+      : useConfiguredResources
+        ? configuredModel
+        : null);
   const datasetName = hasStartResources
     ? startDatasetName
     : useConfiguredResources
@@ -368,9 +376,12 @@ export function TrainingStartOverlay({
     }
   }, [jobId]);
 
+  // my-auto, not items-center: a column taller than the overlay starts at its
+  // top and runs down into the page's scroll, instead of spilling above it
+  // where the cancel button cannot be reached.
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
-      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center">
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
+      <div className="pointer-events-auto relative my-auto flex w-[calc(860px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] flex-col items-center">
         <MascotImg src="unsloth-gem.png" className="size-24 object-contain" />
         <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
@@ -416,7 +427,7 @@ export function TrainingStartOverlay({
             </AlertDialogContent>
           </AlertDialog>
           <Terminal
-            className="w-full min-h-[390px] rounded-2xl border-0 px-7 py-6 text-left"
+            className="w-full min-h-[calc(390px*var(--ui-space-scale,1))] rounded-2xl border-0 px-7 py-6 text-left"
             startOnView={false}
             instant={alreadyAnimated}
           >

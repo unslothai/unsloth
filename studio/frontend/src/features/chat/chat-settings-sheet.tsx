@@ -185,7 +185,7 @@ export function ParamSlider({
     return (
       <div className="flex items-center gap-3">
         {/* A floor rather than a fixed width, so a longer label is never clipped. */}
-        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+        <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
           <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
           </span>
@@ -328,7 +328,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
+        !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
     >
       {labelHref ? (
@@ -489,6 +489,7 @@ export function ChatSettingsPanel({
   const {
     width: settingsWidth,
     max: settingsMax,
+    scale: settingsScale,
     stored: settingsStored,
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
@@ -1081,7 +1082,7 @@ export function ChatSettingsPanel({
       <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
-      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
         {isMobile ? (
           <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
@@ -1096,7 +1097,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1122,7 +1123,7 @@ export function ChatSettingsPanel({
         ref={settingsScrollRef}
         className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
       >
-      <div className="px-[18px] pt-3">
+      <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
             <div className="flex flex-col gap-5">
@@ -1272,7 +1273,7 @@ export function ChatSettingsPanel({
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
+                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
                       )}
                   </Fragment>
                 ))}
@@ -1649,7 +1650,7 @@ export function ChatSettingsPanel({
                   }}
                   placeholder="Random"
                   aria-label="Seed"
-                  className="panel-field h-8 w-[84px] shrink-0"
+                  className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
                 />
               </div>
             ) : null}
@@ -1783,7 +1784,7 @@ export function ChatSettingsPanel({
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
                 placeholder="You are a helpful assistant..."
                 fieldSizing="fixed"
-                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),48dvh)] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
                 rows={14}
               />
             </div>
@@ -1829,7 +1830,7 @@ export function ChatSettingsPanel({
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[18rem] p-0 font-heading">
+        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
@@ -1855,7 +1856,7 @@ export function ChatSettingsPanel({
       )}
       style={
         {
-          "--chat-settings-width": `${settingsWidth}px`,
+          "--chat-settings-width": `${settingsWidth * settingsScale}px`,
           height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
           marginTop: "var(--studio-custom-titlebar-height, 0px)",
         } as CSSProperties
@@ -1869,13 +1870,14 @@ export function ChatSettingsPanel({
         stored={settingsStored}
         min={CHAT_SETTINGS_WIDTH_MIN}
         max={settingsMax}
+        scale={settingsScale}
         clamp={clampChatSettingsWidth}
         setWidth={setSettingsWidth}
         resetWidth={resetSettingsWidth}
         onToggle={() => onOpenChange?.(!open)}
         target={() => asideRef.current}
         cssVar="--chat-settings-width"
-        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+        measure={() => (asideRef.current?.getBoundingClientRect().width ?? 0) / settingsScale}
         label={t("shell.aria.resizeRunSettings")}
         toggleLabel={t("shell.aria.openRunSettings")}
         collapseHint={t("shell.resize.collapse")}

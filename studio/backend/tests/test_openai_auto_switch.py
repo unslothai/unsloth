@@ -2463,6 +2463,48 @@ def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch
     assert selected[3] == readable
 
 
+def test_path_companion_roots_widen_only_the_snapshot_the_repo_would_hand_out(tmp_path):
+    """#10599: loading by path widens to the sibling revisions of the SAME repo dir,
+    and only when the path is the one a repo-level selection resolves to."""
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(old)))) == (old, newer)
+    # A revision the selector would not hand out is pinned, so it keeps its own root only.
+    assert resolver.local_path_gguf_companion_roots(str(newer)) == ()
+
+    pinned = repo / "snapshots" / "newer-weights-revision"
+    pinned.mkdir(parents = True)
+    (pinned / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    os.utime(pinned, (3_000, 3_000))
+    assert resolver.local_path_gguf_companion_roots(str(old)) == ()
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(pinned)))) == (
+        pinned,
+        newer,
+        old,
+    )
+
+
+@pytest.mark.parametrize("kind", ["plain_dir", "repo_dir", "missing", "file", "repo_id"])
+def test_path_companion_roots_refuse_anything_outside_an_hf_cache_snapshot(tmp_path, kind):
+    """The widening reaches sibling revisions of one ``models--`` dir and nothing else."""
+    repo, old, _newer = _vision_gguf_cache_repo(tmp_path)
+    candidates = {
+        "plain_dir": tmp_path / "loose-model-dir",
+        "repo_dir": repo,
+        "missing": old.parent / "absent-revision",
+        "file": old / "vision-model-Q4_K_M.gguf",
+        "repo_id": Path("org/Vision-GGUF"),
+    }
+    target = candidates[kind]
+    if kind == "plain_dir":
+        target.mkdir()
+        (target / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    assert resolver.local_path_gguf_companion_roots(str(target)) == ()
+
+
 def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
     """A selected snapshot still walks intermediate parents before sibling revisions."""
     from utils.models.model_config import detect_mmproj_file
@@ -5666,6 +5708,18 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"enable_thinking": True, "preserve_thinking": True},
             id = "preserve_thinking",
         ),
+        pytest.param(
+            "reasoning_effort",
+            {"chat_template_kwargs": {"reasoning_effort": "none"}},
+            {"reasoning_effort": "none"},
+            id = "nested_effort",
+        ),
+        pytest.param(
+            "enable_thinking",
+            {"chat_template_kwargs": {"preserve_thinking": True}},
+            {"preserve_thinking": True},
+            id = "nested_preserve_thinking",
+        ),
         # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
         pytest.param("enable_thinking", {}, None, id = "template_default"),
     ],
@@ -7136,6 +7190,76 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
     # The matching context opt-in survives. The redundant speculative flag is
     # still stripped because its first-class fields are unconditional.
     assert request.llama_extra_args == ["--ctx-size", "100352"]
+
+
+def test_a_ctx_flag_saved_from_the_picker_reaches_an_api_load(monkeypatch):
+    """#11511: the picker saves its slider context beside a typed -c. Its own load runs at the
+    -c (llama.cpp takes the last one), so an API auto-switch of the same row must too, instead
+    of stripping the flag as a stale shadow of the slider."""
+    _mock_override_store(monkeypatch)
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "300000", "--rope-scaling", "yarn"],
+        custom_context_length = 262144,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["custom_context_length"] == 300000
+    assert entry["llama_extra_args"] == ["-c", "300000", "--rope-scaling", "yarn"]
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 300000
+    assert request.llama_extra_args == ["-c", "300000", "--rope-scaling", "yarn"]
+
+
+@pytest.mark.parametrize(
+    "extra_args, fields, expected",
+    [
+        # llama.cpp's last -c wins, in either spelling.
+        (
+            ["--ctx-size", "8192", "-c", "65536"],
+            {"max_seq_length": 4096, "custom_context_length": 4096},
+            {"max_seq_length": 65536, "custom_context_length": 65536},
+        ),
+        # -c 0 asks llama.cpp for the model's own context: nothing to record.
+        (["-c", "0"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # No context field sent: none is invented, the flag stays the only control.
+        (["-c", "65536"], {"kv_cache_dtype": "q8_0"}, {}),
+        # No -c: the slider value is stored as sent.
+        (["--top-k", "40"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # Past the stored ceiling the slider value stays, so the flag is still checked on load.
+        (["-c", "99999999"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+    ],
+)
+def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
+    monkeypatch, extra_args, fields, expected
+):
+    _mock_override_store(monkeypatch)
+    saved = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = extra_args, **fields)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    stored = {
+        key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
+    }
+    assert stored == expected
+
+
+def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
+    """A fill (the localStorage migration) keeps a stored row's flags, so a -c in its payload is
+    not what any load will run with and must not rewrite the context."""
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "7"])
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "65536"],
+        custom_context_length = 4096,
+        fill_absent_fields = True,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--top-k", "7"]
+    assert entry["custom_context_length"] == 4096
 
 
 @pytest.mark.parametrize(

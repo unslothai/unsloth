@@ -2831,6 +2831,26 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         fi
     fi
     unset _fpe_missing_torch
+    # The pinned Diffusers main build is installed only by the pass, so an install that never ran
+    # that step (updated by an installer that predates it) kept the release while current.
+    _fpe_diffusers=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --diffusers-main-needs-dependency-pass \
+            >/dev/null 2>&1 && _fpe_diffusers=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --diffusers-main-needs-dependency-pass >/dev/null 2>&1; then
+        _fpe_diffusers=true
+    fi
+    if [ "$_fpe_diffusers" = true ] && [ "$_SKIP_PYTHON_DEPS" = true ]; then
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            substep "pinned Diffusers build is not installed but UV_OFFLINE is set -- left for the next online update"
+        else
+            substep "pinned Diffusers build is not installed -- forcing dependency pass..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    unset _fpe_diffusers
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
@@ -4142,7 +4162,7 @@ _keep_installed_gpu_prebuilt() {
     [ -z "${_explicit_llama_source_backend:-}" ] || return 1
     _has_local_llama_server "$install_dir" || return 1
     [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
-    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" "$SCRIPT_DIR" <<'PY' 2>/dev/null
 import json
 import re
 import sys
@@ -4191,7 +4211,13 @@ if requested and requested.lower() != "latest":
     elif requested not in recorded:
         # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
         raise SystemExit(1)
-raise SystemExit(0)
+# Keep the Docker shortcut consistent with desktop preflight without probing a GPU
+# or executing the CUDA binaries on the GPU-less image build host.
+sys.path.insert(0, sys.argv[5])
+from install_llama_prebuilt import installed_runtime_health
+
+health = installed_runtime_health(Path(sys.argv[1]).parent)
+raise SystemExit(1 if health is not None and not health[0] else 0)
 PY
 }
 
@@ -4459,9 +4485,24 @@ fi
 # Source-built llama.cpp installs do not have the prebuilt metadata used above
 # for exact release matching. Reuse a complete local source build unless the
 # caller explicitly requested a rebuild or a PR-specific llama.cpp checkout.
+# The two entrypoints being executable is not enough on its own. Quarantine and
+# a truncated extract both take a library and leave llama-server in place, and
+# this branch only runs once the prebuilt path has already failed, so keeping
+# such a tree returns it byte for byte identical and reports success. Desktop
+# preflight asks about the same tree on every launch, so an update that repaired
+# nothing left it asking forever. A tree with no prebuilt marker is a real source
+# build and keeps the old test.
+_LLAMA_REUSE_EXISTING=true
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+        --check-existing-install "$LLAMA_CPP_DIR" >/dev/null 2>&1 \
+        || _LLAMA_REUSE_EXISTING=false
+fi
+
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ "$_LLAMA_FORCE_COMPILE" != "1" ] && \
    [ -z "$_LLAMA_PR" ] && \
+   [ "$_LLAMA_REUSE_EXISTING" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
