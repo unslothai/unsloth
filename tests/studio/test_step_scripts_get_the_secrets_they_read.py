@@ -207,3 +207,68 @@ def test_an_entry_that_supplies_no_secret_does_not_count():
     assert not _supplies_a_secret("${{ secret.DOCKER_API_KEY }}")
     assert not _supplies_a_secret("secrets.DOCKER_API_KEY")
     assert _supplies_a_secret("${{ github.token }}")
+
+
+# The secret each env key is supplied from, as every workflow maps it today. GitHub expands an
+# unknown `secrets.*` name to an empty string without complaint, and CI cannot list the
+# repository's secret names to check against, so a typo (`secrets.DOCKER_API_KE`) or a mapping to
+# the wrong existing secret reads as a valid expression everywhere except the privileged run that
+# needs it. Pinning the pairs turns both into a failure here. A genuinely new secret goes in this
+# table in the same change that adds it, once it is confirmed to exist.
+_SECRET_FOR = {
+    "APPLE_CERTIFICATE": "APPLE_CERTIFICATE",
+    "APPLE_CERTIFICATE_PASSWORD": "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_ID": "APPLE_ID",
+    "APPLE_PASSWORD": "APPLE_PASSWORD",
+    "APPLE_SIGNING_IDENTITY": "APPLE_SIGNING_IDENTITY",
+    "APPLE_TEAM_ID": "APPLE_TEAM_ID",
+    "AZURE_CERTIFICATE_PROFILE_NAME": "AZURE_CERTIFICATE_PROFILE_NAME",
+    "AZURE_CLIENT_ID": "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET": "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID": "AZURE_TENANT_ID",
+    "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME": "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+    "DOCKER_API_KEY": "DOCKER_API_KEY",
+    "GH_TOKEN": "GITHUB_TOKEN",
+    "GITHUB_TOKEN": "GITHUB_TOKEN",
+    "HF_TOKEN": "HF_TOKEN",
+    "KAGGLE_API_TOKEN": "KAGGLE_API_TOKEN",
+    "KAGGLE_API_TOKEN_2": "KAGGLE_API_TOKEN_2",
+    "KEYCHAIN_PASSWORD": "KEYCHAIN_PASSWORD",
+    "TAURI_SIGNING_PRIVATE_KEY": "TAURI_SIGNING_PRIVATE_KEY",
+    "VT_API_KEY": "VIRUS_TOTAL_API_TOKEN",
+}
+
+
+def _misdrawn(doc: dict, name: str) -> list[str]:
+    wrong = []
+    for env in _env_blocks(doc):
+        for key, value in env.items():
+            if not isinstance(value, str):
+                continue
+            drawn = {n for e in _EXPRESSION.findall(value) for n in _SECRET.findall(e)}
+            if not drawn:
+                continue
+            if key not in _SECRET_FOR:
+                wrong.append(f"{name}: {key} is a new secret mapping; add it to _SECRET_FOR")
+            elif drawn != {_SECRET_FOR[key]}:
+                wrong.append(f"{name}: {key} draws on {sorted(drawn)}, not {_SECRET_FOR[key]}")
+    return wrong
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
+def test_every_secret_mapping_draws_on_the_secret_its_key_is_known_by(path):
+    wrong = _misdrawn(yaml.safe_load(path.read_text(encoding = "utf-8")) or {}, path.name)
+    assert not wrong, "\n".join(wrong)
+
+
+def test_a_misspelled_or_swapped_secret_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KE }}"), "w") == [
+        "w: DOCKER_API_KEY draws on ['DOCKER_API_KE'], not DOCKER_API_KEY"
+    ]
+    assert _misdrawn(doc("${{ secrets.HF_TOKEN }}"), "w") == [
+        "w: DOCKER_API_KEY draws on ['HF_TOKEN'], not DOCKER_API_KEY"
+    ]
