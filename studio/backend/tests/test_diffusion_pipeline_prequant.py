@@ -290,7 +290,7 @@ def _settle_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: scheme
     )
     monkeypatch.setattr(
         pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
@@ -433,7 +433,7 @@ def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
 
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
     """A scheme with no hosted artifact falls through to the in-memory quantise."""
-    assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
+    assert _settle(_settle_backend(monkeypatch, scheme = "mxfp8")) is None
 
 
 def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
@@ -689,7 +689,7 @@ def _load_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
     monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
