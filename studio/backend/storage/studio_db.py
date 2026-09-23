@@ -2157,7 +2157,9 @@ def update_chat_thread(
     # there would cost its next fork a number. The right-hand side reads the pre-update row, so
     # this compares the stored title against the incoming one. Same rule as the upsert's.
     if "title" in patch:
-        assignments.append("fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END")
+        assignments.append(
+            "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
+        )
         values.append(patch.get("title"))
     if not assignments and settings_write is None:
         return get_chat_thread(id)
