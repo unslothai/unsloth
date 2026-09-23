@@ -25,6 +25,7 @@ pytest.importorskip("transformers.models.longcat_flash")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 
 import torch.nn.functional as F  # noqa: E402
+from real_accelerator import has_real_cuda  # noqa: E402
 from transformers import AutoConfig, AutoModelForCausalLM  # noqa: E402
 
 from unsloth.import_fixes import fix_transformers_longcat_lsa_config  # noqa: E402
@@ -423,7 +424,7 @@ def test_ngram_ids_follow_the_sglang_kernel(tiny):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_split_model_keeps_the_token_table_where_accelerate_put_it(tiny):
     # device_map placed embed_tokens and the n-gram embedding on different cards; each module's
     # accelerate hook moves every argument with a `.to`, so the n-gram module must not be
