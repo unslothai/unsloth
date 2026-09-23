@@ -73,6 +73,7 @@ from core.inference.context_window import (
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
+from hub.utils.hf_errors import modelscope_missing
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
@@ -7345,6 +7346,8 @@ class LlamaCppBackend:
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
+        # Per thread, so a load's codec sentence survives the next load taking the serial lock.
+        self._codec_failure = threading.local()
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         # Video INPUT capability, from llama-server's /props modalities. True
@@ -22510,6 +22513,7 @@ class LlamaCppBackend:
         # gets it, so an embedded second session would otherwise release this load.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
+        self._codec_failure.message = None
         with self._serial_load_scope():
             # Here, not at the spawn: a lock gives a waiter no priority, and the
             # duplicate-adoption phase below kills whatever is loaded -- after a
@@ -38976,6 +38980,10 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
+    def codec_failure(self) -> Optional[str]:
+        """The ModelScope missing-repo sentence from this thread's last load_model codec init."""
+        return getattr(self._codec_failure, "message", None)
+
     def _apply_detected_audio(
         self,
         detected: Optional[str],
@@ -38997,6 +39005,7 @@ class LlamaCppBackend:
                     # Surface as HTTP 500 (matches pre-PR contract).
                     logger.warning("Failed to init audio codec '%s': %s", detected, exc)
                     self._audio_probed = False
+                    self._codec_failure.message = modelscope_missing(exc)
                     return False
         elif detected:
             # csm / whisper / audio_vlm: track type but keep _is_audio False --

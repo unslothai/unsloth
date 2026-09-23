@@ -15,6 +15,7 @@ from typing import Optional
 import shutil
 import tempfile
 from utils.paths.path_utils import is_appledouble_metadata
+from hub.utils.hf_errors import modelscope_missing
 from . import auth_safe
 
 AuthSafeRedirectHandler = auth_safe.AuthSafeRedirectHandler
@@ -891,6 +892,10 @@ def format_error_message(error: Exception, model_name: str) -> str:
         error: The exception that occurred
         model_name: Name of the model being loaded
     """
+    missing = modelscope_missing(error)
+    if missing:
+        return missing
+
     error_str = str(error).lower()
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 

@@ -34,6 +34,9 @@ export type DatasetSplitFetchers = {
 
 export function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
+  if (normalized.includes("is not on modelscope")) {
+    return message;
+  }
   if (
     normalized.includes("dataset scripts are no longer supported") ||
     normalized.includes("runs arbitrary python code")

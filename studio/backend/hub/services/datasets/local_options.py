@@ -763,7 +763,7 @@ def hub_dataset_options(
     from hub.services.models.account_access import account_hf_token
     from hub.utils import download_registry
     from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
-    from hub.utils.hf_errors import hf_error_status
+    from hub.utils.hf_errors import hf_error_status, modelscope_missing
     from hub.utils.hf_tokens import recording_a_request_token_fetch
 
     hf_token = account_hf_token(hf_token)
@@ -781,7 +781,9 @@ def hub_dataset_options(
                 repo_id, revision = sha, download_config = DownloadConfig(token = hf_token)
             )
     except Exception as exc:
-        detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
+        detail = modelscope_missing(exc) or download_registry.scrub_secrets(
+            str(exc), hf_token = hf_token
+        )
         status = hf_error_status(exc)
         if status is None:
             # A legacy dataset script is a RuntimeError; training refuses it the same way.

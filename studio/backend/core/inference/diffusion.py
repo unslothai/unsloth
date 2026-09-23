@@ -35,6 +35,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
+from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
@@ -867,7 +868,9 @@ def _assert_base_repo_accessible(
         # 404, or an error carrying no response, raises.
         if _is_auth_error(exc) and _already_downloaded():
             return other_root_snapshot
-        raise ValueError(_repo_access_message(repo, gated = False)) from None
+        raise ValueError(
+            modelscope_missing(exc) or _repo_access_message(repo, gated = False)
+        ) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
             return None  # a 5xx or rate limit is not an access verdict
@@ -2767,7 +2770,8 @@ class DiffusionBackend:
 
             try:
                 text = (
-                    hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
+                    modelscope_missing(exc)
+                    or hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
                     or dynamo_partial_init_message(exc)
                     or str(exc)
                 )

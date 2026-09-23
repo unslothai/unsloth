@@ -6,7 +6,7 @@ import { register } from "node:module";
 import test from "node:test";
 
 register("./bundler-resolver.mjs", import.meta.url);
-const { loadHfDatasetSplits } = await import(
+const { loadHfDatasetSplits, normalizeDatasetSplitsError } = await import(
   "../src/hooks/hf-dataset-split-sources.ts"
 );
 const { resetHfEndpoints, setHfEndpoints } = await import("../src/lib/hf-endpoint.ts");
@@ -107,4 +107,9 @@ test("a datasets-server that fails or knows nothing falls back to the repo files
   setHfEndpoints("http://127.0.0.1:8888/api/hub/modelscope", undefined, "modelscope");
   t.after(resetHfEndpoints);
   assert.equal((await load(async () => [remoteEntry], async () => [remoteEntry])).source, "hub");
+});
+
+test("a dataset missing on ModelScope keeps the backend's reason", () => {
+  const missing = "o/d is not on ModelScope. Switch the model source to Hugging Face in Settings to use it.";
+  assert.equal(normalizeDatasetSplitsError(missing), missing);
 });

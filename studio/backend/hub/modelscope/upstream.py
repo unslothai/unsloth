@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
+from hub.utils.hf_errors import not_on_modelscope
+
 MODELSCOPE = "https://www.modelscope.cn"
 PAGE_SIZE = 50
 
@@ -91,7 +93,7 @@ class NotFound(Exception):
 
 
 def repo_missing(repo: str) -> NotFound:
-    return NotFound("RepoNotFound", f"Repository {repo} not found on ModelScope.")
+    return NotFound("RepoNotFound", not_on_modelscope(repo))
 
 
 class _TTLCache:
