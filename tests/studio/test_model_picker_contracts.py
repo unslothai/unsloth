@@ -461,10 +461,10 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
     assert "getInventoryVersion() !== version" in src
 
 
-def test_diffusion_capability_labeled_image_generation():
-    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
-    text-to-image tags); labeling it "Image to text" showed generators when
-    users asked for captioning models."""
+def test_diffusion_capability_labeled_image_video_gen():
+    """The diffusion capability detects image and video GENERATORS (FLUX, SDXL,
+    LTX, Wan, text-to-image tags); labeling it "Image to text" showed generators
+    when users asked for captioning models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -472,7 +472,7 @@ def test_diffusion_capability_labeled_image_generation():
     ):
         src = _read(rel)
         assert "Image to text" not in src, rel
-        assert "Image generation" in src, rel
+        assert "Image/video gen" in src, rel
 
 
 def test_active_model_config_round_trips_gpu_fields():
