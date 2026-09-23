@@ -15437,7 +15437,8 @@ class LlamaCppBackend:
             from utils.llama_cpp_freshness import read_install_marker
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 
-            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(binary))
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
             env["LD_LIBRARY_PATH"] = ":".join(
                 path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path

@@ -941,6 +941,39 @@ def test_llama_server_env_keeps_vendored_runtime_off_a_resolvable_runtime(tmp_pa
 
 
 @_NEEDS_BASH
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "LD_LIBRARY_PATH is Linux-only")
+def test_llama_server_env_resolves_marker_through_binary_symlink(tmp_path, monkeypatch):
+    import utils.prebuilt.runtime_libs as runtime_libs
+    from utils.llama_cpp_freshness import reset_caches
+
+    install_bin, runtime_dir = _make_vendored_cuda_runtime(tmp_path)
+    target = install_bin / "llama-server"
+    target.write_bytes(b"")
+    external = tmp_path / "external"
+    external.mkdir()
+    symlink = external / "llama-server"
+    symlink.symlink_to(target)
+
+    monkeypatch.setattr("core.inference.llama_cpp.child_env_without_native_path_secret", dict)
+    monkeypatch.setattr("core.inference.llama_cpp._wsl_system_rocm_lib_dirs", lambda: [])
+    monkeypatch.setattr(
+        "core.inference.llama_cpp._native_linux_system_rocm_lib_dirs", lambda _binary_dir: []
+    )
+    monkeypatch.setattr("glob.glob", lambda _pattern: [])
+    monkeypatch.setattr(
+        runtime_libs, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),)
+    )
+    monkeypatch.setattr(runtime_libs, "_loader_already_provides_runtime", lambda _major: False)
+
+    reset_caches()
+    env = LlamaCppBackend._llama_server_env_for_binary(str(symlink))
+    reset_caches()
+
+    assert str(runtime_dir.resolve()) in env["LD_LIBRARY_PATH"].split(os.pathsep)
+
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_does_not_disable_devices_off_macos(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",

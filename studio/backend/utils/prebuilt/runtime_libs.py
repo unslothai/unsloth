@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import glob
 import os
+import platform
 import re
-import shutil
 import site
 import subprocess
 import sys
@@ -82,8 +82,8 @@ _LOADER_DEFAULT_LIB_DIRS: tuple[str, ...] = (
 )
 
 
-def _ld_cache_sonames() -> "frozenset[str] | None":
-    """Every soname in the loader's cache, or None when no ldconfig can be read."""
+def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
+    """Cached (soname, ABI, path) entries, or None when ldconfig cannot be read."""
     for candidate in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
         exe = shutil.which(candidate) if "/" not in candidate else candidate
         if not exe or not os.path.exists(exe):
@@ -101,28 +101,45 @@ def _ld_cache_sonames() -> "frozenset[str] | None":
             continue
         if result.returncode != 0:
             continue
-        # "\tlibfoo.so.1 (libc6,x86-64) => /usr/lib/libfoo.so.1"
-        return frozenset(
-            line.strip().split(" ", 1)[0]
-            for line in (result.stdout or "").splitlines()
-            if "=>" in line and line.strip()
-        )
+        entries: list[tuple[str, str, str]] = []
+        for line in (result.stdout or "").splitlines():
+            match = re.match(r"\s*(\S+)\s+\(([^)]*)\)\s+=>\s+(\S+)", line)
+            if match:
+                soname, abi_text, path = match.groups()
+                abi = abi_text.strip()
+                entries.append((soname, abi, path))
+        return tuple(entries)
     return None
+
+
+_NATIVE_LOADER_ABIS: dict[str, frozenset[str]] = {
+    "x86_64": frozenset({"libc6,x86-64", "libc6,x86-64-v2", "libc6,x86-64-v3", "libc6,x86-64-v4"}),
+    "amd64": frozenset({"libc6,x86-64", "libc6,x86-64-v2", "libc6,x86-64-v3", "libc6,x86-64-v4"}),
+    "i386": frozenset({"libc6,i686", "libc6,i586", "libc6,i486", "libc6,i386"}),
+    "i686": frozenset({"libc6,i686", "libc6,i586", "libc6,i486", "libc6,i386"}),
+    "aarch64": frozenset({"libc6,aarch64"}),
+    "arm64": frozenset({"libc6,aarch64"}),
+    "armv7l": frozenset({"libc6,armhf"}),
+    "ppc64le": frozenset({"libc6,ppc64le"}),
+    "s390x": frozenset({"libc6,s390x"}),
+    "riscv64": frozenset({"libc6,riscv64"}),
+}
 
 
 def _loader_already_provides_runtime(major: str) -> bool:
     """Whether the loader finds this CUDA major's pair without the vendored dir.
 
-    The vendored dir joins LD_LIBRARY_PATH, which outranks the loader's cache and its
-    default dirs however late the entry sits, so it is safe only where nothing else
-    provides both libs. A cache that cannot be read is ignorance rather than absence:
-    the default dirs answer instead, and the rescue stands.
+    LD_LIBRARY_PATH outranks both the cache and default dirs, so never add the
+    vendored pair if either source already provides both native-ABI libraries.
     """
-    cached = _ld_cache_sonames()
+    cached = _ld_cache_entries()
+    native_abis = _NATIVE_LOADER_ABIS.get(platform.machine().lower(), frozenset())
     for soname in (f"libcudart.so.{major}", f"libcublas.so.{major}"):
-        if cached is not None:
-            if soname not in cached:
-                return False
+        cache_has_compatible = cached is not None and any(
+            cached_soname == soname and abi in native_abis
+            for cached_soname, abi, _path in cached
+        )
+        if cache_has_compatible:
             continue
         if not any(
             os.path.isfile(os.path.join(directory, soname))
@@ -130,7 +147,6 @@ def _loader_already_provides_runtime(major: str) -> bool:
         ):
             return False
     return True
-
 
 _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
     (Path("/usr/local/lib/ollama"), "cuda_v{major}"),

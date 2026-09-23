@@ -54,8 +54,7 @@ def _roots(tmp_path):
 def _host_loader_unknown(monkeypatch):
     # The match rule is what these pin, and the loader probe is host state; the
     # arms that need it pin their own answer.
-    import utils.prebuilt.runtime_libs as runtime_libs
-    monkeypatch.setattr(runtime_libs, "_ld_cache_sonames", lambda: None)
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
 
 
@@ -137,16 +136,66 @@ def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkey
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
     monkeypatch.setattr(
         runtime_libs,
-        "_ld_cache_sonames",
-        lambda: frozenset({"libcudart.so.13", "libcublas.so.13"}),
+        "_ld_cache_entries",
+        lambda: (
+            ("libcudart.so.13", "libc6,x86-64", "/usr/lib/libcudart.so.13"),
+            ("libcublas.so.13", "libc6,x86-64", "/usr/lib/libcublas.so.13"),
+        ),
     )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
     # Only the pair counts: the loader cannot link the build without both, so
-    # half a runtime still leaves the dir load bearing.
-    monkeypatch.setattr(runtime_libs, "_ld_cache_sonames", lambda: frozenset({"libcudart.so.13"}))
+    monkeypatch.setattr(
+        runtime_libs,
+        "_ld_cache_entries",
+        lambda: (("libcudart.so.13", "libc6,x86-64", "/usr/lib/libcudart.so.13"),),
+    )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
         str(runtime_dir.resolve())
     ]
+
+
+def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatch):
+    import utils.prebuilt.runtime_libs as runtime_libs
+
+    _make_runtime(tmp_path, "cuda_v13")
+    default_dir = tmp_path / "loader-default"
+    default_dir.mkdir()
+    (default_dir / "libcudart.so.13").write_bytes(b"")
+    (default_dir / "libcublas.so.13").write_bytes(b"")
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: ())
+    monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", (str(default_dir),))
+
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
+
+
+def test_ignores_foreign_abi_cache_entries(tmp_path, monkeypatch):
+    import platform
+
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        pytest.skip("synthetic foreign-ABI cache fixture is x86-64-specific")
+
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    monkeypatch.setattr(runtime_libs.shutil, "which", lambda _candidate: "/sbin/ldconfig")
+    original_exists = runtime_libs.os.path.exists
+    monkeypatch.setattr(
+        runtime_libs.os.path,
+        "exists",
+        lambda path: True if path == "/sbin/ldconfig" else original_exists(path),
+    )
+    result = type("Result", (), {
+        "returncode": 0,
+        "stdout": (
+            "libcudart.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcudart.so.13\\n"
+            "libcublas.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcublas.so.13\\n"
+        ),
+    })()
+    monkeypatch.setattr(runtime_libs.subprocess, "run", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
+
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
+        str(runtime_dir.resolve())
+    ]
+
 
 
 def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monkeypatch):
@@ -155,7 +204,7 @@ def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monke
     import utils.prebuilt.runtime_libs as runtime_libs
 
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
-    monkeypatch.setattr(runtime_libs, "_ld_cache_sonames", lambda: None)
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
     default = tmp_path / "default"
     default.mkdir()
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", (str(default),))
