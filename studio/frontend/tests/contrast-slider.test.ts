@@ -215,12 +215,18 @@ test("ink follows the slider", () => {
   // Contrast is first of all text against its background. Held fixed, a
   // raised slider only greyed the surfaces behind the text and lowered it.
   const adjusted = block("--card: color-mix(in oklab, var(--card-base)");
-  for (const token of INK_TOKENS) {
+  assert.ok(
+    adjusted.includes(
+      "--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));",
+    ),
+    "--foreground is not on the ink curve",
+  );
+  for (const token of INK_TOKENS.filter((token) => token !== "foreground")) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));`,
       ),
-      `--${token} is not on the ink curve`,
+      `--${token} is not on the panel ink curve`,
     );
   }
   for (const token of QUIET_INK_TOKENS) {
@@ -231,11 +237,6 @@ test("ink follows the slider", () => {
       `--${token} is not on the text curve`,
     );
   }
-  // Raising heads away from the page, lowering into it.
-  assert.match(
-    STORE,
-    /CONTRAST_INK_TARGET_VAR,\s*raising \? inkExtreme\(c, resolved\) : "var\(--background\)"/,
-  );
   // Lowering stops well short of the page, or body copy stops being legible.
   const hit = /CONTRAST_INK_MIX_VAR, mix\(raising \? (\d+) : (\d+)\)/.exec(
     STORE,
@@ -246,6 +247,26 @@ test("ink follows the slider", () => {
   assert.match(STORE, /setVar\("--foreground-base", colors\.foreground\)/);
   assert.doesNotMatch(STORE, /setVar\("--foreground", colors\.foreground\)/);
   assert.ok(SNAPSHOT.includes('"--foreground-base"'));
+});
+
+test("raising pushes ink its own way, never toward its surface", () => {
+  // Picked from the page, a dark custom background in light mode sent card,
+  // menu and sidebar text toward white on their white surfaces (2.3:1).
+  assert.match(
+    STORE,
+    /CONTRAST_PANEL_INK_TARGET_VAR,\s*raising \? palettePole : "var\(--background\)"/,
+  );
+  assert.match(
+    STORE,
+    /const palettePole = resolved === "light" \? "#000000" : "#ffffff";/,
+  );
+  // --foreground is also text on cards, so it follows its own colour.
+  assert.match(
+    STORE,
+    /raising\s*\?\s*colors\.foreground\s*\?\s*inkPole\(colors\.foreground\)\s*:\s*palettePole/,
+  );
+  assert.doesNotMatch(STORE, /\.background \?\? PALETTE_SURFACES\[resolved\]\.background;\s*const page/);
+  assert.ok(SNAPSHOT.includes('"--contrast-panel-ink-target"'));
 });
 
 test("the sidebar section labels follow the slider", () => {

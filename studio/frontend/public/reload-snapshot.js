@@ -51,6 +51,7 @@
     "--contrast-ink-mix",
     "--contrast-ink-target",
     "--contrast-line-mix",
+    "--contrast-panel-ink-target",
     "--contrast-state-mix",
     "--contrast-surface-mix",
     "--contrast-target",

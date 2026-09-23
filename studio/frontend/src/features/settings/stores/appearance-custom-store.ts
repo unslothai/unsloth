@@ -296,6 +296,8 @@ export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
 /** Primary ink: how far it heads for pure black/white, or into the page. */
 export const CONTRAST_INK_MIX_VAR = "--contrast-ink-mix";
 export const CONTRAST_INK_TARGET_VAR = "--contrast-ink-target";
+/** Ink on palette surfaces (cards, menus, sidebar), which custom colors keep. */
+export const CONTRAST_PANEL_INK_TARGET_VAR = "--contrast-panel-ink-target";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
@@ -683,12 +685,14 @@ const PALETTE_SURFACES: Record<
   dark: { background: "#181818", elevated: "#272727" },
 };
 
-/** Black or white, whichever is further from the page (custom or palette). */
-function inkExtreme(c: AppearanceCustomization, resolved: ResolvedTheme) {
-  const background =
-    c.colors[resolved].background ?? PALETTE_SURFACES[resolved].background;
-  const page = hexLuminance(background);
-  return contrastRatio(page, 0) >= contrastRatio(page, 1)
+/**
+ * Black for dark ink, white for light. Raising pushes ink further its own way,
+ * so it never flips against the surface it was made for. --foreground is also
+ * text on cards, so a custom page colour must not decide it.
+ */
+function inkPole(ink: string): string {
+  const luminance = hexLuminance(ink);
+  return contrastRatio(luminance, 0) <= contrastRatio(luminance, 1)
     ? "#000000"
     : "#ffffff";
 }
@@ -992,9 +996,18 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_TEXT_MIX_VAR, mix(raising ? 40 : 30));
     // Primary ink heads for pure black/white raising, and into the page
     // lowering, stopping well short so body copy stays readable at 0.
+    const palettePole = resolved === "light" ? "#000000" : "#ffffff";
     setVar(
       CONTRAST_INK_TARGET_VAR,
-      raising ? inkExtreme(c, resolved) : "var(--background)",
+      raising
+        ? colors.foreground
+          ? inkPole(colors.foreground)
+          : palettePole
+        : "var(--background)",
+    );
+    setVar(
+      CONTRAST_PANEL_INK_TARGET_VAR,
+      raising ? palettePole : "var(--background)",
     );
     setVar(CONTRAST_INK_MIX_VAR, mix(raising ? 70 : 30));
     // Hand-written washes multiply their alpha by these to match the tokens.
@@ -1014,6 +1027,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_STATE_MIX_VAR, null);
     setVar(CONTRAST_TEXT_MIX_VAR, null);
     setVar(CONTRAST_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_INK_TARGET_VAR, null);
     setVar(CONTRAST_INK_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);

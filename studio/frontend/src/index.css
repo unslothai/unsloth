@@ -685,8 +685,8 @@
 
 /* Off the default, each token mixes toward --contrast-target (foreground
    above 50, background below). Curves live in applyCustomizationToDocument.
-   Ink mixes toward --contrast-ink-target instead: pure black or white when
-   raising, so text gets crisper rather than the surfaces going grey. */
+   Ink mixes toward pure black or white instead when raising, so text gets
+   crisper rather than the surfaces going grey. */
 html[data-contrast-adjust] {
 	--card: color-mix(in oklab, var(--card-base), var(--contrast-target) var(--contrast-surface-mix));
 	/* Same curve as its rows, so the step between them survives the slider. */
@@ -713,15 +713,17 @@ html[data-contrast-adjust] {
 	   affordance still has to be findable at the bottom of the range. */
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));
-	/* Ink. The 0% fallback is the identity for older reload snapshots. */
+	/* Ink. The 0% fallback is the identity for older reload snapshots. Palette
+	   surfaces keep their colours under a custom page, so their ink takes its
+	   own target. */
 	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--card-foreground: color-mix(in oklab, var(--card-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--popover-foreground: color-mix(in oklab, var(--popover-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--secondary-foreground: color-mix(in oklab, var(--secondary-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--accent-foreground: color-mix(in oklab, var(--accent-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--sidebar-foreground: color-mix(in oklab, var(--sidebar-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--sidebar-accent-foreground: color-mix(in oklab, var(--sidebar-accent-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
-	--nav-fg: color-mix(in oklab, var(--nav-fg-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--card-foreground: color-mix(in oklab, var(--card-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--popover-foreground: color-mix(in oklab, var(--popover-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--secondary-foreground: color-mix(in oklab, var(--secondary-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--accent-foreground: color-mix(in oklab, var(--accent-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--sidebar-foreground: color-mix(in oklab, var(--sidebar-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--sidebar-accent-foreground: color-mix(in oklab, var(--sidebar-accent-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--nav-fg: color-mix(in oklab, var(--nav-fg-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
 	/* Secondary text keeps a gentler curve, it has to stay readable at both
 	   ends. --panel-surface-fg-muted is its stable base. */
 	--muted-foreground: color-mix(
