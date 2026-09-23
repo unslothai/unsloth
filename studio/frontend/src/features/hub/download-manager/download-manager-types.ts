@@ -135,6 +135,11 @@ export interface DownloadManagerState {
   completedInventoryHints: InventoryHint[];
 }
 
+export interface FloorHold {
+  bytes: number;
+  until: number;
+}
+
 export interface JobRuntime {
   kind: DownloadKind;
   repoId: string;
@@ -150,6 +155,8 @@ export interface JobRuntime {
   /**
    * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
   pendingGenerationChange?: boolean;
+  /** Set on an attempt change: the retry worker purges the killed run's partial only once it starts, so the GGUF floor stays off until the byte count drops below `bytes` or `until` passes. Bytes, not the fraction: the killed partial's last reading can land a hair under the old high-water mark. */
+  floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;
