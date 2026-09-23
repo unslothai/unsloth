@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 
 from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = os.environ.get("STUDIO_E2E_URL", "http://127.0.0.1:8000").rstrip("/")
 OWNER_PASSWORD = os.environ.get("STUDIO_E2E_OWNER_PASSWORD")
@@ -137,10 +138,15 @@ def run(page: Page, context) -> None:
         # Appearance survives the switch; its value may have been replaced by the personalization sync.
         assert local(page, "theme") is not None, "the account switch cleared the theme"
         assert local(page, "unsloth_chat_permission_mode") != "full"
-        deadline = time.monotonic() + STEP_TIMEOUT_MS / 1000
-        while second_tab.evaluate("() => window.oldAccountDocument") is not None:
-            assert time.monotonic() < deadline, "the other tab never reloaded on the account switch"
-            time.sleep(0.2)
+        # wait_for_function, not a loop of evaluate(): the reload being waited for destroys the
+        # execution context, and an evaluate() that lands mid-navigation raises instead of
+        # reporting that the old document is gone. wait_for_function re-runs in the new document.
+        try:
+            second_tab.wait_for_function(
+                "() => window.oldAccountDocument === undefined", timeout = STEP_TIMEOUT_MS
+            )
+        except PlaywrightTimeoutError:
+            raise AssertionError("the other tab never reloaded on the account switch") from None
 
         page.locator("#current-password").fill(setup_code)
         page.locator("#new-password").fill(managed_password)

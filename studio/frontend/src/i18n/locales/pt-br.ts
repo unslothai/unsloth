@@ -1989,6 +1989,7 @@ export const ptBR = {
       expires: "Expira {value}",
       actionsFor: "Ações para {name}",
       copyPrefix: "Copiar prefixo",
+      copyFailed: "Não foi possível copiar",
       revokeToken: "Revogar token",
       revokeTitle: 'Revogar token de acesso "{name}"?',
       revokeDescription:

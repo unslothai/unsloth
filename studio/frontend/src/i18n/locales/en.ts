@@ -1964,6 +1964,7 @@ export const en = {
       expires: "Expires {value}",
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
+      copyFailed: "Could not copy",
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
