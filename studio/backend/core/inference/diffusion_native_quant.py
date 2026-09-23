@@ -24,6 +24,17 @@ from typing import Any, Callable, Optional
 NATIVE_INT8 = "int8"
 NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
+# Opt-in W8A8 for int8: quantise each activation row to int8 and run torch._int_mm on the stored int8 weight
+# instead of dequantising the weight. "1" enables it; anything else keeps weight-only.
+NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
+# torch._int_mm wants M > 16 and K, N multiples of 8; smaller or odd shapes keep the weight-only path.
+_INT_MM_MIN_ROWS = 17
+
+
+def int8_act_requested() -> bool:
+    import os
+
+    return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "1"
 
 
 @lru_cache(maxsize = 1)
@@ -36,7 +47,7 @@ def native_linear_class():
     class NativeWeightOnlyLinear(nn.Module):
         """A Linear whose weight is stored as int8 / fp8 with a per-output-row scale."""
 
-        def __init__(self, linear: Any, scheme: str):
+        def __init__(self, linear: Any, scheme: str, act_int8: bool = False):
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -60,6 +71,7 @@ def native_linear_class():
                 "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
             )
             self.bias = linear.bias
+            self.act_int8 = bool(act_int8) and scheme == NATIVE_INT8
 
         def dequantized_weight(self, dtype: Any) -> Any:
             wq = (
@@ -76,13 +88,35 @@ def native_linear_class():
             (PEFT's DoRA forward reads ``base_layer.weight``) keeps working; nothing holds it."""
             return self.dequantized_weight(self.compute_dtype)
 
+        def _int_mm_ok(self, rows: int) -> bool:
+            return (
+                rows >= _INT_MM_MIN_ROWS
+                and self.in_features % 8 == 0
+                and self.out_features % 8 == 0
+            )
+
+        def _forward_int_mm(self, x: Any) -> Any:
+            """W8A8: per-row symmetric int8 activations x the stored int8 weight, int32 accumulate, one rescale."""
+            x2 = x.reshape(-1, self.in_features)
+            xf = x2.float()
+            x_scale = xf.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / 127.0
+            xq = (xf / x_scale).round_().clamp_(-127, 127).to(torch.int8)
+            acc = torch._int_mm(xq, self.weight_q.t())
+            out = acc.float() * x_scale * self.weight_scale.view(torch.float32)[None, :]
+            out = out.to(x.dtype)
+            if self.bias is not None:
+                out = out + self.bias.to(x.dtype)
+            return out.reshape(*x.shape[:-1], self.out_features)
+
         def forward(self, x: Any) -> Any:
+            if self.act_int8 and x.is_cuda and self._int_mm_ok(x.numel() // max(1, self.in_features)):
+                return self._forward_int_mm(x)
             return F.linear(x, self.dequantized_weight(x.dtype), self.bias)
 
         def extra_repr(self) -> str:
             return (
                 f"in_features={self.in_features}, out_features={self.out_features}, "
-                f"scheme={self.scheme}, bias={self.bias is not None}"
+                f"scheme={self.scheme}, act_int8={self.act_int8}, bias={self.bias is not None}"
             )
 
     return NativeWeightOnlyLinear
@@ -114,16 +148,18 @@ def apply_native_weight_quant(
     leaves a partial conversion, which ``is_native_quantised`` reports so the loader refuses it the
     same way it refuses a partial torchao pass."""
     cls = native_linear_class()
+    act_int8 = scheme == NATIVE_INT8 and int8_act_requested()
     # Names only: holding the old modules would keep every bf16 weight alive until the pass ends.
     names = [name for name, mod in transformer.named_modules() if name and filter_fn(mod, name)]
     for name in names:
         parent_name, _, leaf = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
-        setattr(parent, leaf, cls(getattr(parent, leaf), scheme))
+        setattr(parent, leaf, cls(getattr(parent, leaf), scheme, act_int8 = act_int8))
     if logger is not None:
         logger.info(
-            "diffusion.transformer_quant: %s weight-only (torchao-free) on %d linears",
+            "diffusion.transformer_quant: %s %s (torchao-free) on %d linears",
             scheme,
+            "W8A8 torch._int_mm" if act_int8 else "weight-only",
             len(names),
         )
     return len(names)

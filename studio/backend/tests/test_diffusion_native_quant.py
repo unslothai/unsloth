@@ -198,6 +198,71 @@ def test_a_module_wide_dtype_cast_leaves_the_stored_weights_alone(scheme):
     assert torch.allclose(layer(x.to(torch.float16)).float(), before.float(), rtol = 1e-2, atol = 1e-2)
 
 
+def _int_mm_on_cpu():
+    try:
+        torch._int_mm(torch.ones(32, 8, dtype = torch.int8), torch.ones(8, 8, dtype = torch.int8))
+        return True
+    except (RuntimeError, AttributeError, NotImplementedError):
+        return False
+
+
+def test_int8_activation_path_is_off_by_default(monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    assert not nq.int8_act_requested()
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "0")
+    assert not nq.int8_act_requested()
+    monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, "1")
+    assert nq.int8_act_requested()
+
+
+def test_int8_activation_flag_is_ignored_for_fp8():
+    lin = torch.nn.Linear(64, 64).to(torch.bfloat16)
+    assert nq.native_linear_class()(lin, "int8", act_int8 = True).act_int8
+    assert not nq.native_linear_class()(lin, "fp8", act_int8 = True).act_int8
+    assert not nq.native_linear_class()(lin, "int8").act_int8
+
+
+def test_int_mm_shape_gate():
+    cls = nq.native_linear_class()
+    layer = cls(torch.nn.Linear(64, 64).to(torch.bfloat16), "int8", act_int8 = True)
+    assert not layer._int_mm_ok(16) and layer._int_mm_ok(17)
+    odd = cls(torch.nn.Linear(64, 12).to(torch.bfloat16), "int8", act_int8 = True)
+    assert not odd._int_mm_ok(4096)
+
+
+def test_cpu_inputs_keep_the_weight_only_path(monkeypatch):
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(64, 64).to(torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+    monkeypatch.setattr(layer, "_forward_int_mm", lambda x: pytest.fail("int_mm used on a CPU input"))
+    x = torch.randn(32, 64, dtype = torch.bfloat16)
+    assert torch.equal(layer(x), torch.nn.functional.linear(x, layer.dequantized_weight(x.dtype), lin.bias))
+
+
+@pytest.mark.skipif(not _int_mm_on_cpu(), reason = "torch._int_mm has no CPU kernel in this build")
+def test_int_mm_matches_the_dense_layer():
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 128).to(torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+    x = torch.randn(2, 24, 256, dtype = torch.bfloat16)
+    ref = lin(x).float()
+    got = layer._forward_int_mm(x)
+    assert got.shape == ref.shape and got.dtype == torch.bfloat16
+    assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
+
+
+def test_apply_native_weight_quant_reads_the_env(monkeypatch):
+    for value, scheme, expect in (("1", "int8", True), ("", "int8", False), ("1", "fp8", False)):
+        monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, value)
+        model = _toy()
+        n = nq.apply_native_weight_quant(
+            model, scheme, filter_fn = lambda m, name: isinstance(m, torch.nn.Linear)
+        )
+        assert n > 0
+        flags = {m.act_int8 for m in model.modules() if hasattr(m, "act_int8")}
+        assert flags == {expect}
+
+
 # ---- quantize_transformer ---------------------------------------------------------------------
 
 
@@ -271,11 +336,11 @@ def test_quantize_transformer_failure_is_reported_as_dirty(rocm, monkeypatch):
     real = nq.native_linear_class()
     calls = []
 
-    def _boom(linear, scheme):
+    def _boom(linear, scheme, **kw):
         calls.append(1)
         if len(calls) == 3:
             raise RuntimeError("out of memory")
-        return real(linear, scheme)
+        return real(linear, scheme, **kw)
 
     monkeypatch.setattr(nq, "native_linear_class", lambda: _boom)
     warned = []
