@@ -976,3 +976,24 @@ def test_a_sharer_leaving_the_primary_keeps_what_restores_it(backends, monkeypat
     monkeypatch.setattr(inf.account_access, "release_shared_resident", lambda kind: True)
     asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/A-GGUF"), "s"))
     assert inf._primary_request is not None and inf._primary_request.model_path == "org/A-GGUF"
+
+
+def test_counting_for_an_idle_kept_model_ignores_the_primarys_chat(backends):
+    import threading
+
+    from fastapi import HTTPException
+    from models.inference import ChatCountTokensRequest
+
+    from state import active_generations
+
+    payload = ChatCountTokensRequest(
+        model = "org/B-GGUF",
+        messages = [{"role": "user", "content": "hi"}],
+    )
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "chat-on-A"):
+        try:
+            asyncio.run(inf.chat_count_tokens(payload, "s", None))
+        except HTTPException as exc:
+            assert exc.detail != "Cannot count tokens while a generation is in progress."
+        except Exception:
+            pass

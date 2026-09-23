@@ -34374,6 +34374,8 @@ async def chat_count_tokens(
     # registers external-provider runs too, so those decline a count they could have served;
     # narrowing it means trusting a kind/model field to decide whether to work next to a decode, and
     # being wrong there costs inference time while over-refusing only costs a redraw.
+    # Routed first, so every check below looks at the model being counted.
+    await _route_to_extra_slot(payload.model)
     if _routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
@@ -34417,8 +34419,6 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Cannot count tokens for messages containing video.",
         )
-
-    await _route_to_extra_slot(payload.model)
 
     # A replay envelope is countable on a text-only model, where generation strips it
     # and sends no pixels. On a model that reads images the completion promotes it, so
