@@ -409,6 +409,23 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_chat_template_kwargs": True,
         "hidden": True,
     },
+    "lemonade": {
+        "display_name": "AMD NPU (FastFlowLM)",
+        # Studio-owned loopback runtime; catalog labels determine each model's capabilities.
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Unsloth-managed Lemonade serving FastFlowLM on the AMD NPU.",
+        # FastFlowLM 1.0.3 parses min_p into an integer, so 0.05 arrives as 0.
+        "body_omit": ("min_p",),
+        "hidden": True,
+        "managed": True,
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
@@ -453,6 +470,12 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
+    """Return a user-configurable provider, excluding Studio-managed runtimes."""
+    info = PROVIDER_REGISTRY.get(provider_type)
+    return None if info is None or info.get("managed") else info
 
 
 def get_base_url(provider_type: str) -> str | None:
@@ -1067,7 +1090,7 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden") and not include_hidden:
+        if (info.get("hidden") and not include_hidden) or info.get("managed"):
             continue
         result.append(
             {

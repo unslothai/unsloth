@@ -79,6 +79,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -2382,6 +2383,7 @@ export function ChatPage({
   const {
     refresh,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,
@@ -3180,6 +3182,10 @@ export function ChatPage({
       if (isSameLoadedModel && !meta?.forceReload) {
         return;
       }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value);
+        return;
+      }
       if (meta?.source === "external" || isExternalModelId(value)) {
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
@@ -3375,6 +3381,7 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,

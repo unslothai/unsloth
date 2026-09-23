@@ -2775,6 +2775,100 @@ export function useChatModelRuntime() {
     ],
   );
 
+  /** Load a downloaded NPU model directly; read its capabilities from /status. */
+  const loadNpuModel = useCallback(
+    async (modelPath: string) => {
+      const store = useChatRuntimeStore.getState();
+      if (
+        store.params.checkpoint === modelPath &&
+        store.residentCheckpoint === modelPath
+      ) {
+        return;
+      }
+      if (loadingModelRef.current ?? store.loadingModelPick) {
+        toast.info("Another model is already loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      const lease = store.beginModelLoading("preparing");
+      if (lease === null) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      loadLifecycleLeaseRef.current = lease;
+      const displayName = modelDisplayName(
+        modelPath.slice(modelPath.indexOf(":") + 1),
+      );
+      let toastId: string | number | undefined;
+      try {
+        const stopDecision = await confirmStopRunningChatsIfNeeded(
+          "Loading a different model",
+        );
+        if (!stopDecision.proceed) return;
+        const loadInfo = {
+          id: modelPath,
+          displayName,
+          isDownloaded: true,
+          isCachedLora: false,
+          ggufVariant: null,
+          nativePathToken: null,
+        };
+        setModelsError(null);
+        setLastModelLoadError(null);
+        setLoadingModel(loadInfo);
+        loadingModelRef.current = loadInfo;
+        useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
+        setLoadProgress({ percent: null, label: null, phase: "starting" });
+        toastId = toast.loading(`Loading ${displayName} on the NPU`);
+        const previous = useChatRuntimeStore.getState();
+        const previousCheckpoint = previous.params.checkpoint;
+        const previousGgufVariant = previous.activeGgufVariant;
+        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+        await loadModel({
+          model_path: modelPath,
+          hf_token: null,
+          max_seq_length: 0,
+          load_in_4bit: false,
+          is_lora: false,
+          force_cancel_active: stopDecision.forceCancelActive,
+        });
+        const status = await getInferenceStatus();
+        useChatRuntimeStore.getState().setCheckpoint(modelPath, null);
+        applyActiveModelStatusToStore(status, {
+          previousCheckpoint,
+          previousGgufVariant,
+          seedLoadParams: true,
+        });
+        syncModelCapabilities(modelPath, status);
+        void refreshContextUsage({ afterModelLoad: true });
+        toast.success(`${displayName} loaded on the NPU`, {
+          id: toastId,
+          closeButton: true,
+          duration: 4000,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to load model";
+        setModelsError(message);
+        setLastModelLoadError(message);
+        toast.error(message, {
+          id: toastId,
+          closeButton: true,
+          duration: 8000,
+        });
+        // The previous model may be gone even though this one did not load.
+        await syncInferenceStatusToStore().catch(() => {});
+      } finally {
+        resetLoadingUi();
+      }
+    },
+    [resetLoadingUi, setLastModelLoadError, setModelsError],
+  );
+
   const ejectModel = useCallback(async (): Promise<boolean> => {
     if (!params.checkpoint) {
       return false;
@@ -2848,6 +2942,7 @@ export function useChatModelRuntime() {
   return {
     refresh,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,

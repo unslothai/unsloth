@@ -14,11 +14,13 @@ import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { isNpuModelId, NpuModelPanel, useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
+  ChipIcon,
   CloudIcon,
   Download01Icon,
   RemoveCircleIcon,
@@ -261,7 +263,7 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "connected";
+type HubSection = "downloaded" | "recommended" | "connected" | "npu";
 
 // The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
@@ -373,12 +375,15 @@ function ModelSelectorContent({
     [loraModels],
 
   );
+  // The NPU section is chat's alone, and only on a machine with a supported AMD NPU.
+  const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
+  const hasNpu = !task && npuStatus?.supported === true;
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
-    () =>
-      hasExternal
+    () => [
+      ...HUB_SECTION_TABS,
+      ...(hasExternal
         ? [
-            ...HUB_SECTION_TABS,
             {
               value: "connected",
               label: "Connected",
@@ -387,23 +392,41 @@ function ModelSelectorContent({
               ),
             },
           ]
-        : HUB_SECTION_TABS,
-    [hasExternal],
+        : []),
+      ...(hasNpu
+        ? [
+            {
+              value: "npu",
+              label: "NPU",
+              icon: (
+                <HugeiconsIcon icon={ChipIcon} className="size-3.5 shrink-0" />
+              ),
+            },
+          ]
+        : []),
+    ],
+    [hasExternal, hasNpu],
 
   );
   const wantsConnectedDefault = Boolean(
     value && externalModels.some((model) => model.id === value),
   );
+  const wantsNpuDefault = isNpuModelId(value);
   const hasAdditionalOnDeviceModels =
     (additionalOnDeviceModels?.length ?? 0) > 0;
   const [hubSection, setHubSection] = useState<HubSection>(() =>
     wantsConnectedDefault
       ? "connected"
-      : defaultHubSection(hasAdditionalOnDeviceModels),
+      : wantsNpuDefault
+        ? "npu"
+        : defaultHubSection(hasAdditionalOnDeviceModels),
   );
-  // Connected is only valid while external providers exist; fall back otherwise.
+  // Connected is only valid while external providers exist, NPU while the NPU does; fall back otherwise.
   const effectiveHubSection: HubSection =
-    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+    (hubSection === "connected" && !hasExternal) ||
+    (hubSection === "npu" && !hasNpu)
+      ? "recommended"
+      : hubSection;
 
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
@@ -420,14 +443,21 @@ function ModelSelectorContent({
       setHubSection(
         wantsConnectedDefault
           ? "connected"
-          : defaultHubSection(hasAdditionalOnDeviceModels),
+          : wantsNpuDefault
+            ? "npu"
+            : defaultHubSection(hasAdditionalOnDeviceModels),
       );
     }
     if (!open && wasOpen.current) {
       setConfigTarget(null);
     }
     wasOpen.current = open;
-  }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
+  }, [
+    open,
+    wantsConnectedDefault,
+    wantsNpuDefault,
+    hasAdditionalOnDeviceModels,
+  ]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -605,6 +635,34 @@ function ModelSelectorContent({
               }
             />
           </div>
+        ) : effectiveHubSection === "npu" && npuStatus ? (
+          <NpuModelPanel
+            status={npuStatus}
+            onStatusChange={setNpuStatus}
+            value={value}
+            loadedModelId={loaded ? value : undefined}
+            onPick={(modelPath) =>
+              onSelect(modelPath, {
+                source: "local",
+                isLora: false,
+                isDownloaded: true,
+              })
+            }
+            sectionToggle={
+              <PillTabs
+                className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
+                ariaLabel={t("picker.hubSectionAriaLabel")}
+                tabs={hubSectionTabs}
+                value={effectiveHubSection}
+                onValueChange={(next) => {
+                  const section = next as HubSection;
+                  setHubSection(section);
+                  saveLastHubSection(section);
+                }}
+                fit={true}
+              />
+            }
+          />
         ) : (
           <>
             <HubModelPicker
@@ -626,7 +684,12 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
-              section={effectiveHubSection}
+              // Never "npu" here: that section renders NpuModelPanel above.
+              section={
+                effectiveHubSection === "npu"
+                  ? "recommended"
+                  : effectiveHubSection
+              }
               sectionToggle={
                 <PillTabs
                   // Wider tabs than the shared default. The panel reserves
