@@ -234,3 +234,17 @@ def test_a_mock_config_does_not_recurse_forever():
     f = _helper()
     config = SimpleNamespace(auto_map = None, text_config = MagicMock(auto_map = None))
     assert f(config) is False
+
+
+def test_config_objects_inside_dict_configs_are_walked():
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class RemoteAudioConfig(PretrainedConfig):
+        model_type = "remote_audio_dict_test"
+
+    RemoteAudioConfig.__module__ = "transformers_modules.some_repo.configuration_x"
+    assert f({"model_type": "root", "audio": PretrainedConfig()}) is False
+    assert f({"model_type": "root", "audio": RemoteAudioConfig()}) is True
+    assert f({"model_type": "root", "nested": {"audio": RemoteAudioConfig()}}) is True

@@ -244,7 +244,7 @@ def _config_uses_remote_code(config):
 
     def _children(node):
         if isinstance(node, dict):
-            return [value for value in node.values() if isinstance(value, dict)]
+            return [value for value in node.values() if _is_config(value)]
         names = ["text_config", "vision_config", "audio_config"]
         for sub in getattr(type(node), "sub_configs", None) or ():
             if sub not in names:
