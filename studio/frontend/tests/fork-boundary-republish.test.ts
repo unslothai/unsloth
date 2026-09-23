@@ -23,7 +23,7 @@ type Module = {
   ) => Promise<Record<string, unknown> | null | undefined>;
 };
 
-type Published = [string, string | null | undefined, string | null | undefined];
+type Published = [string, string[], string | null | undefined];
 
 function harness(
   // null is the backend saying it has no such thread, which is what a 404 becomes.
@@ -36,6 +36,7 @@ function harness(
     deletedSources?: Set<string>;
     failReadsFrom?: number;
     legacyThreads?: Record<string, Record<string, unknown>>;
+    syncedMessages?: { id: string; parentId?: string | null }[];
   } = {},
 ) {
   const published: Published[] = [];
@@ -51,7 +52,8 @@ function harness(
         saveChatMessage: async (message: unknown) => message,
         notifyChatHistoryUpdated: () => {},
         syncChatMessages: async (_threadId: string, messages: unknown[]) =>
-          messages,
+          // The rows the prune left behind, which is what the inherited chain walks.
+          options.syncedMessages ?? messages,
         getChatThread: async (id: string) => {
           threadReads.push(id);
           // The row ensure reads first, so a count is how this picks out the boundary's own read.
@@ -82,9 +84,10 @@ function harness(
       "../stores/fork-boundary-store": {
         setForkBoundary: (
           threadId: string,
-          messageId: string | null | undefined,
+          messageIds: Iterable<string> | null | undefined,
           sourceThreadId: string | null | undefined,
-        ) => published.push([threadId, messageId, sourceThreadId]),
+        ) =>
+          published.push([threadId, [...(messageIds ?? [])], sourceThreadId]),
       },
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: class {
@@ -109,19 +112,27 @@ function harness(
 }
 
 test("deleting a message republishes the boundary the backend reseated", async () => {
-  const { module, published } = harness({
-    id: "fork-1",
-    // Where the prune moved it: the surviving parent of the row that was deleted.
-    forkBoundaryMessageId: "m1",
-    forkedFromThreadId: "src",
-  });
+  const { module, published } = harness(
+    {
+      id: "fork-1",
+      // Where the prune moved it: the surviving parent of the row that was deleted.
+      forkBoundaryMessageId: "m1",
+      forkedFromThreadId: "src",
+    },
+    {
+      syncedMessages: [
+        { id: "m0", parentId: null },
+        { id: "m1", parentId: "m0" },
+      ],
+    },
+  );
 
   await module.syncStoredChatMessages("fork-1", [], {
     pruneMissing: true,
     deletedMessageIds: ["m2"],
   });
 
-  assert.deepEqual(published, [["fork-1", "m1", "src"]]);
+  assert.deepEqual(published, [["fork-1", ["m1", "m0"], "src"]]);
 });
 
 test("a prune that cleared the boundary clears the divider too", async () => {
@@ -134,11 +145,16 @@ test("a prune that cleared the boundary clears the divider too", async () => {
 
   await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
 
-  assert.deepEqual(published, [["fork-1", null, "src"]]);
+  assert.deepEqual(published, [["fork-1", [], "src"]]);
 });
 
 test("the streaming autosave never pays for the extra read", async () => {
-  const { module, published, threadReads } = harness();
+  const { module, published, threadReads } = harness(undefined, {
+      syncedMessages: [
+        { id: "m0", parentId: null },
+        { id: "m1", parentId: "m0" },
+      ],
+    });
 
   await module.syncStoredChatMessages("fork-1", []);
   const before = threadReads.length;
@@ -154,18 +170,24 @@ test("the streaming autosave never pays for the extra read", async () => {
 
   // Exactly one read more than the same sync without a prune, and it is the boundary's.
   assert.equal(threadReads.length - beforePrune, plainSyncReads + 1);
-  assert.deepEqual(published, [["fork-1", "m1", "src"]]);
+  assert.deepEqual(published, [["fork-1", ["m1", "m0"], "src"]]);
 });
 
 test("a source deleted in this tab keeps the words and drops the link", async () => {
   const { module, published } = harness(
     { id: "fork-1", forkBoundaryMessageId: "m1", forkedFromThreadId: "src" },
-    { deletedSources: new Set(["src"]) },
+    {
+      deletedSources: new Set(["src"]),
+      syncedMessages: [
+        { id: "m0", parentId: null },
+        { id: "m1", parentId: "m0" },
+      ],
+    },
   );
 
   await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
 
-  assert.deepEqual(published, [["fork-1", "m1", null]]);
+  assert.deepEqual(published, [["fork-1", ["m1", "m0"], null]]);
 });
 
 // --- the backlink's existence check ------------------------------------------

@@ -194,7 +194,11 @@ import {
   settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
-import { useForkBoundaryStore } from "@/features/chat/stores/fork-boundary-store";
+import {
+  forkBoundaryAnchor,
+  setForkBoundaryAnchor,
+  useForkBoundaryStore,
+} from "@/features/chat/stores/fork-boundary-store";
 import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
@@ -1783,17 +1787,47 @@ const ThreadMessage: FC = () => {
   );
 };
 
+/**
+ * Resolves the divider against the branch on screen, once for the thread.
+ *
+ * Which inherited message closes the history depends on the branch: editing an inherited turn
+ * starts a sibling and leaves the fork's anchor off screen with earlier inherited messages
+ * still above it. Selecting the message array in each ROW is what the delete render budget
+ * forbids, so it is selected here, in one component, and the rows read the id it publishes.
+ * The walk stops at the first message the fork did not inherit, so it costs the inherited
+ * count rather than the thread length.
+ */
+const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
+  const inherited = useForkBoundaryStore((s) =>
+    threadId === null
+      ? undefined
+      : s.boundaryByThreadId[threadId]?.messageIds,
+  );
+  const anchor = useAuiState(({ thread }) =>
+    forkBoundaryAnchor(thread.messages, inherited),
+  );
+  useEffect(() => {
+    setForkBoundaryAnchor(threadId, anchor);
+  }, [threadId, anchor]);
+};
+
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const messageId = useAuiState(({ message }) => message.id);
-  const boundary = useForkBoundaryStore((s) =>
-    threadId === null ? undefined : s.boundaryByThreadId[threadId],
+  // Two plain values rather than the record: both stay identical between renders, so a row
+  // subscribed to them does not re-render when an unrelated thread publishes.
+  const anchor = useForkBoundaryStore((s) =>
+    threadId === null ? undefined : s.anchorByThreadId[threadId],
+  );
+  const sourceThreadId = useForkBoundaryStore((s) =>
+    threadId === null
+      ? null
+      : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
-  if (!boundary || boundary.messageId !== messageId) return null;
-  const sourceThreadId = boundary.sourceThreadId;
+  if (anchor === undefined || anchor !== messageId) return null;
   const label = (
     <>
       <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
@@ -1880,6 +1914,7 @@ export const Thread: FC<{
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
   useThreadForkCounts();
+  useTrackForkBoundaryAnchor(threadId);
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.

@@ -2049,12 +2049,13 @@ def upsert_chat_thread(thread: dict) -> dict:
                 -- that makes the fork, and moved only by the prune that deletes the row it names.
                 -- A whole-record writer carries whatever it read, which may predate that move, so
                 -- on conflict the stored anchor always wins.
-                -- The base only describes the title it was generated with, so a new title drops
-                -- it whatever the writer still carries. Under the same title an absent one keeps
-                -- the stored base, since a writer rebuilding the record is not renaming anything.
+                -- Server-managed on an existing row, like the anchor above: the payload never
+                -- contributes, since a writer carries whatever it read and a base it saw can
+                -- already have been cleared by a rename it did not see. The title decides alone.
+                -- A new one drops the base; the same one keeps whatever is stored.
                 fork_title_base = CASE
                     WHEN excluded.title = chat_threads.title
-                    THEN COALESCE(excluded.fork_title_base, chat_threads.fork_title_base)
+                    THEN chat_threads.fork_title_base
                     ELSE NULL
                 END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.

@@ -1643,6 +1643,27 @@ def test_a_patch_repeating_the_stored_title_keeps_the_base(tmp_path, monkeypatch
     assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (2)"
 
 
+def test_a_stale_whole_record_save_cannot_restore_a_cleared_base(tmp_path, monkeypatch):
+    """A writer carries the base it read, which a rename it never saw may have cleared.
+    Renaming away and back leaves the titles equal, so only the stored value can decide."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    _fork("src", "fork-1", 99)
+    stale = dict(studio_db.get_chat_thread("fork-1"))
+    assert stale["forkTitleBase"] == "Notes"
+
+    studio_db.update_chat_thread("fork-1", {"title": "Report"})
+    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})  # the user's own name now
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+
+    studio_db.upsert_chat_thread({**stale, "archived": True})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+    # The number is the user's, so it is kept whole rather than taken.
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (1) (1)"
+
+
 def test_a_whole_record_rename_clears_the_base_it_carries(tmp_path, monkeypatch):
     """The record a client read still holds the old base, so the title has to decide alone."""
     _reset_studio_db(tmp_path, monkeypatch)

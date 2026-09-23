@@ -747,15 +747,41 @@ export async function readBackendChatThread(
 }
 
 /** Hand the "Continued from chat" divider where it sits, from a thread just read. */
-function publishForkBoundary(thread: ThreadRecord): void {
+function publishForkBoundary(
+  thread: ThreadRecord,
+  messages: readonly MessageRecord[],
+): void {
   setForkBoundary(
     thread.id,
-    thread.forkBoundaryMessageId,
+    inheritedMessageIds(thread.forkBoundaryMessageId, messages),
     // A deleted source cannot be opened, so the divider drops its link rather than its text.
     thread.forkedFromThreadId && !isChatThreadDeleted(thread.forkedFromThreadId)
       ? thread.forkedFromThreadId
       : null,
   );
+}
+
+/**
+ * Every message the fork inherited: the anchor and its ancestors.
+ *
+ * The anchor alone cannot place the divider, because editing an inherited message starts a
+ * branch that leaves the anchor off screen while earlier inherited messages stay on it. The
+ * chain is derived here rather than stored, since the parent links are already in hand.
+ */
+function inheritedMessageIds(
+  anchorId: string | null | undefined,
+  messages: readonly MessageRecord[],
+): Set<string> {
+  const ids = new Set<string>();
+  if (!anchorId) return ids;
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  let cursor = byId.get(anchorId);
+  // Stops on a repeat as well as at the root: a corrupt chain must not spin.
+  while (cursor !== undefined && !ids.has(cursor.id)) {
+    ids.add(cursor.id);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+  }
+  return ids;
 }
 
 export async function listStoredChatMessages(
@@ -776,7 +802,8 @@ export async function listStoredChatMessages(
       throw error;
     }),
   ]);
-  if (backendThread) publishForkBoundary(backendThread);
+  // The backend's own rows, which are the ones the anchor's parent chain runs through.
+  if (backendThread) publishForkBoundary(backendThread, backendMessages ?? []);
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
@@ -1090,7 +1117,7 @@ export async function syncStoredChatMessages(
     // Nothing else reads the thread again, so without this the divider stays gone until the chat
     // is reopened. Only on a delete, which is rare and already the user waiting on a round trip.
     const thread = await getChatThread(threadId).catch(() => undefined);
-    if (thread) publishForkBoundary(thread);
+    if (thread) publishForkBoundary(thread, synced);
   }
   return synced;
 }
