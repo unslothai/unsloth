@@ -142,6 +142,7 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
         token = "tok",
         cache_dir = "/c",
         local_files_only = True,
+        proxies = {"https": "http://proxy"},
     )
     assert got is Fetched
     assert seen == dict(
@@ -152,6 +153,7 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
         token = "tok",
         cache_dir = "/c",
         local_files_only = True,
+        proxies = {"https": "http://proxy"},
     )
 
 
@@ -443,7 +445,7 @@ def test_every_resolver_probe_forwards_the_trust_decision():
                 node.lineno,
             )
             if module in (loader, vision) and not splats:
-                assert {"revision", "token", "local_files_only"} <= names, (
+                assert {"revision", "token", "local_files_only", "proxies"} <= names, (
                     module.__name__,
                     node.lineno,
                 )
@@ -573,7 +575,13 @@ def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
     monkeypatch.setattr(
         _utils, "resolve_model_class", lambda auto, config, **kw: seen.append(kw) or None
     )
-    options = dict(trust_remote_code = True, revision = "abc", token = "t", local_files_only = True)
+    options = dict(
+        trust_remote_code = True,
+        revision = "abc",
+        token = "t",
+        local_files_only = True,
+        proxies = {"https": "http://proxy"},
+    )
     _utils.resolve_encoder_attention_implementation(object, object(), **options)
     monkeypatch.setattr(
         sentence_transformer, "resolve_model_class", lambda auto, config, **kw: seen.append(kw)

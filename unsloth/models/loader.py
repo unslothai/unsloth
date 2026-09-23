@@ -1922,6 +1922,7 @@ class FastModel(FastBaseModel):
             cache_dir = kwargs.get("cache_dir", None),
             local_files_only = local_files_only,
             force_download = kwargs.get("force_download", None),
+            proxies = kwargs.get("proxies", None),
         )
         text_only_decoder = False
         if load_text_only:

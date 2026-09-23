@@ -1447,13 +1447,14 @@ class FastSentenceTransformer(FastModel):
             )
 
         # The remote-class probes below look at the class this load builds: same trust,
-        # revision, credentials, cache and offline mode.
+        # revision, credentials, cache, proxies and offline mode.
         _remote_class_probe_kwargs = dict(
             trust_remote_code = trust_remote_code,
             revision = revision,
             token = token,
             cache_dir = kwargs.get("cache_folder", kwargs.get("cache_dir", None)),
             local_files_only = kwargs.get("local_files_only", None),
+            proxies = kwargs.get("proxies", None),
         )
 
         # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the sentinel raises there, and that same .to() would pull a split model back onto one card. The env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the sentinel.

@@ -1134,6 +1134,7 @@ _REMOTE_CODE_HUB_KWARGS = (
     "cache_dir",
     "local_files_only",
     "force_download",
+    "proxies",
 )
 
 
