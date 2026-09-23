@@ -1268,8 +1268,11 @@ def test_noncanonical_oom_under_a_compile_error_is_not_swallowed(monkeypatch, in
     _stub_torch_compile_errors(monkeypatch)
 
     def fails(x):
-        cause = RuntimeError("HIP out of memory. Tried to allocate 2.00 GiB") if inner == "message" else (
-            _BackendOutOfMemory("allocation failed"))
+        cause = (
+            RuntimeError("HIP out of memory. Tried to allocate 2.00 GiB")
+            if inner == "message"
+            else (_BackendOutOfMemory("allocation failed"))
+        )
         try:
             raise cause
         except RuntimeError as err:

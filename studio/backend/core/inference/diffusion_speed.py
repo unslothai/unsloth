@@ -522,7 +522,9 @@ def is_compile_failure(exc: BaseException) -> bool:
         seen.add(id(cur))
         # The batch backoff's own classifier (class name or "out of memory" message), plus backend-specific
         # subclasses such as OutOfMemoryError_: anywhere in the chain means the OOM path must see it.
-        if is_oom_error(cur) or any(k.__name__.startswith("OutOfMemory") for k in type(cur).__mro__):
+        if is_oom_error(cur) or any(
+            k.__name__.startswith("OutOfMemory") for k in type(cur).__mro__
+        ):
             return False
         cur = cur.__cause__ or cur.__context__
     kinds: list = []
