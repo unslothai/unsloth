@@ -340,6 +340,10 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
+    # The loader recomputes this over the packed bytes and refuses a checkpoint corrupted in between.
+    from core.inference.diffusion_prequant import packed_weight_fingerprint
+
+    metadata["fingerprint"] = packed_weight_fingerprint(state_dict)
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY

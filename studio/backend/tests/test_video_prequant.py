@@ -1628,7 +1628,12 @@ def test_the_planner_hands_the_resident_pipelines_bytes_to_the_seed_plan(monkeyp
     backend._state = types.SimpleNamespace(pipe = resident_pipe)
     monkeypatch.setattr(vid, "_video_auto_denoiser_scheme", lambda fam, **kw: "fp8")
     monkeypatch.setattr(
-        vid, "_pipeline_device_mib", lambda pipe: 12_345 if pipe is resident_pipe else 0
+        vid,
+        "_pipeline_device_mib",
+        lambda pipe, ordinal = None: (
+            captured.setdefault("ordinal", ordinal),
+            12_345 if pipe is resident_pipe else 0,
+        )[1],
     )
     captured: dict = {}
     monkeypatch.setattr(
@@ -1646,3 +1651,30 @@ def test_the_planner_hands_the_resident_pipelines_bytes_to_the_seed_plan(monkeyp
         == "fp8"
     )
     assert captured["reclaimable_mib"] == 12_345
+
+
+def test_only_the_resident_bytes_on_the_target_card_are_credited():
+    """Tearing down a pipeline on GPU 0 frees nothing on GPU 1, so a switch to GPU 1 gets no credit
+    for it, and a storage shared by two tensors counts once."""
+    import core.inference.video as vid
+
+    def tensor(index, ptr, nbytes):
+        storage = types.SimpleNamespace(data_ptr = lambda: ptr, nbytes = lambda: nbytes)
+        return types.SimpleNamespace(
+            device = types.SimpleNamespace(type = "cuda", index = index),
+            untyped_storage = lambda: storage,
+        )
+
+    tensors = [tensor(0, 1, 3 << 20), tensor(0, 1, 3 << 20), tensor(1, 2, 5 << 20)]
+    module = types.SimpleNamespace(parameters = lambda: iter(tensors), buffers = lambda: iter(()))
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    assert vid._pipeline_device_mib(pipe) == 8
+    assert vid._pipeline_device_mib(pipe, ordinal = 0) == 3
+    assert vid._pipeline_device_mib(pipe, ordinal = 1) == 5
+    assert vid._pipeline_device_mib(pipe, ordinal = 2) == 0
+
+
+def test_the_credit_is_read_on_the_card_the_load_targets():
+    import core.inference.video as vid
+    assert vid._target_ordinal(types.SimpleNamespace(device = "cuda", ordinal = 3)) == 3
+    assert vid._target_ordinal(types.SimpleNamespace(device = "mps", ordinal = None)) is None
