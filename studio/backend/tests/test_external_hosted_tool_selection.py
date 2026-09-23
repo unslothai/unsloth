@@ -14,6 +14,8 @@ the loop is up, so forwarding them too would run both sides of one tool and bill
 the provider for its half.
 """
 
+from __future__ import annotations
+
 import asyncio
 
 from types import SimpleNamespace
