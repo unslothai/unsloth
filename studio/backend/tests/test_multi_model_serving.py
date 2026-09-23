@@ -946,3 +946,25 @@ def test_a_slot_on_another_gpu_is_no_victim(backends):
     inf._extra_slots.append(other)
     assert inf._eviction_victims(None, 5000, (0,)) == [other]
     assert inf._eviction_victims(None, 5000) == [extra]
+
+
+def test_a_token_count_waits_only_on_its_own_models_chats(backends):
+    import threading
+
+    from state import active_generations
+
+    _, extra = backends
+
+    async def count_on(model):
+        await inf._route_to_extra_slot(model)
+        return inf._routed_generation_count()
+
+    on_primary = threading.Event()
+    with active_generations.ActiveGeneration(on_primary, thread_id = "chat-on-A"):
+        assert asyncio.run(count_on("org/B-GGUF")) == 0
+        assert asyncio.run(count_on("org/A-GGUF")) == 1
+    on_slot = threading.Event()
+    with active_generations.ActiveGeneration(on_slot, thread_id = "chat-on-B"):
+        extra.generations.add(on_slot)
+        assert asyncio.run(count_on("org/B-GGUF")) == 1
+        assert asyncio.run(count_on("org/A-GGUF")) == 0

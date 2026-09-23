@@ -2969,6 +2969,9 @@ export function useChatModelRuntime() {
         "unload",
       );
       if (!decision.proceed) return false;
+      // As the selected model's eject does: a queued prompt would otherwise load one back.
+      cancelPreStreamRunReservations(decision.preStreamRunTokens);
+      requestLocalPromptQueueStop(decision.promptQueueThreadIds);
     }
     const results = await Promise.allSettled(
       others.map((id) =>

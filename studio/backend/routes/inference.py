@@ -8035,6 +8035,15 @@ def _slot_generations() -> set:
     return {event for slot in list(_extra_slots) for event in list(slot.generations)}
 
 
+def _routed_generation_count() -> int:
+    """Generations on the model this request is routed to; each loaded model decodes on its own server."""
+    slot = routed_slot.get()
+    if slot is not None:
+        return len(slot.generations)
+    elsewhere = _slot_generations()
+    return active_generations.count(None, elsewhere) if elsewhere else active_generations.count()
+
+
 def _raise_or_cancel_slot_generations(
     slot: _ExtraSlot,
     *,
@@ -34301,7 +34310,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # Re-checked immediately before the only work that takes the orchestrator's lock:
     # everything since the endpoint's entry check awaits, so a chat can have started in
     # the gap and would then wait on this count. The GGUF path re-checks for this reason.
-    if active_generations.count() > 0:
+    if _routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
@@ -34363,7 +34372,7 @@ async def chat_count_tokens(
     # registers external-provider runs too, so those decline a count they could have served;
     # narrowing it means trusting a kind/model field to decide whether to work next to a decode, and
     # being wrong there costs inference time while over-refusing only costs a redraw.
-    if active_generations.count() > 0:
+    if _routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
@@ -34580,7 +34589,7 @@ async def chat_count_tokens(
 
     # Re-checked immediately before the only work that reaches llama-server, because everything
     # between here and the entry check awaits, so a run can have started in the gap.
-    if active_generations.count() > 0:
+    if _routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
@@ -34598,7 +34607,7 @@ async def chat_count_tokens(
             chat_template_kwargs = _template_kwargs,
             # Polled between /apply-template and /tokenize: admission and the work are separate
             # steps, so a run starting in between is caught here and the second round trip is not.
-            should_abort = lambda: active_generations.count() > 0,
+            should_abort = lambda: _routed_generation_count() > 0,
         )
     except CountAborted:
         raise HTTPException(
