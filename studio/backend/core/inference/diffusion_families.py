@@ -1072,6 +1072,27 @@ def _is_local_path(base: str) -> bool:
         return False
 
 
+def _mirror_pipeline_cached(repo_id: str, files: Optional[Sequence[str]]) -> bool:
+    """Whether a mirror is on disk in full, so keeping it under the opt-out fetches nothing.
+
+    A file list answers that. Without one (a failed size estimate) any weight would count, so the
+    cached pipeline index must find every component it names on disk.
+    """
+    if files:
+        return _upstream_is_cached(repo_id, files)
+    try:
+        from core.inference.media_locality import _pipeline_components_present
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        return any(
+            any((rev / n).is_file() for n in ("model_index.json", "modular_model_index.json"))
+            and _pipeline_components_present(rev)
+            for rev in _cached_revisions(Path(active_hf_hub_cache()), repo_id)
+        )
+    except Exception:  # noqa: BLE001 -- an unreadable cache is not proof of a complete one
+        return False
+
+
 def prefer_ungated_mirror(
     base: str,
     hf_token: Optional[str] = None,
@@ -1103,7 +1124,7 @@ def prefer_ungated_mirror(
         if (
             upstream != base.strip()
             and not _is_local_path(base)
-            and not _upstream_is_cached(base, files)
+            and not _mirror_pipeline_cached(base, files)
         ):
             return upstream
         return base

@@ -332,10 +332,39 @@ def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch)
     # A mirror already on disk is kept: no fetch, so nothing to opt out of.
     _all_cached(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
-    assert prefer_ungated_mirror(mirror) == mirror
+    assert prefer_ungated_mirror(mirror, files = ["model_index.json"]) == mirror
     # Without the opt-out a mirror pick is fetched as is.
     _no_cache(monkeypatch)
     assert prefer_ungated_mirror(mirror) == mirror
+
+
+def test_the_opt_out_keeps_a_mirror_without_a_file_list_only_when_whole(monkeypatch, tmp_path):
+    """A failed size estimate passes no files, where any cached weight would read as a hit."""
+    mirror, upstream = "unsloth/FLUX.1-dev", "black-forest-labs/FLUX.1-dev"
+    repo = tmp_path / "models--unsloth--FLUX.1-dev"
+    snap = repo / "snapshots" / "abc"
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("abc")
+    (snap / "vae").mkdir(parents = True)
+    (snap / "vae" / "config.json").write_text("{}")
+    (snap / "vae" / "diffusion_pytorch_model.safetensors").write_text("x")
+    (snap / "transformer").mkdir()
+    (snap / "transformer" / "config.json").write_text("{}")
+    (snap / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "part-1.safetensors", "b": "part-2.safetensors"}}'
+    )
+    (snap / "transformer" / "part-1.safetensors").write_text("x")
+    (snap / "model_index.json").write_text(
+        '{"_class_name": "FluxPipeline", "vae": ["diffusers", "AutoencoderKL"],'
+        ' "transformer": ["diffusers", "FluxTransformer2DModel"]}'
+    )
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    # Torn: one transformer shard is missing, so the opt-out fetches the upstream.
+    assert prefer_ungated_mirror(mirror, files = []) == upstream
+    assert prefer_ungated_mirror(mirror) == upstream
+    (snap / "transformer" / "part-2.safetensors").write_text("x")
+    assert prefer_ungated_mirror(mirror, files = []) == mirror
 
 
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
