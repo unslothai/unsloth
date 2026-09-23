@@ -1484,9 +1484,7 @@ def _checkpointed_layer_forward(original):
         # checkpoint and the caller's use_reentrant choice apply here too.
         checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
         if checkpoint is None:
-            return torch.utils.checkpoint.checkpoint(
-                run, *args, *grad_values, use_reentrant = False
-            )
+            return torch.utils.checkpoint.checkpoint(run, *args, *grad_values, use_reentrant = False)
         return checkpoint(run, *args, *grad_values)
 
     forward._unsloth_manual_checkpoint = True
