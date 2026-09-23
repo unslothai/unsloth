@@ -7493,7 +7493,8 @@ class DiffusionBackend:
                     object.__setattr__(
                         state,
                         "speed_optims",
-                        tuple(o for o in state.speed_optims if o != "compiled") + ("compile_fallback_eager",),
+                        tuple(o for o in state.speed_optims if o != "compiled")
+                        + ("compile_fallback_eager",),
                     )
                     logger.warning("diffusion: regional compile fell back to eager: %s", fallback)
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,

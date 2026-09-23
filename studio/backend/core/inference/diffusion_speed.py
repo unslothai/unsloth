@@ -524,13 +524,19 @@ def is_compile_failure(exc: BaseException) -> bool:
         cur = cur.__cause__ or cur.__context__
     kinds: list = []
     dynamo_exc = getattr(getattr(torch, "_dynamo", None), "exc", None)
-    for name in ("BackendCompilerFailed", "Unsupported", "TorchRuntimeError", "InternalTorchDynamoError"):
+    for name in (
+        "BackendCompilerFailed",
+        "Unsupported",
+        "TorchRuntimeError",
+        "InternalTorchDynamoError",
+    ):
         kind = getattr(dynamo_exc, name, None) if dynamo_exc is not None else None
         if isinstance(kind, type):
             kinds.append(kind)
     try:
-        from torch._inductor.exc import InductorError  # torch 2.7+; older torch wraps it in BackendCompilerFailed
-
+        from torch._inductor.exc import (
+            InductorError,
+        )  # torch 2.7+; older torch wraps it in BackendCompilerFailed
         kinds.append(InductorError)
     except Exception:  # noqa: BLE001
         pass
@@ -548,7 +554,9 @@ class _CompileGuard:
 
     def fail(self, exc: BaseException, owner: Any) -> None:
         if self.error is None:
-            self.error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+            self.error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[
+                :300
+            ]
             for restore in self.restores:
                 try:
                     restore()
