@@ -318,13 +318,21 @@ def test_the_remote_class_lookup_uses_the_loads_code_revision(unsloth_loaded, mo
 
     monkeypatch.setattr(dynamic_module_utils, "get_class_from_dynamic_module", fetch)
     config = LlamaConfig(auto_map = {"AutoModelForCausalLM": "modeling_x.X"})
+    options = {
+        "code_revision": "abc",
+        "cache_dir": "/cache",
+        "proxies": {"https": "http://proxy"},
+        "force_download": True,
+    }
     resolve_remote_code_model_class(
-        AutoModelForCausalLM, config, "some/repo", trust_remote_code = True, code_revision = "abc"
+        AutoModelForCausalLM, config, "some/repo", trust_remote_code = True, **options
     )
-    assert seen.get("code_revision") == "abc"
+    assert {k: seen.get(k) for k in options} == options
     import inspect
 
-    assert 'code_revision = kwargs.get("code_revision", None)' in inspect.getsource(vision)
+    # The load forwards every option that decides which module file it fetches.
+    assert set(options) <= set(vision._REMOTE_CLASS_HUB_OPTIONS)
+    assert "for k in _REMOTE_CLASS_HUB_OPTIONS" in inspect.getsource(vision)
 
 
 def test_unfetchable_remote_class_is_unknown_not_native(unsloth_loaded):

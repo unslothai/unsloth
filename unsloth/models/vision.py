@@ -74,6 +74,7 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_remote_code_model_class,
+    _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
@@ -1467,9 +1468,8 @@ class FastBaseModel:
             token = token,
             revision = _revision,
             local_files_only = local_files_only,
-            # The remote code the load itself fetches: same pin, same cache.
-            code_revision = kwargs.get("code_revision", None),
-            cache_dir = kwargs.get("cache_dir", None),
+            # The remote code the load itself fetches: same pin, cache and Hub options.
+            **{k: kwargs.get(k, None) for k in _REMOTE_CLASS_HUB_OPTIONS},
         )
         model_class = resolve_model_class(auto_model, auto_config)
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.

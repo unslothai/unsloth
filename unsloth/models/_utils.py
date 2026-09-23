@@ -1124,6 +1124,10 @@ def _auto_loader_prefers_explicit_local_code():
         return True
 
 
+# from_pretrained options that also decide which remote module file is fetched.
+_REMOTE_CLASS_HUB_OPTIONS = ("code_revision", "cache_dir", "proxies", "force_download")
+
+
 def resolve_remote_code_model_class(
     auto_model,
     config,
