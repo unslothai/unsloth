@@ -108,7 +108,36 @@ _result=$(PATH="$_curl_dir:$PATH" bash -c "
 assert_eq "one answer across two attempts is enough" "true calls=2" "$_result"
 rm -rf "$_curl_dir"
 
-# 6) Structure at the call site: the not-published arm is gated on the flag and comes before
+# 6) The wget half. curl is checked first, so this arm is only reachable on a host without
+# it: PATH holds the stub wget and nothing else. wget's 8 is its "server error response".
+run_fetch_wget() {
+    _wget_dir=$(mktemp -d)
+    cat > "$_wget_dir/wget" <<STUB
+#!/bin/sh
+exit $1
+STUB
+    chmod +x "$_wget_dir/wget"
+    # bash by absolute path: PATH holds only the stub, so the name would not resolve.
+    PATH="$_wget_dir" "$(command -v bash)" -c "
+        . '$_FUNC_FILE'
+        _VENV_PY='$_STUB_DIR/fakepy'
+        _RADEON_LISTING=''
+        _RADEON_HOST_ANSWERED=false
+        if _radeon_fetch_listing 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.14/'; then
+            _rc=ok
+        else
+            _rc=fail
+        fi
+        echo \"\$_rc answered=\$_RADEON_HOST_ANSWERED\"
+    "
+    rm -rf "$_wget_dir"
+}
+assert_eq "no curl, wget HTTP error -> host recorded as answering" \
+    "fail answered=true" "$(run_fetch_wget 8)"
+assert_eq "no curl, wget network failure -> host not recorded as answering" \
+    "fail answered=false" "$(run_fetch_wget 4)"
+
+# 7) Structure at the call site: the not-published arm is gated on the flag and comes before
 # the unreachable arm, so a reachable host never reads as down.
 _answered_line=$(grep -n 'elif \[ "\$_RADEON_HOST_ANSWERED" = true \]; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _unreachable_line=$(grep -n 'Radeon repo unreachable' "$INSTALL_SH" | head -1 | cut -d: -f1)
