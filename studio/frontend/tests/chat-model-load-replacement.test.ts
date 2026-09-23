@@ -283,7 +283,7 @@ test("cancelling during the preliminary unload reconciles the removed resident m
   );
   assert.match(
     cancel,
-    /if \(!run\.loadAttemptPath && run\.residentModelUnloaded\) \{[\s\S]*?clearCheckpoint\(\);[\s\S]*?await refresh\(\);/,
+    /if \([\s\S]*?!run\.loadAttemptPath && run\.residentModelUnloaded[\s\S]*?clearCheckpoint\(\);[\s\S]*?await refresh\(\);/,
     "an aborted pre-load cancellation must reconcile the removed resident model",
   );
   // The reconciliation has to happen before the slot is handed over.
@@ -422,7 +422,7 @@ test("clearing a cancelled run's checkpoint restores its rollback config first",
   );
   const reconcile = section(
     cancel,
-    "if \(!run\.loadAttemptPath && run\.residentModelUnloaded\)",
+    "if (\n              (!run.loadAttemptPath",
     "activeLoadRunRef.current = releaseOwnedModelLoadRun(",
   );
   const restore = reconcile.indexOf("restoreRollbackConfigForClear(run);");
@@ -762,4 +762,40 @@ test("status adoption consumes the inherited rollback after hydrating the reside
   assert.notEqual(hydrated, -1, "the resident status must be applied before consuming rollback");
   assert.notEqual(cleared, -1, "status adoption must consume the inherited rollback marker");
   assert.ok(hydrated < cleared && cleared < completed);
+});
+
+
+test("successful external replacement discards inherited rollback", () => {
+  const runtime = read(RUNTIME);
+  const discard = section(
+    runtime,
+    "const discardExternalReplacement =",
+    "const restoreConfigForExternalReplacement =",
+  );
+  assert.match(discard, /pendingExternalReplacement = null;\s*pendingReplacementRollback = null;/);
+});
+
+test("forced cancellation reconciles resident status before preserving rollback", () => {
+  const runtime = read(RUNTIME);
+  const cancel = section(runtime, "await run.settledPromise;", "activeLoadRunRef.current = releaseOwnedModelLoadRun(");
+  assert.match(cancel, /run\.forceCancelActive/);
+  assert.match(cancel, /await getInferenceStatus\(\)/);
+  assert.match(cancel, /residentModelMatchesPick\(status/);
+  assert.match(cancel, /status\.loading\?\.length/);
+});
+
+test("approved Hub credentials inherit a settled run rollback before replacement", () => {
+  const runtime = read(RUNTIME);
+  const selection = section(
+    runtime,
+    "const loadIntentId = ++modelSelectionIntentEpoch;",
+    "if (!stopped) {",
+  );
+  const prompt = selection.indexOf("await prepareHfTokenForUse(hfToken)");
+  const adoption = selection.indexOf("activeLoadRunRef.current !== activeRunBeforeCredentials");
+  const inherit = selection.indexOf("previousConfigForReplacement = activeRunBeforeCredentials.rollbackConfig;");
+  const restore = selection.indexOf("restoreRollbackConfigForClear(activeRunBeforeCredentials);", adoption);
+  assert.ok(prompt < adoption && adoption < inherit && inherit < restore);
+  assert.match(selection, /!activeRunBeforeCredentials\.loadAttemptPath/);
+  assert.match(selection, /current\.params\.checkpoint ===\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
 });
