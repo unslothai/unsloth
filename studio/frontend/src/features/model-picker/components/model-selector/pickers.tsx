@@ -3282,6 +3282,12 @@ export function HubModelPicker({
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
     [cachedGguf, cachedModels],
   );
+  // A complete alias loads instead, so the row is downloaded, not partial.
+  const isPartialRow = useCallback(
+    (id: string) =>
+      cachedIdFor(id) === null && partialSet.has(id.toLowerCase()),
+    [cachedIdFor, partialSet],
+  );
 
   // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
   // does. An id partialSet dropped never draws the mark, so a spare entry here costs nothing.
@@ -7210,7 +7216,7 @@ export function HubModelPicker({
                               // publishers would collide.
                               hideOwner={isUnslothOwned(id)}
                               downloaded={cachedIdFor(id) !== null}
-                              partial={partialSet.has(id.toLowerCase())}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
@@ -7321,7 +7327,7 @@ export function HubModelPicker({
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
                             downloaded={cachedIdFor(id) !== null}
-                            partial={partialSet.has(id.toLowerCase())}
+                            partial={isPartialRow(id)}
                             partialResumable={partialResumableSet.has(
                               id.toLowerCase(),
                             )}
@@ -7446,7 +7452,7 @@ export function HubModelPicker({
                               // Typed results are Hub rows like any other, so a repo left
                               // half-downloaded is marked here too. Without it the row reads
                               // as never fetched while the click resumes a download.
-                              partial={partialSet.has(id.toLowerCase())}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
