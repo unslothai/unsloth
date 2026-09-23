@@ -104,10 +104,6 @@ torchvision_compatibility_check()
 disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
-# Below the torchaudio guard, not up with the other version checks: this is the only check
-# here that IMPORTS transformers rather than reading its metadata, and that is the ordering
-# the guard above exists to prevent.
-check_transformers_prequantized_vlm_quant_state()
 del configure_amdgpu_asic_id_table_path
 del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
@@ -120,7 +116,6 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
-del check_transformers_prequantized_vlm_quant_state
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -246,12 +241,21 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
+from .device_type import (
+    arch_lacks_bf16,
+    arch_lacks_buffer_ops,
+    apply_gfx101x_triton_workaround,
+    hip_visible_archs,
+)
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_image_processing_reexports,
+    fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_remote_rope_scaling_none,
+    fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -293,10 +297,30 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
+# composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
+# plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
+fix_transformers_composite_prefix_renaming()
+# After the repair above, never before it, and this is the ONLY call: on exactly the releases
+# the repair covers, warning first tells users to downgrade away from a version that now works,
+# and a second call cannot retract a warning already logged. The check reads the live attribute,
+# so a repair that declined to install still warns. Being this late also keeps it below
+# `disable_torchaudio_if_cuda_mismatched`, which matters because this is the only check here
+# that IMPORTS transformers rather than reading its metadata.
+# A run that loads no pre-quantized multimodal checkpoint never fails either way.
+check_transformers_prequantized_vlm_quant_state()
+del check_transformers_prequantized_vlm_quant_state
 # Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
+fix_transformers_remote_rope_scaling_none()
+fix_transformers_is_torch_fx_available()
+# Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
+# modules are imported and patched when a checkpoint's own modeling file runs,
+# not on every `import unsloth`.
+fix_transformers5_image_processing_reexports()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -348,6 +372,8 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_remote_rope_scaling_none
+del fix_transformers_is_torch_fx_available
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -427,6 +453,10 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
+
+# gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
+if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
+    apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:

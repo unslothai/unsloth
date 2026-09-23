@@ -204,6 +204,8 @@ export const en = {
       noChatsYet: "No chats yet",
       // Shown under an empty project folder in the sidebar.
       noChats: "No chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "All projects pinned",
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
@@ -261,13 +263,6 @@ export const en = {
       sortPinnedChats: "Sort pinned chats",
       moveUp: "Move up",
       moveDown: "Move down",
-    },
-    drag: {
-      reorder: "Reorder",
-      pin: "Pin",
-      unpin: "Unpin",
-      moveTo: "Move to {name}",
-      moveToRecents: "Move to Recents",
     },
     dialog: {
       deleteChat: {
@@ -2006,6 +2001,7 @@ export const en = {
       expires: "Expires {value}",
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
+      copyFailed: "Could not copy",
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:

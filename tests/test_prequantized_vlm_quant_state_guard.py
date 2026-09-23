@@ -311,9 +311,38 @@ def test_a_fixed_nightly_is_not_told_it_is_broken(import_fixes, monkeypatch, cap
 # The warning
 
 
+def _uninstall_runtime_repair(import_fixes, monkeypatch):
+    """Put the live attribute back to an unpatched function.
+
+    The check is silent once the runtime repair is installed, which is the point: the
+    repair covers exactly these releases, so advising a downgrade would contradict it.
+    These tests are about the message shown when the repair is NOT in effect, so they
+    have to say so rather than depend on whether an earlier test installed it.
+
+    A missing transformers is not an error here: nothing can have installed the repair,
+    so there is nothing to undo, and the caller goes on to install a stand-in module.
+    This file runs with pytest alone.
+    """
+    try:
+        from transformers import conversion_mapping
+    except Exception:
+        return
+
+    current = conversion_mapping.get_model_conversion_mapping
+    while getattr(current, import_fixes._COMPOSITE_PREFIX_RENAMING_FLAG, False):
+        unwrapped = getattr(current, "__wrapped__", None)
+        if unwrapped is None:
+            break
+        current = unwrapped
+    monkeypatch.setattr(conversion_mapping, "get_model_conversion_mapping", current)
+
+
 def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    # Uninstall first: `_build_broken` swaps in a stand-in conversion_mapping module that
+    # has no `get_model_conversion_mapping` at all, and the uninstall reads that attribute.
+    _uninstall_runtime_repair(import_fixes, monkeypatch)
     _build_broken(monkeypatch)
     with caplog.at_level(logging.WARNING):
         import_fixes.check_transformers_prequantized_vlm_quant_state()
@@ -427,3 +456,96 @@ def test_the_check_runs_after_the_torchaudio_guard():
     assert order.index("check_transformers_prequantized_vlm_quant_state") > order.index(
         "disable_torchaudio_if_cuda_mismatched"
     ), "the quant_state check imports transformers and must not precede the torchaudio guard"
+
+
+def test_warning_is_silent_once_the_runtime_repair_is_installed(import_fixes, monkeypatch, caplog):
+    """Telling a user to downgrade away from a version we just repaired is worse than silence."""
+    import logging as _logging
+
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    # This one really does need the live module: it installs the repair onto it. Skipping
+    # keeps the rest of the file runnable with pytest alone.
+    transformers = pytest.importorskip("transformers")
+    conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
+    del transformers
+
+    import_fixes.fix_transformers_composite_prefix_renaming()
+    installed = getattr(
+        conversion_mapping.get_model_conversion_mapping,
+        import_fixes._COMPOSITE_PREFIX_RENAMING_FLAG,
+        False,
+    )
+    if not installed:
+        pytest.skip("this transformers is outside the defect window, so the repair declines")
+    with caplog.at_level(_logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" not in caplog.text
+
+
+def test_the_check_is_called_once_and_after_the_repair():
+    """Two calls warned before the repair and could not retract it.
+
+    `_gpu_init` gained a call from this branch's base and a second one after
+    `fix_transformers_composite_prefix_renaming`. On an affected transformers the first
+    emitted the downgrade advice moments before the repair made that advice wrong, and a
+    later silent call cannot unlog it.
+    """
+    import ast
+
+    source = (_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
+    order = [
+        node.value.func.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    ]
+    assert order.count("check_transformers_prequantized_vlm_quant_state") == 1, (
+        "the quant_state check must be called exactly once; a call before the repair warns "
+        "about a version the repair then fixes"
+    )
+    assert order.index("check_transformers_prequantized_vlm_quant_state") > order.index(
+        "fix_transformers_composite_prefix_renaming"
+    ), "the check reads the live attribute, so it has to run after the repair installs"
+
+
+def _install_repaired(monkeypatch, import_fixes, flag_name):
+    """An affected build whose conversion mapping already carries a repair mark."""
+    _build_broken(monkeypatch)
+    import sys as _sys
+
+    conversion_mapping = _sys.modules["transformers.conversion_mapping"]
+
+    def get_model_conversion_mapping(model):
+        return []
+
+    setattr(get_model_conversion_mapping, getattr(import_fixes, flag_name), True)
+    conversion_mapping.get_model_conversion_mapping = get_model_conversion_mapping
+
+
+@pytest.mark.parametrize(
+    "flag_name",
+    ["_COMPOSITE_PREFIX_RENAMING_FLAG", "_ZOO_COMPOSITE_PREFIX_RENAMING_FLAG"],
+)
+def test_either_repair_silences_the_warning(import_fixes, monkeypatch, caplog, flag_name):
+    """When unsloth_zoo installs first, ours yields and only the zoo mark is on the function."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _install_repaired(monkeypatch, import_fixes, flag_name)
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" not in caplog.text
+
+
+def test_an_unmarked_wrapper_does_not_count_as_repaired(import_fixes, monkeypatch, caplog):
+    """Negative control: a wrapper carrying neither mark must still warn."""
+    monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
+    monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
+    _build_broken(monkeypatch)
+    import sys as _sys
+
+    _sys.modules["transformers.conversion_mapping"].get_model_conversion_mapping = lambda model: []
+    with caplog.at_level(logging.WARNING):
+        import_fixes.check_transformers_prequantized_vlm_quant_state()
+    assert "quant_state" in caplog.text

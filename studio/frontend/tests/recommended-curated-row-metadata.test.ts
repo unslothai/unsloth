@@ -298,7 +298,7 @@ test("every list that judges a row against the device asks the same helper", () 
   // calls it a fit and painted with the OOM badge at the same time.
   assert.match(
     declarationText("catalogFit"),
-    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+    /curatedArtifactFit\(id, catalog, budget\)/,
   );
   for (const declaration of ["recommendedRows", "searchRowFits"]) {
     assert.match(
@@ -345,4 +345,38 @@ test("seed rows carry the curated param count", () => {
     declarationText("catalogSeedRows"),
     /totalParams:\s*catalog\s*\?\s*curatedTotalParamsFor\(id, catalog\)/,
   );
+});
+
+
+test("Hub settings configure the cached alias and share the row selection", () => {
+  const compiled = ts.transpileModule(
+    `const render = ${declarationText("renderHubModelRow")};`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const calls: unknown[][] = [];
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown>, ...children: unknown[]) =>
+      ({ type, props, children }),
+  };
+  const render = new Function(
+    "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
+    "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
+    `${compiled}; return render;`,
+  )(
+    React, () => false, (...args: unknown[]) => calls.push(args),
+    (selected: boolean) => selected ? "selected" : "idle", () => true,
+    "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
+    new Map([["mirror/model", "text-generation"]]),
+  );
+  const row = render("mirror/model", "model row");
+  assert.equal(row.props.className, "selected");
+  row.children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[0], ["vendor/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: true,
+    pipelineTag: "text-generation",
+  }]);
+  render("new/model", "model row").children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[1], ["new/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,
+  }]);
 });

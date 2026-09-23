@@ -738,6 +738,118 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_fork_thread_resolves_the_tip_when_no_message_is_given(same_timestamp):
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    for message_id, parent_id, role, created_at in (
+        ("root", None, "user", 1),
+        ("z-user", "root", "user", 2),
+        ("a-reply", "z-user", "assistant", 2 if same_timestamp else 3),
+    ):
+        message = _message(message_id, "src").model_dump()
+        message.update({"createdAt": created_at, "parentId": parent_id, "role": role})
+        studio_db.upsert_chat_message(message)
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 4),
+        current_subject = "test-user",
+    )
+    assert response.thread.forkedFromMessageId == "a-reply"
+    assert len(response.messages) == 3
+    assert any(message.role == "assistant" for message in response.messages)
+
+
+def test_fork_thread_404_when_the_thread_has_no_messages():
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+            current_subject = "test-user",
+        )
+    assert exc.value.status_code == 404
+    assert studio_db.get_chat_thread("new") is None
+
+
+def test_fork_thread_refuses_before_it_resolves_the_tip(monkeypatch):
+    """The generation check runs first, or the tip would be read while it is still moving."""
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+
+    def _never(_t):
+        raise AssertionError("the tip was read before the generation check")
+
+    monkeypatch.setattr(chat_history, "list_chat_messages", _never)
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "src"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+                current_subject = "test-user",
+            )
+    assert exc.value.status_code == 409
+
+
+def test_fork_thread_409_while_the_chat_is_generating(monkeypatch):
+    """A fork taken mid-generation ends at a prompt with no answer, or a half-written reply.
+
+    The client checks too, but another tab can start a generation between its snapshot and
+    this request, so the refusal has to live inside the request that forks.
+    """
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "src"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "m1",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    assert exc.value.status_code == 409
+    assert "still generating" in str(exc.value.detail)
+
+
+def test_fork_thread_allows_a_fork_of_another_generating_chat(monkeypatch):
+    """Only the chat being forked is refused; a different one generating is no reason to."""
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "other"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "missing",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    # Past the generation gate, refused later for the missing branch message.
+    assert exc.value.status_code == 404
+
+
 def test_fork_thread_happy_path(monkeypatch):
     source = {
         "id": "src",
@@ -755,7 +867,7 @@ def test_fork_thread_happy_path(monkeypatch):
     forked = {
         **source,
         "id": "new",
-        "title": "fork · Original",
+        "title": "Original (1)",
         "createdAt": 2,
         "forkedFromThreadId": "src",
         "forkedFromMessageId": "m1",
@@ -797,7 +909,7 @@ def test_fork_thread_happy_path(monkeypatch):
         current_subject = "test-user",
     )
     assert response.thread.id == "new"
-    assert response.thread.title == "fork · Original"
+    assert response.thread.title == "Original (1)"
     assert response.thread.forkedFromThreadId == "src"
     assert response.thread.forkedFromMessageId == "m1"
     assert len(response.messages) == 1
@@ -836,7 +948,7 @@ def test_fork_thread_warns_when_parent_had_container(monkeypatch):
         lambda **_: {
             **source,
             "id": "new",
-            "title": "fork · T",
+            "title": "T (1)",
             "forkedFromThreadId": "src",
             "forkedFromMessageId": "m1",
             "openaiCodeExecContainerId": None,
@@ -1394,3 +1506,92 @@ def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
 
     assert response.status_code == 400
     assert "NaN" not in response.text
+
+
+def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeypatch):
+    """The whole path, real storage: the name loses the prefix and the divider gets its anchor."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Research notes", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": f"m{i}",
+                "threadId": "src",
+                "parentId": None if i == 1 else f"m{i - 1}",
+                "role": "user",
+                "content": [{"type": "text", "text": f"m{i}"}],
+                "createdAt": i,
+            }
+            for i in (1, 2)
+        ],
+    )
+
+    titles = []
+    for i in range(2):
+        response = chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = f"fork-{i}", createdAt = 10 + i),
+            current_subject = "test-user",
+        )
+        titles.append(response.thread.title)
+
+    assert titles == ["Research notes (1)", "Research notes (2)"]
+    assert not any(t.startswith("fork") for t in titles)
+
+    forked = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-x", createdAt = 20),
+        current_subject = "test-user",
+    )
+    assert forked.thread.title == "Research notes (3)"
+    # The anchor is this fork's own last inherited message, so the divider lands under it.
+    assert forked.thread.forkBoundaryMessageId == forked.messages[-1].id
+    assert forked.thread.forkBoundaryMessageId not in {"m1", "m2"}
+
+
+def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, monkeypatch):
+    """A rename landing between the route's read and the write lock must not name the fork."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Renamed", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": "m1",
+                "threadId": "src",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "createdAt": 1,
+            }
+        ],
+    )
+    # What the route saw before the lock: the name as it was, now stale.
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_thread",
+        lambda _id: {"id": "src", "title": "Stale name", "modelType": "base", "createdAt": 1},
+    )
+
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 2),
+        current_subject = "test-user",
+    )
+    assert response.thread.title == "Renamed (1)"
+    assert "Stale" not in response.thread.title

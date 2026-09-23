@@ -461,10 +461,10 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
     assert "getInventoryVersion() !== version" in src
 
 
-def test_diffusion_capability_labeled_image_generation():
-    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
-    text-to-image tags); labeling it "Image to text" showed generators when
-    users asked for captioning models."""
+def test_diffusion_capability_labeled_image_video_gen():
+    """The diffusion capability detects image and video GENERATORS (FLUX, SDXL,
+    LTX, Wan, text-to-image tags); labeling it "Image to text" showed generators
+    when users asked for captioning models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -472,7 +472,7 @@ def test_diffusion_capability_labeled_image_generation():
     ):
         src = _read(rel)
         assert "Image to text" not in src, rel
-        assert "Image generation" in src, rel
+        assert "Image/video gen" in src, rel
 
 
 def test_active_model_config_round_trips_gpu_fields():
@@ -1521,7 +1521,7 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
 
-        assert "handleLoadRef.current(repoId, opts, advanced)" in body, rel
+        assert "handleLoadRef.current(repoId, opts, advanced, pickToastId)" in body, rel
 
 
 def test_every_diffusion_planner_filters_the_cache_before_staging():
@@ -1681,7 +1681,8 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
             'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
-            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return (\w+);",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return (\w+);",
             text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
@@ -1691,7 +1692,8 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         # The fallback load after a rejected plan is guarded too.
         tail = text[text.rindex("} catch") :]
         assert re.search(
-            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return true;.*?return handleLoadRef",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -1883,7 +1885,7 @@ def test_staged_downloads_use_one_actionable_download_surface():
     duplicates the same state and gives users another X that only dismisses copy."""
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     stage_fn = re.search(
-        r"const stage = useCallback\(\(entries: StagedDownloadEntry\[\]\) => \{.*?\n  \}, \[\]\);",
+        r"const stage = useCallback\(\(entries: StagedDownloadEntry\[\]\)(?:: number)? => \{.*?\n  \}, \[\]\);",
         staged,
         re.S,
     )

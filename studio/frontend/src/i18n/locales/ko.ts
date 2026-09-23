@@ -166,6 +166,8 @@ export const ko = {
       noChatsYet: "아직 채팅이 없습니다",
       // Shown under an empty project folder in the sidebar.
       noChats: "채팅 없음",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "모든 프로젝트가 고정됨",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -221,13 +223,6 @@ export const ko = {
       sortPinnedChats: "고정된 채팅 정렬",
       moveUp: "위로 이동",
       moveDown: "아래로 이동",
-    },
-    drag: {
-      reorder: "순서 변경",
-      pin: "고정",
-      unpin: "고정 해제",
-      moveTo: "{name}(으)로 이동",
-      moveToRecents: "최근으로 이동",
     },
     dialog: {
       deleteChat: {
@@ -1973,6 +1968,7 @@ export const ko = {
       expires: "만료: {value}",
       actionsFor: "{name} 작업",
       copyPrefix: "접두사 복사",
+      copyFailed: "복사할 수 없습니다",
       revokeToken: "토큰 폐기",
       revokeTitle: '액세스 토큰 "{name}"을 폐기하시겠습니까?',
       revokeDescription:

@@ -78,15 +78,20 @@ def _get_base_load_in_4bit(model_config) -> bool:
         with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
 
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora":
             return False
-        elif training_method == "qlora":
+        if training_method == "qlora":
             return True
-        elif not training_method:
-            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
-                return False
-            return True
+        if (
+            not training_method
+            and model_config.base_model
+            and "-bnb-4bit" not in model_config.base_model.lower()
+        ):
+            return False
         return True
     except Exception:
         return True
