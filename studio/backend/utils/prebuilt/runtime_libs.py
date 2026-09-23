@@ -16,6 +16,7 @@ import glob
 import os
 import platform
 import re
+import shutil
 import site
 import subprocess
 import sys
