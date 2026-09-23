@@ -251,6 +251,51 @@ def test_int_mm_matches_the_dense_layer():
     assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
 
 
+def test_rotation_only_applies_to_w8a8_and_divisible_inputs():
+    cls = nq.native_linear_class()
+    lin = torch.nn.Linear(512, 64).to(torch.bfloat16)
+    assert cls(lin, "int8", act_int8 = True, rot_group = 256).rot_group == 256
+    assert cls(lin, "int8", rot_group = 256).rot_group == 0
+    assert cls(lin, "fp8", act_int8 = True, rot_group = 256).rot_group == 0
+    odd = torch.nn.Linear(320, 64).to(torch.bfloat16)
+    assert cls(odd, "int8", act_int8 = True, rot_group = 256).rot_group == 0
+
+
+def test_rotated_layer_keeps_the_model_basis():
+    """The stored weight is rotated, but ``.weight`` and the fallback forward still mean the dense layer."""
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(512, 128).to(torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True, rot_group = 256)
+    assert "rot_h" not in layer.state_dict()
+    w = lin.weight.float()
+    assert ((layer.weight.float() - w).norm() / w.norm()).item() < 0.01
+    x = torch.randn(4, 512, dtype = torch.bfloat16)
+    ref = lin(x).float()
+    got = layer(x).float()
+    assert ((got - ref).norm() / ref.norm()).item() < 0.02
+
+
+@pytest.mark.skipif(not _int_mm_on_cpu(), reason = "torch._int_mm has no CPU kernel in this build")
+def test_rotation_cuts_the_int8_activation_error_on_outlier_channels():
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(512, 256).to(torch.bfloat16)
+    cls = nq.native_linear_class()
+    plain = cls(lin, "int8", act_int8 = True)
+    rot = cls(lin, "int8", act_int8 = True, rot_group = 256)
+    x = torch.randn(64, 512, dtype = torch.bfloat16)
+    x[:, :5] *= 30.0
+    ref = lin(x).float()
+    err = lambda y: ((y.float() - ref).norm() / ref.norm()).item()  # noqa: E731
+    assert err(rot._forward_int_mm(rot._rotate(x))) < 0.5 * err(plain._forward_int_mm(x))
+
+
+def test_rotation_env_switch(monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ROT_ENV, raising = False)
+    assert nq.int8_rotation_group() == 256
+    monkeypatch.setenv(nq.NATIVE_INT8_ROT_ENV, "0")
+    assert nq.int8_rotation_group() == 0
+
+
 def test_apply_native_weight_quant_reads_the_env(monkeypatch):
     for value, scheme, expect in (("1", "int8", True), ("", "int8", False), ("1", "fp8", False)):
         monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, value)
