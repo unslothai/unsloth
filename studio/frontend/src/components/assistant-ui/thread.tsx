@@ -195,6 +195,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
 import {
+  forkBoundaryAnchor,
+  setForkBoundaryAnchor,
+  useForkBoundaryStore,
+} from "@/features/chat/stores/fork-boundary-store";
+import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
 } from "@/features/chat/utils/prompt-queue-events";
@@ -259,6 +264,7 @@ import {
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
+  readBackendChatThread,
   getStoredChatThread,
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
@@ -1759,16 +1765,125 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
     case "edit":
-      return <EditComposer />;
+      body = <EditComposer />;
+      break;
     case "user":
-      return <UserMessage />;
+      body = <UserMessage />;
+      break;
     case "assistant":
-      return <AssistantMessage />;
+      body = <AssistantMessage />;
+      break;
     default:
       return null;
   }
+  return (
+    <>
+      {body}
+      <ForkContinuationRule />
+    </>
+  );
+};
+
+/**
+ * Resolves the divider against the branch on screen, once for the thread.
+ *
+ * Which inherited message closes the history depends on the branch: editing an inherited turn
+ * starts a sibling and leaves the fork's anchor off screen with earlier inherited messages
+ * still above it. Selecting the message array in each ROW is what the delete render budget
+ * forbids, so it is selected here, in one component, and the rows read the id it publishes.
+ * The walk stops at the first message the fork did not inherit, so it costs the inherited
+ * count rather than the thread length.
+ */
+const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
+  const inherited = useForkBoundaryStore((s) =>
+    threadId === null
+      ? undefined
+      : s.boundaryByThreadId[threadId]?.messageIds,
+  );
+  const anchor = useAuiState(({ thread }) =>
+    forkBoundaryAnchor(thread.messages, inherited),
+  );
+  useEffect(() => {
+    setForkBoundaryAnchor(threadId, anchor);
+  }, [threadId, anchor]);
+};
+
+// Closes the history a fork inherited. Rendered by the message it follows, since the row slot
+// is propless and the boundary arrives through the store.
+const ForkContinuationRule: FC = () => {
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const messageId = useAuiState(({ message }) => message.id);
+  // Two plain values rather than the record: both stay identical between renders, so a row
+  // subscribed to them does not re-render when an unrelated thread publishes.
+  const anchor = useForkBoundaryStore((s) =>
+    threadId === null ? undefined : s.anchorByThreadId[threadId],
+  );
+  const sourceThreadId = useForkBoundaryStore((s) =>
+    threadId === null
+      ? null
+      : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
+  );
+  const navigate = useNavigate();
+  if (anchor === undefined || anchor !== messageId) return null;
+  const label = (
+    <>
+      <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
+      Continued from chat
+    </>
+  );
+  const labelClass =
+    "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap leading-none";
+  return (
+    <div
+      data-slot="fork-continuation-rule"
+      // Same column as the messages it sits between: it is their sibling, not their child,
+      // so it takes the width constraint every message root applies to itself.
+      className="mx-auto mt-6 mb-2 flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm"
+    >
+      <span aria-hidden={true} className="h-px flex-1 bg-border" />
+      {sourceThreadId ? (
+        <button
+          type="button"
+          data-slot="fork-continuation-link"
+          title="Open the chat this was forked from"
+          // Checked on the way out, not on render: the tombstone set is this tab's own, so a
+          // source deleted on another device still looks openable until something asks for it.
+          // Only a definite "no" stops the trip; an unreachable backend is not a deletion.
+          onClick={async () => {
+            const source = await readBackendChatThread(sourceThreadId);
+            if (source === null) {
+              toast.info("That chat has been deleted.");
+              return;
+            }
+            navigate({
+              to: "/chat",
+              // A paired source is one half of a comparison, and the fork button is offered
+              // inside those panes. Opening it as a single chat would show one model's side
+              // rather than the view it was forked from. Same shape the sidebar opens a pair
+              // with. An unreachable backend has no record to ask, so it falls through.
+              search: source?.pairId
+                ? { compare: source.pairId }
+                : { thread: sourceThreadId },
+              replace: false,
+            });
+          }}
+          className={cn(
+            labelClass,
+            "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+          )}
+        >
+          {label}
+        </button>
+      ) : (
+        // The source is gone, so the text stays but leads nowhere.
+        <span className={labelClass}>{label}</span>
+      )}
+      <span aria-hidden={true} className="h-px flex-1 bg-border" />
+    </div>
+  );
 };
 
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
@@ -1799,6 +1914,7 @@ export const Thread: FC<{
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
   useThreadForkCounts();
+  useTrackForkBoundaryAnchor(threadId);
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
