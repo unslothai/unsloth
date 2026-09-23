@@ -45,6 +45,8 @@ def test_the_sources_list_names_the_running_session(client):
     assert body["default_source_id"]
     assert any(s["label"] == path.name and s["is_current"] for s in body["sources"])
     assert any(s["realpath"] == str(path.resolve()) for s in body["sources"])
+    # the logs directory itself, not the logs/server folder the log sits in
+    assert body["log_root"] == str(path.resolve().parent.parent)
 
 
 def test_the_first_read_returns_the_tail_and_a_cursor(client):
