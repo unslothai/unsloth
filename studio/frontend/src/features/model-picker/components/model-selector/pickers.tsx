@@ -3243,6 +3243,18 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
+  // The id on disk for a row: itself, or the vendor repo its unsloth mirror copies.
+  const cachedIdFor = useCallback(
+    (id: string): string | null => {
+      if (downloadedSet.has(id.toLowerCase())) return id;
+      const upstream =
+        catalog && artifactForRepoId(id, catalog)?.artifact.upstreamRepoId;
+      return upstream && downloadedSet.has(upstream.toLowerCase())
+        ? upstream
+        : null;
+    },
+    [catalog, downloadedSet],
+  );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -3516,7 +3528,7 @@ export function HubModelPicker({
     const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
-      downloadedSet.has(r.id.toLowerCase()) ||
+      cachedIdFor(r.id) !== null ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget)?.fits ??
@@ -3544,6 +3556,12 @@ export function HubModelPicker({
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
     // into the wider Hub. Same keep/fits gates.
     const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    // A vendor repo whose unsloth mirror is listed above is the same files.
+    for (const r of unslothRows) {
+      const upstream =
+        catalog && artifactForRepoId(r.id, catalog)?.artifact.upstreamRepoId;
+      if (upstream) above.add(upstream.toLowerCase());
+    }
     const communityRows = communityBrowse.results
       .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
       .filter((r) => isLoadableCommunityRepo(r.id))
@@ -3556,7 +3574,7 @@ export function HubModelPicker({
     diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
-    downloadedSet,
+    cachedIdFor,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
@@ -5235,16 +5253,17 @@ export function HubModelPicker({
       if (isKnownGgufRepo(id)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        // Cached repos load now; uncached ones download via the Hub manager.
-        onSelect(id, {
+        // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
+        const cached = cachedIdFor(id);
+        onSelect(cached ?? id, {
           source: "hub",
           isLora: false,
-          isDownloaded: downloadedSet.has(id.toLowerCase()),
+          isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
+    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -7169,7 +7188,7 @@ export function HubModelPicker({
                               // A community row without its owner reads as an unsloth upload, and two
                               // publishers would collide.
                               hideOwner={isUnslothOwned(id)}
-                              downloaded={downloadedSet.has(id.toLowerCase())}
+                              downloaded={cachedIdFor(id) !== null}
                               partial={partialSet.has(id.toLowerCase())}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
@@ -7279,7 +7298,7 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
-                            downloaded={downloadedSet.has(id.toLowerCase())}
+                            downloaded={cachedIdFor(id) !== null}
                             partial={partialSet.has(id.toLowerCase())}
                             partialResumable={partialResumableSet.has(
                               id.toLowerCase(),

@@ -517,9 +517,14 @@ test("a partial never reaches the complete-download lookup", () => {
     /\[\.\.\.cachedGguf, \.\.\.cachedModels\]\n\s*\.filter\(\(c\) => !c\.partial\)/,
     "both cached lists are filtered before the ids land in the set",
   );
-  // The search pick still reads that set, which is what makes the guard above load bearing.
-  assert.ok(
-    PICKERS.includes("isDownloaded: downloadedSet.has(id.toLowerCase()),"),
+  // The search pick still reads that set (through cachedIdFor), which is what makes the guard
+  // above load bearing.
+  assert.ok(PICKERS.includes("isDownloaded: cached !== null,"));
+  const lookup = PICKERS.slice(PICKERS.indexOf("const cachedIdFor = useCallback("));
+  assert.match(
+    lookup.slice(0, lookup.indexOf("[catalog, downloadedSet]")),
+    /downloadedSet\.has\(id\.toLowerCase\(\)\)[\s\S]*downloadedSet\.has\(upstream\.toLowerCase\(\)\)/,
+    "both ids are checked against the complete-download set",
   );
 });
 
