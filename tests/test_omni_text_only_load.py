@@ -449,11 +449,20 @@ def test_hub_adapter_keys_come_from_adapter_model_safetensors(monkeypatch):
 
     def fake(self, repo_id, filename, **kwargs):
         asked.update(repo_id = repo_id, filename = filename, **kwargs)
-        return type("Metadata", (), {"tensors": {"base_model.model.model.layers.0.q_proj.lora_A.weight": None}})()
+        return type(
+            "Metadata",
+            (),
+            {"tensors": {"base_model.model.model.layers.0.q_proj.lora_A.weight": None}},
+        )()
 
     monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", fake)
     keys = _adapter_weight_keys("someone/omni-adapter", token = "t", revision = "r")
-    assert asked == {"repo_id": "someone/omni-adapter", "filename": "adapter_model.safetensors", "revision": "r", "token": "t"}
+    assert asked == {
+        "repo_id": "someone/omni-adapter",
+        "filename": "adapter_model.safetensors",
+        "revision": "r",
+        "token": "t",
+    }
     assert keys == ["base_model.model.model.layers.0.q_proj.lora_A.weight"]
     assert _adapter_weight_keys("someone/omni-adapter", local_files_only = True) is None
 

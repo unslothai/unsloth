@@ -267,7 +267,12 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_weight_keys(adapter_name, token = None, revision = None, local_files_only = False):
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
     """Tensor names of a saved adapter without loading its weights, or None."""
     try:
         local = os.path.expanduser(adapter_name)
@@ -275,7 +280,6 @@ def _adapter_weight_keys(adapter_name, token = None, revision = None, local_file
             path = os.path.join(local, "adapter_model.safetensors")
             if os.path.exists(path):
                 from safetensors import safe_open
-
                 with safe_open(path, framework = "pt") as handle:
                     return list(handle.keys())
             path = os.path.join(local, "adapter_model.bin")
