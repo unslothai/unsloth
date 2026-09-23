@@ -928,14 +928,16 @@ export function applyCustomizationToDocument(
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(
-      "--ui-font-scale",
+      "--ui-font-size-scale",
       String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
     );
     el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
-    setVar("--ui-font-scale", null);
+    setVar("--ui-font-size-scale", null);
     el.removeAttribute("data-ui-font-size");
   }
+  // index.css derives --ui-font-scale; clear the value older builds wrote.
+  setVar("--ui-font-scale", null);
   // Older builds scaled the root font size directly; clear any stale inline
   // value so layout never scales with the preference again.
   style.removeProperty("font-size");

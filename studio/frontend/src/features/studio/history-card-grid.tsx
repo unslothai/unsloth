@@ -471,7 +471,7 @@ export function HistoryCardGrid({
             <div
               key={run.id}
               className={cn(
-                "elevated-card group relative h-[11.5rem] cursor-pointer bg-card transition-colors hover:bg-accent/30",
+                "elevated-card group relative h-[calc(11.5rem*var(--ui-space-scale,1))] cursor-pointer bg-card transition-colors hover:bg-accent/30",
                 isRunning && "!border-blue-400/50 dark:!border-blue-500/30",
               )}
             >

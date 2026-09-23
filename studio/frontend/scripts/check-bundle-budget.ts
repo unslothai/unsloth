@@ -461,7 +461,9 @@ function main(): number {
       "Something is now imported statically that the first screen does not need. " +
         "Either load it on use (React.lazy, lazyRouteComponent, or a dynamic import " +
         "at the point of use), or raise BUDGET in this file in the same PR, with the " +
-        "measurement that justifies it.",
+        "measurement that justifies it. If the chunk count above went up, check the " +
+        "opposite first: a dynamic import of a module the startup set already carries " +
+        "loads nothing later, and splits that module's graph into extra startup chunks.",
     );
     return 1;
   }
