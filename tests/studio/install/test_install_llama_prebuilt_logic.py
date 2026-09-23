@@ -2466,7 +2466,9 @@ def write_macos_install_shape(
     (install_dir / "gguf-py" / "gguf").mkdir(parents = True, exist_ok = True)
 
 
-def test_existing_install_matches_plan_with_fingerprint_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_existing_install_matches_plan_with_fingerprint_linux(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_run_validation_ldd_probe",
@@ -3699,7 +3701,9 @@ def add_symlink_to_tar(archive: tarfile.TarFile, name: str, target: str) -> None
     archive.addfile(info)
 
 
-def test_existing_install_matches_choice_fails_when_install_tree_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_existing_install_matches_choice_fails_when_install_tree_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """confirm_install_tree guard rejects installs missing critical files."""
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
@@ -4083,6 +4087,7 @@ def _run_validate_prebuilt_choice(
     monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
     monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
     monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
+
     def fake_build_plan(
         command: list[str],
         *,
@@ -8449,9 +8454,7 @@ def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
     assert "running validation directly" in (plan.reason or "").lower()
 
 
-def test_linux_missing_libraries_uses_system_loader_without_sandbox_adapter(
-    monkeypatch, tmp_path
-):
+def test_linux_missing_libraries_uses_system_loader_without_sandbox_adapter(monkeypatch, tmp_path):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
     rtld = "/lib64/ld-linux-x86-64.so.2"
@@ -8508,7 +8511,13 @@ def test_run_validation_ldd_probe_treats_non_dynamic_file_as_clean_without_sandb
     )
     calls: list[list[str]] = []
 
-    def fake_run_capture(command, *, timeout, env = None, check = False):
+    def fake_run_capture(
+        command,
+        *,
+        timeout,
+        env = None,
+        check = False,
+    ):
         calls.append(list(command))
         return subprocess.CompletedProcess(command, 1, stdout = "", stderr = "")
 
