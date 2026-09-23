@@ -98,6 +98,8 @@ export interface LocalInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  // Same as CachedInventoryRow.companionPrefetch, from the local listing.
+  companionPrefetch?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];

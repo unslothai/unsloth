@@ -580,7 +580,7 @@ export function useHubInventory(
       if (!row.companionPrefetch) set.add(row.repoId.toLowerCase());
     }
     for (const row of effectiveLocalRows) {
-      if (row.repoId) set.add(row.repoId.toLowerCase());
+      if (row.repoId && !row.companionPrefetch) set.add(row.repoId.toLowerCase());
     }
     return set;
   }, [cachedRows, effectiveLocalRows]);
@@ -589,7 +589,7 @@ export function useHubInventory(
     return partialSetFromRows(
       [
         ...cachedRows.filter((row) => !row.companionPrefetch),
-        ...effectiveLocalRows,
+        ...effectiveLocalRows.filter((row) => !row.companionPrefetch),
       ],
       (row) => row.repoId,
     );

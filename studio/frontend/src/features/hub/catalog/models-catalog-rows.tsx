@@ -594,7 +594,7 @@ export const InventoryRow = memo(function InventoryRow({
         : null;
   const canDelete = cacheDeletableRepoId !== null;
   const partialRepoId =
-    row.partial && !(row.kind === "cache" && row.companionPrefetch)
+    row.partial && !row.companionPrefetch
       ? row.kind === "cache"
         ? row.repoId
         : (row.repoId ?? row.loadId)

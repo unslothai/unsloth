@@ -215,6 +215,15 @@ class LocalModelInfo(BaseModel):
         False,
         description = "Whether THIS partial can be continued byte for byte.",
     )
+    # Same flag as CachedModelRepo.companion_prefetch: the Hub merges both listings, so a row from
+    # either one must say it, or the other keeps offering "Continue".
+    companion_prefetch: bool = Field(
+        False,
+        description = (
+            "Pipeline repo holding only what a GGUF load borrowed (VAE, text encoder): partial "
+            "for loading, not an unfinished download."
+        ),
+    )
 
 
 class LocalModelListResponse(BaseModel):

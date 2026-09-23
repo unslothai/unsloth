@@ -84,7 +84,9 @@ export function useSelectedModelView({
           baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
           isDownloaded: !selectedLocalRow.partial,
           runtimeCanChat: selectedLocalRow.capabilities.canChat,
-          isPartial: selectedLocalRow.partial ?? false,
+          isPartial:
+            Boolean(selectedLocalRow.partial) &&
+            !selectedLocalRow.companionPrefetch,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: selectedDiscoverRow.capabilities,
@@ -112,7 +114,8 @@ export function useSelectedModelView({
         ? Boolean(selectedCachedRow.partial) &&
           !selectedCachedRow.companionPrefetch
         : selectedLocalRow?.source === "hf_cache"
-          ? Boolean(selectedLocalRow.partial)
+          ? Boolean(selectedLocalRow.partial) &&
+            !selectedLocalRow.companionPrefetch
           : selectedDiscoverRow.isPartialOnDevice;
       const isResolvedOnDevice = selectedCachedRow
         ? !selectedCachedRow.partial
@@ -270,6 +273,7 @@ export function useSelectedModelView({
       const isPartialHubCache =
         selectedLocalRow.source === "hf_cache" &&
         !!selectedLocalRow.partial &&
+        !selectedLocalRow.companionPrefetch &&
         !!selectedLocalRow.repoId;
       const mergedTags = selectedHfResult?.tags ?? selectedLocalRow.tags;
       const mergedPipelineTag =

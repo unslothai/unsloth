@@ -300,6 +300,7 @@ export function buildLocalInventoryRows(
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
         partialResumable: model.partial_resumable === true,
+        companionPrefetch: model.companion_prefetch === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,

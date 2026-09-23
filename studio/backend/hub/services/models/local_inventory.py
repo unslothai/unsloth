@@ -438,6 +438,21 @@ def _scan_hf_cache(
             snapshot_partial_transport = snapshot_partial_transport,
             snapshot_partial_resumable = snapshot_partial_resumable,
         )
+        # The cached listing's signal, on the snapshot it loads: every file arrived, but the pipeline has no
+        # denoiser, which is what a GGUF load borrows. Partial, as the cached listing marks it, so no picker
+        # loads it (its VAE / encoder shards otherwise classify as a complete safetensors model and the Hub
+        # offers Run); flagged, so the Hub does not offer "Continue" either.
+        if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
+            hf_cache_scan.latest_snapshot_dir(repo_dir)
+        ):
+            rows = [
+                row
+                if row.model_format == "gguf"
+                else row.model_copy(update = {"companion_prefetch": True})
+                for row in _apply_format_aware_partial(
+                    rows, snapshot_partial = True, gguf_partial = gguf_partial
+                )
+            ]
         found.extend(rows)
     return found
 

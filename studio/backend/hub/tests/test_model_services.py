@@ -3988,6 +3988,63 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
     assert rows[0].model_format == "unknown"
 
 
+@pytest.mark.parametrize(
+    "with_denoiser, download_partial, expected",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+)
+def test_hf_cache_scan_flags_a_companion_only_pipeline(
+    monkeypatch, tmp_path, with_denoiser, download_partial, expected
+):
+    """The local listing must carry the same companion_prefetch flag as the cached one: the Hub merges
+    both, and a local row without it kept showing Partial and a Continue sized for the whole repo."""
+    cache_dir = tmp_path / "hub"
+    repo_dir = cache_dir / "models--Org--Pipeline"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for rel in ("vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"):
+        (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / rel).write_bytes(b"weights")
+    (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
+    (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
+    if with_denoiser:
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage"],
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs" / "blob").write_bytes(b"content")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: download_partial,
+    )
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *_args, **_kwargs: False,
+    )
+
+    rows = [
+        row for row in local_inventory._scan_hf_cache(cache_dir) if row.model_id == "Org/Pipeline"
+    ]
+
+    assert rows
+    assert all(row.companion_prefetch is expected for row in rows)
+    if expected:
+        # Still partial, so no picker loads a pipeline without its denoiser.
+        assert all(row.partial for row in rows)
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
