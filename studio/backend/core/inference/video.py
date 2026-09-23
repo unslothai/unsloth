@@ -4414,7 +4414,9 @@ class VideoBackend:
             _video_auto_denoiser_planned,
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-            ensure_flashinfer_for_nvfp4(device, logger = logger, local_files_only = local_files_only, owner = self)
+            ensure_flashinfer_for_nvfp4(
+                device, logger = logger, local_files_only = local_files_only, owner = self
+            )
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:

@@ -496,8 +496,11 @@ def test_status_reason_is_bound_to_the_backend_that_loaded():
     inst.reset_install_state()
     inst._REASONS[image] = "offline: flashinfer is not downloaded"
     inst._REASONS[video] = None
-    assert inst.nvfp4_backend_fields("torchao", owner = image)["transformer_quant_backend_reason"] == (
-        "offline: flashinfer is not downloaded"
+    assert inst.nvfp4_backend_fields("torchao", owner = image)[
+        "transformer_quant_backend_reason"
+    ] == ("offline: flashinfer is not downloaded")
+    assert (
+        inst.nvfp4_backend_fields("flashinfer", owner = image)["transformer_quant_backend_reason"]
+        is None
     )
-    assert inst.nvfp4_backend_fields("flashinfer", owner = image)["transformer_quant_backend_reason"] is None
     inst.reset_install_state()

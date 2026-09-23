@@ -514,7 +514,9 @@ def ensure_flashinfer_for_nvfp4(
 ) -> tuple[bool, str]:
     """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports;
     ``local_files_only`` loads download nothing, so they never install."""
-    ok, reason = _ensure(device, logger = logger, status_cb = status_cb, run = run, local_files_only = local_files_only)
+    ok, reason = _ensure(
+        device, logger = logger, status_cb = status_cb, run = run, local_files_only = local_files_only
+    )
     if owner is not None:
         try:
             _REASONS[owner] = None if ok else reason
@@ -556,7 +558,9 @@ def _ensure(
                 status_cb,
             )
         if local_files_only:
-            return _finish(False, "local-only load: flashinfer is not downloaded", logger, status_cb)
+            return _finish(
+                False, "local-only load: flashinfer is not downloaded", logger, status_cb
+            )
         if install_env() == "0":
             return _finish(
                 False,
