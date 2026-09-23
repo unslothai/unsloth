@@ -1062,6 +1062,8 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
 
     assert status["dtype"] == "float32"  # compute dtype is a separate concern
     assert status["gguf_variant"] == "Q8_0"
+    # The frontend's model recall matches on the exact filename, not the variant token.
+    assert status["gguf_filename"] == filename
     assert backend.unload()["gguf_variant"] is None
 
 
