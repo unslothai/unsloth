@@ -201,6 +201,32 @@ def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatc
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits")
+def test_unreadable_loader_default_files_do_not_block_the_vendored_rescue(tmp_path, monkeypatch):
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    default_dir = tmp_path / "loader-default"
+    default_dir.mkdir()
+    system_libraries = [
+        default_dir / "libcudart.so.13",
+        default_dir / "libcublas.so.13",
+    ]
+    for library in system_libraries:
+        library.write_bytes(b"inaccessible regular file")
+        library.chmod(0)
+
+    # Exercise actual filesystem permissions rather than mocking access checks.
+    assert all(library.is_file() and not os.access(library, os.R_OK) for library in system_libraries)
+    with pytest.raises(PermissionError):
+        system_libraries[0].open("rb")
+
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: ())
+    monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", (str(default_dir),))
+
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
+        str(runtime_dir.resolve())
+    ]
+
+
 def test_ignores_foreign_abi_cache_entries(tmp_path, monkeypatch):
     import platform
 

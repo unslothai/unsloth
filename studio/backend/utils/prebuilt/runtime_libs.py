@@ -145,6 +145,7 @@ def _loader_already_provides_runtime(major: str) -> bool:
             continue
         if not any(
             os.path.isfile(os.path.join(directory, soname))
+            and os.access(os.path.join(directory, soname), os.R_OK)
             for directory in _LOADER_DEFAULT_LIB_DIRS
         ):
             return False
