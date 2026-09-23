@@ -441,7 +441,10 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
     if rows == 0 or rows > _FP8_GEMV_MAX_ROWS or X.shape[-1] != weight.shape[1]:
         return False
     # Exactly one scale per output row: a block grid can have N elements by coincidence.
-    if tuple(weight_scale.shape) not in ((weight.shape[0], 1), (weight.shape[0],)) or weight.shape[0] == 1:
+    if (
+        tuple(weight_scale.shape) not in ((weight.shape[0], 1), (weight.shape[0],))
+        or weight.shape[0] == 1
+    ):
         return False
     # Forward only: the kernel has no backward.
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
