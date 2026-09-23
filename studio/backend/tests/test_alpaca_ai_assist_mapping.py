@@ -28,24 +28,31 @@ def test_alpaca_mapping_keeps_label_names_and_system_prompt():
     assert result["final_format"] == "alpaca", result["warnings"]
     rows = result["dataset"]
     assert list(rows["output"]) == ["pos", "neg"]
-    assert all(PROMPT in instruction for instruction in rows["instruction"])
     assert list(rows["instruction"]) == [f"{PROMPT}\n\nLoved it", f"{PROMPT}\n\nHated it"]
     assert list(rows["input"]) == ["", ""]
 
 
-def test_alpaca_mapping_keeps_system_prompt_without_label_mapping():
-    result = _format("alpaca", {"__system_prompt": PROMPT})
+def test_alpaca_mapping_uses_system_prompt_alone_for_a_blank_instruction():
+    result = format_dataset(
+        Dataset.from_dict({"text": ["Loved it", ""], "label": [1, 0]}),
+        format_type = "alpaca",
+        batch_size = 2,
+        custom_format_mapping = {"text": "instruction", "label": "output", "__system_prompt": PROMPT},
+    )
 
     assert result["final_format"] == "alpaca", result["warnings"]
-    rows = result["dataset"]
-    assert all(PROMPT in instruction for instruction in rows["instruction"])
-    assert list(rows["output"]) == ["1", "0"]
+    assert list(result["dataset"]["instruction"]) == [f"{PROMPT}\n\nLoved it", PROMPT]
 
 
-def test_alpaca_mapping_keeps_an_integer_zero_label():
-    result = _format("alpaca", {})
+def test_alpaca_mapping_keeps_a_zero_label_and_blanks_a_missing_one():
+    result = format_dataset(
+        Dataset.from_dict({"text": ["a", "b", "c"], "label": [1, 0, None]}),
+        format_type = "alpaca",
+        batch_size = 3,
+        custom_format_mapping = {"text": "instruction", "label": "output"},
+    )
 
-    assert list(result["dataset"]["output"]) == ["1", "0"]
+    assert list(result["dataset"]["output"]) == ["1", "0", ""]
 
 
 def test_alpaca_mapping_keeps_every_column_the_advisor_assigns_to_a_role():
@@ -70,16 +77,23 @@ def test_alpaca_mapping_keeps_every_column_the_advisor_assigns_to_a_role():
     assert list(result["dataset"]["output"]) == ["neg", "pos"]
 
 
-def test_alpaca_mapping_renders_list_cells_as_text_across_batches():
+def test_alpaca_mapping_renders_list_and_text_struct_cells_as_text():
     result = format_dataset(
-        Dataset.from_dict({"text": ["a", "b", "c", "d"], "labels": [[0], [3], [1, 2], [4]]}),
+        Dataset.from_dict(
+            {
+                "text": ["a", "b"],
+                "labels": [[0], [1, 2]],
+                "answers": [{"text": ["Paris", "paris"]}, {"text": ["Rome"]}],
+            }
+        ),
         format_type = "alpaca",
         batch_size = 2,
-        custom_format_mapping = {"text": "instruction", "labels": "output"},
+        custom_format_mapping = {"text": "instruction", "labels": "input", "answers": "output"},
     )
 
     assert result["final_format"] == "alpaca", result["warnings"]
-    assert list(result["dataset"]["output"]) == ["0", "3", "1, 2", "4"]
+    assert list(result["dataset"]["input"]) == ["0", "1, 2"]
+    assert list(result["dataset"]["output"]) == ["Paris", "Rome"]
 
 
 def test_alpaca_mapping_names_each_label_in_a_list_cell():
@@ -98,7 +112,7 @@ def test_alpaca_mapping_names_each_label_in_a_list_cell():
     assert list(result["dataset"]["output"]) == ["joy", "anger, fear"]
 
 
-def test_chatml_mapping_with_advisor_keys_is_unchanged():
+def test_chatml_advisor_mapping_adds_system_turn_and_label_names():
     result = _format("chatml", {"__label_mapping": LABEL_MAPPING, "__system_prompt": PROMPT})
 
     assert result["final_format"] == "chatml_conversations", result["warnings"]
@@ -114,3 +128,15 @@ def test_chatml_mapping_with_advisor_keys_is_unchanged():
             {"role": "assistant", "content": "neg"},
         ],
     ]
+
+
+def test_chatml_advisor_mapping_renders_list_cells_as_text():
+    result = format_dataset(
+        Dataset.from_dict({"text": ["a", "b"], "labels": [[0], [1, 2]]}),
+        format_type = "chatml",
+        batch_size = 2,
+        custom_format_mapping = {"text": "user", "labels": "assistant", "__system_prompt": PROMPT},
+    )
+
+    assert result["final_format"] == "chatml_conversations", result["warnings"]
+    assert [convo[-1]["content"] for convo in result["dataset"]["conversations"]] == ["0", "1, 2"]
