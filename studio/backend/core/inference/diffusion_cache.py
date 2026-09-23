@@ -288,6 +288,43 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def install_fbcache_length_guard() -> bool:
+    """Make First-Block-Cache recompute, instead of raise, when the block sequence length changes.
+
+    FBCache decides per step by subtracting the previous step's head-block residual from this one's.
+    A prefix-KV transformer (Qwen-Image-2.1) runs step 0 over prompt + target tokens and every later
+    step over the target alone, so that subtraction raises on step 1. A length change means the
+    stored residuals describe a different sequence, so the only correct answer is "compute": the
+    full pass then stores residuals at the new length and later steps cache normally. Same-length
+    calls take the original path unchanged. Process-wide and idempotent; False when this diffusers
+    has no FBCache head hook to guard."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCHeadBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_length_guard", False):
+        return True
+    import torch
+
+    @torch.compiler.disable
+    def _should_compute_remaining_blocks(self, hidden_states_residual):
+        state = self.state_manager.get_state()
+        previous = state.head_block_residual
+        if previous is not None and previous.shape != hidden_states_residual.shape:
+            return True
+        tail = state.tail_block_residuals
+        if tail is not None and getattr(tail[0], "shape", None) not in (None, hidden_states_residual.shape):
+            return True
+        return original(self, hidden_states_residual)
+
+    _should_compute_remaining_blocks._unsloth_length_guard = True
+    FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
 def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
     """Whether the denoise loop feeds the blocks a SHORTER sequence after the first step.
 
@@ -340,11 +377,14 @@ def apply_step_cache(
     mode: Optional[str],
     threshold: Optional[float] = None,
     quant_active: bool = False,
+    length_changes_ok: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
     """Engage step caching on ``pipe.transformer``. Returns the mode engaged, or None when
     disabled / unsupported (runs uncached). ``threshold`` overrides the default; ``quant_active``
-    raises it so the cache triggers on a quantised transformer. Best-effort."""
+    raises it so the cache triggers on a quantised transformer. ``length_changes_ok`` lets a
+    prefix-KV transformer engage through the length guard; only an explicit request sets it, since
+    those families skip far more steps at the default threshold. Best-effort."""
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
@@ -374,8 +414,9 @@ def apply_step_cache(
         return None
     # Prefix KV reuse shortens the block sequence after the first step, which the cache's stored
     # residuals cannot be subtracted from. Checked before enable_cache: engaging here does not fail
-    # at load, it fails at step 2 of the user's generation.
-    if _reuses_prefix_kv(pipe, transformer):
+    # at load, it fails at step 2 of the user's generation. On an explicit request the length guard
+    # makes the head block recompute whenever the length moved, so the cache engages; otherwise refuse.
+    if _reuses_prefix_kv(pipe, transformer) and not (length_changes_ok and install_fbcache_length_guard()):
         _warn(
             logger,
             mode,
