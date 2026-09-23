@@ -377,23 +377,33 @@ def test_an_adapter_trained_on_the_kept_wrapper_keeps_the_wrapper(monkeypatch, t
     assert seen["text_intent"] is False
 
 
-def test_a_text_only_adapter_round_trips_through_save_and_reload(tmp_path):
-    if not torch.cuda.is_available():
-        pytest.skip("FastModel needs a GPU")
-    from unsloth import FastModel
-
+def _tiny_omni_checkpoint(path):
     tokenizers = pytest.importorskip("tokenizers")
-    base = tmp_path / "base"
-    _tiny_omni().save_pretrained(base)
+    _tiny_omni().save_pretrained(path)
     vocab = {f"w{i}": i for i in range(48)}
     vocab.update({"<unk>": 48, "<pad>": 49, "<eos>": 50})
     backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token = "<unk>"))
     backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
     transformers.PreTrainedTokenizerFast(
         tokenizer_object = backend, unk_token = "<unk>", pad_token = "<pad>", eos_token = "<eos>"
-    ).save_pretrained(base)
-    model, _ = FastModel.from_pretrained(str(base), text_only = True, load_in_4bit = False)
-    model = FastModel.get_peft_model(model, r = 2, lora_alpha = 2, random_state = 0)
+    ).save_pretrained(path)
+
+
+@pytest.mark.parametrize("text_only", [True, False], ids = ["thinker", "kept_wrapper"])
+@pytest.mark.parametrize("target_modules", [None, ["q_proj", "v_proj"]], ids = ["unsloth_regex", "leaf_list"])
+def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(tmp_path, text_only, target_modules):
+    # A leaf-name list reloads as a set that matches either layout, so the saved weight
+    # keys (model.layers vs thinker.model.layers) are what decide.
+    if not torch.cuda.is_available():
+        pytest.skip("FastModel needs a GPU")
+    from unsloth import FastModel
+
+    base = tmp_path / "base"
+    _tiny_omni_checkpoint(base)
+    model, _ = FastModel.from_pretrained(str(base), text_only = text_only, load_in_4bit = False)
+    kwargs = {} if target_modules is None else {"target_modules": target_modules}
+    model = FastModel.get_peft_model(model, r = 2, lora_alpha = 2, random_state = 0, **kwargs)
+    trained_on = type(model.get_base_model()).__name__
     with torch.no_grad():
         for name, param in model.named_parameters():
             if "lora_B" in name:
@@ -405,8 +415,22 @@ def test_a_text_only_adapter_round_trips_through_save_and_reload(tmp_path):
     model.save_pretrained(tmp_path / "adapter")
     del model
     reloaded, _ = FastModel.from_pretrained(str(tmp_path / "adapter"), load_in_4bit = False)
-    assert "Thinker" in type(reloaded.get_base_model()).__name__
+    assert type(reloaded.get_base_model()).__name__ == trained_on
     loaded = {n: p.detach().float().cpu() for n, p in reloaded.named_parameters() if "lora_" in n}
     assert loaded.keys() == saved.keys()
     for name, value in saved.items():
         assert torch.equal(loaded[name], value), name
+
+
+def test_saved_weight_keys_decide_over_the_target_regex():
+    from unsloth.models.loader import _adapter_targets_text_core
+
+    config = type("Config", (), {"target_modules": {"q_proj", "v_proj"}})()
+    thinker_keys = ["base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"]
+    wrapper_keys = ["base_model.model.thinker.model.layers.0.self_attn.q_proj.lora_A.weight"]
+    assert _adapter_targets_text_core(config, thinker_keys) is True
+    assert _adapter_targets_text_core(config, wrapper_keys) is False
+    # Without keys a leaf list cannot tell the layouts apart, so the composition is kept.
+    assert _adapter_targets_text_core(config, None) is False
+    regex = type("Config", (), {"target_modules": r".*\.q_proj"})()
+    assert _adapter_targets_text_core(regex, wrapper_keys) is False

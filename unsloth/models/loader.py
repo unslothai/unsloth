@@ -267,13 +267,38 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_targets_text_core(peft_config):
+def _adapter_weight_keys(adapter_name, token = None, revision = None, local_files_only = False):
+    """Tensor names of a saved adapter from the safetensors header only, or None."""
+    try:
+        local = os.path.expanduser(adapter_name)
+        if os.path.isdir(local):
+            path = os.path.join(local, "adapter_model.safetensors")
+            if not os.path.exists(path):
+                return None
+            from safetensors import safe_open
+
+            with safe_open(path, framework = "pt") as handle:
+                return list(handle.keys())
+        if local_files_only:
+            return None
+        from huggingface_hub import get_safetensors_metadata
+
+        metadata = get_safetensors_metadata(adapter_name, revision = revision, token = token)
+        return [key for file in metadata.files_metadata.values() for key in file.tensors]
+    except Exception:
+        return None
+
+
+def _adapter_targets_text_core(peft_config, weight_keys = None):
     """True when an adapter was trained on an extracted thinker (`text_only = True`).
 
-    Unsloth saves target_modules as one regex. A kept Qwen3-Omni wrapper adds its
-    `thinker.model` decoder to it; a thinker trained alone never names `thinker`, and its
-    weights are keyed `model.layers...`, so it only reloads onto the thinker.
+    Its weights are keyed `model.layers...` and a kept Qwen3-Omni wrapper's
+    `thinker.model.layers...`, so the saved keys decide. Without them, fall back to
+    Unsloth's saved regex: a kept wrapper's names `thinker.model`, a thinker's never does.
+    A plain list of leaf names matches either layout, so it cannot decide on its own.
     """
+    if weight_keys:
+        return not any("thinker." in key for key in weight_keys)
     targets = getattr(peft_config, "target_modules", None)
     return isinstance(targets, str) and "thinker" not in targets
 
@@ -1913,7 +1938,15 @@ class FastModel(FastBaseModel):
             and not text_only
             and auto_model is None
             and _resolve_omni_auto_model(model_config) is not None
-            and _adapter_targets_text_core(peft_config)
+            and _adapter_targets_text_core(
+                peft_config,
+                _adapter_weight_keys(
+                    old_model_name,
+                    token = token,
+                    revision = adapter_revision,
+                    local_files_only = local_files_only,
+                ),
+            )
         ):
             print(
                 "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
