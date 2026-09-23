@@ -697,7 +697,7 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
         stderr = _sp.STDOUT,
         text = True,
     )
-    output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
+    output, timed_out, _ = _drain_process_output(proc, 10, lambda _t: None)
     assert not timed_out
     assert "ok-no-pgid" in output
 
@@ -724,7 +724,7 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     assert pgid is not None
     proc.wait()  # reap the leader before draining
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     assert "parent-done" in output
     _assert_grandchild_was_killed(gate, sentinel)
@@ -771,7 +771,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
@@ -808,7 +808,7 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     pgid = _capture_process_group(proc)
     assert pgid is not None
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -970,6 +970,45 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
     assert "truncated" in baseline
     assert "the user was shown the full output" not in baseline
     assert "persist in the working directory" in baseline
+
+
+def test_drain_retains_bounded_head_and_tail_of_runaway_output(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "for i in range(5000): print(f'{i:09d}')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    full = "".join(streamed)
+    assert not timed_out
+    assert len(full) == 50000
+    assert len(output) <= 1010 + 510
+    assert output.startswith(full[:1000]) and full.endswith(output[-500:])
+    assert len(output) + chars == len(full)
+    assert output.count("\n") + lines == 5000
+
+
+def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 2000)
+    code = "for i in range(3000): print('x' * 99)\nopen('/mnt/data/x.html')\n"
+    streamed = []
+    baseline = _python_exec(code, timeout = 60)
+    out = _python_exec(code, timeout = 60, output_callback = streamed.append)
+    assert out == baseline
+    total = len("Exit code 1:\n") + len("".join(streamed))
+    assert f"{total} chars total" in out
+    assert "'x.html', not '/mnt/data/x.html'" in out
 
 
 def test_result_cap_env_override(monkeypatch):
