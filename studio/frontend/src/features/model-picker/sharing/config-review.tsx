@@ -35,6 +35,12 @@ export function SharedRunConfigReview({
           ? `Settings changed by link (${keys.length})`
           : "Link settings already match this editor"}
       </summary>
+      <p className="my-2 text-xs text-muted-foreground">
+        Loading with “Remember for this model” checked saves these settings for
+        future loads, replacing any saved settings. Loading with it unchecked
+        deletes any saved settings for this model. Close this editor without
+        loading to keep your saved settings.
+      </p>
       {keys.length > 0 && (
         <>
           <p className="my-2 text-xs text-muted-foreground">

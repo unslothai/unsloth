@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
 import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
 import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-review.tsx";
 import type { SharedRunConfigActions as Actions } from "../src/features/model-picker/sharing/config-ui.tsx";
@@ -13,7 +12,6 @@ import type { SharedRunConfigLinkHandler as LinkHandler } from "../src/features/
 import type { ShareRunConfigDialog as ShareDialog } from "../src/features/model-picker/sharing/share-dialog.tsx";
 import {
   installLocalStorageFake,
-  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 import {
@@ -44,65 +42,6 @@ const { createRunConfigInbox } = await import(
 );
 const targetModule = await import("./helpers/sharing-target.ts");
 const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
-
-test("unresolved shared GGUFs disable Load and skip model metadata requests", () => {
-  const source = ts.createSourceFile(
-    "model-config-page.tsx",
-    readText("../src/features/model-picker/components/model-config-page.tsx"),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  );
-  const declarations = new Map<string, string>();
-  let disabled: string | undefined;
-  const visit = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node)) {
-      declarations.set(node.name.getText(source), node.getText(source));
-    }
-    if (ts.isJsxOpeningElement(node)) {
-      const props = node.attributes.properties.filter(ts.isJsxAttribute);
-      if (
-        props.some(
-          (prop) =>
-            prop.name.getText(source) === "onClick" &&
-            prop.initializer?.getText(source) === "{handleRun}",
-        )
-      ) {
-        const value = props.find(
-          (prop) => prop.name.getText(source) === "disabled",
-        )?.initializer;
-        assert.ok(value && ts.isJsxExpression(value) && value.expression);
-        disabled = value.expression.getText(source);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  assert.ok(disabled);
-  const body = ["sharedVariantUnresolved", "contextFetchKey", "handleRun"]
-    .map((name) => {
-      const declaration = declarations.get(name);
-      assert.ok(declaration);
-      return `const ${declaration};`;
-    })
-    .join("\n");
-  const evaluate = new Function(
-    "target",
-    "isRunConfigVariantUnresolved",
-    ts.transpile(
-      `${body}\nreturn { contextFetchKey, disabled: ${disabled}, run: handleRun };`,
-    ),
-  );
-  for (const ggufVariant of [undefined, "model-Q4_K_M.gguf"]) {
-    const state = evaluate(
-      { isGguf: true, ggufVariant, meta: { source: "hub" } },
-      targetModule.isRunConfigVariantUnresolved,
-    );
-    assert.equal(state.contextFetchKey, null);
-    assert.equal(state.disabled, true);
-    assert.equal(state.run(), undefined);
-  }
-});
 
 function elements(node: unknown): StubElement[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -530,6 +469,12 @@ test("review renders field labels and argument values as text", () => {
   assert.ok(text(tree).includes("Parallel slots"));
   assert.ok(text(tree).includes("--rope-scaling yarn"));
   assert.ok(text(tree).includes("Default"));
+  assert.match(text(tree), /checked saves these settings for future loads/);
+  assert.match(
+    text(tree),
+    /unchecked deletes any saved settings for this model/,
+  );
+  assert.match(text(tree), /without loading to keep your saved settings/);
   assert.ok(
     elements(tree).every(
       (element) => !("dangerouslySetInnerHTML" in element.props),

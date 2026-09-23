@@ -33,11 +33,32 @@ const nativeScheme = /^unsloth:/i;
 // Only the startup URL is eligible; hash changes during this session are ignored.
 let startupUrl = typeof window === "undefined" ? "" : window.location.href;
 const recoveryKey = "unsloth.run-config-login.v1";
+const handledNativeUrlKey = "unsloth.run-config-native-handled.v1";
+let handledNativeUrl = readHandledNativeUrl();
 let awaitingLogin = false;
 let recoveryExpiresAt = 0;
 let recoveryUrl = "";
 let recoveryReplaceHistory = false;
 let intakeRevision = 0;
+
+function readHandledNativeUrl(): string | null {
+  try {
+    return sessionStorage.getItem(handledNativeUrlKey);
+  } catch {
+    return null;
+  }
+}
+
+function saveHandledNativeUrl(): void {
+  if (!handledNativeUrl) {
+    return;
+  }
+  try {
+    sessionStorage.setItem(handledNativeUrlKey, handledNativeUrl);
+  } catch {
+    return;
+  }
+}
 
 function clearRecovery() {
   try {
@@ -80,6 +101,7 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
     onChange();
   };
   const onStored = () => {
+    saveHandledNativeUrl();
     if (awaitingLogin) {
       saveRecovery();
       awaitingLogin = false;
@@ -238,7 +260,10 @@ export async function receiveStartupRunConfigUrl(): Promise<void> {
   }
 }
 
-export function receiveSharedRunConfigUrls(urls: string[]): boolean {
+export function receiveSharedRunConfigUrls(
+  urls: string[],
+  source: "startup" | "event" = "event",
+): boolean | "ignored" {
   for (let index = urls.length - 1; index >= 0; index -= 1) {
     const url = urls[index];
     if (!nativeScheme.test(url)) {
@@ -254,6 +279,11 @@ export function receiveSharedRunConfigUrls(urls: string[]): boolean {
     if (!candidate) {
       continue;
     }
+    if (source === "startup" && handledNativeUrl === url) {
+      return "ignored";
+    }
+    handledNativeUrl = url;
+    saveHandledNativeUrl();
     if (acceptNativeIntent(url) === null) {
       return true;
     }

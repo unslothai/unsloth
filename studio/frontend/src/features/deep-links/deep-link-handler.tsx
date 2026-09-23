@@ -19,7 +19,10 @@ async function restoreMainWindow(): Promise<void> {
 export function DeepLinkHandler({
   onOpenUrls,
 }: {
-  onOpenUrls?: (urls: string[]) => boolean;
+  onOpenUrls?: (
+    urls: string[],
+    source: "startup" | "event",
+  ) => boolean | "ignored";
 }) {
   const navigate = useNavigate();
 
@@ -30,9 +33,16 @@ export function DeepLinkHandler({
     let receivedLiveIntent = false;
     let unlisten: (() => void) | undefined;
 
-    const handleUrls = (urls: string[]): boolean => {
+    const handleUrls = (
+      urls: string[],
+      source: "startup" | "event",
+    ): boolean => {
       if (disposed) return false;
-      if (onOpenUrls?.(urls)) {
+      const sharedIntent = onOpenUrls?.(urls, source);
+      if (sharedIntent === "ignored") {
+        return true;
+      }
+      if (sharedIntent) {
         acceptIntent.clear();
         void restoreMainWindow().catch(() => undefined);
         return true;
@@ -75,7 +85,9 @@ export function DeepLinkHandler({
       if (disposed) return;
 
       const cleanup = await onOpenUrl((urls) => {
-        if (handleUrls(urls)) receivedLiveIntent = true;
+        if (handleUrls(urls, "event")) {
+          receivedLiveIntent = true;
+        }
       });
       if (disposed) {
         cleanup();
@@ -84,7 +96,9 @@ export function DeepLinkHandler({
       unlisten = cleanup;
 
       const currentUrls = await getCurrent();
-      if (currentUrls && !receivedLiveIntent) handleUrls(currentUrls);
+      if (currentUrls && !receivedLiveIntent) {
+        handleUrls(currentUrls, "startup");
+      }
     }
 
     void subscribe().catch(() => undefined);

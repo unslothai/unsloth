@@ -21,6 +21,7 @@ const { createRunConfigInbox } = await import(
 );
 const events = await import("../src/features/auth/session-events.ts");
 const sessionMark = "unsloth_auth_session_mark";
+const recoveryKey = "unsloth.run-config-login.v1";
 const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
 const browserRun =
   "http://localhost/chat#run?v=1&model=owner/model&nParallel=3";
@@ -49,11 +50,11 @@ function harness({
   loadParser?: () => typeof links | Promise<typeof links>;
 } = {}) {
   const browser = installLocalStorageFake();
-  const recovery = new Map<string, string>();
+  const storage = new Map<string, string>();
   const sessionStorage = {
-    getItem: (key: string) => recovery.get(key) ?? null,
-    setItem: (key: string, value: string) => recovery.set(key, value),
-    removeItem: (key: string) => recovery.delete(key),
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
   };
   Object.assign(globalThis, { sessionStorage });
   window.location.href = url;
@@ -113,7 +114,12 @@ function harness({
   };
   return {
     loadDocument,
-    recovery,
+    storage,
+    readRecovery: () => {
+      const raw = storage.get(recoveryKey);
+      assert.ok(raw);
+      return JSON.parse(raw);
+    },
     errors,
     cleared,
     parserLoads: () => parserLoads,
@@ -138,15 +144,15 @@ test("login recovery survives the account purge and document replacement exactly
       before.receiver.receiveSharedRunConfigUrls([run]);
       await settle();
     } else await before.receiver.receiveStartupRunConfigUrl();
-    app.recovery.clear();
+    app.storage.clear();
     app.signIn();
-    assert.equal(app.recovery.size, 1);
+    assert.equal(app.storage.has(recoveryKey), true);
     before.dispose();
     const after = app.loadDocument();
     await after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
     assert.equal(after.inbox.getSnapshot()?.replaceHistory, !native);
-    assert.equal(app.recovery.size, 0);
+    assert.equal(app.storage.has(recoveryKey), false);
     after.dispose();
     const next = app.loadDocument();
     await next.receiver.receiveStartupRunConfigUrl();
@@ -165,15 +171,78 @@ test("sign-out discards both pending and recoverable links before another sessio
   const id = doc.inbox.getSnapshot()?.id;
   app.signOut();
   assert.equal(doc.inbox.getSnapshot(), null);
-  assert.equal(app.recovery.size, 0);
+  assert.equal(app.storage.has(recoveryKey), false);
   assert.deepEqual(app.cleared, [id]);
   app.signIn("second");
-  assert.equal(app.recovery.size, 0);
+  assert.equal(app.storage.has(recoveryKey), false);
   doc.receiver.receiveSharedRunConfigUrls([run]);
   await settle();
   assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
   doc.dispose();
 });
+
+test("an account purge cannot replay a previously handled desktop link", async () => {
+  const app = harness({ desktop: true });
+  app.signIn();
+  const before = app.loadDocument();
+  before.receiver.receiveSharedRunConfigUrls([run], "startup");
+  await settle();
+  const pending = before.inbox.getSnapshot();
+  assert.ok(pending);
+  before.inbox.bind(pending.id, "draft");
+  app.signOut();
+  app.storage.clear();
+  app.signIn("second");
+  before.dispose();
+
+  const after = app.loadDocument();
+  assert.equal(
+    after.receiver.receiveSharedRunConfigUrls([run], "startup"),
+    "ignored",
+  );
+  await after.receiver.receiveStartupRunConfigUrl();
+  assert.equal(after.inbox.getSnapshot(), null);
+  assert.equal(app.parserLoads(), 1);
+  after.receiver.receiveSharedRunConfigUrls([run], "event");
+  await settle();
+  assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
+  after.dispose();
+});
+
+for (const recoveryFirst of [false, true]) {
+  test(`desktop login recovery imports once regardless of startup callback order: recovery first ${recoveryFirst}`, async () => {
+    const app = harness({ desktop: true });
+    const before = app.loadDocument();
+    before.receiver.receiveSharedRunConfigUrls([run], "startup");
+    await settle();
+    app.storage.clear();
+    app.signIn();
+    before.dispose();
+
+    const after = app.loadDocument();
+    if (recoveryFirst) {
+      await after.receiver.receiveStartupRunConfigUrl();
+    }
+    assert.equal(
+      after.receiver.receiveSharedRunConfigUrls([run], "startup"),
+      "ignored",
+    );
+    if (!recoveryFirst) {
+      await after.receiver.receiveStartupRunConfigUrl();
+    }
+    assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
+    assert.equal(app.parserLoads(), 2);
+    after.dispose();
+
+    const next = app.loadDocument();
+    next.receiver.receiveSharedRunConfigUrls([run], "startup");
+    await next.receiver.receiveStartupRunConfigUrl();
+    assert.equal(next.inbox.getSnapshot(), null);
+    assert.equal(app.parserLoads(), 2);
+    next.dispose();
+    assert.deepEqual(app.errors, []);
+  });
+}
 
 test("pending links survive repeated login reloads before signing in", async (t) => {
   let now = 1_000;
@@ -185,8 +254,8 @@ test("pending links survive repeated login reloads before signing in", async (t)
       doc.receiver.receiveSharedRunConfigUrls([run]);
       await settle();
     } else await doc.receiver.receiveStartupRunConfigUrl();
-    assert.equal(app.recovery.size, 1);
-    const saved = JSON.parse([...app.recovery.values()][0]);
+    assert.equal(app.storage.has(recoveryKey), true);
+    const saved = app.readRecovery();
     for (let reload = 0; reload < 2; reload += 1) {
       now += 60_000;
       doc.dispose();
@@ -195,19 +264,16 @@ test("pending links survive repeated login reloads before signing in", async (t)
       await doc.receiver.receiveStartupRunConfigUrl();
       assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
       assert.equal(doc.inbox.getSnapshot()?.replaceHistory, !native);
-      assert.equal(app.recovery.size, 1);
-      assert.equal(
-        JSON.parse([...app.recovery.values()][0]).expiresAt,
-        saved.expiresAt,
-      );
+      assert.equal(app.storage.has(recoveryKey), true);
+      assert.equal(app.readRecovery().expiresAt, saved.expiresAt);
     }
-    app.recovery.clear();
+    app.storage.clear();
     app.signIn();
     doc.dispose();
     const signedIn = app.loadDocument();
     await signedIn.receiver.receiveStartupRunConfigUrl();
     assert.equal(signedIn.inbox.getSnapshot()?.value.config.nParallel, 3);
-    assert.equal(app.recovery.size, 0);
+    assert.equal(app.storage.has(recoveryKey), false);
     signedIn.dispose();
     assert.deepEqual(app.errors, []);
   }
@@ -232,18 +298,16 @@ test("pre-login recovery cannot outlive its expiry or cross a session boundary",
     const before = app.loadDocument();
     await before.receiver.receiveStartupRunConfigUrl();
     before.dispose();
-    assert.equal(app.recovery.size, 1);
-    for (const [key, raw] of app.recovery) {
-      const saved = JSON.parse(raw);
-      if (change === "expired") saved.expiresAt = 0;
-      else saved.session = "other-account";
-      app.recovery.set(key, JSON.stringify(saved));
-    }
+    assert.equal(app.storage.has(recoveryKey), true);
+    const saved = app.readRecovery();
+    if (change === "expired") saved.expiresAt = 0;
+    else saved.session = "other-account";
+    app.storage.set(recoveryKey, JSON.stringify(saved));
     window.location.href = "http://localhost/login";
     const after = app.loadDocument();
     await after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot(), null);
-    assert.equal(app.recovery.size, 0);
+    assert.equal(app.storage.has(recoveryKey), false);
     after.dispose();
   }
 });
@@ -256,13 +320,11 @@ for (const change of ["session", "expired", "invalid", "newer"] as const) {
     await settle();
     app.signIn();
     before.dispose();
-    for (const [key, raw] of app.recovery) {
-      const saved = JSON.parse(raw);
-      if (change === "session") saved.session = "other-account";
-      if (change === "expired") saved.expiresAt = 0;
-      if (change === "invalid") saved.url = "unsloth://run?v=1&hfToken=secret";
-      app.recovery.set(key, JSON.stringify(saved));
-    }
+    const saved = app.readRecovery();
+    if (change === "session") saved.session = "other-account";
+    if (change === "expired") saved.expiresAt = 0;
+    if (change === "invalid") saved.url = "unsloth://run?v=1&hfToken=secret";
+    app.storage.set(recoveryKey, JSON.stringify(saved));
     const after = app.loadDocument();
     if (change === "newer")
       after.receiver.receiveSharedRunConfigUrls([
@@ -271,7 +333,7 @@ for (const change of ["session", "expired", "invalid", "newer"] as const) {
     await settle();
     await after.receiver.receiveStartupRunConfigUrl();
     assert.equal(after.inbox.getSnapshot(), null);
-    assert.equal(app.recovery.size, 0);
+    assert.equal(app.storage.has(recoveryKey), false);
     after.dispose();
   });
 }
@@ -287,7 +349,7 @@ test("binding or cancelling an in-document import removes login recovery", async
     assert.ok(pending);
     if (bind) doc.inbox.bind(pending.id, "draft");
     else doc.inbox.clear(pending.id);
-    assert.equal(app.recovery.size, 0);
+    assert.equal(app.storage.has(recoveryKey), false);
     doc.dispose();
   }
 });
@@ -465,19 +527,19 @@ test("a login remount preserves recovery until binding or rejection", async () =
   doc.dispose();
   await doc.receiver.receiveStartupRunConfigUrl();
   assert.equal(doc.inbox.getSnapshot(), pending);
-  assert.equal(app.recovery.size, 1);
+  assert.equal(app.storage.has(recoveryKey), true);
   window.location.href = "http://localhost/chat";
   const reloaded = app.loadDocument();
   await reloaded.receiver.receiveStartupRunConfigUrl();
   assert.equal(reloaded.inbox.getSnapshot()?.value.config.nParallel, 3);
-  assert.equal(app.recovery.size, 0);
+  assert.equal(app.storage.has(recoveryKey), false);
   reloaded.dispose();
 });
 
 test("ordinary startup, unrelated links and expired recovery never load the parser", async () => {
   const app = harness({ url: "http://localhost/chat#unrelated" });
-  app.recovery.set(
-    "unsloth.run-config-login.v1",
+  app.storage.set(
+    recoveryKey,
     JSON.stringify({
       url: run,
       expiresAt: 0,
@@ -534,7 +596,7 @@ test("sign-out retires a parser load before another account can receive its sett
   parser.resolve(links);
   await settle();
   assert.equal(doc.inbox.getSnapshot(), null);
-  assert.equal(app.recovery.size, 0);
+  assert.equal(app.storage.has(recoveryKey), false);
   assert.deepEqual(app.errors, []);
   doc.dispose();
 });
@@ -546,7 +608,7 @@ test("login recovery is saved even before the parser chunk arrives", async () =>
   const startup = before.receiver.receiveStartupRunConfigUrl();
   app.signOut();
   app.signIn();
-  assert.equal(app.recovery.size, 1);
+  assert.equal(app.storage.has(recoveryKey), true);
   before.dispose();
   window.location.href = "http://localhost/chat";
   const after = app.loadDocument();
@@ -554,7 +616,7 @@ test("login recovery is saved even before the parser chunk arrives", async () =>
   parser.resolve(links);
   await Promise.all([startup, recovered]);
   assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
-  assert.equal(app.recovery.size, 0);
+  assert.equal(app.storage.has(recoveryKey), false);
   assert.deepEqual(app.errors, []);
   after.dispose();
 });

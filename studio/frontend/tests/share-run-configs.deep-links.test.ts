@@ -3,9 +3,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { DeepLinkHandler as Handler } from "../src/features/deep-links/deep-link-handler.tsx";
 import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
 import * as linkAddress from "../src/features/model-picker/sharing/link-address.ts";
+import type * as Receiver from "../src/features/model-picker/sharing/receive-link.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -25,6 +27,17 @@ const invalid =
   "unsloth://run?v=1&llamaExtraArgs=%5B%22--host%22%2C%220.0.0.0%22%5D";
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+function desktopSession() {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  Object.assign(globalThis, { sessionStorage: storage });
+  return storage;
+}
+
 function harness(sharedLinks = true) {
   const inbox = createRunConfigInbox();
   const navigations: Array<{
@@ -42,9 +55,7 @@ function harness(sharedLinks = true) {
   const startup = new Promise<string[] | null>((resolve) => {
     releaseStartup = resolve;
   });
-  const { receiveSharedRunConfigUrls } = loadWithStubs<{
-    receiveSharedRunConfigUrls: (urls: string[]) => boolean;
-  }>(
+  const { receiveSharedRunConfigUrls } = loadWithStubs<typeof Receiver>(
     new URL(
       "../src/features/model-picker/sharing/receive-link.ts",
       import.meta.url,
@@ -72,9 +83,7 @@ function harness(sharedLinks = true) {
     },
   );
   const { DeepLinkHandler } = loadWithStubs<{
-    DeepLinkHandler: (props: {
-      onOpenUrls?: (urls: string[]) => boolean;
-    }) => null;
+    DeepLinkHandler: typeof Handler;
   }>(
     new URL(
       "../src/features/deep-links/deep-link-handler.tsx",
@@ -129,6 +138,87 @@ function harness(sharedLinks = true) {
     counts: () => ({ subscriptions, unsubscriptions }),
   };
 }
+
+for (const delivery of ["startup", "live"] as const) {
+  for (const url of [run, invalid]) {
+    test(`a ${delivery} run link is not replayed by later desktop documents: ${url}`, async () => {
+      desktopSession();
+      const before = harness();
+      await settle();
+      before.releaseStartup(delivery === "startup" ? [url] : null);
+      await settle();
+      if (delivery === "live") before.emit([url]);
+      await settle();
+      assert.deepEqual(before.commands, ["reveal_main_window"]);
+      assert.equal(before.errors.length, url === invalid ? 1 : 0);
+      assert.equal(before.inbox.getSnapshot() !== null, url === run);
+      before.cleanup();
+
+      for (let reload = 0; reload < 2; reload += 1) {
+        const after = harness();
+        await settle();
+        after.releaseStartup([hub, url]);
+        await settle();
+        assert.equal(after.inbox.getSnapshot(), null);
+        assert.deepEqual(after.navigations, []);
+        assert.deepEqual(after.commands, []);
+        assert.deepEqual(after.errors, []);
+        if (reload === 1) {
+          after.emit([url]);
+          await settle();
+          assert.deepEqual(after.commands, ["reveal_main_window"]);
+          assert.equal(after.errors.length, url === invalid ? 1 : 0);
+          assert.equal(after.inbox.getSnapshot() !== null, url === run);
+        }
+        after.cleanup();
+      }
+    });
+  }
+}
+
+test("a different startup run link and a fresh desktop session are still accepted", async () => {
+  desktopSession();
+  const first = harness();
+  await settle();
+  first.releaseStartup([run]);
+  await settle();
+  first.cleanup();
+
+  const newer = harness();
+  await settle();
+  newer.releaseStartup([run.replace("nParallel=3", "nParallel=4")]);
+  await settle();
+  assert.equal(newer.inbox.getSnapshot()?.value.config.nParallel, 4);
+  assert.deepEqual(newer.commands, ["reveal_main_window"]);
+  newer.cleanup();
+
+  desktopSession();
+  const restarted = harness();
+  await settle();
+  restarted.releaseStartup([run]);
+  await settle();
+  assert.equal(restarted.inbox.getSnapshot()?.value.config.nParallel, 3);
+  assert.deepEqual(restarted.commands, ["reveal_main_window"]);
+  restarted.cleanup();
+});
+
+test("blocked session storage does not prevent opening native run links", async (t) => {
+  const storage = desktopSession();
+  t.mock.method(storage, "getItem", () => {
+    throw new Error("Storage blocked");
+  });
+  t.mock.method(storage, "setItem", () => {
+    throw new Error("Storage blocked");
+  });
+  const app = harness();
+  await settle();
+  app.releaseStartup([run]);
+  await settle();
+  assert.equal(app.inbox.getSnapshot()?.value.config.nParallel, 3);
+  assert.deepEqual(app.commands, ["reveal_main_window"]);
+  assert.deepEqual(app.errors, []);
+  app.cleanup();
+});
 
 for (const sharedLinks of [false, true]) {
   test(`ordinary Hub links retain routing and deduplication with sharing ${sharedLinks ? "enabled" : "absent"}`, async () => {
