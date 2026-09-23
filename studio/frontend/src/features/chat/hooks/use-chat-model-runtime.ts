@@ -2810,11 +2810,15 @@ export function useChatModelRuntime() {
         modelPath.slice(modelPath.indexOf(":") + 1),
       );
       let toastId: string | number | undefined;
+      let signal: AbortSignal | undefined;
       try {
         const stopDecision = await confirmStopRunningChatsIfNeeded(
           "Loading a different model",
         );
         if (!stopDecision.proceed) return;
+        const abortCtrl = new AbortController();
+        loadAbortRef.current = abortCtrl;
+        signal = abortCtrl.signal;
         const loadInfo = {
           id: modelPath,
           displayName,
@@ -2843,6 +2847,8 @@ export function useChatModelRuntime() {
           is_lora: false,
           force_cancel_active: stopDecision.forceCancelActive,
         });
+        // Stop loading unloads it; cancelLoading reports that.
+        if (signal.aborted) return;
         const status = await getInferenceStatus();
         useChatRuntimeStore.getState().setCheckpoint(modelPath, null);
         applyActiveModelStatusToStore(status, {
@@ -2858,6 +2864,7 @@ export function useChatModelRuntime() {
           duration: 4000,
         });
       } catch (error) {
+        if (signal?.aborted) return;
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);

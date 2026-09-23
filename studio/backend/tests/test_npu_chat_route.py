@@ -464,3 +464,34 @@ def test_fastflowlm_reasoning_controls(enable, effort, expected):
     body: dict = {}
     _apply_fastflowlm_reasoning_controls(body, enable, effort)
     assert body == expected
+
+
+def test_stop_loading_an_npu_model_does_not_wait_for_the_load(monkeypatch):
+    """/load holds the lifecycle gate for the whole /v1/load, so Stop loading must not queue on it."""
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from models.inference import UnloadRequest
+    from routes import inference as routes
+
+    cancelled: list[str] = []
+
+    class _Loading:
+        is_loaded = False
+
+        def cancel_load(self, model_id):
+            cancelled.append(model_id)
+            return True
+
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: _Loading())
+
+    async def _run():
+        async with inference_lifecycle_gate():
+            return await asyncio.wait_for(
+                routes._unload_model_impl(
+                    UnloadRequest(model_path = "lemonade:qwen3-0.6b-FLM"), "owner"
+                ),
+                timeout = 10,
+            )
+
+    response = asyncio.run(_run())
+    assert response.status == "unloaded"
+    assert cancelled == ["qwen3-0.6b-FLM"]

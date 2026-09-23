@@ -56,6 +56,10 @@ class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
 
 
+class NpuLoadCancelled(NpuError):
+    """A load was stopped by cancel_load."""
+
+
 @dataclass(frozen = True)
 class NpuModel:
     id: str
@@ -173,6 +177,7 @@ class LemonadeNpuBackend:
         self._server: Optional[LemonadeServer] = None
         self._loaded: Optional[_Loaded] = None
         self._loading: Optional[str] = None
+        self._load_cancelled = threading.Event()
         self._hardware: Optional[dict[str, Any]] = None
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
@@ -349,6 +354,8 @@ class LemonadeNpuBackend:
         return {"ready": ready, "problems": problems, "report": report}
 
     def shutdown(self) -> None:
+        # A load holds the lock for as long as /v1/load runs.
+        self.cancel_load()
         with self._lock:
             self._loaded = None
             if self._server is not None:
@@ -440,6 +447,7 @@ class LemonadeNpuBackend:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
             self._loading = model_id
+            self._load_cancelled.clear()
             try:
                 model = self._model(model_id)
                 if not model.downloaded:
@@ -451,12 +459,14 @@ class LemonadeNpuBackend:
                     ctx = min(ctx, limit)
                 server = self._ensure_running()
                 self._loaded = None
+                self._raise_if_load_cancelled(model_id)
                 response = server.request(
                     "POST",
                     "/v1/load",
                     json_body = {"model_name": model.id, "ctx_size": ctx, "save_options": False},
                     timeout = 900.0,
                 )
+                self._raise_if_load_cancelled(model_id)
                 if response.status_code != 200 or response.json().get("status") == "error":
                     raise NpuError(f"Loading {model.id} failed: {_error_message(response)}")
                 resident_ctx = self._resident_context(server, model.id)
@@ -466,8 +476,27 @@ class LemonadeNpuBackend:
                 self._state = "ready"
                 self._error = None
                 return model
+            except LemonadeUnavailable as exc:
+                # cancel_load stops lemond under the in-flight request.
+                self._raise_if_load_cancelled(model_id)
+                raise NpuError(f"Loading {model_id} failed: {exc}") from exc
             finally:
                 self._loading = None
+
+    def _raise_if_load_cancelled(self, model_id: str) -> None:
+        if self._load_cancelled.is_set():
+            raise NpuLoadCancelled(f"Loading {model_id} was cancelled.")
+
+    def cancel_load(self, model_id: Optional[str] = None) -> bool:
+        """Stop an in-flight load by stopping lemond. Does not take the lock the load holds."""
+        loading = self._loading
+        if loading is None or (model_id is not None and loading != model_id):
+            return False
+        self._load_cancelled.set()
+        server = self._server
+        if server is not None:
+            server.stop()
+        return True
 
     @staticmethod
     def _resident_context(server: LemonadeServer, model_id: str) -> Optional[int]:
@@ -495,14 +524,21 @@ class LemonadeNpuBackend:
             server = self._server
             if server is not None and server.is_alive():
                 try:
-                    server.request(
+                    response = server.request(
                         "POST",
                         "/v1/unload",
                         json_body = {"model_name": loaded.model.id},
                         timeout = 60.0,
                     )
+                    failure = None if response.status_code == 200 else _error_message(response)
                 except LemonadeUnavailable as exc:
-                    logger.warning("Unloading %s from Lemonade failed: %s", loaded.model.id, exc)
+                    failure = str(exc)
+                if failure is not None:
+                    # Stopping lemond is the unload that cannot fail; the next load restarts it.
+                    logger.warning(
+                        "Unloading %s from Lemonade failed: %s", loaded.model.id, failure
+                    )
+                    server.stop()
             return loaded.model.model_path
 
     def upstream(self) -> ManagedUpstream:

@@ -13,6 +13,7 @@ import json
 import os
 import signal
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -161,6 +162,8 @@ def main() -> None:
                 self.end_headers()
                 self.wfile.write(events)
             elif self.path == "/v1/load":
+                # A load FastFlowLM takes this long to answer, to exercise cancelling one.
+                time.sleep(float(os.environ.get("FAKE_LEMOND_LOAD_SECONDS", "0")))
                 if name not in downloaded:
                     self._send(404, {"error": {"message": f"Model '{name}' was not found."}})
                     return
@@ -168,6 +171,9 @@ def main() -> None:
                 loaded[name] = {"ctx_size": body.get("ctx_size"), "flm_args": ""}
                 self._send(200, {"status": "success", "model_name": name, "recipe": "flm"})
             elif self.path == "/v1/unload":
+                if os.environ.get("FAKE_LEMOND_UNLOAD_FAILS") == "1":
+                    self._send(500, {"error": {"message": "unload failed"}})
+                    return
                 if name:
                     loaded.pop(name, None)
                 else:

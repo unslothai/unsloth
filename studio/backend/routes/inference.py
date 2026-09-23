@@ -15814,7 +15814,12 @@ async def _load_npu_model(
     load_cancel_event: Optional[threading.Event],
 ) -> LoadResponse:
     """``/load`` for a ``lemonade:<id>`` model: the same swap rules as any local model."""
-    from core.inference.npu_backend import NpuError, get_npu_backend, model_id_from_path
+    from core.inference.npu_backend import (
+        NpuError,
+        NpuLoadCancelled,
+        get_npu_backend,
+        model_id_from_path,
+    )
     from core.inference.llama_keepwarm import note_model_unloaded
 
     if account_access.managed_account():
@@ -15861,6 +15866,8 @@ async def _load_npu_model(
     await asyncio.to_thread(release_chat_gpu_claim)
     try:
         await asyncio.to_thread(npu.load, model_id, requested_ctx)
+    except NpuLoadCancelled:
+        raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     account_access.join_resident("chat")
@@ -18490,11 +18497,17 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
-    from core.inference.npu_backend import is_npu_model_path, peek_npu_backend
+    from core.inference.npu_backend import MODEL_PREFIX, is_npu_model_path, peek_npu_backend
 
     try:
         if is_npu_model_path(request.model_path):
             npu = peek_npu_backend()
+            # "Stop loading": /load holds the lifecycle gate until /v1/load returns.
+            if npu is not None and await asyncio.to_thread(
+                npu.cancel_load, request.model_path[len(MODEL_PREFIX) :]
+            ):
+                logger.info(f"Cancelled in-flight NPU load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
             async with inference_lifecycle_gate():
                 if npu is not None and npu.is_loaded:
                     # Same order as the llama-server eject below: stop the chats, let them

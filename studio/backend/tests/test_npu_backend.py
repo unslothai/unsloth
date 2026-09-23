@@ -179,6 +179,57 @@ def test_unload_then_delete(npu):
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is False
 
 
+def test_a_rejected_unload_stops_lemond(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", "1")
+    # Survives the restart, as the files on disk would.
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    npu.enable()
+    npu.load("qwen3-0.6b-FLM")
+    process = npu._server._process
+    assert npu.unload() == "lemonade:qwen3-0.6b-FLM"
+    # The model cannot outlive a reported unload: its server is gone.
+    assert process.poll() is not None
+    assert not npu.is_loaded
+    npu.load("qwen3-0.6b-FLM")
+    assert npu.is_loaded
+
+
+@pytest.mark.parametrize("stop", ["cancel_load", "shutdown"])
+def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
+    import threading
+    import time
+
+    monkeypatch.setenv("FAKE_LEMOND_LOAD_SECONDS", "60")
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    errors: list[BaseException] = []
+
+    def _load():
+        try:
+            npu.load("qwen3-0.6b-FLM")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target = _load)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not any(r["path"] == "/v1/load" for r in _requests(npu)):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert npu.cancel_load("other-FLM") is False
+    started = time.monotonic()
+    if stop == "cancel_load":
+        assert npu.cancel_load("qwen3-0.6b-FLM") is True
+    else:
+        npu.shutdown()
+    thread.join(timeout = 30)
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 30
+    assert len(errors) == 1 and isinstance(errors[0], nb.NpuLoadCancelled)
+    assert not npu.is_loaded
+    assert npu.loading_model is None
+
+
 def test_a_restarted_runtime_reports_nothing_loaded(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
