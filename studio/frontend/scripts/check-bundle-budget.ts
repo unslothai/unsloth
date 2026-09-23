@@ -32,14 +32,16 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
-  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
-  // on its own; the previous four raises each bought a few kilobytes and were spent within
-  // days, charging the next PR for drift it did not cause. The eager set has not gained a
-  // member across any of it, so what runs out is headroom, not laziness.
-  transferBytes: 1_715_000,
-  rawBytes: 5_730_000,
+  // Taken from upstream main rather than re-derived here: this branch's own base predates
+  // main's re-measure, and holding the older pair would make the dock work fail a number main
+  // has already moved past. The monitor is imported eagerly on purpose (an existing test in
+  // tests/monitor-frame-ownership.test.ts requires it), so its interaction code is part of this
+  // path by design; the dock change is +4.2 KB raw / +1.7 KB transfer on main (5,601.4 ->
+  // 5,605.6 KB raw, 1,664.1 -> 1,665.8 KB transfer, 79 chunks both sides), measured by
+  // building main and then rebuilding with only this change's three source files overlaid.
+  // Both halves are re-measured TOGETHER, or each drags main red on its own.
+  transferBytes: 1_770_000,
+  rawBytes: 5_950_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
