@@ -112,8 +112,8 @@ sequences/sec is twice the pair batch size divided by step time. LoRA targets
 `query,key,value,dense`, with rank 8 and alpha 16. BF16 is the default.
 
 CUDA events measure forward/loss, backward and optimizer time. CUDA-synchronized
-wall time covers that same window, excluding gradient clearing, event creation
-and untimed loss checks. Peak allocated and reserved memory
+wall time covers gradient clearing, forward/loss, backward and optimizer, while
+excluding event creation and untimed loss checks. Peak allocated and reserved memory
 are reset after warmup. Tokenization and host-to-device transfer are recorded
 separately, outside resident training-step timing. Real batches exclude sentences
 repeated across different pairs and discard incomplete batches consistently across arms.

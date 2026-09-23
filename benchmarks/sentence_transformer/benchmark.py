@@ -580,8 +580,8 @@ def run_repeat(a, pairs, torch, device):
 
     def train_step(batch, measured = False):
         left, right = batch
-        optimizer.zero_grad(set_to_none = True)
         if not measured:
+            optimizer.zero_grad(set_to_none = True)
             with torch.autocast("cuda", dtype = torch_dtype(a.dtype, torch), enabled = amp):
                 loss = loss_fn(fresh_features(batch), labels = None)
             loss.backward()
@@ -597,6 +597,7 @@ def run_repeat(a, pairs, torch, device):
         )
         torch.cuda.synchronize()
         wall_start = wall_clock()
+        optimizer.zero_grad(set_to_none = True)
         fwd_start.record()
         with torch.autocast("cuda", dtype = torch_dtype(a.dtype, torch), enabled = amp):
             loss = loss_fn(fresh_features(batch), labels = None)
