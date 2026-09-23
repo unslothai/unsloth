@@ -1035,6 +1035,15 @@ export function useChatModelRuntime() {
               (!run.loadAttemptPath && run.residentModelUnloaded) ||
               (run.loadAttemptPath && run.forceCancelActive && run.residentModelUnloaded)
             ) {
+              try {
+                // The run applied its target's config before the preliminary unload, so the store
+                // still names the former resident while holding the cancelled target's settings.
+                restoreRollbackConfigForClear(run);
+                clearCheckpoint();
+                await refresh();
+              } catch {
+                // The cancel's own error reporting stands; the slot is still released.
+              }
             }
             activeLoadRunRef.current = releaseOwnedModelLoadRun(
               activeLoadRunRef.current,
