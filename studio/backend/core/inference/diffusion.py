@@ -5562,7 +5562,9 @@ class DiffusionBackend:
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                "dynamic": effective_speed != SPEED_MAX,
+                                # max compiles DiTs with automatic dynamic (None); keyed apart from the old static
+                                # bundles.
+                                "dynamic": None if effective_speed == SPEED_MAX else True,
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",

@@ -365,9 +365,10 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     )
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is True and pipe.fused is True
-    # max opts into autotuned kernels (static shapes); CUDA-graph modes are avoided.
+    # max opts into autotuned kernels with automatic dynamic (static until a dimension changes, so a new prompt
+    # length does not recompile every time); CUDA-graph modes are avoided.
     assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
-    assert pipe.compile_kwargs["dynamic"] is False
+    assert pipe.compile_kwargs["dynamic"] is None
 
 
 # ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────
