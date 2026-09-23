@@ -143,7 +143,7 @@ def build_router(*, browser: bool) -> APIRouter:
             body = ms.hub_entry(kind, {**found, "id": repo})
             if full:
                 sha, files = await _listing(kind, repo, revision)
-                body["sha"] = sha
+                body["sha"] = ms.answered_commit(revision, sha)
                 body["siblings"] = [ms.sibling(path, meta) for path, meta in files.items()]
             return JSONResponse(body)
 
@@ -239,7 +239,7 @@ def build_router(*, browser: bool) -> APIRouter:
                 raise ms.NotFound("EntryNotFound", f"{path} not found in {repo}.")
             etag = f'"{meta["sha256"]}"'
             headers = {
-                "X-Repo-Commit": sha,
+                "X-Repo-Commit": ms.answered_commit(revision, sha),
                 "ETag": etag,
                 "X-Linked-Etag": etag,
                 "X-Linked-Size": str(meta["size"]),

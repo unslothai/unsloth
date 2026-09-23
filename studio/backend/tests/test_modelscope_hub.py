@@ -226,6 +226,18 @@ def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
     )
 
 
+def test_a_listed_hugging_face_pin_is_served_from_the_matching_modelscope_commit(hub, monkeypatch):
+    dac = ("model", "ibm-research/DAC.speech.v1.0", "1ea7f64cd0678415e2d8c32d67b190722cb9b149")
+    assert upstream.upstream_commit(*dac) == "3268c083add6c07ae3c4a36650863eb2c3bb6717"
+    monkeypatch.setattr(upstream, "_PINNED_COMMITS", {("model", "qwen/tiny", "c" * 40): SHA})
+    head = hub.head(f"/Qwen/Tiny/resolve/{'C' * 40}/config.json")
+    assert head.headers["x-repo-commit"] == "c" * 40
+    assert head.headers["location"].endswith(f"/Qwen/Tiny/resolve/{SHA}/config.json")
+    assert hub.get(f"/api/models/Qwen/Tiny/revision/{'c' * 40}").json()["sha"] == "c" * 40
+    assert upstream.branch_url("model", "Qwen/Tiny", "c" * 40, "a").endswith(f"/{SHA}/a")
+    assert upstream.upstream_commit("model", "Qwen/Tiny", "D" * 40) == "d" * 40
+
+
 def test_writes_bad_ids_and_upstream_failures(hub):
     assert hub.post("/api/repos/create", json = {}).status_code == 403
     assert hub.get("/api/models/a/b..c").status_code == 400

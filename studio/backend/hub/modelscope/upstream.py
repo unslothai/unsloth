@@ -60,6 +60,26 @@ def upstream_id(kind: str, repo: str) -> str:
     return _ALIAS_INDEX[kind].get(repo.casefold(), repo)
 
 
+# Hugging Face pins that ModelScope's history lacks, by kind, casefolded repo and commit, mapped
+# to a ModelScope commit whose loaded files match. Unlisted pins miss: a pin guards remote code.
+_PINNED_COMMITS = {
+    (
+        "model",
+        "ibm-research/dac.speech.v1.0",
+        "1ea7f64cd0678415e2d8c32d67b190722cb9b149",
+    ): "3268c083add6c07ae3c4a36650863eb2c3bb6717",
+}
+
+
+def upstream_commit(kind: str, repo: str, sha: str) -> str:
+    return _PINNED_COMMITS.get((kind, repo.casefold(), sha.lower()), sha.lower())
+
+
+def answered_commit(revision: str, sha: str) -> str:
+    """A full-sha request is answered under that commit, so a mapped pin caches as the pin."""
+    return revision.lower() if _SHA.fullmatch(revision.lower()) else sha
+
+
 class UpstreamError(Exception):
     """ModelScope could not answer. Never read as absence."""
 
@@ -207,7 +227,7 @@ async def repo_exists(kind: str, repo: str) -> None:
 
 async def resolve_revision(kind: str, repo: str, revision: str) -> str:
     if _SHA.fullmatch(revision.lower()):
-        return revision.lower()
+        return upstream_commit(kind, repo, revision)
     refs = await _refs(kind, repo)
     if revision in _DEFAULT_REVISIONS:
         sha = refs.get("HEAD") or refs.get("refs/heads/master")
@@ -310,9 +330,13 @@ def branch_url(kind: str, repo: str, revision: str, path: str) -> str:
     from urllib.parse import quote
 
     name = revision.removeprefix("refs/heads/").removeprefix("refs/tags/")
-    return file_url(
-        kind, repo, "master" if revision in _DEFAULT_REVISIONS else quote(name, safe = ""), path
-    )
+    if revision in _DEFAULT_REVISIONS:
+        ref = "master"
+    elif _SHA.fullmatch(name.lower()):
+        ref = upstream_commit(kind, repo, name)
+    else:
+        ref = quote(name, safe = "")
+    return file_url(kind, repo, ref, path)
 
 
 SORTS = {"downloads": "downloads", "likes": "likes", "lastModified": "last_modified"}
