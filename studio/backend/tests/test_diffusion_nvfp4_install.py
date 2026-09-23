@@ -494,8 +494,8 @@ def test_status_reason_is_bound_to_the_backend_that_loaded():
 
     image, video = _Backend(), _Backend()
     inst.reset_install_state()
-    inst._REASONS[image] = "offline: flashinfer is not downloaded"
-    inst._REASONS[video] = None
+    inst.record_install_reason(image, False, "offline: flashinfer is not downloaded", 0)
+    inst.record_install_reason(video, True, "installed", 1)
     assert inst.nvfp4_backend_fields("torchao", owner = image)[
         "transformer_quant_backend_reason"
     ] == ("offline: flashinfer is not downloaded")
@@ -504,3 +504,37 @@ def test_status_reason_is_bound_to_the_backend_that_loaded():
         is None
     )
     inst.reset_install_state()
+
+
+def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
+    # Image on GPU 0 and video on GPU 1 both fell back in preflight, for different reasons.
+    class _Backend:
+        pass
+
+    image, video = _Backend(), _Backend()
+    inst.reset_install_state()
+    monkeypatch.setitem(ops._PREFLIGHT, 0, {"ok": False, "reason": "JIT build failed"})
+    monkeypatch.setitem(ops._PREFLIGHT, 1, {"ok": False, "reason": "sm_120 unsupported"})
+    inst.record_install_reason(image, True, "already installed", 0)
+    inst.record_install_reason(video, True, "already installed", "cuda:1")
+    assert inst.nvfp4_backend_fields("torchao", owner = image)[
+        "transformer_quant_backend_reason"
+    ] == "flashinfer preflight failed: JIT build failed"
+    assert inst.nvfp4_backend_fields("torchao", owner = video)[
+        "transformer_quant_backend_reason"
+    ] == "flashinfer preflight failed: sm_120 unsupported"
+    inst.reset_install_state()
+
+
+def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded():
+    # A superseded load raises at the cancel check before the swap; the resident model keeps its reason.
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    ensure_at = src.index("ensure_flashinfer_for_nvfp4(")
+    call = src[ensure_at : src.index(")", ensure_at)]
+    assert "owner" not in call
+    unload_at = src.index("self._unload_locked()", ensure_at)
+    assert src.index("record_install_reason(self", ensure_at) > unload_at

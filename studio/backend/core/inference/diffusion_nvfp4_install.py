@@ -72,12 +72,15 @@ def last_install_reason() -> Optional[str]:
     return _LAST_REASON
 
 
-def _cached_preflight_failure() -> Optional[str]:
-    """A memoised failed preflight, read without running one: this feeds a polled status route."""
+def _cached_preflight_failure(index: Optional[int] = None) -> Optional[str]:
+    """A memoised failed preflight, read without running one: this feeds a polled status route. With
+    ``index`` only that device's record counts; without it, the first failed record on any device."""
     try:
         from . import diffusion_nvfp4_ops as ops
         with ops._PREFLIGHT_LOCK:
-            records = list(ops._PREFLIGHT.values())
+            records = (
+                [ops._PREFLIGHT.get(index)] if index is not None else list(ops._PREFLIGHT.values())
+            )
     except Exception:  # noqa: BLE001
         return None
     for record in records:
@@ -86,14 +89,48 @@ def _cached_preflight_failure() -> Optional[str]:
     return None
 
 
+def _cuda_index(device: Any) -> Optional[int]:
+    """The CUDA index a load targets, or None when it cannot be told without guessing."""
+    if isinstance(device, int):
+        return device
+    try:
+        import torch
+
+        dev = torch.device(device) if device is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+    if dev is None or dev.type != "cuda":
+        return None
+    if dev.index is not None:
+        return int(dev.index)
+    try:
+        return int(torch.cuda.current_device())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def record_install_reason(owner: Any, ok: bool, reason: Optional[str], device: Any = None) -> None:
+    """Bind an ensure outcome to ``owner`` (the loading backend) and the device it loaded on. Call it
+    once the load has replaced the resident model, so a cancelled attempt cannot relabel it."""
+    if owner is None:
+        return
+    try:
+        _REASONS[owner] = (None if ok else reason, _cuda_index(device))
+    except TypeError:  # not weak-referenceable: the process-wide reason stands in
+        pass
+
+
 def nvfp4_backend_fields(backend: Optional[str], owner: Any = None) -> dict:
     """The two status keys for a loaded NVFP4 denoiser: the backend it runs and, when that is torchao,
     why flashinfer is not serving it (the install refusal or failure, else a failed preflight). ``owner``
     is the backend object whose load asked; without it the process-wide last reason is used."""
     reason = None
     if backend == "torchao":
-        own = _REASONS.get(owner) if owner is not None else _LAST_REASON
-        reason = own or _cached_preflight_failure()
+        if owner is not None and owner in _REASONS:
+            own, index = _REASONS[owner]
+            reason = own or _cached_preflight_failure(index)
+        else:
+            reason = (_LAST_REASON if owner is None else None) or _cached_preflight_failure()
     return {"transformer_quant_backend": backend, "transformer_quant_backend_reason": reason}
 
 
@@ -512,16 +549,13 @@ def ensure_flashinfer_for_nvfp4(
     local_files_only: bool = False,
     owner: Any = None,
 ) -> tuple[bool, str]:
-    """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports;
-    ``local_files_only`` loads download nothing, so they never install."""
+    """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports,
+    recorded at once; a loader that can still be cancelled with a model resident passes no owner and
+    calls ``record_install_reason`` after the swap. ``local_files_only`` loads never install."""
     ok, reason = _ensure(
         device, logger = logger, status_cb = status_cb, run = run, local_files_only = local_files_only
     )
-    if owner is not None:
-        try:
-            _REASONS[owner] = None if ok else reason
-        except TypeError:  # not weak-referenceable: fall back to the process-wide reason
-            pass
+    record_install_reason(owner, ok, reason, device)
     return ok, reason
 
 
