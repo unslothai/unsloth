@@ -248,3 +248,20 @@ def test_config_objects_inside_dict_configs_are_walked():
     assert f({"model_type": "root", "audio": PretrainedConfig()}) is False
     assert f({"model_type": "root", "audio": RemoteAudioConfig()}) is True
     assert f({"model_type": "root", "nested": {"audio": RemoteAudioConfig()}}) is True
+
+
+def test_configs_past_the_depth_bound_count_as_remote():
+    """Deeper than the walk goes is answered conservatively, never as native."""
+    f = _helper()
+
+    def chain(levels, leaf):
+        node = leaf
+        for _ in range(levels):
+            node = {"model_type": "wrapper", "llm_config": node}
+        return node
+
+    remote_leaf = {"auto_map": {"AutoModel": "modeling_x.XModel"}}
+    native_leaf = {"model_type": "llama"}
+    assert f(chain(3, native_leaf)) is False
+    assert f(chain(3, remote_leaf)) is True
+    assert f(chain(12, remote_leaf)) is True

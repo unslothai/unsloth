@@ -271,9 +271,14 @@ def _config_uses_remote_code(config):
         seen.add(id(current))
         if _remote(current):
             return True
-        # Configs nest a few levels at most; the bound only guards pathological objects.
-        if depth < 8:
-            pending.extend((child, depth + 1) for child in _children(current))
+        children = _children(current)
+        if not children:
+            continue
+        # Configs nest a few levels at most; the bound only guards pathological objects,
+        # and past it the answer is the conservative one.
+        if depth >= 8:
+            return True
+        pending.extend((child, depth + 1) for child in children)
     return False
 
 
