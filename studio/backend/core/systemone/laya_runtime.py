@@ -141,6 +141,8 @@ def _install_command() -> list[str]:
 def ensure_package() -> None:
     global _install_failure
     if package_available():
+        # Installed some other way (by hand, or by an update) after a failed attempt.
+        _install_failure = None
         return
     with _install_lock:
         if package_available():
@@ -186,8 +188,9 @@ def ensure_package() -> None:
 
 
 def install_in_background() -> None:
-    global _installer
+    global _installer, _install_failure
     if package_available():
+        _install_failure = None
         return
     with _state_lock:
         if _installer is not None and _installer.is_alive():

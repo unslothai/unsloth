@@ -297,6 +297,16 @@ def test_failed_install_says_why_and_backs_off(client, monkeypatch, runtime):
     assert client.get("/api/settings/systemone").json()["error"] == message
 
 
+def test_a_package_installed_by_hand_clears_the_old_install_error(client, monkeypatch):
+    monkeypatch.setattr(laya_runtime, "FAILURE_BACKOFF_S", 0.0)
+    pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
+    assert _post(client).status_code == 503
+    pip.installed = True
+    assert _post(client).status_code == 200
+    body = client.get("/api/settings/systemone").json()
+    assert body["error"] is None and body["loaded_model"] == "laya-multilingual"
+
+
 def test_turning_it_back_on_retries_a_failed_install(client, monkeypatch):
     pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
     assert _post(client).status_code == 503
