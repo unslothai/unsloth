@@ -603,7 +603,11 @@ class SamplingParamsEngine(FakeEngine):
         return ["generated"]
 
 
-def _sampling_generation(monkeypatch, user_sampling_params, shared_weights = True):
+def _sampling_generation(
+    monkeypatch,
+    user_sampling_params,
+    shared_weights = True,
+):
     cls = _build_fake_trl(monkeypatch, _GENERATE_BUILDS_SAMPLING_PARAMS)
     module = sys.modules["trl.generation.vllm_generation"]
     module.SamplingParams = FakeSamplingParams
