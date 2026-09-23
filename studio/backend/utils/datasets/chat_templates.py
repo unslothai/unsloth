@@ -279,6 +279,8 @@ def apply_chat_template_to_dataset(
             except Exception as e:
                 logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
 
+        alpaca_eos = getattr(tokenizer, 'eos_token', None) or ""
+
         def _format_alpaca(examples):
             texts = []
             for i in range(len(examples["instruction"])):
@@ -292,7 +294,9 @@ def apply_chat_template_to_dataset(
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
-                texts.append(text + eos_token)
+                if not text.endswith(alpaca_eos):
+                    text += alpaca_eos
+                texts.append(text)
 
             return {"text": texts}
 
