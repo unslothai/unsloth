@@ -50,7 +50,7 @@ def _is_remote_code_module(module):
     return type(module).__module__.startswith("transformers_modules")
 
 
-def _constructor_kwargs(module, model_config):
+def _constructor_kwargs(module):
     """Arguments to rebuild ``module`` from its own attributes, or None when a required
     one cannot be recovered."""
     try:
@@ -63,7 +63,11 @@ def _constructor_kwargs(module, model_config):
             # Whatever went through *args / **kwargs cannot be recovered from the instance.
             return None
         if name == "config":
-            value = module.__dict__.get("config", None) or model_config
+            # A child of a composite model may have been built with a sub-config; only the
+            # config the module kept is known to be the one it was built with.
+            value = module.__dict__.get("config", None)
+            if value is None:
+                return None
         elif name in _PLACEMENT_ARGUMENTS:
             # A stored `self.device` can be the meta device transformers built on.
             value = None if parameter.default is inspect.Parameter.empty else parameter.default
@@ -94,10 +98,10 @@ def _cache_key(module, kwargs):
     return type(module), tuple(parts)
 
 
-def _names_the_model_initialises(model):
-    """Identifiers used by the remote code's own ``_init_weights``. A buffer it names is one
-    the remote code fills after construction, so the constructor's value is not the answer."""
-    names = set()
+def _remote_init_weights_identifiers(model):
+    """The identifiers of each remote ``_init_weights`` found on the model, one set per
+    implementation."""
+    found = []
     seen = set()
     for module in model.modules():
         for cls in type(module).__mro__:
@@ -113,8 +117,19 @@ def _names_the_model_initialises(model):
                 source = inspect.getsource(init_weights)
             except (OSError, TypeError):
                 continue
-            names.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", source))
-    return names
+            found.append(set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", source)))
+    return found
+
+
+def _initialised_by_remote_code(module, buffer_name, init_identifiers):
+    """Whether a remote ``_init_weights`` names both ``module``'s class (or a base) and the
+    buffer, i.e. fills that buffer after construction for this kind of module."""
+    classes = {
+        cls.__name__
+        for cls in type(module).__mro__
+        if not cls.__module__.startswith(("torch", "builtins"))
+    }
+    return any(buffer_name in names and classes & names for names in init_identifiers)
 
 
 def _fresh_non_persistent_buffers(module, kwargs, dtype):
@@ -152,16 +167,15 @@ def restore_remote_code_non_persistent_buffers(model):
     the model is built with real buffers."""
     if model is None or not _transformers_builds_on_meta():
         return 0
-    model_config = getattr(model, "config", None)
     dtype = getattr(model, "dtype", None)
     cache = {}
     restored = 0
-    initialised_by_remote_code = _names_the_model_initialises(model)
+    init_identifiers = _remote_init_weights_identifiers(model)
     for module in model.modules():
         own = getattr(module, "_non_persistent_buffers_set", None)
         if not own or not _is_remote_code_module(module):
             continue
-        kwargs = _constructor_kwargs(module, model_config)
+        kwargs = _constructor_kwargs(module)
         if kwargs is None:
             continue
         key = _cache_key(module, kwargs)
@@ -174,7 +188,7 @@ def restore_remote_code_non_persistent_buffers(model):
             continue
         buffers, aliases = cache[key]
         for name, fresh in buffers.items():
-            if name in initialised_by_remote_code:
+            if _initialised_by_remote_code(module, name, init_identifiers):
                 continue
             live = module._buffers.get(name, None)
             if live is None or live.is_meta or live.shape != fresh.shape:

@@ -71,6 +71,7 @@ def _remote_module():
             inv_freq = 1.0 / (
                 config.rope_theta ** (torch.arange(0, dim, 2, dtype = torch.float) / dim)
             )
+            self.config = config
             self.register_buffer("inv_freq", inv_freq, persistent = False)
             self.original_inv_freq = self.inv_freq
 
@@ -190,7 +191,7 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     module = NeedsTensor(torch.ones(2))
     module.b.zero_()
     # `table` is not recoverable from the instance, so the module is skipped, not guessed.
-    assert helper._constructor_kwargs(module, None) is None
+    assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
 
     class KeepsOnlyStride(nn.Module):
@@ -207,7 +208,7 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     module = KeepsOnlyStride(ratio = 4)
     module.b.zero_()
     # A non-default `ratio` cannot be told from the default, so nothing is rebuilt.
-    assert helper._constructor_kwargs(module, None) is None
+    assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
 
@@ -228,7 +229,7 @@ def test_stored_tensor_arguments_skip_the_module():
     module = OptionalTable(torch.full((2,), 5.0))
     module.b.zero_()
     # Rebuilding with table=None would write 2.0 instead of 10.0, so the module is skipped.
-    assert helper._constructor_kwargs(module, None) is None
+    assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
 
@@ -271,7 +272,7 @@ def test_variadic_constructors_are_skipped():
     module = TakesKwargs(base = 6.0)
     module.b.zero_()
     # Rebuilding without `base` would write 1.0 instead of 6.0, so the module is skipped.
-    assert helper._constructor_kwargs(module, None) is None
+    assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
 
@@ -302,7 +303,7 @@ def test_dtype_is_recovered_from_the_instance_or_the_module_is_skipped():
 
     module = EpsFromDtype(dtype = torch.float16, keep = False)
     module.b.zero_()
-    assert helper._constructor_kwargs(module, None) is None
+    assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
 
 
@@ -355,6 +356,64 @@ def test_buffers_the_remote_init_weights_fills_are_left_alone():
     model._init_weights(model.block)
     assert helper.restore_remote_code_non_persistent_buffers(model) == 0
     torch.testing.assert_close(model.block.table, torch.full((2,), 5.0))
+
+
+def test_a_module_that_did_not_keep_its_config_is_skipped():
+    # In a composite model a child may have been built with text_config or vision_config;
+    # rebuilding it from the root config could give different same-shaped buffers.
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class ScaleFromConfig(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            self.register_buffer("b", torch.full((2,), float(config.scale)), persistent = False)
+
+    ScaleFromConfig.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = nn.Module()
+    model.config = types.SimpleNamespace(scale = 1.0)
+    model.child = ScaleFromConfig(types.SimpleNamespace(scale = 9.0))
+    model.child.b.zero_()
+    assert helper._constructor_kwargs(model.child) is None
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 0
+    assert model.child.b.eq(0).all()
+
+
+def test_remote_init_detection_is_scoped_to_the_class_it_names():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Placeholder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("table", torch.zeros(2), persistent = False)
+
+    class ComputesTable(nn.Module):
+        def __init__(self, base = 4.0):
+            super().__init__()
+            self.base = base
+            self.register_buffer("table", torch.full((2,), base), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Placeholder()
+            self.other = ComputesTable()
+
+        def _init_weights(self, module):
+            if isinstance(module, Placeholder):
+                module.table.fill_(5.0)
+
+    for cls in (Placeholder, ComputesTable, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model._init_weights(model.block)
+    model.other.table.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    torch.testing.assert_close(model.block.table, torch.full((2,), 5.0))
+    torch.testing.assert_close(model.other.table, torch.full((2,), 4.0))
 
 
 def test_loaders_restore_right_after_from_pretrained():
