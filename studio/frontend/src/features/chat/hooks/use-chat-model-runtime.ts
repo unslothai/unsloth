@@ -496,7 +496,9 @@ function publishLoadedModels(
   const known = new Map(
     current.map((m) => [
       m.id,
-      statusQuant && m.id === statusId && m.quant && m.quant !== statusQuant
+      m.id === statusId &&
+      m.quant !== undefined &&
+      m.quant !== (statusQuant ?? null)
         ? { id: m.id }
         : m,
     ]),
