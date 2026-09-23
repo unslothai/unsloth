@@ -111,6 +111,11 @@ export {
   type ReasoningRoundState,
 } from "./stores/reasoning-round-store";
 export {
+  setForkBoundary,
+  useForkBoundaryStore,
+  type ForkBoundaryState,
+} from "./stores/fork-boundary-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,
@@ -230,6 +235,7 @@ export {
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
+export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -322,6 +328,7 @@ export {
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
+  readBackendChatThread,
 } from "./utils/chat-history-storage";
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {

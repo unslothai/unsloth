@@ -56,6 +56,21 @@ test("re-evaluates the cap per call, so a resize can re-clamp", () => {
   assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), SIDEBAR_WIDTH_MAX);
 });
 
+test("a scaled browser caps against the window in layout px", async () => {
+  // The panel renders at width * scale, so its share of the window has to be
+  // taken from the window at that scale, as desktop webview zoom does.
+  const { setLayoutScale } = await import("../src/lib/layout-scale.ts");
+  stubWindow.innerWidth = 1440;
+  setLayoutScale(2);
+  try {
+    assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), 288);
+    assert.equal(clampSidebarWidth(270), 270);
+  } finally {
+    setLayoutScale(1);
+  }
+  assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), SIDEBAR_WIDTH_MAX);
+});
+
 // The reset action promises to clear every stored preference, so a persisted
 // panel width that is missing from the list survives the reload.
 test("persisted panel widths are cleared by the preference reset", async () => {

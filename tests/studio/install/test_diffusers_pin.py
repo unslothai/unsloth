@@ -890,3 +890,42 @@ def test_a_recorded_repair_failure_still_waits_for_a_peer(monkeypatch):
     )
     assert module._repair_diffusers_main() == 1 and ran == []
     assert module.lock_polls() == 2
+
+
+@pytest.mark.parametrize("git", [True, False])
+def test_the_startup_prefetch_fills_the_cache_and_never_the_environment(monkeypatch, git):
+    """The backend stops this at its deadline, which is only safe while it installs nothing here."""
+    import types
+
+    module = _probe_module("install_python_stack_prefetch_probe")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: True)
+    monkeypatch.setattr(module, "_startup_repair_failed", lambda: False)
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_has_working_git", lambda: git)
+    for forbidden in ("_diffusers_main_step", "pip_install_try", "pip_install"):
+        monkeypatch.setattr(module, forbidden, lambda *a, **k: pytest.fail("installed"))
+    monkeypatch.setattr(
+        module.install_manifest, "pass_lock", lambda *a, **k: pytest.fail("took the pass lock")
+    )
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        target = pathlib.Path(cmd[cmd.index("--target") + 1])
+        assert target.is_dir()
+        return types.SimpleNamespace(returncode = 0 if len(runs) == 1 else 1, stdout = b"")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module._prefetch_diffusers_main() == 0
+    cmd = runs[0]
+    assert cmd[:3] == ["uv", "pip", "install"] and "--no-deps" in cmd
+    target = pathlib.Path(cmd[cmd.index("--target") + 1])
+    assert not target.exists(), "the scratch install is thrown away"
+    if git:
+        assert "-r" in cmd
+    else:
+        assert any(arg.startswith("diffusers @ https://") for arg in cmd)
+    assert module._prefetch_diffusers_main() == 2
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: False)
+    assert module._prefetch_diffusers_main() == 1 and len(runs) == 2, "pip has no cache to fill"
