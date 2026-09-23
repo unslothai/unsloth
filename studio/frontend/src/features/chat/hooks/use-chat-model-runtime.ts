@@ -1216,18 +1216,50 @@ export function useChatModelRuntime() {
             toast.error("Model load cancelled.");
             // This pick invalidated the previous run before opening credentials. If that run
             // fails while the dialog is open, its stale-intent catch cannot restore the config
-            // it staged over the still-resident model. Defer restoration until it fully settles,
-            // and only if the original resident is still the selected checkpoint.
+            // it staged over the still-resident model. Wait until the run settles, then reconcile
+            // status if it had already unloaded its resident.
             if (activeRunBeforeCredentials) {
-              void activeRunBeforeCredentials.settledPromise.then(() => {
+              void activeRunBeforeCredentials.settledPromise.then(async () => {
                 if (modelSelectionIntentEpoch !== loadIntentId) return;
-                const current = useChatRuntimeStore.getState();
-                if (
-                  !activeRunBeforeCredentials.residentModelUnloaded &&
-                  current.params.checkpoint ===
+                if (!activeRunBeforeCredentials.residentModelUnloaded) {
+                  const current = useChatRuntimeStore.getState();
+                  if (
+                    current.params.checkpoint ===
                     activeRunBeforeCredentials.rollbackCheckpoint
-                ) {
-                  restoreRollbackConfigForClear(activeRunBeforeCredentials);
+                  ) {
+                    restoreRollbackConfigForClear(activeRunBeforeCredentials);
+                  }
+                  return;
+                }
+                if (activeRunBeforeCredentials.residentModelUnloaded) {
+                  try {
+                    const status = await getInferenceStatus();
+                    if (modelSelectionIntentEpoch !== loadIntentId) return;
+                    if (
+                      (status.loading?.length ?? 0) === 0 &&
+                      useChatRuntimeStore.getState().params.checkpoint ===
+                        activeRunBeforeCredentials.rollbackCheckpoint
+                    ) {
+                      if (!status.active_model) {
+                        restoreRollbackConfigForClear(activeRunBeforeCredentials);
+                        useChatRuntimeStore.getState().clearCheckpoint();
+                      } else if (
+                        residentModelMatchesPick(status, {
+                          id: activeRunBeforeCredentials.rollbackCheckpoint ?? "",
+                          loadPath:
+                            activeRunBeforeCredentials.rollbackLoadId ??
+                            activeRunBeforeCredentials.rollbackCheckpoint,
+                          ggufVariant: activeRunBeforeCredentials.rollbackVariant,
+                        })
+                      ) {
+                        restoreRollbackConfigForClear(activeRunBeforeCredentials);
+                      }
+                      await refresh();
+                    }
+                  } catch {
+                    // Preserve state when backend status is unavailable; a later refresh can reconcile it.
+                  }
+                  return;
                 }
               });
             }
@@ -1237,7 +1269,6 @@ export function useChatModelRuntime() {
         hfToken = preparedToken.token;
       }
       if (modelSelectionIntentEpoch !== loadIntentId) return;
-
       // A prior run may have failed while this pick was waiting for Hub credentials. If it
       // never unloaded the resident, it could not restore its staged config after losing intent.
       if (activeRunBeforeCredentials && activeLoadRunRef.current !== activeRunBeforeCredentials) {
@@ -1263,6 +1294,7 @@ export function useChatModelRuntime() {
           });
         }
       }
+
 
 
       if (pendingReplacementRollback?.config) {

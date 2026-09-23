@@ -726,7 +726,7 @@ test("declined Hub credentials restore a failed superseded run's resident config
   const decline = section(selection, "if (!preparedToken.proceed) {", "hfToken = preparedToken.token;");
   assert.match(decline, /activeRunBeforeCredentials\.settledPromise\.then\(/);
   assert.match(decline, /modelSelectionIntentEpoch !== loadIntentId/);
-  assert.match(decline, /!activeRunBeforeCredentials\.residentModelUnloaded/);
+  assert.match(decline, /if \(!activeRunBeforeCredentials\.residentModelUnloaded\)/);
   assert.match(decline, /current\.params\.checkpoint ===\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
   assert.match(decline, /restoreRollbackConfigForClear\(activeRunBeforeCredentials\)/);
 });
@@ -818,4 +818,17 @@ test("approved Hub credentials snapshot config from a successfully settled prior
   assert.match(refresh, /activeRunBeforeCredentials\.loadAttemptPath/);
   assert.match(refresh, /current\.params\.checkpoint !==\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
   assert.match(refresh, /previousConfigForReplacement = currentRuntimePerModelConfig\(\{\s*includeMaxSeqLength: true/);
+});
+
+
+test("declining Hub credentials reconciles an unloaded predecessor after it settles", () => {
+  const runtime = read(RUNTIME);
+  const decline = section(runtime, "if (!preparedToken.proceed) {", "hfToken = preparedToken.token;");
+  assert.match(decline, /activeRunBeforeCredentials\.settledPromise\.then\(async\s*\(\)\s*=>/);
+  assert.match(decline, /if \(activeRunBeforeCredentials\.residentModelUnloaded\)/);
+  assert.match(decline, /await getInferenceStatus\(\)/);
+  assert.match(
+    decline,
+    /status\.loading\?\.length[\s\S]*?!status\.active_model[\s\S]*?clearCheckpoint\(\)/,
+  );
 });
