@@ -152,7 +152,13 @@ def _client_capture(provider_type: str, **kwargs) -> dict:
         return server.sampling()
 
 
-def _route_capture(*, provider_type = "vllm", messages = None, full_body = False, **payload_fields) -> dict:
+def _route_capture(
+    *,
+    provider_type = "vllm",
+    messages = None,
+    full_body = False,
+    **payload_fields,
+) -> dict:
     """POST through `_proxy_to_external_provider`, not around it."""
     import routes.inference as ri
     from starlette.requests import Request
@@ -375,8 +381,9 @@ def test_preserve_thinking_reaches_llama_server_through_the_route(value):
         {"role": "assistant", "content": "answer", "reasoning_content": "prior thought"},
         {"role": "user", "content": "two"},
     ]
-    body = _route_capture(provider_type = "llama_cpp", messages = messages,
-                          full_body = True, preserve_thinking = value)
+    body = _route_capture(
+        provider_type = "llama_cpp", messages = messages, full_body = True, preserve_thinking = value
+    )
     assert body["messages"][-2]["reasoning_content"] == "prior thought"
     if value is None:
         assert "chat_template_kwargs" not in body

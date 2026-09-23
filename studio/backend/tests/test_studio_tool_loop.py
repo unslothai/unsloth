@@ -1341,16 +1341,32 @@ def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
 
 @pytest.mark.parametrize("preserve", [True, False])
 def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
-    transport = FakeTransport([
+    transport = FakeTransport(
         [
-            _sse({"reasoning_content": "First "}),
-            _sse({"reasoning_content": "thought."}),
-            _sse({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
-                "function": {"name": "web_search", "arguments": '{"query":"unsloth"}'}}]}),
-            _sse(finish = "tool_calls"), _DONE,
-        ],
-        [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
-    ])
+            [
+                _sse({"reasoning_content": "First "}),
+                _sse({"reasoning_content": "thought."}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"unsloth"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
     transport.preserves_reasoning = preserve
     _run(transport)
     assistant = transport.requests[1]["messages"][-2]

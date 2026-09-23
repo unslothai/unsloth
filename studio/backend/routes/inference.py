@@ -22742,7 +22742,12 @@ def _build_external_messages(
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
             # function-call loops round-trip.
-            if msg.role == "assistant" and not (msg.content or "").strip() and not msg.tool_calls and not reasoning:
+            if (
+                msg.role == "assistant"
+                and not (msg.content or "").strip()
+                and not msg.tool_calls
+                and not reasoning
+            ):
                 continue
             out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **reasoning}
             if msg.role == "assistant" and msg.tool_calls:
