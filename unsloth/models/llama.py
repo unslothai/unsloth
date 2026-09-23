@@ -2730,7 +2730,9 @@ class FastLlamaModel:
         kwargs.pop("attn_implementation", None)  # No need since we auto call it
 
         # Cannot be None, since HF now checks for the config.
-        if load_in_4bit:
+        # A caller's own BitsAndBytesConfig (fast_inference forwards load_in_4bit = True with it)
+        # stays authoritative: its quant type, double quant and skip list are theirs.
+        if load_in_4bit and not _explicit_bnb_4bit:
             kwargs["quantization_config"] = bnb_config
 
         kwargs = add_dtype_kwargs(dtype, kwargs)

@@ -945,6 +945,24 @@ def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
         assert guards == ["not _explicit_bnb_4bit"], (module.__name__, guards)
 
 
+def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
+    import ast, inspect
+    from unsloth.models import llama
+
+    guards = [
+        ast.unparse(node.test)
+        for node in ast.walk(ast.parse(inspect.getsource(llama)))
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(stmt, ast.Assign)
+            and "quantization_config" in ast.unparse(stmt.targets[0])
+            and ast.unparse(stmt.value) == "bnb_config"
+            for stmt in node.body
+        )
+    ]
+    assert guards and all("not _explicit_bnb_4bit" in guard for guard in guards), guards
+
+
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
     # The public loader forwards load_in_4bit = False when a quantization_config is passed, so a
