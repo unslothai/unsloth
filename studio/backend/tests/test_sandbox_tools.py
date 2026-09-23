@@ -1102,6 +1102,10 @@ class TestNetworkTargetResolution:
                 "configure(os)\nrequests.get('https://pypi.org/')",
                 id = "proxy_environment_through_os_passed_to_a_helper",
             ),
+            pytest.param(
+                f"import paramiko\nparamiko.Transport(sock=('{_H}', 22))",
+                id = "transport_sock_keyword",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1246,6 +1250,7 @@ class TestNetworkTargetResolution:
             "import os, httpx\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "httpx.get('https://pypi.org/', trust_env=False)",
             "class API:\n    @property\n    def data(self):\n        return {}\nAPI().data.get('http://203.0.113.5/')",
+            "import paramiko\nparamiko.Transport(sock=('pypi.org', 22))",
         ],
     )
     def test_known_trusted_host_runs(self, code):

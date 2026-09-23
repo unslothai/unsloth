@@ -17189,8 +17189,11 @@ def _check_signal_escape_patterns(code: str):
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
 
+    # `sock=` is where `SSHClient.connect` really goes; on `Transport` it is the readable
+    # destination itself, so only the client's connect is listed.
     _ROUTE_KEYWORDS = {
-        "paramiko.": ("sock",),
+        "paramiko.SSHClient.": ("sock",),
+        "paramiko.client.SSHClient.": ("sock",),
         "fabric.": ("gateway",),
         "asyncssh.": ("tunnel", "proxy_command"),
     }
