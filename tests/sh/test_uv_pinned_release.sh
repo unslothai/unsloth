@@ -1109,6 +1109,38 @@ else
     bad "a destination holding regex metacharacters is written once, not once per run ($_n)"
 fi
 
+# UNSLOTH_UV_WHEEL_MIRROR: the pinned uv as its PyPI wheel, from that mirror only, under the wheel's digest.
+mkdir -p "$WORK/whl/uv-0.12.1.data/scripts" && cp "$WORK/src/uv-fake-triple/uv" "$WORK/src/uv-fake-triple/uvx" "$WORK/whl/uv-0.12.1.data/scripts/"
+(cd "$WORK/whl" && python3 -m zipfile -c "$WORK/uv-fake.whl" uv-0.12.1.data)
+WHEEL_SHA=$( (sha256sum "$WORK/uv-fake.whl" 2>/dev/null || shasum -a 256 "$WORK/uv-fake.whl") | awk '{print $1}')
+_sa=$(grep -n '^_SETUP_UV_PINNED_VERSION=' "$SETUP_SH" | cut -d: -f1)
+_sb=$(awk -v s="$(grep -n '^_setup_install_uv_pinned() {' "$SETUP_SH" | cut -d: -f1)" 'NR > s && /^}$/ { print NR; exit }' "$SETUP_SH")
+sed -n "${_sa},${_sb}p" "$SETUP_SH" > "$WORK/uvfns_setup.sh"
+cp "$WORK/uvfns.sh" "$WORK/uvfns_install.sh"
+for _run in install:good install:bad setup:good setup:bad; do
+    _wh="$WORK/wheel_${_run%:*}_${_run#*:}"; mkdir -p "$_wh"; _want=$WHEEL_SHA; [ "${_run#*:}" = good ] || _want=$(printf '0%.0s' $(seq 64))
+    (
+        set +e; tauri_log() { :; }
+        # shellcheck disable=SC1090
+        . "$WORK/uvfns_${_run%:*}.sh"
+        # GNU tar cannot read a zip; stand in for it where tar is bsdtar, which can.
+        tar() { case "$*" in *.whl*) return 1 ;; esac; command tar "$@"; }
+        _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }; _setup_uv_pinned_asset() { _uv_pinned_asset; }
+        _uv_pinned_wheel() { echo "packages/ab/cd/uv-fake.whl $_want"; }; _setup_uv_pinned_wheel() { _uv_pinned_wheel; }
+        download() { echo "$1" >> "$_wh.get"; cp -f "$WORK/uv-fake.whl" "$2"; }; _setup_http_get() { download "$1" /dev/stdout; }; _setup_persist_uv_path() { :; }
+        HOME="$_wh"; UNSLOTH_UV_WHEEL_MIRROR="https://mirror.example/pypi/web/"; export HOME UNSLOTH_UV_WHEEL_MIRROR
+        unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME UV_DOWNLOAD_URL INSTALLER_DOWNLOAD_URL UV_INSTALLER_GHE_BASE_URL UV_INSTALLER_GITHUB_BASE_URL
+        if [ "${_run%:*}" = install ]; then _uv_install_pinned; else _setup_install_uv_pinned; fi
+    ) > "$_wh.out" 2>&1 || true
+    _got=no; [ -x "$_wh/.local/bin/uv" ] && [ -x "$_wh/.local/bin/uvx" ] \
+        && [ "$(cat "$_wh.get")" = "https://mirror.example/pypi/web/packages/ab/cd/uv-fake.whl" ] && _got=yes
+    _exp=no; [ "${_run#*:}" = good ] && _exp=yes
+    assert_eq "$_run: wheel-mirror install (good digest installs from the mirror only, bad installs nothing)" "$_exp" "$_got"
+done
+_wheels() { grep -oE 'uv-[0-9.]+-py3-none-[a-z0-9_.]+\.whl [0-9a-f]{64}"' "$1" | sort; }
+assert_eq "install.sh and setup.sh pin the same four wheels of the pinned uv" "4 $(_wheels "$INSTALL_SH")" \
+    "$(_wheels "$INSTALL_SH" | grep -c "^uv-$(sed -n 's/^UV_PINNED_VERSION="\(.*\)"/\1/p' "$INSTALL_SH")-") $(_wheels "$SETUP_SH")"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

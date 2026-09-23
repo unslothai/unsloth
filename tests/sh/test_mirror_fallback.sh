@@ -28,7 +28,7 @@ cat > "$_WORK/bin/curl" <<'EOF'
 for _a in "$@"; do _url="$_a"; done
 echo "$_url" >> "$MOCK_LOG"
 case "$_url" in https://mirrors.cernet.edu.cn/*|https://registry.npmmirror.com/*) _m=_MIRROR ;; *) _m= ;; esac
-case "$_url" in *python-build*) _h=PYTHON ;; *pypi*) _h=PYPI ;; *pytorch*) _h=TORCH ;; *node*) _h=NODE ;; *) _h=NPM ;; esac
+case "$_url" in *python-build*) _h=PYTHON ;; */uv/*) _h=UV ;; *pypi*) _h=PYPI ;; *pytorch*) _h=TORCH ;; *node*) _h=NODE ;; *) _h=NPM ;; esac
 eval "_r=\${MOCK_$_h$_m:-ok}"
 case " $* " in *" -sL "*) ;; *) [ -z "$_m" ] || { printf 302; exit 0; } ;; esac
 case "$_r" in
@@ -39,7 +39,7 @@ esac
 EOF
 chmod +x "$_WORK/bin/curl"
 
-_VARS="UV_DEFAULT_INDEX UV_INDEX UV_INDEX_STRATEGY PIP_INDEX_URL PIP_EXTRA_INDEX_URL UNSLOTH_PYTORCH_MIRROR UNSLOTH_NODE_MIRROR UNSLOTH_NPM_REGISTRY UV_PYTHON_INSTALL_MIRROR"
+_VARS="UV_DEFAULT_INDEX UV_INDEX UV_INDEX_STRATEGY PIP_INDEX_URL PIP_EXTRA_INDEX_URL UNSLOTH_PYTORCH_MIRROR UNSLOTH_NODE_MIRROR UNSLOTH_NPM_REGISTRY UV_PYTHON_INSTALL_MIRROR UNSLOTH_UV_WHEEL_MIRROR"
 
 # _run <shell> [VAR=value ...]: prints "VAR=value" for every exported var in $_VARS, then the step lines.
 _run() {
@@ -113,6 +113,10 @@ for SH in dash bash; do
     assert_contains "[$SH] uv.toml python-install-mirror leaves the index fallback on" "$out" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     out=$(_run "$SH" MOCK_PYTHON=blocked UV_PYTHON_INSTALL_MIRROR=https://corp.example/pbs)
     assert_eq "[$SH] a user Python mirror skips the probe" "" "$(grep -F python-build "$_WORK/curl.log" || true)"
+    out=$(_run "$SH" MOCK_UV=blocked)
+    assert_contains "[$SH] blocked uv releases: the pinned wheel comes from the PyPI mirror" "$out" "UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web"
+    for _src in UV_INSTALLER_GITHUB_BASE_URL UNSLOTH_UV_WHEEL_MIRROR; do out=$(_run "$SH" MOCK_UV=blocked $_src=https://corp.example/uv)
+        assert_eq "[$SH] a user $_src skips the uv probe" "" "$(grep -F /uv/ "$_WORK/curl.log" || true)"; done
     out=$(_run "$SH" MOCK_TORCH=blocked UNSLOTH_TORCH_INDEX_URL=https://corp.example/whl/cu128)
     assert_not_contains "[$SH] a pinned torch index is not overridden" "$out" "UNSLOTH_PYTORCH_MIRROR"
     out=$(_run "$SH" MOCK_NPM=blocked UNSLOTH_NPM_REGISTRY=https://corp.example/npm/)

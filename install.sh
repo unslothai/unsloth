@@ -1654,9 +1654,11 @@ _mirror_url() {
         node:mirror) echo "$_MIRROR_CERNET/nodejs-release/index.tab" ;;
         npm:default) echo "https://registry.npmjs.org/npm/latest" ;;
         npm:mirror) echo "https://registry.npmmirror.com/npm/latest" ;;
-        # Any published release will do: the probe only checks that the host answers.
+        # Any published release will do for the two releases.astral.sh probes: they only check that the host answers.
         python:default) echo "https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS" ;;
         python:mirror) echo "$_MIRROR_PYTHON/20260728/" ;;
+        uvbin:default) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/sha256.sum" ;;
+        uvbin:mirror) echo "$_MIRROR_PYPI/uv/" ;;
     esac
 }
 
@@ -1735,6 +1737,10 @@ _mirror_use() {
             export UV_PYTHON_INSTALL_MIRROR="$_MIRROR_PYTHON"
             _mu_from="releases.astral.sh (Python builds)"
             _mu_to="$UV_PYTHON_INSTALL_MIRROR" ;;
+        uvbin)
+            export UNSLOTH_UV_WHEEL_MIRROR="$_MIRROR_CERNET/pypi/web"
+            _mu_from="releases.astral.sh (uv)"
+            _mu_to="$UNSLOTH_UV_WHEEL_MIRROR" ;;
     esac
     step "mirror" "$_mu_from is $2; using $_mu_to" "$C_WARN"
     _mf_used=true
@@ -1760,6 +1766,7 @@ _mirror_fallback() {
     [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] || _mf_hosts="$_mf_hosts npm"
     _mirror_configured python || _mf_hosts="$_mf_hosts python"
+    [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
     [ -n "$_mf_hosts" ] || return 0
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
     # shellcheck disable=SC2086
@@ -3460,6 +3467,31 @@ _uv_pinned_asset() {
     return 0
 }
 
+# The same pinned uv as a PyPI wheel, for UNSLOTH_UV_WHEEL_MIRROR: "<path under a PyPI file root> <sha256>" for archive $1, both from https://pypi.org/pypi/uv/<ver>/json.
+_uv_pinned_wheel() {
+    case "$1" in
+        uv-x86_64-unknown-linux-gnu.tar.gz)
+            echo "packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 27211df9b277f440dea438a4e525ba40250fb721ad39b8927eefc2d91f9aea15" ;;
+        uv-aarch64-unknown-linux-gnu.tar.gz)
+            echo "packages/9a/c7/29e426865c2eb8df61253dae93b953523f48c9fca1e471c7e49ff068f19a/uv-0.12.1-py3-none-manylinux_2_28_aarch64.whl b255ac23958e45f39f9c7a4cd65890df5ef46f539a3b14de03bd296bbba9cb60" ;;
+        uv-x86_64-apple-darwin.tar.gz)
+            echo "packages/fd/07/a417475380e901f4325d13b09938baab227b0c143547124b944c5bc71783/uv-0.12.1-py3-none-macosx_10_12_x86_64.whl 41b8fc2335f682312a1ca39a7b4abfd6af800992065c663582ca3e4d51cf9258" ;;
+        uv-aarch64-apple-darwin.tar.gz)
+            echo "packages/c9/68/391ff0cc3d8020e64adc43bb4e50607f744c69e792fb7623dc7c1526704b/uv-0.12.1-py3-none-macosx_11_0_arm64.whl 2e9b0b86e180abc5968b979c6e25203b32e85969abb5083ee1e8b88a5aa98a76" ;;
+        *) return 1 ;;
+    esac
+}
+
+# A wheel is a zip, which GNU tar cannot read and minimal Linux images often have no unzip for.
+_uv_unzip() {
+    if command -v unzip >/dev/null 2>&1 && unzip -qo "$1" -d "$2" >/dev/null 2>&1; then return 0; fi
+    case "$(tar --version 2>/dev/null)" in
+        *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
+    esac
+    command -v python3 >/dev/null 2>&1 &&
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+}
+
 # Echoes the SHA-256 of "$1", or nothing when the host has no digest tool.
 _uv_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -3581,6 +3613,15 @@ _uv_install_pinned() {
         _uip_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _uip_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
+    elif [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}" ]; then
+        # Set by the mirror fallback when releases.astral.sh is blocked or slow. No wheel pin leaves the list empty, so the caller's fallback runs.
+        _uip_bases=""
+        if _uip_wheel=$(_uv_pinned_wheel "$_uip_asset"); then
+            _uip_path=${_uip_wheel% *}
+            _uip_bases="${UNSLOTH_UV_WHEEL_MIRROR%/}/${_uip_path%/*}"
+            _uip_asset=${_uip_path##*/}
+            _uip_want=${_uip_wheel##* }
+        fi
     else
         _uip_bases="https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
@@ -3596,8 +3637,11 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             fi
             continue
         fi
-        # The POSIX archives hold uv and uvx under a uv-<triple>/ directory.
-        if ! tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null; then continue; fi
+        # The POSIX archives hold uv and uvx under a uv-<triple>/ directory, the wheel under uv-<ver>.data/scripts/.
+        case "$_uip_asset" in
+            *.whl) _uv_unzip "$_uip_work/$_uip_asset" "$_uip_work" || continue ;;
+            *) tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null || continue ;;
+        esac
         mkdir -p "$_uip_dest" 2>/dev/null || break
         _uip_placed=0
         # uv first, and either half failing aborts the placement: the two ship as a set, and a pinned uvx beside the host's older uv is a pairing we never built or tested. Stage both, then publish both: the renames sit next to each other so the pair is replaced as one, and a failure anywhere before them leaves the destination untouched.
