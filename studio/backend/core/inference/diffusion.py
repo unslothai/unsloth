@@ -4443,8 +4443,10 @@ class DiffusionBackend:
                     # GPU" while holding a working GPU learns nothing about why it declined.
                     transformer_quant_decline = dense_transformer_unsupported_reason(target)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-                elif transformer_quant_pinned is not None and (
-                    select_transformer_quant_scheme(
+                elif (
+                    transformer_quant_pinned is not None
+                    and native_scheme is None
+                    and select_transformer_quant_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
                     )
                     is None
@@ -5734,6 +5736,10 @@ class DiffusionBackend:
                                     )
                                 )
                                 if transformer_quant_engaged is None
+                                # Weight-only: the stored precision is the scheme, the arithmetic is not.
+                                else f"weight-only: {transformer_quant_engaged} weights, bf16 compute "
+                                "(torchao-free, a memory saving rather than a speed-up)"
+                                if native_scheme is not None
                                 else f"seeded from the hosted checkpoint "
                                 f"{transformer_quant_artifact.split(':', 1)[1]}"
                                 if transformer_quant_artifact is not None

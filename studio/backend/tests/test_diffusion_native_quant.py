@@ -144,8 +144,10 @@ def test_native_layer_reconstructs_the_weight(scheme, bound):
     err = nq.native_weight_error(lin, scheme)
     assert err is not None and err < bound
     layer = nq.native_linear_class()(lin, scheme)
-    assert layer.weight_q.dtype == (torch.int8 if scheme == "int8" else torch.float8_e4m3fn)
-    assert layer.weight_scale.dtype == torch.float32 and layer.weight_scale.shape == (512,)
+    # Stored as integer views (fp8 as uint8, fp32 scales as int32) so a module ``.to(dtype)`` cannot cast them.
+    assert layer.weight_q.dtype == (torch.int8 if scheme == "int8" else torch.uint8)
+    assert layer.weight_scale.dtype == torch.int32 and layer.weight_scale.shape == (512,)
+    assert layer.weight_q.element_size() == 1
     assert layer.bias is lin.bias
     x = torch.randn(4, 256, dtype = torch.bfloat16)
     ref = lin(x).float()
@@ -177,7 +179,23 @@ def test_native_buffers_move_with_module_to_and_state_dict():
     assert {"weight_q", "weight_scale", "bias"} <= keys and "weight" not in keys
     layer.to("meta")
     assert layer.weight_q.device.type == "meta" and layer.weight_q.dtype == torch.int8
-    assert layer.weight_scale.dtype == torch.float32
+    assert layer.weight_scale.dtype == torch.int32
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_a_module_wide_dtype_cast_leaves_the_stored_weights_alone(scheme):
+    """A pipeline ``.to(dtype)`` casts every floating buffer: an fp8 payload would widen back to bf16
+    and the fp32 scales would round. Integer views are skipped, so memory and output are unchanged."""
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(128, 64).to(torch.bfloat16)
+    layer = nq.native_linear_class()(lin, scheme)
+    x = torch.randn(3, 128, dtype = torch.bfloat16)
+    before = layer(x).clone()
+    q_before = layer.weight_q.clone()
+    layer.to(torch.float16)
+    assert layer.weight_q.dtype == q_before.dtype and torch.equal(layer.weight_q, q_before)
+    assert layer.weight_scale.dtype == torch.int32
+    assert torch.allclose(layer(x.to(torch.float16)).float(), before.float(), rtol = 1e-2, atol = 1e-2)
 
 
 # ---- quantize_transformer ---------------------------------------------------------------------

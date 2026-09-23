@@ -9623,3 +9623,45 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compile(
+    fake_runtime, monkeypatch, scheme
+):
+    """On AMD / the Windows torchao stub, an explicit int8 / fp8 video DiT goes to the torchao-free
+    weight-only branch: it engages instead of being declined, and speed=off is honoured because bf16
+    arithmetic has no compile to require."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    calls: list = []
+
+    def _quantize(
+        view,
+        target,
+        *,
+        mode,
+        family = None,
+        **kw,
+    ):
+        assert tq.native_quant_scheme(target, mode, family = family) == scheme
+        calls.append(mode)
+        return scheme
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _quantize)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = scheme,
+        speed_mode = "off",
+    )
+    assert calls and set(calls) == {scheme}
+    assert status["transformer_quant"] == scheme
+    assert status["speed_mode"] == "off"
+    backend.unload()

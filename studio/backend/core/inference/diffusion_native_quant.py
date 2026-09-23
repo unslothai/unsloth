@@ -52,12 +52,22 @@ def native_linear_class():
                 else:
                     wq = (w / scale).to(torch.float8_e4m3fn)
                 del w
-            self.register_buffer("weight_q", wq)
-            self.register_buffer("weight_scale", scale.squeeze(1).to(torch.float32))
+            # Integer views, so a module-wide ``.to(dtype)`` (which casts every floating buffer) can neither widen
+            # the fp8 payload back to bf16 nor round the fp32 scales.
+            self.register_buffer("weight_q", wq.view(torch.uint8) if scheme == NATIVE_FP8 else wq)
+            self.register_buffer(
+                "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
+            )
             self.bias = linear.bias
 
         def dequantized_weight(self, dtype: Any) -> Any:
-            return (self.weight_q.to(torch.float32) * self.weight_scale[:, None]).to(dtype)
+            wq = (
+                self.weight_q.view(torch.float8_e4m3fn)
+                if self.scheme == NATIVE_FP8
+                else self.weight_q
+            )
+            scale = self.weight_scale.view(torch.float32)
+            return (wq.to(torch.float32) * scale[:, None]).to(dtype)
 
         def forward(self, x: Any) -> Any:
             return F.linear(x, self.dequantized_weight(x.dtype), self.bias)
