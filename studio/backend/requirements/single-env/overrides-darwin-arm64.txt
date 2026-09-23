@@ -35,15 +35,9 @@ anyio<4.14.0
 # silently backtracks mlx-vlm to 0.4.4, dropping newer VLM/audio support, so the
 # cap stays: the resolver must never pair hub 1.x with pinned transformers 4.x.
 #
-# On python >= 3.10 that premise is gone. diffusers (for MiniMax-H3) needed a
-# hub 1.x, and constraints.txt, studio.txt, no-torch-runtime.txt and the studio
-# extra in pyproject.toml all moved to that window; the floor is now 1.31.0,
-# which is what the pinned Diffusers main build in diffusers-main.txt requires.
-# A flat <1.0 here contradicts them and is unsatisfiable, which is macOS-arm
-# only, so only the mac legs see it: uv reported "Because you require
-# huggingface-hub>=0.34.0,<1.0 and huggingface-hub>=1.23.0,<2.0, your
-# requirements are unsatisfiable", falls back to pip, and the clean-machine
-# trace then fails on a rustc probe. mlx-audio's own >=1.0 floor is satisfied by
-# the 1.x window anyway.
+# On python >= 3.10 the premise is gone: constraints.txt, studio.txt,
+# no-torch-runtime.txt and the pyproject studio extra take hub 1.x, so a flat
+# <1.0 here is unsatisfiable (macOS-arm only; uv falls back to pip). 1.31.0 is
+# the floor the Diffusers main build in diffusers-main.txt declares.
 huggingface_hub>=1.31.0,<2.0; python_version >= "3.10"
 huggingface_hub>=0.34.0,<1.0; python_version < "3.10"
