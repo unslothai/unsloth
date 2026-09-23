@@ -979,6 +979,23 @@ def test_exact_module_targets_win_over_a_class_target():
     )
 
 
+def test_exact_and_regex_targets_win_when_the_module_is_known():
+    # A broad class group listed first must not win over an exact path or a regex.
+    pytest.importorskip("compressed_tensors")
+    from types import SimpleNamespace
+    from unsloth.models.compressed_tensors_bnb import _scheme_for_module
+
+    dense = SimpleNamespace(targets = ["Linear"])
+    exact = SimpleNamespace(targets = [f"model.layers.1.mlp.experts.{e}.gate_proj" for e in range(4)])
+    ct = SimpleNamespace(config_groups = {"dense": dense, "experts": exact})
+    linear = torch.nn.Linear(4, 4)
+    assert _scheme_for_module(ct, "model.layers.1.mlp.experts.2.gate_proj", linear) is exact
+    assert _scheme_for_module(ct, "model.layers.0.self_attn.q_proj", linear) is dense
+    regex = SimpleNamespace(targets = [r"re:.*self_attn\.q_proj$"])
+    ct = SimpleNamespace(config_groups = {"dense": dense, "q": regex})
+    assert _scheme_for_module(ct, "model.layers.0.self_attn.q_proj", linear) is regex
+
+
 def test_expert_scheme_is_resolved_per_layer():
     # One converter serves every layer, so a checkpoint that quantizes layer 1's experts and
     # layer 5's experts under different groups must get each layer's own scheme.

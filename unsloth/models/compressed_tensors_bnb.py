@@ -424,14 +424,6 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
     groups = list(ct_config.config_groups.values())
     if len(groups) == 1:
         return groups[0]
-    try:
-        from compressed_tensors.utils.match import is_match
-        if module is not None:
-            for group in groups:
-                if is_match(name, module, group.targets):
-                    return group
-    except Exception:
-        pass
     # compressed-tensors precedence: an exact module path, then a regex, then a class name.
     for group in groups:
         if name in group.targets:
@@ -440,6 +432,14 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
         for target in group.targets:
             if target.startswith("re:") and re.match(target[3:], name):
                 return group
+    try:
+        from compressed_tensors.utils.match import is_match
+        if module is not None:
+            for group in groups:
+                if is_match(name, module, group.targets):
+                    return group
+    except Exception:
+        pass
     class_name = type(module).__name__ if module is not None else "Linear"
     for group in groups:
         for target in group.targets:
