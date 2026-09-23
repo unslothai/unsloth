@@ -1867,6 +1867,7 @@ def update_openai_auto_switch_override(
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import (
         drop_managed_flags,
+        parse_ctx_override,
         strip_shadowing_flags,
         validate_extra_args,
     )
@@ -2056,12 +2057,28 @@ def update_openai_auto_switch_override(
             ):
                 _kept_reasoning_budget = -1
                 _kept_reasoning_budget_message = ""
+            # A -c the caller sends with this save is what its own load runs with, since llama.cpp
+            # takes the last -c over the slider value, so store the context the same way.
+            # Otherwise an API auto-switch strips the flag as a stale shadow of the slider
+            # (#11511). Flags carried over from an earlier save keep that stale-flag rule.
+            max_seq_length = payload.max_seq_length
+            custom_context_length = payload.custom_context_length
+            if payload.llama_extra_args is not None:
+                try:
+                    explicit_ctx = parse_ctx_override(extra_args)
+                except ValueError:
+                    explicit_ctx = None
+                if explicit_ctx:
+                    if max_seq_length is not None:
+                        max_seq_length = explicit_ctx
+                    if custom_context_length is not None:
+                        custom_context_length = explicit_ctx
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
-                max_seq_length = payload.max_seq_length,
-                custom_context_length = payload.custom_context_length,
+                max_seq_length = max_seq_length,
+                custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
                 mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
