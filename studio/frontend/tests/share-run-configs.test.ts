@@ -40,8 +40,6 @@ test("null, false, zero and empty values survive; omissions retain the existing 
     { llamaExtraArgs: [] },
     { llamaExtraArgs: null },
     { reasoningBudgetMessage: "" },
-    { chatTemplateOverride: "" },
-    { chatTemplateOverride: null },
   ]) {
     const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
     assert.equal(parsed.kind, "valid");

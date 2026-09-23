@@ -261,7 +261,7 @@ for (const [address, destination] of [
   });
 }
 
-test("sharing empty arguments and templates preserves recipient overrides unless explicitly selected", () => {
+test("extra arguments are always selectable and empty arguments are shared only when selected", () => {
   const recipient = {
     ...DEFAULT_PER_MODEL_CONFIG,
     llamaExtraArgs: ["--threads", "8"],
@@ -277,7 +277,6 @@ test("sharing empty arguments and templates preserves recipient overrides unless
     });
     const { tree, config, choice } = render();
     const imported = mergeSharedRunConfig(recipient, config, true);
-    const templateChoice = choice("chatTemplateOverride");
     const messageChoice = choice("reasoningBudgetMessage");
     assert.ok(messageChoice);
     assert.equal(messageChoice.props.disabled, true);
@@ -287,38 +286,36 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       recipient.reasoningBudgetMessage,
     );
     assert.match(text(tree), /Custom reasoning messages cannot be shared/);
-    assert.ok(templateChoice);
-    assert.equal(templateChoice.props.checked, false);
-    assert.equal(
-      text(
-        tree.find(
-          (element) => element.props.id === "share-chatTemplateOverride-detail",
-        ),
-      ),
-      "Default",
-    );
+    assert.equal(choice("chatTemplateOverride"), undefined);
     assert.equal(imported.chatTemplateOverride, recipient.chatTemplateOverride);
-    (templateChoice.props.onCheckedChange as (checked: boolean) => void)(true);
-    assert.equal(render().config.chatTemplateOverride, "");
     const argsChoice = choice("llamaExtraArgs");
     const nonempty = (llamaExtraArgs?.length ?? 0) > 0;
     assert.deepEqual(
       imported.llamaExtraArgs,
       nonempty ? llamaExtraArgs : recipient.llamaExtraArgs,
     );
-    if (llamaExtraArgs === undefined) {
-      assert.equal(argsChoice, undefined);
-      continue;
-    }
     assert.ok(argsChoice);
+    assert.equal(argsChoice.props.disabled, false);
     assert.equal(argsChoice.props.checked, nonempty);
     if (!nonempty) {
       (argsChoice.props.onCheckedChange as (checked: boolean) => void)(true);
       const selected = render();
       assert.equal(selected.choice("llamaExtraArgs")?.props.checked, true);
       assert.match(text(selected.tree), /No extra arguments/);
-      assert.deepEqual(selected.config.llamaExtraArgs, llamaExtraArgs);
+      assert.deepEqual(selected.config.llamaExtraArgs, llamaExtraArgs ?? null);
     }
+  }
+});
+
+test("chat templates are absent from sharing options and generated links", () => {
+  for (const chatTemplateOverride of [null, "", "{{ messages }}"]) {
+    const { choice, config, link } = shareDialogHarness({
+      ...DEFAULT_PER_MODEL_CONFIG,
+      chatTemplateOverride,
+    })();
+    assert.equal(choice("chatTemplateOverride"), undefined);
+    assert.equal(Object.hasOwn(config, "chatTemplateOverride"), false);
+    assert.equal(link.includes("chatTemplateOverride"), false);
   }
 });
 

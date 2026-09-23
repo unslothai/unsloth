@@ -61,6 +61,7 @@ function harness({
   });
   let signedIn = false;
   const errors: string[] = [];
+  const notices: { message: string; description?: string }[] = [];
   const cleared: string[] = [];
   let parserLoads = 0;
   const loadDocument = () => {
@@ -68,6 +69,7 @@ function harness({
       desktop,
       signedIn: () => signedIn,
       errors,
+      notices,
       cleared,
       loadParser: () => {
         parserLoads += 1;
@@ -81,6 +83,7 @@ function harness({
     loadDocument,
     storage,
     errors,
+    notices,
     cleared,
     parserLoads: () => parserLoads,
     signIn: () => {
@@ -137,6 +140,42 @@ test("sign-in retains pending links in memory; a reload requires reopening the l
     }
     after.dispose();
     assert.deepEqual(app.errors, []);
+    assert.deepEqual(app.notices, []);
+  }
+});
+
+test("session loss reports a discarded import once and permits reopening after sign-in", async () => {
+  for (const desktop of [true, false]) {
+    const app = harness({ desktop, url: desktop ? undefined : browserRun });
+    app.signIn();
+    const doc = app.loadDocument();
+    if (desktop) {
+      doc.receiver.receiveSharedRunConfigUrls([run]);
+      await settle();
+    } else await doc.receiver.receiveStartupRunConfigUrl();
+    const pending = doc.inbox.getSnapshot();
+    assert.ok(pending);
+    app.signOut();
+    assert.equal(doc.inbox.getSnapshot(), null);
+    assert.deepEqual(app.cleared, [pending.id]);
+    assert.equal(app.notices.length, 1);
+    assert.equal(app.notices[0].message, "Run settings import cancelled");
+    assert.match(app.notices[0].description ?? "", /session/i);
+    assert.match(app.notices[0].description ?? "", /Reopen the link/);
+    app.signOut();
+    app.signIn();
+    assert.equal(app.notices.length, 1);
+    assert.equal(doc.inbox.getSnapshot(), null);
+    if (!desktop) doc.dispose();
+    if (!desktop) window.location.href = browserRun;
+    const reopened = desktop ? doc : app.loadDocument();
+    if (desktop) {
+      reopened.receiver.receiveSharedRunConfigUrls([run]);
+      await settle();
+    } else await reopened.receiver.receiveStartupRunConfigUrl();
+    assert.equal(reopened.inbox.getSnapshot()?.value.config.nParallel, 3);
+    assert.deepEqual(app.errors, []);
+    reopened.dispose();
   }
 });
 

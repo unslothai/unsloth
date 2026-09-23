@@ -42,7 +42,10 @@ const cacheType = nullable(
   (value) => value === "f16" || choice(value, KV_CACHE_DTYPES),
 );
 
-export type SharedConfigKey = keyof PerModelConfig;
+export type SharedConfigKey = Exclude<
+  keyof PerModelConfig,
+  "chatTemplateOverride"
+>;
 type Field = { label: string; valid: Validator; error?: string };
 
 export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
@@ -110,12 +113,6 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   },
   tensorParallel: { label: "Tensor parallel", valid: boolean },
   disableVision: { label: "Disable vision", valid: boolean },
-  chatTemplateOverride: {
-    label: "Chat template",
-    valid: nullable((value) => value === ""),
-    error:
-      "Custom template code cannot be shared through links. Configure it locally instead.",
-  },
   llamaExtraArgs: {
     label: "Extra arguments",
     valid: nullable(validSharedExtraArgs),
@@ -167,7 +164,7 @@ export function formatSharedConfigValue(
     return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
   }
   const value = config[key];
-  return value == null || (key === "chatTemplateOverride" && value === "")
+  return value == null
     ? "Default"
     : typeof value === "string" && value !== ""
       ? value

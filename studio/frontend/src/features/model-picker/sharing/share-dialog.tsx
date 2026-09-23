@@ -85,7 +85,7 @@ function configDetail(
 
 export function ShareRunConfigDialog({
   target,
-  config,
+  config: sourceConfig,
   onClose,
 }: {
   target: ModelPickTarget;
@@ -93,6 +93,13 @@ export function ShareRunConfigDialog({
   onClose: () => void;
 }) {
   const id = useId();
+  const config = useMemo(
+    () => ({
+      ...sourceConfig,
+      llamaExtraArgs: sourceConfig.llamaExtraArgs ?? null,
+    }),
+    [sourceConfig],
+  );
   const model = target.configId ?? target.id;
   const shareableModel = isShareableModelId(model);
   const fields = useMemo(
@@ -132,7 +139,6 @@ export function ShareRunConfigDialog({
           .filter(
             ({ key, valid }) =>
               valid &&
-              (key !== "chatTemplateOverride" || config[key] !== "") &&
               (key === "llamaExtraArgs"
                 ? (config.llamaExtraArgs?.length ?? 0) > 0
                 : JSON.stringify(config[key]) !==

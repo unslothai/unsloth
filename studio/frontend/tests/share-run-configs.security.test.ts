@@ -42,7 +42,10 @@ function rejects(query: string) {
   }
 }
 
-const fullConfig: typeof DEFAULT_PER_MODEL_CONFIG = {
+const fullConfig: Omit<
+  typeof DEFAULT_PER_MODEL_CONFIG,
+  "chatTemplateOverride"
+> = {
   customContextLength: 32768,
   maxSeqLength: 32768,
   kvCacheDtype: "q8_0",
@@ -60,7 +63,6 @@ const fullConfig: typeof DEFAULT_PER_MODEL_CONFIG = {
   cacheRam: -1,
   tensorParallel: true,
   disableVision: false,
-  chatTemplateOverride: "",
   llamaExtraArgs: [
     "--rope-scaling",
     "yarn",
@@ -264,11 +266,6 @@ test("links and field payloads have bounded sizes", () => {
     createRunConfigLink({ config: { llamaExtraArgs: Array(257).fill("x") } }),
   );
   assert.throws(() =>
-    createRunConfigLink({
-      config: { chatTemplateOverride: "a".repeat(65537) },
-    }),
-  );
-  assert.throws(() =>
     createRunConfigLink({ config: {} }, "file:///tmp/index.html"),
   );
   assert.throws(() =>
@@ -292,12 +289,11 @@ test("invalid field values use readable labels for malformed and decoded input",
     for (const value of ["", '""']) {
       const params = new URLSearchParams({
         reasoningBudgetMessage: value,
-        chatTemplateOverride: value,
       });
       assert.deepEqual(parseRunConfigLink(`${prefix}${params}`), {
         kind: "valid",
         value: {
-          config: { reasoningBudgetMessage: "", chatTemplateOverride: "" },
+          config: { reasoningBudgetMessage: "" },
         },
       });
     }
@@ -420,9 +416,6 @@ test("generation enforces the same restrictions as receiving a link", () => {
       createRunConfigLink({ config: { llamaExtraArgs: [flag, "x"] } }),
     );
   }
-  assert.throws(() =>
-    createRunConfigLink({ config: { chatTemplateOverride: "{{ messages }}" } }),
-  );
   assert.throws(() =>
     createRunConfigLink({ ggufVariant: "C:/model.gguf", config: {} }),
   );
@@ -832,8 +825,14 @@ test("Windows device aliases with spaces before an extension are rejected", () =
   }
 });
 
-test("arbitrary templates cannot enter through a field or an argument", () => {
+test("templates cannot be shared or clear a recipient's template", () => {
+  const recipient = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    chatTemplateOverride: "Recipient template",
+  };
   for (const template of [
+    null,
+    "",
     "{{ messages[0]['content'] }}",
     "{{ cycler.__init__.__globals__.os.popen('id').read() }}",
     "{% for x in range(1000000000) %}x{% endfor %}",
@@ -845,15 +844,21 @@ test("arbitrary templates cannot enter through a field or an argument", () => {
   ]) {
     rejects(query("chatTemplateOverride", template));
     rejects(query("llamaExtraArgs", ["--chat-template", template]));
-  }
-  for (const template of [null, ""]) {
+    const config = { nParallel: 2, chatTemplateOverride: template };
+    for (const address of [undefined, "http://localhost:8888/chat"]) {
+      const link = createRunConfigLink({ config }, address);
+      assert.equal(link.includes("chatTemplateOverride"), false);
+      assert.deepEqual(parseRunConfigLink(link), {
+        kind: "valid",
+        value: { config: { nParallel: 2 } },
+      });
+    }
     assert.equal(
-      parseRunConfigLink(
-        createRunConfigLink({ config: { chatTemplateOverride: template } }),
-      ).kind,
-      "valid",
+      mergeSharedRunConfig(recipient, config, true).chatTemplateOverride,
+      recipient.chatTemplateOverride,
     );
   }
+  rejects("chatTemplateOverride=");
 });
 
 test("shared reasoning messages reject invisible separators and format controls", () => {

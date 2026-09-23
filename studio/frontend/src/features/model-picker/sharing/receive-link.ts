@@ -56,7 +56,14 @@ export function subscribeRunConfigSession(onChange: () => void): () => void {
     startupUrl = "";
     acceptNativeIntent.clear();
     if (!awaitingLogin) {
+      const pending = runConfigInbox.getSnapshot();
       clearPendingImport();
+      if (pending) {
+        toast.info("Run settings import cancelled", {
+          description:
+            "Your session ended before the settings were imported. Reopen the link to try again.",
+        });
+      }
     }
     onChange();
   };

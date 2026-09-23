@@ -19,12 +19,14 @@ export function receiverHarness({
   signedIn = () => true,
   loadParser = () => links,
   errors = [],
+  notices = [],
   cleared = [],
 }: {
   desktop?: boolean;
   signedIn?: () => boolean;
   loadParser?: () => typeof links | Promise<typeof links>;
   errors?: string[];
+  notices?: { message: string; description?: string }[];
   cleared?: string[];
 } = {}) {
   const inbox = createRunConfigInbox();
@@ -37,7 +39,11 @@ export function receiverHarness({
     {
       "@/lib/api-base": { isTauri: desktop },
       "@/lib/toast": {
-        toast: { error: (message: string) => errors.push(message) },
+        toast: {
+          error: (message: string) => errors.push(message),
+          info: (message: string, options?: { description?: string }) =>
+            notices.push({ message, description: options?.description }),
+        },
       },
       "@/features/auth": { ...events, hasAuthToken: signedIn },
       "@/features/deep-links": {
@@ -59,5 +65,5 @@ export function receiverHarness({
       },
     },
   );
-  return { receiver, inbox, errors, cleared };
+  return { receiver, inbox, errors, notices, cleared };
 }
