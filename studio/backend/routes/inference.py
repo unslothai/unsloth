@@ -14220,11 +14220,6 @@ async def _preflight_native_audio_placement(
                 "Load a merged checkpoint instead."
             ),
         )
-    if audio_type == "minimax_music3":
-        # Its worker imports diffusers, and cannot see this process's repair.
-        from utils.diffusers_repair import IN_FLIGHT_MESSAGE, diffusers_repair_in_flight
-        if diffusers_repair_in_flight():
-            raise HTTPException(status_code = 400, detail = IN_FLIGHT_MESSAGE)
     if audio_type in ("higgs_tts2", "higgs_tts3") and sys.version_info < (3, 10):
         raise HTTPException(
             status_code = 400,

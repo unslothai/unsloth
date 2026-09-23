@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusers self-heal: an install updated by an installer without the Diffusers main step gets the
-pinned build from the backend on its next start, instead of needing a second update."""
+"""Test startup repair of the pinned Diffusers build before app imports."""
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -36,8 +35,6 @@ class _Dist:
 
 @pytest.fixture(autouse = True)
 def _reset(monkeypatch):
-    monkeypatch.setattr(dr, "_thread", None)
-    monkeypatch.setattr(dr, "_installed", False)
     monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
@@ -69,60 +66,50 @@ def test_only_an_index_release_is_a_candidate(monkeypatch, direct_url, expected)
 class _Proc:
     """A finished installer, for the Popen the repair starts."""
 
-    def __init__(
-        self,
-        returncode,
-        wait = None,
-    ):
-        self.pid, self.returncode, self._wait = 0, returncode, wait
+    def __init__(self, returncode):
+        self.pid, self.returncode = 0, returncode
 
     def communicate(self, timeout = None):
-        if self._wait is not None:
-            self._wait.wait(5)
-        return "", None
+        return "installer output", None
 
     def poll(self):
         return self.returncode
 
 
-def test_a_release_install_starts_one_repair_and_records_success(monkeypatch):
+def test_a_release_install_runs_the_installer_step_and_reports_it(monkeypatch):
     _installed_diffusers(monkeypatch, None)
-    calls = []
-    release = threading.Event()
+    calls, lines = [], []
 
     def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs["env"]))
-        return _Proc(dr._INSTALLED, wait = release)
+        return _Proc(dr._INSTALLED)
 
     monkeypatch.setattr(dr.subprocess, "Popen", fake_popen)
-    assert dr.start_diffusers_autorepair_if_needed() is True
-    assert dr.diffusers_repair_in_flight() is True
-    assert dr.start_diffusers_autorepair_if_needed() is False, "at most once per process"
-    release.set()
-    dr._thread.join(5)
-    assert dr.diffusers_repair_in_flight() is False
-    assert dr.diffusers_repair_installed() is True
+    assert dr.repair_diffusers_before_imports(lines.append) is True
     argv, env = calls[0]
     assert argv == [sys.executable, str(dr._INSTALLER), "--repair-diffusers-main"]
     assert env["VIRTUAL_ENV"] == sys.prefix
+    assert lines == [
+        "  - installing the pinned Diffusers build (first start after an update)...",
+        "  - installed the pinned Diffusers build",
+    ]
 
 
 def test_nothing_to_do_and_failure_do_not_report_an_install(monkeypatch):
     _installed_diffusers(monkeypatch, None)
-    for code in (dr._NOTHING_TO_DO, 2):
-        monkeypatch.setattr(dr, "_thread", None)
+    for code, says_retry in ((dr._NOTHING_TO_DO, False), (2, True)):
+        lines = []
         monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, code = code, **kw: _Proc(code))
-        assert dr.start_diffusers_autorepair_if_needed() is True
-        dr._thread.join(5)
-        assert dr.diffusers_repair_installed() is False
+        assert dr.repair_diffusers_before_imports(lines.append) is False
+        assert any("unsloth studio update" in line for line in lines) is says_retry
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
-def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_path):
-    """uv, not the installer, rewrites diffusers, so killing only the installer on timeout would
-    reopen the load gate while the files are still being replaced."""
-    from utils.process_lifetime import _pid_alive, _pid_is_zombie
-
+def _slow_installer(
+    monkeypatch,
+    tmp_path,
+    timeout_s = 3,
+):
+    """An installer that outlives the budget, with a child standing in for uv."""
     pid_file = tmp_path / "child.pid"
     installer = tmp_path / "installer.py"
     installer.write_text(
@@ -133,20 +120,84 @@ def test_a_timed_out_repair_stops_the_installers_children_too(monkeypatch, tmp_p
         encoding = "utf-8",
     )
     monkeypatch.setattr(dr, "_INSTALLER", installer)
-    monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", 3)
-    waited = []
-    monkeypatch.setattr(dr, "_wait_for_peer_pass", lambda: waited.append(True))
-    dr._run_repair()
-    assert waited == [True], "a timed-out repair must hold the gate for a peer still in the pass"
+    monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", timeout_s)
+    return pid_file
+
+
+def _assert_child_stopped(pid_file):
+    from utils.process_lifetime import _pid_alive, _pid_is_zombie
+
     child = int(pid_file.read_text())
     for _ in range(50):
         if not _pid_alive(child) or _pid_is_zombie(child):
-            break
+            return
         time.sleep(0.1)
-    else:
-        os.kill(child, 9)
-        pytest.fail("the installer's child outlived the timed-out repair")
-    assert dr.diffusers_repair_installed() is False
+    os.kill(child, 9)
+    pytest.fail("the installer's child outlived the timed-out repair")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
+def test_a_timed_out_repair_stops_the_installers_children_and_records_it(monkeypatch, tmp_path):
+    """Stop uv children before app imports and record the timeout to prevent repeated retries."""
+    pid_file = _slow_installer(monkeypatch, tmp_path)
+    recorded = []
+    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    lines = []
+    assert dr._run_repair(lines.append) is False
+    assert recorded == [True]
+    assert "unsloth studio update" in lines[-1]
+    _assert_child_stopped(pid_file)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
+def test_a_peer_still_in_the_pass_at_the_deadline_stops_startup_in_time(monkeypatch, tmp_path):
+    """Abort at timeout if a peer is still installing, without changing its manifest."""
+    pid_file = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)
+    recorded = []
+    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_peer_holds_pass", lambda: True)
+    started = time.monotonic()
+    with pytest.raises(dr.PeerInstallInProgress, match = "Start Unsloth Studio again"):
+        dr._run_repair(lambda _line: None)
+    assert time.monotonic() - started < 2 + 10
+    assert recorded == []
+    _assert_child_stopped(pid_file)
+
+
+def test_run_server_exits_with_the_message_when_a_peer_holds_the_environment(monkeypatch, capsys):
+    import run
+
+    def blocked(echo):
+        raise dr.PeerInstallInProgress(dr.PEER_INSTALL_MESSAGE)
+
+    monkeypatch.setattr(dr, "repair_diffusers_before_imports", blocked)
+    with pytest.raises(SystemExit) as excinfo:
+        run._repair_pinned_diffusers(silent = True)
+    assert excinfo.value.code == 1
+    assert dr.PEER_INSTALL_MESSAGE in capsys.readouterr().err, "shown even under --silent"
+
+
+def test_any_other_repair_error_lets_startup_continue(monkeypatch, capsys):
+    import run
+
+    def broken(echo):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(dr, "repair_diffusers_before_imports", broken)
+    run._repair_pinned_diffusers(silent = False)
+    assert "diffusers self-heal skipped: disk full" in capsys.readouterr().out
+
+
+def test_a_recorded_failure_uses_the_key_the_installer_reads(monkeypatch):
+    import types
+
+    recorded = {}
+    fake = types.SimpleNamespace(update_manifest = lambda **extra: recorded.update(extra))
+    monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
+    dr._record_failure()
+    source = dr._INSTALLER.read_text(encoding = "utf-8")
+    assert recorded == {"diffusers_main_repair": "failed"}
+    assert '_DIFFUSERS_MAIN_REPAIR_KEY = "diffusers_main_repair"' in source
 
 
 def _peer_pass(monkeypatch, *uncontended):
@@ -159,27 +210,17 @@ def _peer_pass(monkeypatch, *uncontended):
     monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
 
 
-def test_the_gate_waits_for_a_peer_to_leave_the_pass(monkeypatch):
-    """The repair's installer may have been waiting behind a sibling's repair or an update when it
-    timed out; that peer can still be rewriting diffusers."""
-    _peer_pass(monkeypatch, False, False, True)
-    polls = []
-    monkeypatch.setattr(dr.time, "sleep", lambda seconds: polls.append(seconds))
-    dr._wait_for_peer_pass()
-    assert polls == [dr._PEER_POLL_S] * 2
-
-
 def test_a_start_during_a_peers_pass_waits_it_out(monkeypatch):
     """A peer swapping diffusers can have removed its metadata, which reads as no index release."""
     _peer_pass(monkeypatch, False)
     _installed_diffusers(
         monkeypatch, {"url": "https://github.com/huggingface/diffusers", "vcs_info": {}}
     )
-    started = []
+    started, lines = [], []
     monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, **kw: started.append(argv) or _Proc(1))
-    assert dr.start_diffusers_autorepair_if_needed() is True
-    dr._thread.join(5)
+    assert dr.repair_diffusers_before_imports(lines.append) is False
     assert started and started[0][-1] == "--repair-diffusers-main"
+    assert lines == ["  - waiting for another Unsloth install or update to finish..."]
 
 
 @pytest.mark.parametrize(
@@ -191,7 +232,7 @@ def test_opt_outs_start_nothing(monkeypatch, env):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(dr.subprocess, "Popen", lambda *a, **k: pytest.fail("started a repair"))
-    assert dr.start_diffusers_autorepair_if_needed() is False
+    assert dr.repair_diffusers_before_imports() is False
 
 
 def test_the_pinned_build_starts_nothing(monkeypatch):
@@ -199,7 +240,7 @@ def test_the_pinned_build_starts_nothing(monkeypatch):
         monkeypatch, {"url": "https://github.com/huggingface/diffusers", "vcs_info": {}}
     )
     monkeypatch.setattr(dr.subprocess, "Popen", lambda *a, **k: pytest.fail("started a repair"))
-    assert dr.start_diffusers_autorepair_if_needed() is False
+    assert dr.repair_diffusers_before_imports() is False
 
 
 def test_secrets_and_index_redirects_stay_out_of_the_installer_env(monkeypatch):
@@ -213,76 +254,55 @@ def test_secrets_and_index_redirects_stay_out_of_the_installer_env(monkeypatch):
     assert env["UV_OFFLINE"] == "1", "an offline install must not reach GitHub from the repair"
 
 
-def test_the_load_gate_waits_for_a_running_repair(monkeypatch):
-    """Importing diffusers mid-install reads half-replaced files and pins the release for the
-    session, so a load during the repair is refused with a retry message instead."""
-    from core.inference import diffusion_families as fam
-
-    monkeypatch.setattr(dr, "diffusers_repair_in_flight", lambda: True)
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
-    with pytest.raises(ValueError, match = "installing the pinned diffusers build"):
-        fam.assert_pipeline_class_available("QwenImage21Pipeline", "qwen-image-2.1")
-
-
-def test_minimax_music3_is_refused_before_eviction_while_the_repair_runs(monkeypatch):
-    """Its worker is a separate process that imports diffusers and never sees this one's repair."""
-    import asyncio
-    import types
-
-    from fastapi import HTTPException
-
-    import routes.inference as ri
-
-    monkeypatch.setattr(dr, "diffusers_repair_in_flight", lambda: True)
-    config = types.SimpleNamespace(audio_type = "minimax_music3", is_lora = False, identifier = "x/y")
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            ri._preflight_native_audio_placement(
-                config,
-                types.SimpleNamespace(audio_device = None),
-                types.SimpleNamespace(requested_gpu_ids = None),
-            )
-        )
-    assert excinfo.value.status_code == 400
-    assert excinfo.value.detail == dr.IN_FLIGHT_MESSAGE
-
-
-def test_the_repair_is_decided_before_the_socket_binds():
-    """The lifespan yields, and the server accepts requests, before the post-warm thread runs, so a
-    repair started there leaves a window where a load imports the release being replaced. Checked on
-    the source because running the real lifespan brings up the whole backend."""
+def test_run_server_repairs_before_it_imports_the_app():
+    """Check import ordering in the AST to avoid starting the full backend."""
     import ast
 
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
-    functions = {
-        node.name: node
+    tree = ast.parse((_BACKEND / "run.py").read_text(encoding = "utf-8"))
+    run_server = next(
+        node
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-    def first_call(function, name):
-        lines = [
-            node.lineno
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == name
-        ]
-        return min(lines) if lines else None
-
-    lifespan = functions["lifespan"]
-    start = first_call(lifespan, "start_diffusers_autorepair_if_needed")
-    assert start is not None
-    assert start < first_call(lifespan, "_start_post_warm_thread")
-    assert start < min(n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Yield))
-    post_warm = functions["_post_warm_background_work"]
-    assert first_call(post_warm, "start_diffusers_autorepair_if_needed") is None
+        if isinstance(node, ast.FunctionDef) and node.name == "run_server"
+    )
+    repair = min(
+        node.lineno
+        for node in ast.walk(run_server)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_repair_pinned_diffusers"
+    )
+    app_import = min(
+        node.lineno
+        for node in ast.walk(run_server)
+        if isinstance(node, ast.ImportFrom) and node.module == "main"
+    )
+    assert repair < app_import
+    main_source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "diffusers_repair" not in main_source, "the app itself must never install under itself"
 
 
-def test_a_finished_repair_behind_a_loaded_release_asks_for_a_restart(monkeypatch):
-    from core.inference import diffusion_families as fam
-
-    monkeypatch.setattr(dr, "_installed", True)
-    message = fam._too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
-    assert "Restart Unsloth Studio" in message
+def test_the_repair_path_imports_nothing_it_can_replace():
+    """Use a fresh interpreter to exclude imports made by the test suite."""
+    code = (
+        "import sys\n"
+        "sys.argv = ['run.py']\n"
+        "import run\n"
+        "import utils.diffusers_repair as dr\n"
+        "from utils.child_stdio import utf8_child_env\n"
+        "from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid\n"
+        "dr._repair_env()\n"
+        "dr._diffusers_is_an_index_install()\n"
+        "names = ('huggingface_hub', 'diffusers', 'torch', 'transformers', 'safetensors', 'numpy')\n"
+        "print('LOADED=' + ','.join(n for n in names if n in sys.modules))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd = _BACKEND,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "LOADED=\n" in result.stdout, result.stdout
 
 
 def test_the_installer_exposes_the_repair_flag():
