@@ -52,9 +52,7 @@ def _make_stub_type(name):
     return _StubTypeMeta(name, (), {})
 
 
-# Below every minimum anyone checks. transformers 5 reads ``__version__`` off a package with no
-# metadata and parses it, so a stub without one reads "N/A" and ``is_torchao_available()`` raises
-# InvalidVersion, taking ``transformers.modeling_utils`` and every model that imports it down with it.
+# Below every minimum: without dist-info, transformers 5 parses this ("N/A" raised).
 STUB_VERSION = "0.0.0"
 
 

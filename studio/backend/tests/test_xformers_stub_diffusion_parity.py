@@ -344,8 +344,7 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
 
 
 def _metadata_free_version(name: str) -> str:
-    """How transformers 5 versions a package with no dist-info: import it and read ``__version__``,
-    falling back to "N/A", which it then hands straight to ``version.parse``."""
+    """transformers 5's version for a package with no dist-info."""
     import importlib
     return getattr(importlib.import_module(name), "__version__", "N/A")
 
@@ -358,9 +357,7 @@ def _metadata_free_version(name: str) -> str:
     ],
 )
 def test_a_stub_reports_a_version_every_minimum_rejects(on_windows_rocm, install, name):
-    """Neither package has metadata on Windows ROCm, so this is the version transformers 5 reads.
-    "N/A" raised InvalidVersion in is_torchao_available(), which transformers.modeling_utils calls at
-    import, so no transformers or diffusers model could load there."""
+    """Neither package has dist-info on Windows ROCm, so this is the version transformers 5 reads."""
     from packaging.version import Version
 
     install()
@@ -369,8 +366,6 @@ def test_a_stub_reports_a_version_every_minimum_rejects(on_windows_rocm, install
 
 
 def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, monkeypatch):
-    """transformers 5 probes torchao when asked; 4.x answered once at its own import, so it has no
-    call-time answer to check here."""
     transformers = pytest.importorskip("transformers")
     import importlib.metadata
 
@@ -379,8 +374,7 @@ def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, mon
     if Version(transformers.__version__).major < 5:
         pytest.skip("transformers 4.x reads torchao once, at its own import")
 
-    # Windows ROCm has no torchao dist-info, so transformers falls back to the stub's __version__.
-    # A CI box with a real torchao installed would answer from its metadata and never see the stub.
+    # Hide torchao's dist-info as on Windows ROCm, or a real install answers instead of the stub.
     real_version = importlib.metadata.version
 
     def no_torchao_metadata(name):
