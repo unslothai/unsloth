@@ -7420,76 +7420,86 @@ class DiffusionBackend:
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
                 graphs_before = dynamo_graph_count()
-                pending = list(chunks)
-                while pending:
-                    chunk = pending.pop(0)
-                    chunk_kwargs = dict(kwargs)
-                    shared = uniform_prompt(chunk)
-                    generators = [
-                        torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
-                    ]
-                    if len(jobs) == 1:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators[0]
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                    elif shared is not None:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = len(chunk)
-                    else:
-                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
-                        # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
-                        chunk_kwargs["prompt"] = [p for p, _ in chunk]
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                        if isinstance(chunk_kwargs.get("negative_prompt"), str):
-                            chunk_kwargs["negative_prompt"] = [
-                                chunk_kwargs["negative_prompt"]
-                            ] * len(chunk)
-                    # A step cache keys residuals on the cond/uncond context, which a graph key
-                    # cannot see. Per chunk because an AUTO decision is re-taken per generation.
-                    if state.cuda_graphs:
-                        cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
-                    # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                    # __call__, so a raised call leaves a residual the next forward trips over.
-                    if state.transformer_cache:
-                        self._reset_step_cache(state.pipe)
+                try:
+                    pending = list(chunks)
+                    while pending:
+                        chunk = pending.pop(0)
+                        chunk_kwargs = dict(kwargs)
+                        shared = uniform_prompt(chunk)
+                        generators = [
+                            torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
+                        ]
+                        if len(jobs) == 1:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators[0]
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                        elif shared is not None:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = len(chunk)
+                        else:
+                            # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
+                            # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
+                            chunk_kwargs["prompt"] = [p for p, _ in chunk]
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                            if isinstance(chunk_kwargs.get("negative_prompt"), str):
+                                chunk_kwargs["negative_prompt"] = [
+                                    chunk_kwargs["negative_prompt"]
+                                ] * len(chunk)
+                        # A step cache keys residuals on the cond/uncond context, which a graph key
+                        # cannot see. Per chunk because an AUTO decision is re-taken per generation.
+                        if state.cuda_graphs:
+                            cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
+                        # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
+                        # __call__, so a raised call leaves a residual the next forward trips over.
+                        if state.transformer_cache:
+                            self._reset_step_cache(state.pipe)
+                        try:
+                            # inference_mode is faster than no_grad and numerically identical here.
+                            with torch.inference_mode():
+                                out = pipe(**chunk_kwargs).images
+                        except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
+                            oom = is_oom_error(exc)
+                            if oom:
+                                # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                                # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                                # pool is segregated from the ordinary allocator), so the halved retry below and the
+                                # user's next smaller request would both run a step's worth of VRAM short. The shape
+                                # that finally renders re-captures on its first step.
+                                cuda_graph.reset_all(state.cuda_graphs)
+                            if len(chunk) < 2 or not oom:
+                                raise
+                            # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
+                            # reproducible.
+                            empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
+                            if callable(empty_cache):
+                                empty_cache()
+                            first_half, second_half = split_chunk(chunk)
+                            pending[:0] = [first_half, second_half]
+                            gen.total_steps += steps  # one extra chunk to run
+                            logger.warning(
+                                "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
+                                len(chunk),
+                                len(first_half),
+                                len(second_half),
+                            )
+                            continue
+                        if cancel.is_set():
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                        images.extend(out)
+                        per_image_seeds.extend(s for _, s in chunk)
+                        chunk_shapes.append(len(chunk))
+                        steps_done[0] += steps
+                except BaseException:
+                    # A cancelled or failed render may already have generalised a graph that the next render reuses
+                    # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
-                            out = pipe(**chunk_kwargs).images
-                    except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        oom = is_oom_error(exc)
-                        if oom:
-                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
-                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
-                            # pool is segregated from the ordinary allocator), so the halved retry below and the
-                            # user's next smaller request would both run a step's worth of VRAM short. The shape
-                            # that finally renders re-captures on its first step.
-                            cuda_graph.reset_all(state.cuda_graphs)
-                        if len(chunk) < 2 or not oom:
-                            raise
-                        # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
-                        # reproducible.
-                        empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
-                        if callable(empty_cache):
-                            empty_cache()
-                        first_half, second_half = split_chunk(chunk)
-                        pending[:0] = [first_half, second_half]
-                        gen.total_steps += steps  # one extra chunk to run
-                        logger.warning(
-                            "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
-                            len(chunk),
-                            len(first_half),
-                            len(second_half),
-                        )
-                        continue
-                    if cancel.is_set():
-                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    images.extend(out)
-                    per_image_seeds.extend(s for _, s in chunk)
-                    chunk_shapes.append(len(chunk))
-                    steps_done[0] += steps
+                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                            compile_cache.mark_recompiled(state.compile_cache_ctx)
+                    except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
+                        pass
+                    raise
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
