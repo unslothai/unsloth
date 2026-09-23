@@ -150,6 +150,7 @@ def _loader_already_provides_runtime(major: str) -> bool:
             return False
     return True
 
+
 _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
     (Path("/usr/local/lib/ollama"), "cuda_v{major}"),
 )

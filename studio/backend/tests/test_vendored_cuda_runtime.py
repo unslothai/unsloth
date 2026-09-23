@@ -187,7 +187,6 @@ def test_ignores_cache_entries_with_missing_targets(tmp_path, monkeypatch):
     ]
 
 
-
 def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatch):
     import utils.prebuilt.runtime_libs as runtime_libs
 
@@ -216,13 +215,17 @@ def test_ignores_foreign_abi_cache_entries(tmp_path, monkeypatch):
         "exists",
         lambda path: True if path == "/sbin/ldconfig" else original_exists(path),
     )
-    result = type("Result", (), {
-        "returncode": 0,
-        "stdout": (
-            "libcudart.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcudart.so.13\\n"
-            "libcublas.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcublas.so.13\\n"
-        ),
-    })()
+    result = type(
+        "Result",
+        (),
+        {
+            "returncode": 0,
+            "stdout": (
+                "libcudart.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcudart.so.13\\n"
+                "libcublas.so.13 (libc6,i686) => /usr/lib/i386-linux-gnu/libcublas.so.13\\n"
+            ),
+        },
+    )()
     monkeypatch.setattr(runtime_libs.subprocess, "run", lambda *_args, **_kwargs: result)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
 
@@ -252,13 +255,17 @@ def test_recognizes_aarch64_ldconfig_abi_spelling_case_insensitively(tmp_path, m
         "exists",
         lambda path: True if path == "/sbin/ldconfig" else original_exists(path),
     )
-    result = type("Result", (), {
-        "returncode": 0,
-        "stdout": (
-            f"libcudart.so.13 (libc6,AArch64) => {cudart}\n"
-            f"libcublas.so.13 (libc6,AArch64) => {cublas}\n"
-        ),
-    })()
+    result = type(
+        "Result",
+        (),
+        {
+            "returncode": 0,
+            "stdout": (
+                f"libcudart.so.13 (libc6,AArch64) => {cudart}\n"
+                f"libcublas.so.13 (libc6,AArch64) => {cublas}\n"
+            ),
+        },
+    )()
     monkeypatch.setattr(runtime_libs.subprocess, "run", lambda *_args, **_kwargs: result)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
 
@@ -267,8 +274,6 @@ def test_recognizes_aarch64_ldconfig_abi_spelling_case_insensitively(tmp_path, m
         ("libcublas.so.13", "libc6,aarch64", str(cublas)),
     )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
-
-
 
 
 def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monkeypatch):

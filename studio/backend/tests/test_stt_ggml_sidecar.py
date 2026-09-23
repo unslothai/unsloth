@@ -667,7 +667,6 @@ def test_child_env_omits_vendored_cuda_runtime_for_cpu_bundle(monkeypatch, tmp_p
     assert str(vendored.resolve()) not in env[_loader_path_var()].split(os.pathsep)
 
 
-
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_resolves_external_symlink_before_cuda_bundle_probe(monkeypatch, tmp_path):
     import utils.prebuilt.runtime_libs as rl
@@ -695,7 +694,6 @@ def test_child_env_resolves_external_symlink_before_cuda_bundle_probe(monkeypatc
     parts = env["LD_LIBRARY_PATH"].split(os.pathsep)
     assert str(bindir.resolve()) in parts
     assert parts[-1] == str(vendored.resolve())
-
 
 
 def test_engine_unavailable_is_stt_unavailable():

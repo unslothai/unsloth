@@ -972,7 +972,6 @@ def test_llama_server_env_resolves_marker_through_binary_symlink(tmp_path, monke
     assert str(runtime_dir.resolve()) in env["LD_LIBRARY_PATH"].split(os.pathsep)
 
 
-
 @_NEEDS_BASH
 def test_probe_server_capabilities_does_not_disable_devices_off_macos(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(
