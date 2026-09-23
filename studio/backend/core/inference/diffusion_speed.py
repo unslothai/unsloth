@@ -388,7 +388,12 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
         return True
-    return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
+    if mode != SPEED_DEFAULT:
+        return False
+    # A torchao-quantised DiT compiles with automatic dynamic: its first shapes get their own artifacts.
+    return _denoiser_unet(pipe) is not None or any(
+        getattr(t, "_unsloth_auto_dynamic", False) for t in _denoiser_dits(pipe)
+    )
 
 
 def _denoiser_dits(pipe: Any) -> list:
@@ -465,12 +470,23 @@ def _compile_repeated_blocks(
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
+        dit_kwargs = dict(kwargs)
+        if dit_kwargs["dynamic"] and _carries_torchao_weights(transformer):
+            # dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output
+            # cat (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction,
+            # which inductor cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first
+            # shapes static and only generalises what actually varies: stable after ~3 recompiles, same numerics.
+            dit_kwargs["dynamic"] = None
+            transformer._unsloth_auto_dynamic = True
         try:
-            transformer.compile_repeated_blocks(**kwargs)
+            transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
+        # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
+        # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
+        guard_compiled_blocks(transformer, logger)
         # A step cache engaged BEFORE this compile already wrapped each block forward in a disabled hook, so the compute
         # branch would run eager and forfeit the regional compile. Re-point the hooks' inner forward at compiled
         # wrappers (no-op without them).
@@ -480,6 +496,130 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _carries_torchao_weights(module: Any) -> bool:
+    """Whether any parameter of ``module`` is a torchao tensor subclass (the int8 / fp8 dense fast path)."""
+    try:
+        return any(type(p).__module__.startswith("torchao") for p in module.parameters())
+    except Exception:  # noqa: BLE001 - not a torch module (tests/fakes)
+        return False
+
+
+def is_compile_failure(exc: BaseException) -> bool:
+    """True for an error torch.compile raises while BUILDING a graph (dynamo tracing, inductor lowering / codegen), as
+    opposed to one raised by kernels that already built. Only the former is safe to answer with an eager retry: nothing
+    ran yet. An OOM is never one, even when inductor wraps it (autotune ran out), so the OOM backoff still sees it."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - no torch, nothing compiled
+        return False
+    oom = getattr(torch, "OutOfMemoryError", None)
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if oom is not None and isinstance(cur, oom):
+            return False
+        cur = cur.__cause__ or cur.__context__
+    kinds: list = []
+    dynamo_exc = getattr(getattr(torch, "_dynamo", None), "exc", None)
+    for name in ("BackendCompilerFailed", "Unsupported", "TorchRuntimeError", "InternalTorchDynamoError"):
+        kind = getattr(dynamo_exc, name, None) if dynamo_exc is not None else None
+        if isinstance(kind, type):
+            kinds.append(kind)
+    try:
+        from torch._inductor.exc import InductorError  # torch 2.7+; older torch wraps it in BackendCompilerFailed
+
+        kinds.append(InductorError)
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(kinds) and isinstance(exc, tuple(kinds))
+
+
+class _CompileGuard:
+    """Per-DiT record of a compile that failed at runtime. The first failure flips every guarded block of that DiT to
+    eager (one shared decision: a half-compiled stack would retry the same broken lowering per block)."""
+
+    def __init__(self, logger: Any) -> None:
+        self.logger = logger
+        self.error: Optional[str] = None
+        self.restores: list = []
+
+    def fail(self, exc: BaseException, owner: Any) -> None:
+        if self.error is None:
+            self.error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+            for restore in self.restores:
+                try:
+                    restore()
+                except Exception:  # noqa: BLE001 - per-block best-effort; the guard still routes to eager
+                    pass
+            if self.logger is not None:
+                self.logger.warning(
+                    "diffusion.speed: torch.compile failed on %s at the first forward (%s); this load runs eager",
+                    type(owner).__name__,
+                    self.error,
+                )
+
+    def wrap(self, compiled: Any, eager: Any, owner: Any) -> Any:
+        guard = self
+
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            if guard.error is None:
+                try:
+                    return compiled(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                    if not is_compile_failure(exc):
+                        raise
+                    guard.fail(exc, owner)
+                    # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                    exc.__traceback__ = None
+            return eager(*args, **kwargs)
+
+        guarded._unsloth_compile_guard = guard
+        return guarded
+
+
+def guard_compiled_blocks(transformer: Any, logger: Any = None) -> int:
+    """Wrap each ``Module.compile``d submodule's ``_compiled_call_impl`` so a compile-time failure on the first forward
+    (e.g. inductor ``CantSplit`` on a torchao-quantised Qwen-Image-2.1 block) falls back to that module's eager
+    ``_call_impl`` for this and every later call. Idempotent. Returns the number of modules guarded."""
+    guard = getattr(transformer, "_unsloth_compile_guard", None)
+    if guard is None:
+        guard = _CompileGuard(logger)
+        try:
+            transformer._unsloth_compile_guard = guard
+        except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+            return 0
+    count = 0
+    try:
+        modules = list(transformer.modules())
+    except Exception:  # noqa: BLE001 - not a torch module
+        return 0
+    for module in modules:
+        compiled = getattr(module, "_compiled_call_impl", None)
+        if compiled is None or getattr(compiled, "_unsloth_compile_guard", None) is not None:
+            continue
+        eager = getattr(module, "_call_impl", None)
+        if eager is None:
+            continue
+
+        def restore(m: Any = module) -> None:
+            m._compiled_call_impl = None
+
+        guard.restores.append(restore)
+        module._compiled_call_impl = guard.wrap(compiled, eager, transformer)
+        count += 1
+    return count
+
+
+def compile_fallback_error(pipe: Any) -> Optional[str]:
+    """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
+    for transformer in _denoiser_dits(pipe):
+        guard = getattr(transformer, "_unsloth_compile_guard", None)
+        if guard is not None and guard.error:
+            return guard.error
+    return None
 
 
 def _compile_vae_decode(pipe: Any, logger: Any) -> bool:

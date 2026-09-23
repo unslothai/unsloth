@@ -1117,3 +1117,139 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     )
     assert applied["cuda_graph"] is False and calls["installs"] == 1
     assert applied["compiled"] is True  # the rest of the tier still engaged
+
+
+# ── runtime compile failure falls back to eager ──────────────────────────────
+# compile_repeated_blocks is lazy: inductor runs on the first forward, inside generate(). A lowering bug there
+# (Qwen-Image-2.1 int8 / fp8: inductor CantSplit) used to fail every render; the guard drops that DiT to eager.
+
+
+class _BackendCompilerFailed(Exception):
+    pass
+
+
+class _OutOfMemory(RuntimeError):
+    pass
+
+
+def _stub_torch_compile_errors(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    torch._dynamo = types.SimpleNamespace(
+        exc = types.SimpleNamespace(BackendCompilerFailed = _BackendCompilerFailed)
+    )
+    torch.OutOfMemoryError = _OutOfMemory
+    return torch
+
+
+class _Block:
+    """A Module.compile'd block: __call__ routes through _compiled_call_impl when set, like nn.Module."""
+
+    def __init__(self, compiled) -> None:
+        self.eager_calls = 0
+        self._compiled_call_impl = compiled
+
+    def _call_impl(self, x):
+        self.eager_calls += 1
+        return x + 1
+
+    def __call__(self, x):
+        if self._compiled_call_impl is not None:
+            return self._compiled_call_impl(x)
+        return self._call_impl(x)
+
+
+class _Dit:
+    def __init__(self, blocks) -> None:
+        self.blocks = blocks
+
+    def modules(self):
+        return [self, *self.blocks]
+
+
+def test_compile_failure_at_first_forward_falls_back_to_eager(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    calls = {"compiled": 0}
+
+    def broken(x):
+        calls["compiled"] += 1
+        raise _BackendCompilerFailed("CantSplit: 4096*s87 - 4096*s89 not divisible by s87 - s89")
+
+    blocks = [_Block(broken), _Block(broken)]
+    dit = _Dit(blocks)
+    assert ds_mod.guard_compiled_blocks(dit) == 2
+    assert blocks[0](1) == 2  # the failed call itself is answered eagerly
+    assert blocks[1](1) == 2
+    assert blocks[0](5) == 6
+    # One failure flips the whole DiT: the broken lowering is attempted once, not per block or per call.
+    assert calls["compiled"] == 1
+    assert all(b._compiled_call_impl is None for b in blocks)
+    pipe = types.SimpleNamespace(transformer = dit)
+    assert "CantSplit" in ds_mod.compile_fallback_error(pipe)
+
+
+def test_compiled_block_that_works_is_untouched(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    block = _Block(lambda x: x * 10)
+    dit = _Dit([block])
+    ds_mod.guard_compiled_blocks(dit)
+    ds_mod.guard_compiled_blocks(dit)  # idempotent: no double wrap
+    assert block(3) == 30
+    assert block.eager_calls == 0
+    assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
+
+
+@pytest.mark.parametrize("kind", ["runtime", "oom"])
+def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
+    # Only a failure while BUILDING the graph is safe to retry eagerly. A kernel error, and an OOM even when inductor
+    # wrapped it, must reach the caller (the OOM backoff splits the batch on it).
+    _stub_torch_compile_errors(monkeypatch)
+
+    def fails(x):
+        if kind == "runtime":
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
+        try:
+            raise _OutOfMemory("CUDA out of memory")
+        except _OutOfMemory as oom:
+            raise _BackendCompilerFailed("autotune ran out") from oom
+
+    block = _Block(fails)
+    dit = _Dit([block])
+    ds_mod.guard_compiled_blocks(dit)
+    with pytest.raises((RuntimeError, _BackendCompilerFailed)):
+        block(1)
+    assert block.eager_calls == 0
+    assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
+
+
+class _TorchaoWeight:
+    pass
+
+
+_TorchaoWeight.__module__ = "torchao.quantization.quantize_.workflows.int8.int8_tensor"
+
+
+def test_torchao_dit_compiles_with_automatic_dynamic(monkeypatch):
+    # dynamic=True made Qwen-Image-2.1's attention-output cat fuse into torchao's per-row activation-quant reduction,
+    # which inductor cannot split; automatic dynamic (None) compiles it. A bf16 DiT keeps dynamic=True.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    quant = _Pipe(with_compile = True)
+    quant.transformer.parameters = lambda: iter([_TorchaoWeight()])
+    apply_speed_optims(quant, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert quant.compile_kwargs["dynamic"] is None
+    assert ds_mod.compiled_shapes_are_static(quant, SPEED_DEFAULT) is True
+
+    dense = _Pipe(with_compile = True)
+    dense.transformer.parameters = lambda: iter([object()])
+    apply_speed_optims(dense, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert dense.compile_kwargs["dynamic"] is True
+    assert ds_mod.compiled_shapes_are_static(dense, SPEED_DEFAULT) is False
+
+
+def test_max_tier_keeps_static_compile_for_torchao_dit(monkeypatch):
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer.parameters = lambda: iter([_TorchaoWeight()])
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is False
