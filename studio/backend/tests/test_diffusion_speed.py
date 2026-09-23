@@ -1309,3 +1309,12 @@ def test_max_tier_keeps_static_compile_for_torchao_dit(monkeypatch):
     pipe.transformer.parameters = lambda: iter([_TorchaoWeight()])
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
     assert pipe.compile_kwargs["dynamic"] is False
+
+
+def test_auto_dynamic_active_follows_the_torchao_marker():
+    dit = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(transformer = dit)
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    dit._unsloth_auto_dynamic = True
+    assert ds_mod.auto_dynamic_active(pipe) is True
+    assert isinstance(ds_mod.dynamo_graph_count(), int)

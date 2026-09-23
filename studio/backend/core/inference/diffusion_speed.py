@@ -667,6 +667,21 @@ def settle_compile_fallback(
     return fallback
 
 
+def auto_dynamic_active(pipe: Any) -> bool:
+    """Whether any denoiser DiT compiled with automatic dynamic (torchao weights on the default tier)."""
+    return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _guarded_dits(pipe))
+
+
+def dynamo_graph_count() -> int:
+    """Graphs dynamo has compiled in this process (0 when unavailable); a delta across a render means it compiled."""
+    try:
+        from torch._dynamo.utils import counters
+
+        return int(counters["stats"]["unique_graphs"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def compile_fallback_error(pipe: Any) -> Optional[str]:
     """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
     for transformer in _guarded_dits(pipe):
