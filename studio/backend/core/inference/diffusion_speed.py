@@ -676,7 +676,6 @@ def dynamo_graph_count() -> int:
     """Graphs dynamo has compiled in this process (0 when unavailable); a delta across a render means it compiled."""
     try:
         from torch._dynamo.utils import counters
-
         return int(counters["stats"]["unique_graphs"])
     except Exception:  # noqa: BLE001
         return 0
