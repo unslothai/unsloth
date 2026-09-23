@@ -1083,7 +1083,6 @@ def _mirror_pipeline_cached(repo_id: str, files: Optional[Sequence[str]]) -> boo
     try:
         from core.inference.media_locality import _pipeline_components_present
         from utils.hf_cache_settings import active_hf_hub_cache
-
         return any(
             any((rev / n).is_file() for n in ("model_index.json", "modular_model_index.json"))
             and _pipeline_components_present(rev)
