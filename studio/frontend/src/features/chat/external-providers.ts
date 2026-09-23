@@ -40,6 +40,7 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
+  autoReloadModels?: boolean;
   /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
    *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
   openaiContainerTtlMinutes?: number;
@@ -458,7 +459,7 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
-const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
 const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
@@ -542,6 +543,8 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? raw.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&

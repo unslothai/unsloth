@@ -177,6 +177,8 @@ export function mergeLocalProviderOptions(
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? existing.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&
@@ -187,6 +189,47 @@ export function mergeLocalProviderOptions(
 }
 
 
+
+export function preserveConcurrentLlamaCppUpdates(
+  syncedProviders: ExternalProviderConfig[],
+  previousProviders: ExternalProviderConfig[],
+  currentProviders: ExternalProviderConfig[],
+): ExternalProviderConfig[] {
+  const previousById = new Map(
+    previousProviders.map((provider) => [provider.id, provider]),
+  );
+  const currentById = new Map(
+    currentProviders.map((provider) => [provider.id, provider]),
+  );
+  return syncedProviders.map((synced) => {
+    if (synced.providerType !== "llama_cpp") return synced;
+    const previous = previousById.get(synced.id);
+    const current = currentById.get(synced.id);
+    let merged = mergeLocalProviderOptions(current, synced);
+    if (!previous || !current) return merged;
+    if (
+      previous.baseUrl !== current.baseUrl ||
+      previous.hasApiKey !== current.hasApiKey
+    ) {
+      merged = {
+        ...merged,
+        baseUrl: current.baseUrl,
+        hasApiKey: current.hasApiKey,
+      };
+    }
+    if (
+      previous.models !== current.models ||
+      previous.availableModels !== current.availableModels
+    ) {
+      merged = {
+        ...merged,
+        models: current.models,
+        availableModels: current.availableModels,
+      };
+    }
+    return merged;
+  });
+}
 
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
@@ -280,7 +323,10 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      if (needsModelBackfill || needsAvailableBackfill) {
+      // A llama.cpp settings snapshot cannot safely compare then backfill across tabs without
+      // backend CAS support. Leave its catalog writes to queued manual and live-refresh paths.
+      const settingsMayBackfill = uiProviderType !== "llama_cpp";
+      if ((needsModelBackfill || needsAvailableBackfill) && settingsMayBackfill) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
