@@ -287,6 +287,23 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
+test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-6-sol": { vision: true, studio_tools: true },
+    "gpt-6-luna": { vision: true, studio_tools: true },
+  });
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    assert.equal(providerModelSupportsStudioTools("openai_codex", model), true);
+    assert.equal(providerModelSupportsVision("openai_codex", model), true);
+    assert.deepEqual(selectCodeToolNames({
+      codeToolsEnabled: true,
+      hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution("openai_codex", model),
+      providerHostsCodeExecution: providerHostsCodeExecution("openai_codex"),
+    }), { local: ["python", "terminal", "edit_file"], hosted: [] });
+  }
+});
+
+
 test("ChatGPT subscription models expose Unsloth-owned search and local code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
