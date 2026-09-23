@@ -125,6 +125,7 @@ def test_rejects_unreadable_major_soname_links(tmp_path):
 
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
+
 def test_ignores_a_file_named_like_a_runtime_dir(tmp_path):
     (tmp_path / "cuda_v13").write_bytes(b"")
 
