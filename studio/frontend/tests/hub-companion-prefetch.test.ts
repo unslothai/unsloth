@@ -66,3 +66,65 @@ test("the local listing's flag reaches the local inventory row", () => {
   assert.equal(localRow(true)[0].companionPrefetch, true);
   assert.equal(localRow(false)[0].companionPrefetch, false);
 });
+
+test("the detail pane offers a plain Download, never Run, for a companion-only repo", async () => {
+  const { useSelectedModelView } =
+    await import("../src/features/hub/hooks/use-selected-model-view.ts");
+  const { modelDownloadState } =
+    await import("../src/features/hub/catalog/model-download-state.ts");
+  const { downloadActionLabel } =
+    await import("../src/features/hub/catalog/use-download-card-state.ts");
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+
+  const [local] = localRow(true);
+  const cached = buildCachedInventoryRow(
+    {
+      repo_id: REPO_ID,
+      model_format: "safetensors",
+      size_bytes: 1_350_989_512,
+      partial: true,
+      companion_prefetch: true,
+    },
+    "safetensors",
+  );
+  const [discover] = buildDiscoverRows([RESULT], [cached], [local]);
+  const base = {
+    selectedDiscoverRow: null,
+    selectedCachedRow: null,
+    selectedLocalRow: null,
+    selectedHfResult: null,
+    isDatasetMode: false,
+  };
+  const cases = {
+    "local row": { ...base, selectedLocalRow: local },
+    "cached row": { ...base, selectedCachedRow: cached },
+    "discover row over the local row": {
+      ...base,
+      selectedDiscoverRow: discover,
+      selectedLocalRow: local,
+    },
+    "discover row over the cached row": {
+      ...base,
+      selectedDiscoverRow: discover,
+      selectedCachedRow: cached,
+    },
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    let view: ReturnType<typeof useSelectedModelView> = null;
+    function Harness() {
+      view = useSelectedModelView(input);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    assert.ok(view, name);
+    const state = modelDownloadState(view);
+    assert.equal(state.isDownloaded, false, name);
+    assert.equal(state.isPartial, false, name);
+    assert.equal(
+      downloadActionLabel(state.isPartial, state.partialResumable),
+      "Download",
+      name,
+    );
+  }
+});

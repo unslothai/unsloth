@@ -273,8 +273,9 @@ export function useSelectedModelView({
       const isPartialHubCache =
         selectedLocalRow.source === "hf_cache" &&
         !!selectedLocalRow.partial &&
-        !selectedLocalRow.companionPrefetch &&
         !!selectedLocalRow.repoId;
+      // A GGUF's borrowed companions: not on device and not an unfinished download either.
+      const isCompanionPrefetch = selectedLocalRow.companionPrefetch === true;
       const mergedTags = selectedHfResult?.tags ?? selectedLocalRow.tags;
       const mergedPipelineTag =
         selectedHfResult?.pipelineTag ??
@@ -305,7 +306,9 @@ export function useSelectedModelView({
           title: selectedLocalRow.title,
           summary: selectedHfResult
             ? buildSummary(selectedHfResult)
-            : "Partial download. Finish it from the card below, or delete it to free space.",
+            : isCompanionPrefetch
+              ? "Holds only the files a GGUF borrowed. Download the full model from the card below."
+              : "Partial download. Finish it from the card below, or delete it to free space.",
           sourceLabel: "Hub cache",
           path: selectedLocalRow.path,
           isLocal: false,
@@ -314,7 +317,7 @@ export function useSelectedModelView({
           modelFormat: selectedLocalRow.modelFormat,
           isDownloaded: false,
           runtimeCanChat: selectedLocalRow.capabilities.canChat,
-          isPartial: true,
+          isPartial: !isCompanionPrefetch,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: detectViewCapabilities(
