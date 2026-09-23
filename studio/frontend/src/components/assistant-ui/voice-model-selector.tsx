@@ -51,7 +51,7 @@ const ParallelVoicesPicker: FC<{
   const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
   return (
     <>
-      <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+      <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
       <div className="flex items-center justify-between gap-2 px-2 py-1">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Parallel synthesis
@@ -239,7 +239,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         </button>
 
         {models.length > 0 && (
-          <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+          <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
         )}
 
         {models.map((model) => {

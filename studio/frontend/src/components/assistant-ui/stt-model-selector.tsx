@@ -85,7 +85,7 @@ const MicDevicePicker: FC = () => {
 
   return (
     <>
-      <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+      <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
       <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         Microphone
       </div>
@@ -251,7 +251,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
         </button>
 
         {models.length > 0 && (
-          <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+          <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
         )}
 
         {models.map((model) => {
