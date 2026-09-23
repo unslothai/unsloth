@@ -683,3 +683,30 @@ def test_a_task_checkpoint_keeps_its_quantized_head():
     config.architectures = ["LlamaForCausalLM"]
     assert keep_task_heads_unquantized(config, AutoModelForSequenceClassification)
     assert "score" in config.quantization_config["modules_to_not_convert"]
+
+
+def test_a_reused_config_keeps_the_scale_renaming():
+    # The offline retry and a second load hand the same config object back in; it already reads
+    # as native fp8, so the renaming has to come from somewhere other than the moved marker.
+    from transformers import LlamaConfig
+
+    from unsloth.models.modelopt_fp8 import modelopt_rewritten
+
+    config = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, vocab_size = 16)
+    config.quantization_config = _sarvam_quant()
+    if arm_modelopt_fp8_loading(config, verbose = False) is None:
+        pytest.skip("this transformers has no per-tensor fp8")
+    first, second = {}, {}
+    pop_modelopt_key_mapping(config, first)
+    assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+    assert arm_modelopt_fp8_loading(config, verbose = False) is None  # already fp8
+    assert modelopt_rewritten(config)
+    pop_modelopt_key_mapping(config, second)
+    assert second["key_mapping"] == first["key_mapping"]
+    assert UNSLOTH_MODELOPT_KEY_MAPPING_ATTR not in config.to_dict()
+
+    fresh = LlamaConfig(hidden_size = 8, num_hidden_layers = 1, num_attention_heads = 2, vocab_size = 16)
+    assert not modelopt_rewritten(fresh)
+    kwargs = {}
+    pop_modelopt_key_mapping(fresh, kwargs)
+    assert kwargs == {}

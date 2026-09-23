@@ -2608,13 +2608,13 @@ class FastLlamaModel:
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
         # lives on model_config, so it has to be the config the weights load against.
         from .modelopt_fp8 import (
-            UNSLOTH_MODELOPT_KEY_MAPPING_ATTR,
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
+            modelopt_rewritten,
             pop_modelopt_key_mapping,
         )
 
-        _modelopt_rewritten = hasattr(model_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        _modelopt_rewritten = modelopt_rewritten(model_config)
         if _modelopt_rewritten and num_labels is not None:
             # num_labels builds AutoModelForSequenceClassification; its new `score` has no fp8
             # weight on disk.

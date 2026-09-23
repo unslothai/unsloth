@@ -1493,13 +1493,13 @@ class FastBaseModel:
         # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above; its two
         # scale tensors are renamed on the way in.
         from .modelopt_fp8 import (
-            UNSLOTH_MODELOPT_KEY_MAPPING_ATTR,
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
+            modelopt_rewritten,
             pop_modelopt_key_mapping,
         )
 
-        _modelopt_rewritten = hasattr(auto_config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        _modelopt_rewritten = modelopt_rewritten(auto_config)
         if _modelopt_rewritten:
             # A task auto_model builds a head (`score`) with no fp8 weight on disk.
             keep_task_heads_unquantized(auto_config, auto_model, model_class)

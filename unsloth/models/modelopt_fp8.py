@@ -32,6 +32,7 @@ algorithm are left untouched.
 """
 
 import inspect
+import weakref
 from typing import Optional
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "MODELOPT_FP8_KEY_MAPPING",
     "UNSLOTH_MODELOPT_KEY_MAPPING_ATTR",
     "pop_modelopt_key_mapping",
+    "modelopt_rewritten",
     "keep_task_heads_unquantized",
     "modelopt_planner_quantization_config",
 ]
@@ -170,6 +172,41 @@ def _transformers_accepts_fp8_plan(plan) -> bool:
     return True
 
 
+# Configs this module rewrote, by id. A caller's config object is reused by a retry or a
+# second load and then reads as native fp8, with the parked mapping already moved off it;
+# this keeps the scale renaming reachable without writing anything serializable onto it.
+_REWRITTEN_CONFIGS: dict = {}
+
+
+def _remember_rewrite(config, mapping) -> None:
+    key = id(config)
+    entry = _REWRITTEN_CONFIGS.get(key)
+    if entry is not None and entry[0]() is config:
+        return
+    try:
+        ref = weakref.ref(config)
+        weakref.finalize(config, _REWRITTEN_CONFIGS.pop, key, None)
+    except TypeError:
+        return
+    _REWRITTEN_CONFIGS[key] = (ref, dict(mapping))
+
+
+def _remembered_mapping(config) -> Optional[dict]:
+    entry = _REWRITTEN_CONFIGS.get(id(config))
+    if entry is None or entry[0]() is not config:
+        return None
+    return dict(entry[1])
+
+
+def modelopt_rewritten(config) -> bool:
+    """Whether ``config`` carries a ModelOpt FP8 block rewritten to the transformers fp8 form,
+    on this load or an earlier one with the same config object."""
+    return (
+        hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+        or _remembered_mapping(config) is not None
+    )
+
+
 def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
     """Rewrite ``config.quantization_config`` from ModelOpt FP8 to the transformers fp8 form
     and park the scale renaming on the config for the loader. Returns the new quantization
@@ -182,6 +219,7 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
         setattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, dict(MODELOPT_FP8_KEY_MAPPING))
     except Exception:
         return None
+    _remember_rewrite(config, MODELOPT_FP8_KEY_MAPPING)
     if verbose:
         print(
             "Unsloth: NVIDIA ModelOpt FP8 checkpoint detected; loading it as a static per-tensor "
@@ -222,7 +260,10 @@ def pop_modelopt_key_mapping(
     ``key_mapping`` makes some transformers releases skip them."""
     mapping = getattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, None)
     if mapping is None:
-        return
+        # Already moved off on an earlier load of this same config object.
+        mapping = _remembered_mapping(config)
+        if mapping is None:
+            return
     try:
         delattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
     except Exception:
