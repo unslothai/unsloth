@@ -464,44 +464,78 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefi
     margin, but the two arms do the same strip here, so their ratio sits at 1.0 and the
     runner's noise alone spans 0.89 to 1.09: it failed on a PR that did not touch the
     stripper (0.444s against 0.404s). Paying the checks on every token measured 1.11 to
-    1.33, overlapping that noise, so no margin separates the two. The work is countable:
-    the checks run on no token, and the strip reads no more text than the reference does.
-    The at-offset-0 case reaches the degenerate branch, which the timed version never did.
+    1.33, overlapping that noise, so no margin separates the two.
+
+    The work is countable where it is done: the characters each arm hands to
+    ``strip_outside_think`` and ``strip_segment``, which hold the regex passes, and to the
+    blocked-body masking only the incremental arm runs. The incremental arm may read no
+    more of either than the reference, may mask each character at most once per strip, and
+    runs the whole-buffer checks on no token. A second strip or scan inside ``_full_strip``
+    doubles those counts. The at-offset-0 case reaches the degenerate branch, which the
+    timed version never did.
     """
-    whole_buffer_checks = []
-    stripped_chars = []
+    work = {}
+
+    def counting(name, fn):
+        def wrapper(text, *args, **kwargs):
+            work[name] = work.get(name, 0) + len(text)
+            return fn(text, *args, **kwargs)
+
+        return wrapper
+
+    # Both arms reach these through the same module objects, so one patch counts both.
+    monkeypatch.setattr(
+        tool_healing,
+        "strip_outside_think",
+        counting("strip_outside_think", tool_healing.strip_outside_think),
+    )
+    monkeypatch.setattr(tool_call_parser, "strip_segment", counting("strip_segment", strip_segment))
+    monkeypatch.setattr(
+        sys.modules[__name__], "strip_segment", counting("strip_segment", strip_segment)
+    )
+    monkeypatch.setattr(
+        tool_call_parser,
+        "_mask_blocked_bodies",
+        counting("mask", tool_call_parser._mask_blocked_bodies),
+    )
     needs_whole_buffer = StreamingMarkupStripper._needs_whole_buffer
-    full_strip = StreamingMarkupStripper._full_strip
 
     def counting_needs_whole_buffer(self, text):
-        whole_buffer_checks.append(len(text))
+        work["whole_buffer_checks"] = work.get("whole_buffer_checks", 0) + 1
         return needs_whole_buffer(self, text)
 
-    def counting_full_strip(self, text):
-        stripped_chars.append(len(text))
-        return full_strip(self, text)
-
     monkeypatch.setattr(StreamingMarkupStripper, "_needs_whole_buffer", counting_needs_whole_buffer)
-    monkeypatch.setattr(StreamingMarkupStripper, "_full_strip", counting_full_strip)
 
     count = 1500
-    stripper = StreamingMarkupStripper(ENABLED)
-    text = prefix
-    reference_chars = 0
-    for _ in range(count):
-        text += "word "
-        reference_chars += len(text)
-        assert stripper.strip(text) == _reference_strip(text)
 
-    # Not vacuous: the stripper did strip on every token, so the counters were live.
-    assert len(stripped_chars) == count
-    assert not whole_buffer_checks, (
-        f"{len(whole_buffer_checks)} of {count} tokens paid the whole-buffer checks with "
-        "markup at the front and nothing settled"
+    def run(strip):
+        work.clear()
+        text = prefix
+        outputs = []
+        for _ in range(count):
+            text += "word "
+            outputs.append(strip(text))
+        return dict(work), outputs
+
+    reference, expected = run(_reference_strip)
+    incremental, got = run(StreamingMarkupStripper(ENABLED).strip)
+
+    assert got == expected
+    # Not vacuous: the reference did one full strip per token, so the counters were live.
+    assert reference.get("strip_outside_think", 0) >= count * len(prefix)
+    assert reference.get("strip_segment", 0) > 0
+    assert not incremental.get("whole_buffer_checks"), (
+        f"{incremental['whole_buffer_checks']} of {count} tokens paid the whole-buffer checks "
+        "with markup at the front and nothing settled"
     )
-    assert (
-        sum(stripped_chars) <= reference_chars
-    ), f"stripped {sum(stripped_chars)} chars against the reference's {reference_chars}"
+    for name in ("strip_outside_think", "strip_segment"):
+        assert (
+            incremental.get(name, 0) <= reference[name]
+        ), f"{name} read {incremental.get(name, 0)} chars against the reference's {reference[name]}"
+    assert incremental.get("mask", 0) <= reference["strip_outside_think"], (
+        f"masked {incremental.get('mask', 0)} chars, more than one pass per strip "
+        f"({reference['strip_outside_think']})"
+    )
 
 
 def test_an_open_reasoning_block_is_scanned_incrementally():
