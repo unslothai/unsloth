@@ -762,12 +762,21 @@ with sync_playwright() as p:
     if open_config(popover, MODEL_HINT) is None:
         fail("could not reopen run-settings after reload")
     else:
-        ctx_in = context_input(popover)
-        val = ctx_in.input_value() if ctx_in else None
+        # The popover can render before the stored per-model config has been applied to it, so a
+        # single read right after opening can see the default. Wait for the stored value; a value
+        # that was really lost never shows up and still fails below.
+        val = None
+        deadline = time.monotonic() + 15
+        while True:
+            ctx_in = context_input(popover)
+            val = ctx_in.input_value() if ctx_in else None
+            if _as_int(val) == DISTINCT_CTX or time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(250)
         if _as_int(val) == DISTINCT_CTX:
             info(f"OK persist(reload): Context Length still {val!r} after reload")
         else:
-            fail(f"Context Length did not persist across reload (got {val!r})")
+            fail(f"Context Length did not persist across reload (got {val!r} after 15s)")
         shoot("07-after-reload")
 
     # ─────────────────────────────────────────────────────
