@@ -1140,6 +1140,8 @@ done
 _wheels() { grep -oE 'uv-[0-9.]+-py3-none-[a-z0-9_.]+\.whl [0-9a-f]{64}"' "$1" | sort; }
 assert_eq "install.sh and setup.sh pin the same four wheels of the pinned uv" "4 $(_wheels "$INSTALL_SH")" \
     "$(_wheels "$INSTALL_SH" | grep -c "^uv-$(sed -n 's/^UV_PINNED_VERSION="\(.*\)"/\1/p' "$INSTALL_SH")-") $(_wheels "$SETUP_SH")"
+_winwheels() { grep -oE 'uv-[0-9.]+-py3-none-win[a-z0-9_]*\.whl"; WheelSha256 = "[0-9A-F]{64}' "$1" | sort; }
+assert_eq "install.ps1 and setup.ps1 pin the same three wheels of the pinned uv" "3 $(_winwheels "$SCRIPT_DIR/../../install.ps1")" "$(_winwheels "$SCRIPT_DIR/../../install.ps1" | grep -c "^uv-$(sed -n 's/^UV_PINNED_VERSION="\(.*\)"/\1/p' "$INSTALL_SH")-") $(_winwheels "$SETUP_PS1")"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

@@ -985,10 +985,13 @@ function Invoke-MirrorFallback {
         $hosts['registry.npmjs.org'] = @('https://registry.npmjs.org/npm/latest', 'https://registry.npmmirror.com/npm/latest', 'https://registry.npmmirror.com')
     }
     # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+    # Any published release will do for the two releases.astral.sh probes below: they only check that the host answers.
     if (-not (Test-MirrorConfigured -Tool python)) {
         $pbs = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
-        # Any published release will do: the probe only checks that the host answers.
         $hosts['releases.astral.sh (Python builds)'] = @('https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS', "$pbs/20260728/", $pbs)
+    }
+    if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
+        $hosts['releases.astral.sh (uv)'] = @('https://releases.astral.sh/github/uv/releases/download/0.12.1/sha256.sum', "$pypiMirror/uv/", "$cernet/pypi/web")
     }
     if ($hosts.Count -eq 0) { return }
     $default = Invoke-MirrorProbe -Urls @($hosts.Keys | ForEach-Object { $hosts[$_][0] })
@@ -1019,6 +1022,7 @@ function Invoke-MirrorFallback {
             'nodejs.org' { $env:UNSLOTH_NODE_MIRROR = $to }
             'registry.npmjs.org' { $env:UNSLOTH_NPM_REGISTRY = $to }
             'releases.astral.sh (Python builds)' { $env:UV_PYTHON_INSTALL_MIRROR = $to }
+            'releases.astral.sh (uv)' { $env:UNSLOTH_UV_WHEEL_MIRROR = $to }
         }
         step "mirror" "$name is $how; using $to" "Yellow"
         $used = $true
@@ -6768,13 +6772,16 @@ function Assert-VenvActivated {
 # prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
 # running remote script text in-process.
 # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-# Bumping the version means bumping all 3 hashes:
+# Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 as in install.ps1:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
 $UvPinnedVersion = "0.12.1"
 $UvPinnedAssets = @{
-    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
+                  Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
+                  Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
+                  Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
 }
 
 # Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
@@ -6878,6 +6885,8 @@ function Install-UvFromPinnedRelease {
     }
     $asset  = $UvPinnedAssets[$arch].Asset
     $wanted = $UvPinnedAssets[$arch].Sha256
+    $remote = $asset
+    $wheelDir = $null
 
     # astral's destination priority, so an existing uv is replaced in place and the Get-Command
     # probe after Refresh-Environment still finds it.
@@ -6899,6 +6908,11 @@ function Install-UvFromPinnedRelease {
         @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
     } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
         @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } elseif ($env:UNSLOTH_UV_WHEEL_MIRROR) {
+        $remote = $UvPinnedAssets[$arch].Wheel
+        $wanted = $UvPinnedAssets[$arch].WheelSha256
+        $wheelDir = "uv-$UvPinnedVersion.data/scripts"
+        @("$($env:UNSLOTH_UV_WHEEL_MIRROR.TrimEnd('/'))")
     } else {
         @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
           "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -6914,7 +6928,7 @@ function Install-UvFromPinnedRelease {
         foreach ($base in $uvBase) {
             Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
             try {
-                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$remote"
             } catch {
                 Write-Output "uv download failed: $($_.Exception.Message)"
                 continue
@@ -6931,10 +6945,11 @@ function Install-UvFromPinnedRelease {
         }
         if (-not $downloaded) { return $false }
 
-        # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
+        # The archives are flat, the wheel nests them in $wheelDir; both keep a .zip name for 5.1's Expand-Archive.
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
         [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-        $stagedUv = Join-Path $work "uv.exe"
+        $srcRoot = if ($wheelDir) { Join-Path $work $wheelDir } else { $work }
+        $stagedUv = Join-Path $srcRoot "uv.exe"
         if (-not (Test-Path -LiteralPath $stagedUv)) {
             Write-Output "uv.exe was not present in $asset."
             return $false
@@ -6952,7 +6967,7 @@ function Install-UvFromPinnedRelease {
         # than leaving half a set behind quietly.
         $haveUv = $true
         foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
-            $src = Join-Path $work $exe
+            $src = Join-Path $srcRoot $exe
             if (-not (Test-Path -LiteralPath $src)) { continue }
             $dst = Join-Path $destDir $exe
             try {

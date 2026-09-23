@@ -7,8 +7,9 @@ $installPath = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { throw "install.ps1 has parse errors" }
-foreach ($name in 'Test-MirrorConfigured', 'Invoke-MirrorProbe', 'Invoke-MirrorFallback') {
-    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1"))).Path, [ref]$tokens, [ref]$errors)
+foreach ($pair in @($ast, 'Test-MirrorConfigured'), @($ast, 'Invoke-MirrorProbe'), @($ast, 'Invoke-MirrorFallback'), @($ast, 'Install-UvFromRelease'), @($setupAst, 'Install-UvFromPinnedRelease'), @($setupAst, 'Get-UvInstallDir')) {
+    $fn = $pair[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $pair[1] }, $true)
     Invoke-Expression $fn[0].Extent.Text
 }
 
@@ -28,7 +29,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); print(s.server_port, flush=True); s.serve_forever()
 '@
-$python = if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
+# Windows' python3 is often the Microsoft Store stub, which prints an install hint instead of running.
+$python = if ($env:OS -ne 'Windows_NT' -and (Get-Command python3 -ErrorAction SilentlyContinue)) { 'python3' } else { 'python' }
 $psi = New-Object System.Diagnostics.ProcessStartInfo $python, "-c `"exec(__import__('sys').stdin.read())`""
 $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.UseShellExecute = $false
 $proc = [System.Diagnostics.Process]::Start($psi)
@@ -47,8 +49,9 @@ try {
 } finally { $proc.Kill() }
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
-    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE'
-$saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
+    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
+    'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH'
+$saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
 $pipIni = Join-Path $home_ 'AppData/pip/pip.ini'
 New-Item -ItemType Directory -Force -Path (Split-Path $pipIni) | Out-Null
@@ -100,6 +103,19 @@ try {
     Run @{ 'registry.npmjs.org' = 'blocked' } @{ UNSLOTH_NPM_REGISTRY = 'https://corp.example/npm/' }; Check "a user npm registry is kept and not probed" ($env:UNSLOTH_NPM_REGISTRY -eq 'https://corp.example/npm/' -and -not ($script:probed -like '*npm*'))
     Run @{ 'pypi.org' = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = 'Off' }; Check "UNSLOTH_MIRROR_FALLBACK=Off probes nothing" ($script:probed.Count -eq 0)
     Run @{ 'pypi.org' = 'blocked' } @{ _UNSLOTH_MIRROR_PROBED = '1' }; Check "a parent installer's probe is not repeated" ($script:probed.Count -eq 0)
+    Run @{ 'releases.astral.sh' = 'blocked' }; Check "blocked uv releases: the pinned wheel comes from the PyPI mirror" ($env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web"); foreach ($src in 'UV_INSTALLER_GITHUB_BASE_URL', 'UNSLOTH_UV_WHEEL_MIRROR') { Run @{ 'releases.astral.sh' = 'blocked' } @{ $src = 'https://corp.example/uv' }; Check "a user $src skips the uv probe" (-not ($script:probed -like '*/uv/*')) }
+    # Both uv installers against a fake wheel: the mirror is the only source and the wheel digest gates the install.
+    function Get-HostMachineArch { 'x86_64' }; function Get-UvHostArch { 'x86_64' }; function Get-UvExecutableVerdict { 'ok' }; function Get-SetupUvExecutableVerdict { 'ok' }
+    function Invoke-WebRequest([switch]$UseBasicParsing, $OutFile, $Uri) { $script:fetched += $Uri; Copy-Item "$home_/uv.zip" $OutFile }
+    foreach ($exe in 'uv.exe', 'uvx.exe') { New-Item -Force -Path "$home_/whl/uv-0.12.1.data/scripts/$exe" -Value $exe | Out-Null }
+    Compress-Archive -Path "$home_/whl/uv-0.12.1.data" -DestinationPath "$home_/uv.zip"
+    $UvPinnedVersion = '0.12.1'; $wheelSha = (Get-FileHash "$home_/uv.zip").Hash
+    foreach ($fn in 'Install-UvFromRelease', 'Install-UvFromPinnedRelease') { foreach ($good in $true, $false) {
+        $dest = "$home_/bin-$fn-$good"; $env:UV_INSTALL_DIR = $dest; $env:UV_NO_MODIFY_PATH = '1'; $env:UNSLOTH_UV_WHEEL_MIRROR = 'https://m.example/pypi/web/'; $script:fetched = @()
+        $UvPinnedAssets = @{ x86_64 = @{ Asset = 'uv-x86_64-pc-windows-msvc.zip'; Sha256 = 'X'; Wheel = 'packages/ab/uv.whl'; WheelSha256 = $(if ($good) { $wheelSha } else { '0' * 64 }) } }
+        $installed = (@(& $fn)[-1] -eq $true) -and (Test-Path "$dest/uv.exe") -and (Test-Path "$dest/uvx.exe") -and "$script:fetched" -eq 'https://m.example/pypi/web/packages/ab/uv.whl'
+        Check "${fn}: wheel mirror, good digest $good" ($installed -eq $good -and ($good -or -not (Test-Path "$dest/uv.exe")))
+    } }
 } finally {
     foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue } else { Set-Item "Env:$n" $saved[$n] } }
     Remove-Item -LiteralPath $home_ -Recurse -Force -ErrorAction SilentlyContinue
