@@ -997,3 +997,20 @@ def test_counting_for_an_idle_kept_model_ignores_the_primarys_chat(backends):
             assert exc.detail != "Cannot count tokens while a generation is in progress."
         except Exception:
             pass
+
+
+def test_a_model_still_loading_alongside_keeps_the_chat_claim(backends, monkeypatch):
+    primary, extra = backends
+    _hold_chat_claim(monkeypatch)
+    primary.unload_model()
+    extra.llama.unload_model()
+    extra.orchestrator.loading_models = {"org/C"}
+    inf.release_chat_gpu_claim()
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    extra.orchestrator.loading_models = set()
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/C"))
+    inf.release_chat_gpu_claim()
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    monkeypatch.setattr(inf, "_loading_slot", None)
+    inf.release_chat_gpu_claim()
+    assert gpu_arbiter.current_owner() != gpu_arbiter.CHAT

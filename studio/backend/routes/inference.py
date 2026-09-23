@@ -10804,7 +10804,11 @@ def release_chat_gpu_claim() -> bool:
     from core.inference.llama_cpp import chat_load_active
 
     def chat_idle() -> bool:
-        if any(map(_slot_in_use, _extra_slots)):
+        # A model still loading alongside holds the GPU before it is published.
+        if _loading_slot is not None or any(
+            _slot_in_use(slot) or tuple(getattr(slot.orchestrator, "loading_models", ()) or ())
+            for slot in _extra_slots
+        ):
             return False
         llama = get_llama_cpp_backend()
         # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
