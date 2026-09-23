@@ -1083,6 +1083,15 @@ class TestNetworkTargetResolution:
                 f"import asyncssh\nasyncssh.connect('pypi.org', tunnel='{_H}')",
                 id = "asyncssh_tunnel_host",
             ),
+            pytest.param(
+                f"import asyncssh\nasyncssh.connect_reverse('{_H}', 22)",
+                id = "asyncssh_connect_reverse",
+            ),
+            pytest.param(
+                "import requests\nclass API:\n    @property\n    def session(self):\n"
+                f"        return requests.Session()\nAPI().session.get('http://{_H}/')",
+                id = "client_returned_by_a_property",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1226,6 +1235,7 @@ class TestNetworkTargetResolution:
             "configure({})\nrequests.get('https://pypi.org/')",
             "import os, httpx\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "httpx.get('https://pypi.org/', trust_env=False)",
+            "class API:\n    @property\n    def data(self):\n        return {}\nAPI().data.get('http://203.0.113.5/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):

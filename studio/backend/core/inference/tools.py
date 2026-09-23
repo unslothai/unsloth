@@ -16404,7 +16404,11 @@ def _check_signal_escape_patterns(code: str):
             **{
                 f"{module}.{fn}": (index, ("host",), "host")
                 for module in ("asyncssh", "asyncssh.connection")
-                for fn, index in (("connect", 0), ("create_connection", 1))
+                for fn, index in (
+                    ("connect", 0),
+                    ("connect_reverse", 0),
+                    ("create_connection", 1),
+                )
             },
         }
     )
@@ -17311,6 +17315,8 @@ def _check_signal_escape_patterns(code: str):
             self.class_family: "dict[int, str]" = {}
             # Class name -> its family, so `API()` makes an `<API>` instance.
             self.class_names: "dict[str, str]" = {}
+            # (class family, name) of every `@property`, read as the attribute it returns.
+            self.properties: "list[tuple[str, str]]" = []
             # Class name -> its `__init__`, so `Wrapper(session)` binds `session` inside it.
             self.class_inits: "dict[str, list[ast.AST]]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
@@ -17343,6 +17349,8 @@ def _check_signal_escape_patterns(code: str):
                             params = fn.args.posonlyargs + fn.args.args
                             if params:
                                 self.method_self[id(fn)] = (params[0].arg, family)
+                            if any(getattr(d, "id", None) == "property" for d in fn.decorator_list):
+                                self.properties.append((family, fn.name))
                 # A class without its own `__init__` uses the first local base's.
                 bases = {
                     c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
@@ -17508,6 +17516,11 @@ def _check_signal_escape_patterns(code: str):
                     self._record_env_proxy(key, value)
                 if name in self.dict_mutated:
                     self.env_proxies.append(_UNREADABLE)
+            for family, name in self.properties:
+                # `API().session` returns what `def session(self)` returns.
+                attribute = ast.Name(id = f"{family}.{name}", ctx = ast.Store())
+                returned = ast.Name(id = _returns_of(name), ctx = ast.Load())
+                self.flows.append((attribute, returned, (0, 0), attribute, (0,), ()))
             self._index_flows()
             queue = list(range(len(self.flows)))
             while queue:
