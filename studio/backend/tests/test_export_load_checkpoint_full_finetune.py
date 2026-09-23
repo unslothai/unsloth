@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
 from routes import export as export_routes
+from utils.models import checkpoints
 
 
 async def _fake_ensure_export_supported():
@@ -105,8 +106,8 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     config_file.write_text(json.dumps(hub_config), encoding = "utf-8")
 
     monkeypatch.setattr(
-        export_routes,
-        "_hub_config",
+        checkpoints,
+        "hub_model_config",
         lambda repo_id, hf_token: None if adapter_on_hub else hub_config,
     )
     backend = MagicMock()
@@ -135,5 +136,42 @@ def test_hub_lookup_failure_keeps_the_old_default(monkeypatch):
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "file_exists", _boom, raising = False)
-    assert export_routes._hub_config("org/model", None) is None
-    assert export_routes._is_unquantized_full_finetune("org/model", None) is False
+    assert checkpoints.hub_model_config("org/model", None) is None
+    assert checkpoints.is_unquantized_full_finetune("org/model", None) is False
+
+
+@pytest.mark.parametrize(
+    "files,load_in_4bit,expected",
+    [
+        (_FULL_FINETUNE, None, False),
+        (_FULL_FINETUNE, True, True),
+        (_LORA_ADAPTER, None, True),
+        (_LORA_ADAPTER, False, False),
+        (_BNB_QUANTIZED, None, True),
+    ],
+    ids = [
+        "full_finetune",
+        "full_finetune_explicit_4bit",
+        "lora_adapter",
+        "lora_adapter_explicit_16bit",
+        "bnb_quantized",
+    ],
+)
+def test_orchestrator_resolves_unset_load_in_4bit(
+    monkeypatch, tmp_path, files, load_in_4bit, expected
+):
+    from core.export.orchestrator import ExportOrchestrator
+
+    for name, content in files.items():
+        (tmp_path / name).write_text(json.dumps(content), encoding = "utf-8")
+
+    backend = ExportOrchestrator()
+    spawned = {}
+    monkeypatch.setattr(backend, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(backend, "_spawn_subprocess", spawned.update)
+    monkeypatch.setattr(
+        backend, "_wait_response", lambda *a, **k: {"success": True, "message": "loaded"}
+    )
+
+    assert backend.load_checkpoint(str(tmp_path), load_in_4bit = load_in_4bit)[0]
+    assert spawned["load_in_4bit"] is expected

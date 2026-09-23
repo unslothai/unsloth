@@ -470,7 +470,7 @@ class ExportOrchestrator:
         self,
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: Optional[bool] = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: HfTokenArg = None,
@@ -485,6 +485,16 @@ class ExportOrchestrator:
         adapter config, which its owner can rewrite after the check.
         """
         validate_job_paths({"checkpoint_path": checkpoint_path})
+        if load_in_4bit is None:
+            from utils.models.checkpoints import is_unquantized_full_finetune
+
+            load_in_4bit = not is_unquantized_full_finetune(checkpoint_path, hf_token)
+            if not load_in_4bit:
+                logger.info(
+                    "Full fine-tune checkpoint %s has no quantization_config - "
+                    "loading in 16-bit for export",
+                    checkpoint_path,
+                )
         sub_config = {
             "checkpoint_path": checkpoint_path,
             "base_model": base_model,
