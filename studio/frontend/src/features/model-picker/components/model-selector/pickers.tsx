@@ -4731,9 +4731,13 @@ export function HubModelPicker({
     searchRowFits,
   ]);
 
+  // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
   const recommendedSet = useMemo(
-    () => new Set(filteredRecommendedIds),
-    [filteredRecommendedIds],
+    () =>
+      new Set(
+        filteredRecommendedIds.flatMap(aliasesOf).map((id) => id.toLowerCase()),
+      ),
+    [filteredRecommendedIds, aliasesOf],
   );
 
   // One pipeline for both listings, so community rows clear the same gates; `owned` is the only difference.
@@ -4754,7 +4758,7 @@ export function HubModelPicker({
         // Search reaches the live Hub, so without this a query re-lands the exact curated row the seed
         // and Recommended filters just dropped, clickable and still refused at load.
         .filter(curatedOfferable)
-        .filter((id) => !recommendedSet.has(id))
+        .filter((id) => !recommendedSet.has(id.toLowerCase()))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors on Mac, matching the
         // empty Recommended view.
         .filter(

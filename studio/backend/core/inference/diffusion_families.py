@@ -1075,10 +1075,11 @@ def _is_local_path(base: str) -> bool:
 def _mirror_pipeline_cached(repo_id: str, files: Optional[Sequence[str]]) -> bool:
     """Whether a mirror is on disk in full, so keeping it under the opt-out fetches nothing.
 
-    A file list answers that. Without one (a failed size estimate) any weight would count, so the
-    cached pipeline index must find every component it names on disk.
+    A file list with weights answers that. Without one (a failed size estimate, or the
+    ``model_index.json`` metadata probe) nothing proves the pipeline is there, so the cached
+    pipeline index must find every component it names on disk.
     """
-    if files:
+    if files and any(PurePosixPath(f).suffix.lower() in _WEIGHT_SUFFIXES for f in files):
         return _upstream_is_cached(repo_id, files)
     try:
         from core.inference.media_locality import _pipeline_components_present

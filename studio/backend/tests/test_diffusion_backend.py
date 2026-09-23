@@ -332,7 +332,7 @@ def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch)
     # A mirror already on disk is kept: no fetch, so nothing to opt out of.
     _all_cached(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
-    assert prefer_ungated_mirror(mirror, files = ["model_index.json"]) == mirror
+    assert prefer_ungated_mirror(mirror, files = ["vae/diffusion_pytorch_model.safetensors"]) == mirror
     # Without the opt-out a mirror pick is fetched as is.
     _no_cache(monkeypatch)
     assert prefer_ungated_mirror(mirror) == mirror
@@ -360,11 +360,13 @@ def test_the_opt_out_keeps_a_mirror_without_a_file_list_only_when_whole(monkeypa
     )
     monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path))
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
-    # Torn: one transformer shard is missing, so the opt-out fetches the upstream.
-    assert prefer_ungated_mirror(mirror, files = []) == upstream
-    assert prefer_ungated_mirror(mirror) == upstream
+    # Torn: one transformer shard is missing, so the opt-out fetches the upstream. The metadata
+    # probe's lone manifest is no evidence either.
+    for files in ([], None, ["model_index.json"]):
+        assert prefer_ungated_mirror(mirror, files = files) == upstream
     (snap / "transformer" / "part-2.safetensors").write_text("x")
-    assert prefer_ungated_mirror(mirror, files = []) == mirror
+    for files in ([], None, ["model_index.json"]):
+        assert prefer_ungated_mirror(mirror, files = files) == mirror
 
 
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
