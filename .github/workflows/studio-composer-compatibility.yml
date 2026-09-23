@@ -78,10 +78,13 @@ jobs:
         run: npm ci --ignore-scripts --no-fund --no-audit
       - name: Create isolated test environment
         run: |
-          mkdir -p temp/queue-validation/tmp
-          echo "TMPDIR=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
-          echo "TMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
-          echo "TEMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          # Branded Chrome and Edge put a unix socket in TMPDIR and abort when its path passes
+          # 107 bytes. Under the checkout that path grows with the repository name, so a fork
+          # with a longer name failed every chrome and msedge leg; RUNNER_TEMP is short everywhere.
+          mkdir -p "$RUNNER_TEMP/qv"
+          echo "TMPDIR=$RUNNER_TEMP/qv" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP/qv" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP/qv" >> "$GITHUB_ENV"
           python -m venv temp/queue-validation/venv
           python - <<'PY'
           import os

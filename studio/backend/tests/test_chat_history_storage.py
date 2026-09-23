@@ -822,7 +822,6 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m3",
         new_thread_id = "fork-1",
-        new_title = "fork · Original",
         created_at = 99,
         id_factory = id_factory,
     )
@@ -858,7 +857,6 @@ def test_fork_preserves_legacy_ancestry(tmp_path, monkeypatch, linked_tip, branc
         source_thread_id = "src",
         branch_message_id = branch_message_id,
         new_thread_id = "fork-1",
-        new_title = "fork",
         created_at = 4,
         id_factory = iter(("copy-1", "copy-2", "copy-3")).__next__,
     )
@@ -878,7 +876,6 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "fork-1",
-        new_title = "fork · Original",
         created_at = 99,
         id_factory = lambda: "new-1",
     )
@@ -929,7 +926,6 @@ def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "research-report",
         new_thread_id = "fork-1",
-        new_title = "fork",
         created_at = 3,
         id_factory = iter(("fork-user", "fork-report")).__next__,
     )
@@ -965,7 +961,6 @@ def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch)
         source_thread_id = "nope",
         branch_message_id = "m1",
         new_thread_id = "fork",
-        new_title = "f",
         created_at = 1,
         id_factory = lambda: "x",
     )
@@ -983,7 +978,6 @@ def test_fork_chat_thread_rejects_a_deleted_target_id(tmp_path, monkeypatch):
             source_thread_id = "src",
             branch_message_id = "m1",
             new_thread_id = "fork",
-            new_title = "f",
             created_at = 2,
             id_factory = lambda: "new-1",
         )
@@ -1006,7 +1000,6 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "f1",
-        new_title = "f1",
         created_at = 2,
         id_factory = id_factory,
     )
@@ -1014,7 +1007,6 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         source_thread_id = "src",
         branch_message_id = "m1",
         new_thread_id = "f2",
-        new_title = "f2",
         created_at = 3,
         id_factory = id_factory,
     )
@@ -1041,7 +1033,6 @@ def test_fork_counts_for_thread(tmp_path, monkeypatch):
             source_thread_id = "src",
             branch_message_id = branch,
             new_thread_id = new_id,
-            new_title = new_id,
             created_at = 10 + index,
             id_factory = id_factory,
         )
@@ -1380,3 +1371,402 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     messages = studio_db.sync_chat_messages("thread-1", payload)
     assert len(messages) == 2
     assert [m["id"] for m in messages] == ["u1", "u2"]
+
+
+# ---------------------------------------------------------------------------
+# fork titles and the inherited-history boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stored,title,base",
+    [
+        ("Chat", "Chat (2)", "Chat"),  # generated, so the stored base wins
+        ("Chat (2)", "Chat (2) (3)", "Chat (2)"),  # a base may hold a number of its own
+        (None, "Chat", "Chat"),
+        (None, "Budget (2026)", "Budget (2026)"),  # the user's number, kept whole
+        (None, "Release (2)", "Release (2)"),
+        (None, "(2)", "(2)"),
+        (None, "  Spaced  ", "Spaced"),
+        ("", "Chat (2)", "Chat (2)"),  # blank is no base at all
+        ("  ", "Chat (2)", "Chat (2)"),
+    ],
+)
+def test_fork_base_of(stored, title, base):
+    """Without a stored base the whole title is one, so only a generated "(n)" is replaced."""
+    assert studio_db.fork_base_of({"fork_title_base": stored, "title": title}) == base
+
+
+def _fork(source: str, new_id: str, at: int):
+    return studio_db.fork_chat_thread(
+        source_thread_id = source,
+        branch_message_id = None,
+        new_thread_id = new_id,
+        created_at = at,
+        id_factory = lambda: uuid.uuid4().hex,
+    )
+
+
+def test_fork_of_an_ordinary_chat_keeps_a_numeric_suffix(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Budget (2026)"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+
+    # The year is the user's, not a fork number, so it survives into the fork's name.
+    assert _fork("src", "f0", 10)["title"] == "Budget (2026) (1)"
+    # And a fork of that fork still numbers from the same base rather than nesting again.
+    assert _fork("f0", "f1", 11)["title"] == "Budget (2026) (2)"
+
+
+def test_a_renamed_fork_keeps_the_name_the_user_gave_it(tmp_path, monkeypatch):
+    """forked_from_thread_id survives a rename, so it alone cannot say the "(n)" is ours."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.upsert_chat_thread(
+        {**_thread("f"), "title": "Report (2026)", "forkedFromThreadId": "orig"}
+    )
+    studio_db.sync_chat_messages("f", [_msg("m1", None, 1)])
+
+    # No "Report" family to join, so the year is the user's and the whole name is the base.
+    assert _fork("f", "f2", 10)["title"] == "Report (2026) (1)"
+
+
+def test_a_generated_suffix_is_still_replaced(tmp_path, monkeypatch):
+    """A real fork carries the base it was built from, so its "(n)" is ours to take."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_a_fork_numbers_from_its_base_after_the_source_is_gone(tmp_path, monkeypatch):
+    """The stored base is the whole signal, so nothing about the source can take it away."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+
+    studio_db.delete_chat_threads(["orig"])  # "Notes (1)" is now the only one left
+
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_a_fork_numbers_from_its_base_after_the_source_is_renamed(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+
+    studio_db.update_chat_thread("orig", {"title": "Journal"})
+
+    # The fork keeps its own family rather than following a name it never had.
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_renaming_a_fork_ends_the_generated_name(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    _fork("orig", "f", 10)
+
+    studio_db.update_chat_thread("f", {"title": "Report (2026)"})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] is None
+
+    # The year is the user's now, so the whole name is the base.
+    assert _fork("f", "f2", 11)["title"] == "Report (2026) (1)"
+
+
+def test_a_rename_through_upsert_also_ends_it(tmp_path, monkeypatch):
+    """Whole-record writers rebuild the row without the base; only a new title drops it."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    _fork("orig", "f", 10)
+
+    # Same title, no base in the payload: the stored one survives.
+    studio_db.upsert_chat_thread({**_thread("f"), "title": "Notes (1)", "archived": True})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] == "Notes"
+
+    studio_db.upsert_chat_thread({**_thread("f"), "title": "Report (2026)"})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] is None
+
+
+def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Research notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1), _msg("m2", "m1", 2)])
+
+    titles = [_fork("src", f"f{i}", 10 + i)["title"] for i in range(3)]
+    assert titles == ["Research notes (1)", "Research notes (2)", "Research notes (3)"]
+
+    # Forking a fork numbers from the same base rather than nesting suffixes.
+    assert _fork("f0", "deep", 20)["title"] == "Research notes (4)"
+
+
+def test_fork_title_fills_the_lowest_free_number(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    for i in range(3):
+        _fork("src", f"f{i}", 10 + i)
+    studio_db.delete_chat_threads(["f1"])  # frees "Notes (2)"
+
+    assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
+
+
+def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    # A different chat whose name merely starts with the base must not consume a number.
+    studio_db.upsert_chat_thread({**_thread("other"), "title": "Notes extra (1)"})
+    # An archived chat still holds its number, so restoring it cannot collide.
+    studio_db.upsert_chat_thread({**_thread("old"), "title": "Notes (1)", "archived": True})
+
+    assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
+
+
+def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+
+    forked = studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m2",
+        new_thread_id = "fork-1",
+        created_at = 99,
+        id_factory = lambda: uuid.uuid4().hex,
+    )
+    copied = studio_db.list_chat_messages("fork-1")
+    boundary = forked["forkBoundaryMessageId"]
+    # The fork's own copy of the branch message, not the source's id.
+    assert boundary == copied[-1]["id"]
+    assert boundary not in {"m1", "m2", "m3"}
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
+
+
+def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monkeypatch):
+    """An imported chat can end on a system message, which the thread renders as nothing.
+    Anchoring there would hang the divider off a row that never mounts."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+            _stored_message(id = "m3", parentId = "m2", role = "system", createdAt = 3),
+        ],
+    )
+
+    forked = _fork("src", "fork-1", 99)
+    copied = {m["id"]: m for m in studio_db.list_chat_messages("fork-1")}
+
+    # The system message is still inherited, it just does not close the history.
+    assert [m["role"] for m in copied.values()] == ["user", "assistant", "system"]
+    assert copied[forked["forkBoundaryMessageId"]]["role"] == "assistant"
+
+
+def test_a_fork_with_nothing_visible_to_inherit_has_no_boundary(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Prompt only"})
+    studio_db.sync_chat_messages(
+        "src", [_stored_message(id = "m1", parentId = None, role = "system", createdAt = 1)]
+    )
+
+    # Nothing the reader can see, so no inherited history to close and no divider.
+    assert _fork("src", "fork-1", 99)["forkBoundaryMessageId"] is None
+
+
+def test_a_whole_record_save_without_the_boundary_keeps_it(tmp_path, monkeypatch):
+    """The backend owns the anchor and moves it itself, so an absent one is not a clear."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    boundary = _fork("src", "fork-1", 99)["forkBoundaryMessageId"]
+    assert boundary is not None
+
+    stored = studio_db.get_chat_thread("fork-1")
+    studio_db.upsert_chat_thread({k: v for k, v in stored.items() if k != "forkBoundaryMessageId"})
+
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
+
+
+def test_a_stale_whole_record_save_cannot_move_the_boundary_back(tmp_path, monkeypatch):
+    """A whole-record writer carries whatever it read, which may predate a prune that moved
+    the anchor. Writing that back would park the divider on a deleted row for good."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+        ],
+    )
+    _fork("src", "fork-1", 99)
+    stale = dict(studio_db.get_chat_thread("fork-1"))  # read before the delete
+
+    copied = studio_db.list_chat_messages("fork-1")
+    studio_db.sync_chat_messages(
+        "fork-1",
+        [m for m in copied if m["id"] != stale["forkBoundaryMessageId"]],
+        prune_missing = True,
+    )
+    reseated = studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"]
+    assert reseated != stale["forkBoundaryMessageId"]
+
+    # The first writer now saves its old record for an unrelated change.
+    studio_db.upsert_chat_thread({**stale, "archived": True})
+
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == reseated
+    assert studio_db.get_chat_thread("fork-1")["archived"] is True
+
+
+def test_a_patch_repeating_the_stored_title_keeps_the_base(tmp_path, monkeypatch):
+    """Renaming a pair patches every thread in it, so one can be sent the name it already has.
+    That is not a rename, and clearing there would cost its next fork a number."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    forked = _fork("src", "fork-1", 99)
+    assert forked["title"] == "Notes (1)"
+
+    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] == "Notes"
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (2)"
+
+
+def test_a_stale_whole_record_save_cannot_restore_a_cleared_base(tmp_path, monkeypatch):
+    """A writer carries the base it read, which a rename it never saw may have cleared.
+    Renaming away and back leaves the titles equal, so only the stored value can decide."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    _fork("src", "fork-1", 99)
+    stale = dict(studio_db.get_chat_thread("fork-1"))
+    assert stale["forkTitleBase"] == "Notes"
+
+    studio_db.update_chat_thread("fork-1", {"title": "Report"})
+    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})  # the user's own name now
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+
+    studio_db.upsert_chat_thread({**stale, "archived": True})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+    # The number is the user's, so it is kept whole rather than taken.
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (1) (1)"
+
+
+def test_a_whole_record_rename_clears_the_base_it_carries(tmp_path, monkeypatch):
+    """The record a client read still holds the old base, so the title has to decide alone."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    _fork("src", "fork-1", 99)
+
+    carried = dict(studio_db.get_chat_thread("fork-1"))
+    assert carried["forkTitleBase"] == "Notes"
+    studio_db.upsert_chat_thread({**carried, "title": "Report"})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Report (1)"
+
+
+def test_plain_thread_has_no_fork_boundary(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("plain"))
+    assert studio_db.get_chat_thread("plain")["forkBoundaryMessageId"] is None
+
+
+def _forked_thread(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+    return _fork("src", "f", 9)
+
+
+def test_pruning_the_boundary_moves_the_divider_up(tmp_path, monkeypatch):
+    """Left on a deleted row the boundary matches nothing, and the divider never comes back."""
+    _forked_thread(tmp_path, monkeypatch)
+    copied = studio_db.list_chat_messages("f")
+    studio_db.sync_chat_messages("f", copied[:-1], prune_missing = True)
+
+    survivors = [m["id"] for m in studio_db.list_chat_messages("f")]
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] == survivors[-1]
+
+
+def test_pruning_every_inherited_message_clears_the_boundary(tmp_path, monkeypatch):
+    _forked_thread(tmp_path, monkeypatch)
+    studio_db.sync_chat_messages("f", [], prune_missing = True)
+
+    # Nothing was inherited any more, so there is no history for a divider to close.
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None
+
+
+def test_pruning_an_earlier_message_leaves_the_boundary_alone(tmp_path, monkeypatch):
+    forked = _forked_thread(tmp_path, monkeypatch)
+    copied = studio_db.list_chat_messages("f")
+    studio_db.sync_chat_messages("f", copied[1:], prune_missing = True)
+
+    assert (
+        studio_db.get_chat_thread("f")["forkBoundaryMessageId"] == forked["forkBoundaryMessageId"]
+    )
+
+
+def test_the_reseat_skips_an_ancestor_that_paints_no_row(tmp_path, monkeypatch):
+    """A system message can survive a prune that takes the boundary. It renders as nothing,
+    so parking the divider there loses it just as surely as leaving it on the deleted row."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+            _stored_message(id = "m3", parentId = "m2", role = "system", createdAt = 3),
+            _stored_message(id = "m4", parentId = "m3", createdAt = 4),
+        ],
+    )
+    forked = _fork("src", "f", 10)
+    copied = studio_db.list_chat_messages("f")
+    by_id = {m["id"]: m for m in copied}
+    boundary = forked["forkBoundaryMessageId"]
+
+    # Prune the boundary; the system message directly above it survives.
+    studio_db.sync_chat_messages(
+        "f", [m for m in copied if m["id"] != boundary], prune_missing = True
+    )
+
+    moved = studio_db.get_chat_thread("f")["forkBoundaryMessageId"]
+    assert by_id[moved]["role"] == "assistant"
+
+
+def test_the_reseat_clears_when_only_hidden_ancestors_survive(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, role = "system", createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", createdAt = 2),
+        ],
+    )
+    forked = _fork("src", "f", 10)
+    copied = studio_db.list_chat_messages("f")
+    boundary = forked["forkBoundaryMessageId"]
+
+    studio_db.sync_chat_messages(
+        "f", [m for m in copied if m["id"] != boundary], prune_missing = True
+    )
+
+    # Only the system prompt is left, so there is no visible inherited history to close.
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None

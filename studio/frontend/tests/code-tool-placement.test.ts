@@ -143,6 +143,18 @@ test("the branch is only taken when a tool Unsloth itself can run is on", () => 
   assert.match(gate, /studioLocalCodeTools\.length > 0/);
 });
 
+test("response details record Code from the placement, local or hosted", () => {
+  // An external connection with no sandbox (openai_codex, vLLM, ...) sends the local
+  // names, so keying on the hosted flag or a local model reported Code as off.
+  const start = SOURCE.indexOf("const buildResponseDetails = (");
+  const tools = SOURCE.slice(start, SOURCE.indexOf("images:", start));
+  assert.match(tools, /code:\s*hostedCodeToolsForThisTurn\.length > 0 \|\|/);
+  assert.match(
+    tools,
+    /\(supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.length > 0\)/,
+  );
+});
+
 // ── Whether the pill is offered at all ─────────────────────────────
 
 // Until Unsloth's loop reached the general external providers, the composer

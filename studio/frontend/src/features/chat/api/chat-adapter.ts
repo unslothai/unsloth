@@ -6051,8 +6051,9 @@ export function createOpenAIStreamAdapter(
               (!isExternalRequest && supportsTools && toolsEnabled),
             fetch: webFetchEnabledForThisTurn,
             code:
-              codeExecEnabledForThisTurn ||
-              (!isExternalRequest && supportsTools && codeToolsEnabled),
+              hostedCodeToolsForThisTurn.length > 0 ||
+              (supportsStudioToolsForThisTurn &&
+                studioLocalCodeTools.length > 0),
             images: imageGenerationEnabledForThisTurn,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:

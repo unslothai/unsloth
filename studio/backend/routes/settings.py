@@ -1867,10 +1867,11 @@ def update_openai_auto_switch_override(
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import (
         drop_managed_flags,
+        parse_ctx_override,
         strip_shadowing_flags,
         validate_extra_args,
     )
-    from utils.openai_auto_switch_settings import get_model_override
+    from utils.openai_auto_switch_settings import MAX_SEQ_LENGTH_CEILING, get_model_override
 
     try:
         if payload.fill_absent_fields and payload.remove is True:
@@ -2056,12 +2057,27 @@ def update_openai_auto_switch_override(
             ):
                 _kept_reasoning_budget = -1
                 _kept_reasoning_budget_message = ""
+            # A -c sent with this save is what its load runs at (llama.cpp takes the last -c); store it as
+            # the context or auto-switch strips it as stale (#11511). Carried-over flags and fills keep that rule.
+            max_seq_length = payload.max_seq_length
+            custom_context_length = payload.custom_context_length
+            if payload.llama_extra_args is not None and not payload.fill_absent_fields:
+                try:
+                    explicit_ctx = parse_ctx_override(extra_args)
+                except ValueError:
+                    explicit_ctx = None
+                # Past the stored ceiling the field would be dropped, leaving the flag unchecked.
+                if explicit_ctx and explicit_ctx <= MAX_SEQ_LENGTH_CEILING:
+                    if max_seq_length is not None:
+                        max_seq_length = explicit_ctx
+                    if custom_context_length is not None:
+                        custom_context_length = explicit_ctx
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
-                max_seq_length = payload.max_seq_length,
-                custom_context_length = payload.custom_context_length,
+                max_seq_length = max_seq_length,
+                custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
                 mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
@@ -3868,9 +3884,8 @@ class DebugLogSourcesResponse(BaseModel):
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
-    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
-    # STUDIO_HOME is set AND there is no readable log to take a path from.
-    # Additive and optional: an older client ignores it.
+    # ~/.unsloth/studio/logs, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set. Additive and optional: an older client ignores it.
     log_root: Optional[str] = None
 
 
@@ -3907,14 +3922,18 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # The first candidate root is the one the walk prefers, so it is the
-    # directory a user opening "the log folder" expects to land in.
+    # The first candidate root is the one the walk prefers. File logging may
+    # be disabled before logs/ is created, so reveal the existing home then.
     roots = debug_log_sources.candidate_roots()
+    log_root = None
+    if roots:
+        logs_dir = roots[0] / "logs"
+        log_root = str(logs_dir if logs_dir.is_dir() else roots[0])
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
-        log_root = str(roots[0]) if roots else None,
+        log_root = log_root,
     )
 
 
