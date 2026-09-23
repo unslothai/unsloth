@@ -6137,6 +6137,31 @@ def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
     assert (repo_dir / "blobs" / "q8blob").exists()
 
 
+def test_unlink_variant_blob_sweeps_when_cache_root_is_in_another_form(tmp_path):
+    real = tmp_path / "real"
+    repo_dir = real / "models--Org--Repo-GGUF"
+    _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(real, repo_dir, "q4blob")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory = True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").unlink()
+    blob = alias / repo_dir.name / "blobs" / "q4blob"
+
+    # The resolved root differs lexically from the blob's path, as a Windows 8.3 short name does.
+    freed = deletion._unlink_variant_blob(blob, real.resolve())
+
+    assert freed == 200
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+
+
 def _load_fresh_deletion(monkeypatch, shared_blobs_module):
     import importlib.util
 

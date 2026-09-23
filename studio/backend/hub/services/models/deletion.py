@@ -95,8 +95,15 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
 
 def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
     shared_target = None
-    if shared_blob_target is not None and cache_dir is not None:
-        shared_target = shared_blob_target(blob, cache_dir)
+    if shared_blob_target is not None:
+        # huggingface_hub matches paths lexically, so try the cache root in the blob's own form first: a resolved root misses a symlinked cache or a Windows 8.3 short name and would leak the payload.
+        for root in dict.fromkeys(
+            r for r in (blob.parent.parent.parent, cache_dir) if r is not None
+        ):
+            shared_target = shared_blob_target(blob, root)
+            if shared_target is not None:
+                cache_dir = root
+                break
     if shared_target is None:
         freed = blob.stat().st_size
         blob.unlink()
