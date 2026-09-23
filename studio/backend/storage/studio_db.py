@@ -2045,18 +2045,17 @@ def upsert_chat_thread(thread: dict) -> dict:
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
                 forked_from_message_id = excluded.forked_from_message_id,
-                -- The backend owns this anchor and moves it itself when the row it names is
-                -- pruned, so an absent one is a writer rebuilding the record, not a clear.
-                fork_boundary_message_id = COALESCE(
-                    excluded.fork_boundary_message_id, chat_threads.fork_boundary_message_id
-                ),
-                -- The base only describes the title it was generated with, so a rename drops it.
-                -- Under the same title an absent one keeps the stored base, since a writer that
-                -- rebuilds the record without this field is not renaming anything.
+                -- fork_boundary_message_id is deliberately absent. It is set once, on the insert
+                -- that makes the fork, and moved only by the prune that deletes the row it names.
+                -- A whole-record writer carries whatever it read, which may predate that move, so
+                -- on conflict the stored anchor always wins.
+                -- The base only describes the title it was generated with, so a new title drops
+                -- it whatever the writer still carries. Under the same title an absent one keeps
+                -- the stored base, since a writer rebuilding the record is not renaming anything.
                 fork_title_base = CASE
                     WHEN excluded.title = chat_threads.title
                     THEN COALESCE(excluded.fork_title_base, chat_threads.fork_title_base)
-                    ELSE excluded.fork_title_base
+                    ELSE NULL
                 END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
                 settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)

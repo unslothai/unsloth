@@ -1597,6 +1597,52 @@ def test_a_whole_record_save_without_the_boundary_keeps_it(tmp_path, monkeypatch
     assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
 
 
+def test_a_stale_whole_record_save_cannot_move_the_boundary_back(tmp_path, monkeypatch):
+    """A whole-record writer carries whatever it read, which may predate a prune that moved
+    the anchor. Writing that back would park the divider on a deleted row for good."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+        ],
+    )
+    _fork("src", "fork-1", 99)
+    stale = dict(studio_db.get_chat_thread("fork-1"))  # read before the delete
+
+    copied = studio_db.list_chat_messages("fork-1")
+    studio_db.sync_chat_messages(
+        "fork-1",
+        [m for m in copied if m["id"] != stale["forkBoundaryMessageId"]],
+        prune_missing = True,
+    )
+    reseated = studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"]
+    assert reseated != stale["forkBoundaryMessageId"]
+
+    # The first writer now saves its old record for an unrelated change.
+    studio_db.upsert_chat_thread({**stale, "archived": True})
+
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == reseated
+    assert studio_db.get_chat_thread("fork-1")["archived"] is True
+
+
+def test_a_whole_record_rename_clears_the_base_it_carries(tmp_path, monkeypatch):
+    """The record a client read still holds the old base, so the title has to decide alone."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    _fork("src", "fork-1", 99)
+
+    carried = dict(studio_db.get_chat_thread("fork-1"))
+    assert carried["forkTitleBase"] == "Notes"
+    studio_db.upsert_chat_thread({**carried, "title": "Report"})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Report (1)"
+
+
 def test_plain_thread_has_no_fork_boundary(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("plain"))
