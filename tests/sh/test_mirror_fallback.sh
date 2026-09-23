@@ -20,6 +20,15 @@ if [ "$(_block "$SETUP_SH")" = "$(cat "$_WORK/block.sh")" ]; then
 else
     bad "setup.sh mirror fallback block drifted from install.sh"
 fi
+# Inside a heredoc the block is written to a file instead of defining _mirror_fallback.
+_heredoc_block_lines() { awk '
+    tag != "" { if ($0 == tag || (dash && $0 ~ "^\t*" tag "$")) tag = ""; else if (/^[ \t]*# ── BEGIN mirror fallback/) print NR; next }
+    !/^[ \t]*#/ && match($0, /(^|[^<])<<-?[ \t]*["\047]?[A-Za-z_][A-Za-z_0-9]*["\047]?([ \t|;&)>]|$)/) {
+        t = substr($0, RSTART, RLENGTH); sub(/^[^<]*<</, "", t); dash = (t ~ /^-/)
+        gsub(/^-?[ \t]*["\047]?|["\047]?[ \t|;&)>]*$/, "", t); tag = t }' "$1"; }
+for _f in "$INSTALL_SH" "$SETUP_SH"; do
+    assert_eq "${_f##*/} defines the mirror fallback outside every heredoc" "" "$(_heredoc_block_lines "$_f")"
+done
 
 # The stub answers from MOCK_<HOST>[_MIRROR]: ok, slow (status seen, --max-time hit) or blocked; mirrors redirect like CERNET.
 mkdir -p "$_WORK/bin"
