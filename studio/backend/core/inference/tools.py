@@ -13840,9 +13840,10 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
-# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>.
+# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
+# browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
-    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>|<[!/?][^>]*>",
+    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[\s/](?:[^>\"']|\"[^\"]*\"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?].*",
     re.IGNORECASE | re.DOTALL,
 )
 _META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")

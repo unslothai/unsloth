@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import codecs
 import sys
+import time
 from email.message import Message
 from pathlib import Path
 
@@ -436,7 +437,9 @@ _JAPANESE = "価格.com は日本最大級の購買支援サイトです。製�
 
 
 def _html_page(head: str, text: str) -> str:
-    return f"<html><head>{head}<title>t</title></head><body><p>{text}</p></body></html>"
+    return (
+        f"<!doctype html><html><head>{head}<title>t</title></head><body><p>{text}</p></body></html>"
+    )
 
 
 @pytest.mark.parametrize(
@@ -588,6 +591,21 @@ def test_meta_charset_wins_over_xml_prolog(monkeypatch):
     out = _fetch_with(monkeypatch, body, "text/html")
     assert text.strip() in out
     assert "Ã" not in out
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"<a" * 1024,
+        b'<html><head><script data-x="' + b"<a" * 1024,
+        b"<html><head><script>" + b"x<y;" * 512,
+        b'<html><head><script data-x=\'<meta charset="shift_jis">' + b"x" * 2048,
+    ],
+)
+def test_meta_prescan_stops_at_an_unterminated_tag(head):
+    start = time.perf_counter()
+    assert tools._sniff_meta_charset(head[: tools._META_CHARSET_SCAN_BYTES], "text/html") is None
+    assert time.perf_counter() - start < 1
 
 
 def test_whatwg_charset_table_only_names_text_codecs():
