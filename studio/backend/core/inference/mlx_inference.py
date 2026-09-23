@@ -226,12 +226,23 @@ def _place_per_layer_inputs(kwargs, rows, start):
 
 
 class _ForwardRecord:
-    __slots__ = ("forwards", "capture_at", "snapshot", "resume_offset", "on_resume")
+    __slots__ = (
+        "forwards",
+        "capture_at",
+        "snapshot",
+        "tail_at",
+        "tail",
+        "resume_offset",
+        "on_resume",
+    )
 
     def __init__(self):
         self.forwards = 0
         self.capture_at = 0
         self.snapshot = None
+        # Where the prefill ends, as the last token's own forward begins.
+        self.tail_at = 0
+        self.tail = None
         self.resume_offset = None
         self.on_resume = None
 
@@ -279,14 +290,19 @@ def _recording_class(base):
         # two (KV quantization).
         if (
             record is not None
-            and record.capture_at
-            and record.forwards == record.capture_at
+            and record.forwards
+            and record.forwards in (record.capture_at, record.tail_at)
             and cache is not None
         ):
             try:
-                record.snapshot = copy_cache_entries(cache)
+                copied = copy_cache_entries(cache)
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+            else:
+                if record.forwards == record.capture_at:
+                    record.snapshot = copied
+                else:
+                    record.tail = copied
         output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
@@ -438,7 +454,9 @@ class VLMPromptSnapshotStore:
     """Boundary snapshots, most recently used last, under a byte budget. A snapshot that a
     longer one of the same conversation extends reads its in-order KV rows from that one, its
     base: both were prefilled on one grid, so those rows are the same, and a base's views are
-    only counted once."""
+    only counted once. One snapshot per key may instead hold where a prompt's prefill ended, a
+    replay: its last rows came from a chunk that stopped there, so it serves only a prompt of
+    that length and reads through no other snapshot."""
 
     def __init__(
         self,
@@ -449,17 +467,21 @@ class VLMPromptSnapshotStore:
         self._max_entries = max_entries
         self._entries = OrderedDict()
         self._bases = {}
+        self._replays = {}
         self.nbytes = 0
 
     def __len__(self):
         return len(self._entries)
 
     def lookup(self, key, token_ids, limit):
-        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``."""
+        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``, or the replay
+        holding all of it but the last token."""
         best = None
-        for (stored_key, prefix), (entries, _nbytes) in self._entries.items():
+        for item, (entries, _nbytes) in self._entries.items():
+            stored_key, prefix = item
             n = len(prefix)
-            if stored_key != key or n == 0 or n > limit:
+            fits = n == len(token_ids) - 1 if self._is_replay(item) else n <= limit
+            if stored_key != key or n == 0 or not fits:
                 continue
             if best is not None and n <= len(best[0]):
                 continue
@@ -470,7 +492,13 @@ class VLMPromptSnapshotStore:
         self._touch((key, best[0]))
         return best[1], len(best[0])
 
-    def store(self, key, prefix_ids, entries):
+    def store(
+        self,
+        key,
+        prefix_ids,
+        entries,
+        replay = False,
+    ):
         compact_sliding_windows(entries)
         nbytes = cache_entries_nbytes(entries)
         if nbytes > self._max_bytes:
@@ -481,16 +509,22 @@ class VLMPromptSnapshotStore:
             )
             return False
         item = (key, tuple(prefix_ids))
+        replay = replay or self._is_replay(item)
         readers = [other for other, base in self._bases.items() if base == item]
         self._pop(item)
         self._entries[item] = (entries, nbytes)
         self.nbytes += nbytes
+        replaced = self._replays.get(key)
+        if replay:
+            self._replays[key] = item
         longer = [other for other in reversed(self._entries) if _extends(other, item)]
-        base = self._bases.get(longer[0], longer[0]) if longer else item
+        # A replay is the base of what it extends, so the one it replaces takes nothing along.
+        base = self._bases.get(longer[0], longer[0]) if longer and not replay else item
         rebased = {
             other
             for other in list(self._entries)
             if other != base
+            and other not in (replaced, self._replays.get(key))
             and (other == item or _extends(item, other))
             and self._rebase(other, base)
         }
@@ -498,6 +532,8 @@ class VLMPromptSnapshotStore:
             # Still reading the replaced buffers, which nothing counts any more.
             if other not in rebased:
                 self.discard(other)
+        if replay and replaced not in (None, item):
+            self.discard(replaced)
         self._touch(item)
         while self._entries and (
             self.nbytes > self._max_bytes or len(self._entries) > self._max_entries
@@ -522,9 +558,14 @@ class VLMPromptSnapshotStore:
             # Behind what reads through it, so eviction reaches it last.
             self._entries.move_to_end(base)
 
+    def _is_replay(self, item):
+        return self._replays.get(item[0]) == item
+
     def _pop(self, item):
         dropped = self._entries.pop(item, None)
         self._bases.pop(item, None)
+        if self._is_replay(item):
+            del self._replays[item[0]]
         if dropped is not None:
             self.nbytes -= dropped[1]
 
@@ -542,6 +583,7 @@ class VLMPromptSnapshotStore:
     def clear(self):
         self._entries.clear()
         self._bases.clear()
+        self._replays.clear()
         self.nbytes = 0
 
 
@@ -646,6 +688,9 @@ class VLMPromptCacheSession:
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         record.capture_at = (boundary - prefix_len) // self.step
+        if prefix_len <= boundary < len(token_ids) - 1:
+            # One chunk more: what ends the prefill.
+            record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
         return prefix_len
 
@@ -679,8 +724,25 @@ class VLMPromptCacheSession:
         stops reading early."""
 
     def finish(self):
-        snapshot = self._forward.record.snapshot
-        if snapshot is None or self._token_ids is None:
+        if self._token_ids is None:
+            return False
+        record = self._forward.record
+        stored = self._store_boundary(record.snapshot)
+        replay = len(self._token_ids) - 1
+        # Only a prefill on the offered chunks: a declined offer started over from row 0.
+        if (
+            record.tail is not None
+            and record.resume_offset == self.reused_tokens
+            and cache_entries_offset(record.tail) == replay
+        ):
+            stored = (
+                self._store.store(self._key, self._token_ids[:replay], record.tail, replay = True)
+                or stored
+            )
+        return stored
+
+    def _store_boundary(self, snapshot):
+        if snapshot is None:
             return False
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
