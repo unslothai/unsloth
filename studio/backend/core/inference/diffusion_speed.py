@@ -499,9 +499,17 @@ def _compile_repeated_blocks(
 
 
 def _carries_torchao_weights(module: Any) -> bool:
-    """Whether any parameter of ``module`` is a torchao tensor subclass (the int8 / fp8 dense fast path)."""
+    """Whether any parameter of ``module`` is a torchao tensor subclass (the int8 / fp8 dense fast path).
+
+    Checks ``.data`` too: some torchao builds keep ``Linear.weight`` a plain ``nn.Parameter`` wrapping the subclass,
+    the same two representations ``transformer_is_quantised`` covers. Only torchao's own types count, so a GGUF or
+    bitsandbytes parameter subclass keeps its existing compile policy."""
+
+    def _torchao(t: Any) -> bool:
+        return t is not None and type(t).__module__.startswith("torchao")
+
     try:
-        return any(type(p).__module__.startswith("torchao") for p in module.parameters())
+        return any(_torchao(p) or _torchao(getattr(p, "data", None)) for p in module.parameters())
     except Exception:  # noqa: BLE001 - not a torch module (tests/fakes)
         return False
 
