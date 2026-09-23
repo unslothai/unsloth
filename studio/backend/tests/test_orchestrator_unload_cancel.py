@@ -1770,6 +1770,47 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
     )
 
 
+@pytest.mark.parametrize("unload_path, cancelled", [("gguf-X", True), ("gguf-Y", False)])
+def test_unload_cancels_gguf_load_still_downloading(monkeypatch, unload_path, cancelled):
+    # Mid-download no llama-server exists, so the unload must cancel the load before the gate.
+
+    from core.inference import llama_keepwarm
+    from models.inference import LoadRequest
+    import asyncio as _asyncio
+    import routes.inference as ri
+
+    attempt = ri._begin_load_attempt(LoadRequest(model_path = "gguf-X"), "s")
+    seen_at_gate = {}
+
+    class _Gate:
+        async def __aenter__(self):
+            seen_at_gate["cancel"] = attempt.cancel_event.is_set()
+            seen_at_gate["complete"] = attempt.cancel_complete.is_set()
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Backend(_Unsloth):
+        def unload_model(self, name):
+            return True
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+    with ri._scoped_load_attempts_lock:
+        ri._running_load_attempt = attempt
+    try:
+        _asyncio.run(ri._unload_model_impl(ri.UnloadRequest(model_path = unload_path), "s"))
+    finally:
+        with ri._scoped_load_attempts_lock:
+            ri._running_load_attempt = None
+
+    assert seen_at_gate == {"cancel": cancelled, "complete": cancelled}
+
+
 # ----------------------------------------------------------------------------
 # cancel_load clears its loading marker BEFORE tearing the subprocess down, so a
 # racing off-gate load_model observes the cancel during the shutdown window.

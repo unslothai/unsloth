@@ -18461,6 +18461,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
+        # A downloading GGUF has no llama-server yet: cancel its load so it releases the gate.
+        with _scoped_load_attempts_lock:
+            running = _running_load_attempt
+        if running is not None and _names_the_loading_model(running.model_path, request.model_path):
+            running.cancel_event.set()
+            running.cancel_complete.set()
+            logger.info(f"Cancelled in-flight load before its server started: {request.model_path}")
+
         # Same gate as /load: refusal only, so a non-forced unload fails fast before queueing on the
         # lifecycle gate. Skipped when no teardown branch can fire, or a request naming a model
         # another tab already replaced would 409 on chats it cannot interrupt.
