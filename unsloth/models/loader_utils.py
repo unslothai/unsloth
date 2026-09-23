@@ -1378,8 +1378,12 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         if scheme is None or getattr(scheme, "weights", None) is None:
             continue
         block = None
+        # The FP8 kernels are triton: any other device keeps the compressed-tensors decompression.
+        weight = getattr(module, "weight", None)
+        on_gpu = isinstance(weight, torch.Tensor) and weight.device.type in ("cuda", "xpu")
         if (
-            isinstance(module, torch.nn.Linear)
+            on_gpu
+            and isinstance(module, torch.nn.Linear)
             and getattr(scheme, "output_activations", None) is None
         ):
             block = _compressed_tensors_fp8_block_size(module, scheme.weights)

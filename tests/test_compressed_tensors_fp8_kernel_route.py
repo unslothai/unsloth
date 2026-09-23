@@ -245,3 +245,13 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
 def _fp8_kernel_unsupported_here():
     from unsloth.kernels.fp8 import _fp8_kernel_unsupported
     return _fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn))
+
+
+def test_fp8_weights_off_the_gpu_keep_the_compressed_tensors_path():
+    from unsloth.models.loader_utils import _route_compressed_tensors_fp8_to_unsloth
+
+    model, _ = _ct_model(256, 256, "channel")
+    model.cpu()
+    # The FP8 kernels are triton; a CPU (or disk-offloaded) model is decompressed as before.
+    assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
+    assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
