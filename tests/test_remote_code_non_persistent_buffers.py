@@ -446,6 +446,102 @@ def test_prose_in_remote_init_weights_does_not_count_as_initialisation():
     torch.testing.assert_close(model.rotary.inv_freq, torch.full((2,), 4.0))
 
 
+def test_a_buffer_name_written_for_another_class_does_not_skip_this_one():
+    # _init_weights fills `inv_freq` only in another class's branch; this class's `inv_freq`
+    # still comes from its constructor.
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Rotary(nn.Module):
+        def __init__(self, base = 4.0):
+            super().__init__()
+            self.base = base
+            self.register_buffer("inv_freq", torch.full((2,), base), persistent = False)
+
+    class OtherRotary(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("inv_freq", torch.zeros(2), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rotary = Rotary()
+            self.other = OtherRotary()
+
+        def _init_weights(self, module):
+            if isinstance(module, OtherRotary):
+                module.inv_freq.fill_(5.0)
+
+    for cls in (Rotary, OtherRotary, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model._init_weights(model.other)
+    model.rotary.inv_freq.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    torch.testing.assert_close(model.rotary.inv_freq, torch.full((2,), 4.0))
+    torch.testing.assert_close(model.other.inv_freq, torch.full((2,), 5.0))
+
+
+def test_buffers_filled_through_a_helper_are_left_alone():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Placeholder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("table", torch.zeros(2), persistent = False)
+
+    def initialize_placeholder(module):
+        module.table.fill_(5.0)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Placeholder()
+
+        def _init_weights(self, module):
+            if isinstance(module, Placeholder):
+                initialize_placeholder(module)
+
+    for cls in (Placeholder, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model._init_weights(model.block)
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 0
+    torch.testing.assert_close(model.block.table, torch.full((2,), 5.0))
+
+
+def test_a_module_whose_init_weights_raises_is_skipped():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Rotary(nn.Module):
+        def __init__(self, base = 4.0):
+            super().__init__()
+            self.base = base
+            self.register_buffer("inv_freq", torch.full((2,), base), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rotary = Rotary()
+
+        def _init_weights(self, module):
+            if isinstance(module, Rotary):
+                raise RuntimeError("needs state the probe does not have")
+
+    for cls in (Rotary, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model.rotary.inv_freq.fill_(7.0)
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 0
+    torch.testing.assert_close(model.rotary.inv_freq, torch.full((2,), 7.0))
+
+
 def test_float64_loads_rebuild_under_float64():
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():

@@ -25,9 +25,7 @@ and dispatch hooks are kept). Native transformers modules are left alone: their
 `_init_weights` already recomputes these buffers.
 """
 
-import ast
 import inspect
-import textwrap
 
 import torch
 
@@ -99,68 +97,39 @@ def _cache_key(module, kwargs):
     return type(module), tuple(parts)
 
 
-def _remote_init_weights_identifiers(model):
-    """The identifiers of each remote ``_init_weights`` found on the model, one set per
-    implementation."""
-    found = []
-    seen = set()
-    for module in model.modules():
-        for cls in type(module).__mro__:
-            init_weights = cls.__dict__.get("_init_weights")
-            if (
-                init_weights is None
-                or cls in seen
-                or not cls.__module__.startswith("transformers_modules")
-            ):
-                continue
-            seen.add(cls)
-            try:
-                tree = ast.parse(textwrap.dedent(inspect.getsource(init_weights)))
-            except (OSError, TypeError, SyntaxError):
-                continue
-            found.append(_code_identifiers(tree))
-    return found
+def _written_by_init_weights(fresh, buffers, init_weights):
+    """Names of ``buffers`` the model's own ``_init_weights`` writes on ``fresh``, found by
+    running it on the rebuilt module with those buffers set to NaN. None when it cannot be
+    run, since then a live value it may have written cannot be told apart."""
+    if init_weights is None:
+        return set()
+    probed = {name: buffer for name, buffer in buffers.items() if buffer.is_floating_point()}
+    if not probed:
+        return set()
+    with torch.no_grad():
+        for name, buffer in probed.items():
+            fresh._buffers[name] = torch.full_like(buffer, float("nan"))
+        try:
+            init_weights(fresh)
+        except Exception:
+            return None
+        written = set()
+        for name in probed:
+            after = fresh._buffers.get(name, None)
+            if after is None or after.is_meta or not torch.isnan(after).all():
+                written.add(name)
+    return written
 
 
-def _code_identifiers(tree):
-    """Names, attributes and string arguments the code uses; comments and the docstring are
-    not part of the tree walked, so prose that mentions a buffer does not count."""
-    docstrings = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
-            first = node.body[0]
-            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
-                docstrings.add(id(first.value))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            names.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.add(node.attr)
-        elif (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and id(node) not in docstrings
-        ):
-            # getattr(module, "inv_freq") / register_buffer("inv_freq", ...)
-            names.add(node.value)
-    return names
-
-
-def _initialised_by_remote_code(module, buffer_name, init_identifiers):
-    """Whether a remote ``_init_weights`` names both ``module``'s class (or a base) and the
-    buffer, i.e. fills that buffer after construction for this kind of module."""
-    classes = {
-        cls.__name__
-        for cls in type(module).__mro__
-        if not cls.__module__.startswith(("torch", "builtins"))
-    }
-    return any(buffer_name in names and classes & names for names in init_identifiers)
-
-
-def _fresh_non_persistent_buffers(module, kwargs, dtype):
+def _fresh_non_persistent_buffers(
+    module,
+    kwargs,
+    dtype,
+    init_weights = None,
+):
     """Construct ``type(module)(**kwargs)`` on the CPU with parameters on meta and
-    return its non-persistent buffers, plus the attributes that alias them."""
+    return its non-persistent buffers, the attributes that alias them, and the buffers
+    the model's ``_init_weights`` fills itself (None when that cannot be determined)."""
     from accelerate import init_empty_weights
 
     previous_dtype = torch.get_default_dtype()
@@ -176,15 +145,17 @@ def _fresh_non_persistent_buffers(module, kwargs, dtype):
     for name in getattr(fresh, "_non_persistent_buffers_set", ()):
         buffer = fresh._buffers.get(name, None)
         if buffer is not None and not buffer.is_meta:
-            buffers[name] = buffer
+            buffers[name] = buffer.clone()
     aliases = {}
     for attribute, value in fresh.__dict__.items():
         if not isinstance(value, torch.Tensor) or attribute in ("_buffers", "_parameters"):
             continue
-        for name, buffer in buffers.items():
-            if value is buffer:
+        for name in buffers:
+            if value is fresh._buffers.get(name, None):
                 aliases[attribute] = name
-    return buffers, aliases
+    # After the aliases are read: the probe below replaces fresh's buffers.
+    written = _written_by_init_weights(fresh, buffers, init_weights)
+    return buffers, aliases, written
 
 
 def restore_remote_code_non_persistent_buffers(model):
@@ -196,7 +167,9 @@ def restore_remote_code_non_persistent_buffers(model):
     dtype = getattr(model, "dtype", None)
     cache = {}
     restored = 0
-    init_identifiers = _remote_init_weights_identifiers(model)
+    # transformers 5 runs this on every module after building on meta; a buffer it writes
+    # already holds the right value.
+    init_weights = getattr(model, "_init_weights", None)
     for module in model.modules():
         own = getattr(module, "_non_persistent_buffers_set", None)
         if not own or not _is_remote_code_module(module):
@@ -207,14 +180,16 @@ def restore_remote_code_non_persistent_buffers(model):
         key = _cache_key(module, kwargs)
         if key not in cache:
             try:
-                cache[key] = _fresh_non_persistent_buffers(module, kwargs, dtype)
+                cache[key] = _fresh_non_persistent_buffers(module, kwargs, dtype, init_weights)
             except Exception:
                 cache[key] = None
         if cache[key] is None:
             continue
-        buffers, aliases = cache[key]
+        buffers, aliases, written = cache[key]
+        if written is None:
+            continue
         for name, fresh in buffers.items():
-            if _initialised_by_remote_code(module, name, init_identifiers):
+            if name in written:
                 continue
             live = module._buffers.get(name, None)
             if live is None or live.is_meta or live.shape != fresh.shape:
