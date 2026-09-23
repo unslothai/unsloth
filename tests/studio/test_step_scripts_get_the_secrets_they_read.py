@@ -56,6 +56,7 @@ def _reads(script: str, name: str) -> bool:
         or re.search(rf"\$\{{?{n}(?![A-Za-z0-9_])", script)
         # PowerShell and cmd, for the Windows steps.
         or re.search(rf"\$env:{n}(?![A-Za-z0-9_])", script, re.I)
+        or re.search(rf"\$\{{env:{n}\}}", script, re.I)
         or re.search(rf"%{n}%", script)
         or re.search(rf"GetEnvironmentVariable\(\s*['\"]{n}['\"]", script)
     ):
@@ -204,6 +205,7 @@ def test_the_reader_sees_every_spelling_the_workflows_use():
     assert _reads('curl -H "Bearer $K"', "K")
     assert _reads('echo "${K}"', "K")
     assert _reads("Write-Host $env:K", "K")
+    assert _reads("Write-Host ${env:K}", "K")
     assert _reads("echo %K%", "K")
     assert _reads("[Environment]::GetEnvironmentVariable('K')", "K")
     assert not _reads("Write-Host $env:K_OTHER", "K")
@@ -279,7 +281,47 @@ def _static_matrix_values(job: dict, field: str):
     return values
 
 
+_WHOLE_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+_WITHHELD_ON_PULL_REQUESTS = "github.event_name != 'pull_request' && {} || ''"
+
+
+def _allowed_shapes(key: str) -> set[str]:
+    """The expressions a known secret key may be given, whitespace-normalised.
+
+    The secret itself, or the one conditional this repository uses: withheld on pull_request
+    and supplied on every other event. Any other condition is a mapping this guard cannot read,
+    and `== 'pull_request' && secrets.X || ''` would starve exactly the privileged runs.
+    """
+    shapes = set()
+    if key in _SECRET_FOR:
+        source = f"secrets.{_SECRET_FOR[key]}"
+        shapes |= {source, _WITHHELD_ON_PULL_REQUESTS.format(source)}
+        if _SECRET_FOR[key] == "GITHUB_TOKEN":
+            shapes.add("github.token")
+    if key in _INDEXED_FOR:
+        source = f"secrets[{_INDEXED_FOR[key][0]}]"
+        shapes |= {source, _WITHHELD_ON_PULL_REQUESTS.format(source)}
+    return shapes
+
+
 def _check_mapping(key, value, job, name, wrong):
+    before = len(wrong)
+    _check_source(key, value, job, name, wrong)
+    known = key in _SECRET_FOR or key in _INDEXED_FOR
+    if len(wrong) == before and known and isinstance(value, str) and _EXPRESSION.search(value):
+        # The whole value, not an expression found inside it: `junk-${{ secrets.X }}` or a block
+        # scalar's trailing newline exports an altered credential.
+        whole = _WHOLE_EXPRESSION.fullmatch(value)
+        shape = " ".join(whole.group(1).split()) if whole else None
+        if shape is None:
+            wrong.append(f"{name}: {key} is {value!r}, which is not a single ${{{{ }}}} expression")
+        elif shape not in _allowed_shapes(key):
+            wrong.append(
+                f"{name}: {key} is given `${{{{ {shape} }}}}`, not a shape this guard reads"
+            )
+
+
+def _check_source(key, value, job, name, wrong):
     if not isinstance(value, str):
         # YAML reads `false` or `1` as a non-string; for a known secret key that is still a
         # value that supplies nothing, and a `uses:` step has no script for _unmapped to read.
@@ -423,3 +465,28 @@ def test_the_run_token_and_non_string_values_do_not_pass_for_other_keys():
     ]
     gh = {"jobs": {"j": {"steps": [{"env": {"GH_TOKEN": "${{ github.token }}"}, "run": "true"}]}}}
     assert _misdrawn(gh, "w") == []
+
+
+def test_a_condition_that_withholds_the_secret_from_the_privileged_run_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    withheld_on_prs = "${{ github.event_name != 'pull_request' && secrets.DOCKER_API_KEY || '' }}"
+    assert _misdrawn(doc(withheld_on_prs), "w") == []
+    only_on_prs = "${{ github.event_name == 'pull_request' && secrets.DOCKER_API_KEY || '' }}"
+    assert _misdrawn(doc(only_on_prs), "w") == [
+        "w: DOCKER_API_KEY is given `${{ github.event_name == 'pull_request' "
+        "&& secrets.DOCKER_API_KEY || '' }}`, not a shape this guard reads"
+    ]
+
+
+def test_the_whole_value_must_be_the_expression():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    for altered in ("junk-${{ secrets.DOCKER_API_KEY }}", "${{ secrets.DOCKER_API_KEY }}\n"):
+        assert _misdrawn(doc(altered), "w") == [
+            f"w: DOCKER_API_KEY is {altered!r}, which is not a single ${{{{ }}}} expression"
+        ]

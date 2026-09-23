@@ -88,7 +88,11 @@ def test_protocol_constants_and_curated_provider_contract():
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
     ]
+    for model in ("gpt-6-luna", "gpt-6-sol"):
+        assert info["model_capabilities"][model] == {"vision": True, "studio_tools": True}
     assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
     row = next(
         item for item in list_available_providers() if item["provider_type"] == "openai_codex"

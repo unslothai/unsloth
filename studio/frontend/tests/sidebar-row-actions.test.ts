@@ -242,9 +242,9 @@ test("a chat row forks from its own menu", async () => {
   // Below Mark as unread, and before the rule that sets off the rest.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)/,
+    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
-  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
+  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/);
   // A comparison has two threads and no single tip to fork from.
   assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
   // The fork carries the settings on screen, not the ones the row was last written with.

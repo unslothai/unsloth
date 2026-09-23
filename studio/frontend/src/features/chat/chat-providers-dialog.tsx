@@ -1364,7 +1364,7 @@ export function ChatProvidersSettings({
           </div>
         </header>
 
-        <div className="flex max-w-[760px] flex-col gap-3">
+        <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
           <section className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
               <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
@@ -1806,7 +1806,7 @@ export function ChatProvidersSettings({
                         }
                         placeholder={customProviderModelIdsPlaceholder(providerType)}
                         rows={5}
-                        className="min-h-[100px] resize-y font-mono text-sm"
+                        className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                       />
                     </div>
                   </div>
@@ -1899,7 +1899,7 @@ export function ChatProvidersSettings({
                           onChange={(event) => setManualModelIds(event.target.value)}
                           placeholder={"model-id-1\nmodel-id-2"}
                           rows={5}
-                          className="min-h-[100px] resize-y font-mono text-sm"
+                          className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                         />
                       </div>
                     ) : null}
@@ -1995,7 +1995,7 @@ export function ChatProvidersSettings({
                             providerType,
                           )}
                           rows={4}
-                          className="min-h-[80px] resize-y font-mono text-sm"
+                          className="min-h-[calc(80px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                         />
                       </div>
                     ) : null}
@@ -2051,7 +2051,7 @@ export function ChatProvidersSettings({
         </p>
       </header>
 
-      <div className="flex w-full max-w-[760px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
+      <div className="flex w-full max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
         <div className="flex items-center gap-2">
           <Label
             htmlFor="chat-connections-enabled"
@@ -2075,7 +2075,7 @@ export function ChatProvidersSettings({
         </p>
       </div>
 
-      <section className="flex max-w-[760px] flex-col gap-2">
+      <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
         <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/[0.12]">
           <button
             type="button"
@@ -2215,7 +2215,7 @@ export function ChatProvidersDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/50 backdrop-blur-sm"
-        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[44rem]"
+        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[calc(44rem*var(--ui-space-scale,1))]"
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>

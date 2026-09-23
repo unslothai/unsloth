@@ -522,10 +522,7 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
-  if (providerType === "openai_codex") {
-    return providerModelSupportsStudioTools(providerType, modelId) === true;
-  }
-
+  // Codex runs Studio tools locally, not provider-hosted code_execution.
   if (usesOpenAIHostedResponses(providerType, baseUrl, apiType)) {
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),

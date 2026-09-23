@@ -553,7 +553,7 @@ test("a row with no heading over it still names its connection", () => {
   // own left edge is ~30px in and a tooltip opening that way ran off screen.
   assert.match(
     pickers,
-    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[15rem\] break-words"/,
+    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[calc\(15rem\*var\(--ui-space-scale,1\)\)\] break-words"/,
   );
 });
 
