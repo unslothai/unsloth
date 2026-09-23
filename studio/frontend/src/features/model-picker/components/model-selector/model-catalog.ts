@@ -81,6 +81,8 @@ export interface CatalogGroup {
    *  `ModelArtifact.totalParams`: the Hub listing's tags win, since a name like "MiniMax-H3-GGUF"
    *  says nothing about the audio track the model emits. */
   capabilities?: Partial<ModelCapabilities>;
+  /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
+  pinToTop?: boolean;
 }
 
 
@@ -201,8 +203,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
     // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.
     aliases: ["unsloth/Qwen-Image-2.1-FP8"],
+    pinToTop: true,
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-2.1", 33, {
+      bf16Mirror("Qwen/Qwen-Image-2.1", 33, {
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
