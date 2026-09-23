@@ -259,7 +259,9 @@ def test_length_guard_recomputes_on_a_length_change_and_defers_otherwise(monkeyp
     assert dc.install_fbcache_length_guard() is True  # idempotent: no second wrapper
     assert fbc.FBCHeadBlockHook._should_compute_remaining_blocks is guarded
 
-    state = types.SimpleNamespace(head_block_residual = torch.ones(1, 4297, 8), tail_block_residuals = None)
+    state = types.SimpleNamespace(
+        head_block_residual = torch.ones(1, 4297, 8), tail_block_residuals = None
+    )
     hook = fbc.FBCHeadBlockHook.__new__(fbc.FBCHeadBlockHook)
     hook.state_manager = types.SimpleNamespace(get_state = lambda: state)
     hook.threshold = 0.1

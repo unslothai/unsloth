@@ -316,7 +316,10 @@ def install_fbcache_length_guard() -> bool:
         if previous is not None and previous.shape != hidden_states_residual.shape:
             return True
         tail = state.tail_block_residuals
-        if tail is not None and getattr(tail[0], "shape", None) not in (None, hidden_states_residual.shape):
+        if tail is not None and getattr(tail[0], "shape", None) not in (
+            None,
+            hidden_states_residual.shape,
+        ):
             return True
         return original(self, hidden_states_residual)
 
@@ -416,7 +419,9 @@ def apply_step_cache(
     # residuals cannot be subtracted from. Checked before enable_cache: engaging here does not fail
     # at load, it fails at step 2 of the user's generation. On an explicit request the length guard
     # makes the head block recompute whenever the length moved, so the cache engages; otherwise refuse.
-    if _reuses_prefix_kv(pipe, transformer) and not (length_changes_ok and install_fbcache_length_guard()):
+    if _reuses_prefix_kv(pipe, transformer) and not (
+        length_changes_ok and install_fbcache_length_guard()
+    ):
         _warn(
             logger,
             mode,
