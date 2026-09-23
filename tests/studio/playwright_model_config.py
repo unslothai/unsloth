@@ -773,8 +773,21 @@ with sync_playwright() as p:
             if _as_int(val) == DISTINCT_CTX or time.monotonic() >= deadline:
                 break
             page.wait_for_timeout(250)
-        if _as_int(val) == DISTINCT_CTX:
-            info(f"OK persist(reload): Context Length still {val!r} after reload")
+        # The input alone cannot prove the remembered record survived: with the model still loaded
+        # the page seeds the field from the active runtime, which also says 4096. Read the stored
+        # per-model entry again, after the reload, so a lost record fails even if the UI looks right.
+        stored = [
+            e
+            for e in entries_for_model(read_configs())
+            if e.get("customContextLength") == DISTINCT_CTX
+        ]
+        if not stored:
+            fail(
+                "the remembered per-model entry lost customContextLength across reload "
+                f"(entries={json.dumps(entries_for_model(read_configs()))[:400]})"
+            )
+        elif _as_int(val) == DISTINCT_CTX:
+            info(f"OK persist(reload): stored entry and Context Length both {val!r} after reload")
         else:
             fail(f"Context Length did not persist across reload (got {val!r} after 15s)")
         shoot("07-after-reload")
