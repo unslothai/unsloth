@@ -17166,8 +17166,20 @@ def _check_signal_escape_patterns(code: str):
         contains parentheses, so it cannot collide with one."""
         return f"{function_name}()"
 
-    # The clients that read the proxy environment variables; sockets and urllib3 do not.
-    _ENV_PROXY_CLIENTS = ("requests.", "httpx.", "urllib.request.", "aiohttp.")
+    # The clients that read the proxy environment variables; sockets and urllib3 do not, and
+    # aiohttp only when a session opts in with `trust_env`, which defaults to False.
+    _ENV_PROXY_CLIENTS = ("requests.", "httpx.", "urllib.request.")
+
+    def _reads_proxy_environment(node: ast.Call, recognised) -> bool:
+        if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+            return True
+        if any(c.startswith("aiohttp.") for c in recognised):
+            trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
+            return trust is not None and not (
+                isinstance(trust, ast.Constant) and trust.value is False
+            )
+        return False
+
     _ENV_PROXY_VARIABLES = frozenset(
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
@@ -17355,6 +17367,9 @@ def _check_signal_escape_patterns(code: str):
             self.env_proxies: "list[ast.AST]" = []
             # Name -> the dict literals assigned to it, for `os.environ.update(config)`.
             self.dict_literals: "dict[str, list[ast.Dict]]" = {}
+            # Name -> (key, value) stored into it later, and names mutated in a way not read.
+            self.dict_entries: "dict[str, list[tuple]]" = {}
+            self.dict_mutated: "set[str]" = set()
             self.os_names: "set[str]" = {"os"}
             self.environ_names: "set[str]" = set()
             for imp in nodes:
@@ -17902,6 +17917,25 @@ def _check_signal_escape_patterns(code: str):
                 (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
             )
 
+        def _record_dict_mutation(self, name: str, method: str, args, keywords) -> None:
+            """`cfg[k] = v`, `cfg.update(...)`, `cfg.setdefault(k, v)` and `cfg |= {...}` on a
+            name, so a mapping later merged into the environment is read as it really is."""
+            if method in ("setdefault", "__setitem__") and len(args) >= 2:
+                self.dict_entries.setdefault(name, []).append((args[0], args[1]))
+            elif method in ("update", "__ior__"):
+                for arg in args:
+                    if isinstance(arg, ast.Dict) and None not in arg.keys:
+                        self.dict_entries.setdefault(name, []).extend(zip(arg.keys, arg.values))
+                    else:
+                        self.dict_mutated.add(name)
+                for kw in keywords:
+                    if kw.arg is None:
+                        self.dict_mutated.add(name)
+                    else:
+                        self.dict_entries.setdefault(name, []).append(
+                            (ast.Constant(value = kw.arg), kw.value)
+                        )
+
         def _record_env_mapping(self, mapping) -> None:
             """The entries of a mapping merged into the environment: a dict literal, a name bound
             to one, `dict(...)` keywords or a list of pairs. Anything else may set a proxy
@@ -17913,8 +17947,12 @@ def _check_signal_escape_patterns(code: str):
                     else:
                         self._record_env_proxy(k, v)
             elif isinstance(mapping, ast.Name) and mapping.id in self.dict_literals:
+                if mapping.id in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
                 for literal in self.dict_literals[mapping.id]:
                     self._record_env_mapping(literal)
+                for key, value in self.dict_entries.get(mapping.id, ()):
+                    self._record_env_proxy(key, value)
             elif (
                 isinstance(mapping, ast.Call)
                 and isinstance(mapping.func, ast.Name)
@@ -17994,6 +18032,10 @@ def _check_signal_escape_patterns(code: str):
                 self._record_flow(target, value, at, node)
                 if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
                     self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                    self._record_dict_mutation(
+                        target.value.id, "__setitem__", [target.slice, value], []
+                    )
                 if isinstance(target, ast.Name):
                     for alt in _alternatives(value):
                         if isinstance(alt, ast.Name) and alt.id != target.id:
@@ -18009,9 +18051,15 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_AugAssign(self, node):
-            # `s.proxies |= {...}` mutates the mapping the session sends through.
+            # `s.proxies |= {...}` mutates the mapping the session sends through, and
+            # `os.environ |= {...}` the environment.
             if self.collecting:
-                self._record_proxy(node.target, node.value, mutated = True)
+                if self._is_environ(node.target):
+                    self._record_env_mapping(node.value)
+                else:
+                    if isinstance(node.target, ast.Name):
+                        self._record_dict_mutation(node.target.id, "__ior__", [node.value], [])
+                    self._record_proxy(node.target, node.value, mutated = True)
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node):
@@ -18204,6 +18252,10 @@ def _check_signal_escape_patterns(code: str):
                     "__setitem__",
                     "__ior__",
                 ):
+                    if isinstance(func.value, ast.Name):
+                        self._record_dict_mutation(
+                            func.value.id, func.attr, node.args, node.keywords
+                        )
                     # `update`, `setdefault` and the dunder spellings of a subscript store and `|=`.
                     args = node.args
                     if func.attr in ("setdefault", "__setitem__"):
@@ -18362,7 +18414,7 @@ def _check_signal_escape_patterns(code: str):
                 # Proxies passed to this call or set in the environment, and proxies or a base URL
                 # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
-                if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+                if _reads_proxy_environment(node, recognised):
                     proxies += self.env_proxies
                 if "urllib.request.ProxyHandler" in recognised and node.args:
                     proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`

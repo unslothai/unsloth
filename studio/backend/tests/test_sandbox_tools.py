@@ -1009,6 +1009,21 @@ class TestNetworkTargetResolution:
                 "os.environ.update(**cfg)\nrequests.get('https://pypi.org/')",
                 id = "proxy_environment_from_expanded_keywords",
             ),
+            pytest.param(
+                f"import os, requests\ncfg = {{}}\ncfg['HTTPS_PROXY'] = 'http://{_H}:8080'\n"
+                "os.environ.update(cfg)\nrequests.get('https://pypi.org/')",
+                id = "proxy_environment_from_a_mutated_mapping",
+            ),
+            pytest.param(
+                f"import os, requests\nos.environ |= {{'HTTPS_PROXY': 'http://{_H}:8080'}}\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_merged_in_place",
+            ),
+            pytest.param(
+                f"import os, aiohttp\nos.environ['HTTPS_PROXY'] = 'http://{_H}'\n"
+                "aiohttp.ClientSession(trust_env=True).get('https://pypi.org/')",
+                id = "proxy_environment_aiohttp_opted_in",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1143,6 +1158,9 @@ class TestNetworkTargetResolution:
             "import os, socket\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "socket.create_connection(('pypi.org', 443))",
             "class D(dict):\n    def go(self):\n        return self.get('http://203.0.113.5/')",
+            # aiohttp ignores the proxy environment unless a session sets `trust_env`.
+            "import os, aiohttp\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
+            "aiohttp.ClientSession().get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
