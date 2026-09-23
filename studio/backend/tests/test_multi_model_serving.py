@@ -1023,12 +1023,19 @@ def test_an_idle_sweep_spares_the_slot_a_load_is_filling(backends, monkeypatch):
     assert inf._extra_slots == [extra] and extra.llama.is_active
 
 
-def test_a_llama_update_leaves_safetensors_slots_loaded(backends):
+def test_a_llama_update_stops_every_llama_slot_and_only_those(backends, monkeypatch):
     _, extra = backends
     safetensors = inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner")
-    inf._extra_slots.append(safetensors)
-    assert inf.unload_extra_models(keep = lambda llama: not llama.is_active, stash = True) == 1
-    assert inf._extra_slots == [safetensors] and safetensors.orchestrator.active_model_name
+    starting = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    inf._extra_slots += [safetensors, starting]
+    monkeypatch.setattr(inf, "_loading_slot", (starting, "org/D-GGUF"))
+    assert inf.unload_llama_slots() == 2
+    assert inf._extra_slots == [safetensors]
+    loading = inf._ExtraSlot(FakeLlama(), FakeOrchestrator(), "owner")
+    loading.orchestrator.loading_models = {"org/E"}
+    inf._extra_slots.append(loading)
+    monkeypatch.setattr(inf, "_loading_slot", (loading, "org/E"))
+    assert inf.unload_llama_slots() == 0
 
 
 def test_a_selective_sweep_stops_a_filling_slot_unless_it_spares_it(backends, monkeypatch):

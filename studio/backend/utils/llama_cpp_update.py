@@ -664,12 +664,10 @@ def _run_llama_phase(
                 logger.debug("llama update: load coordination failed", error = str(exc))
         # Servers kept alongside run from the same tree, so they stop too.
         try:
-            from routes.inference import _extra_slots, unload_extra_models
+            from routes.inference import unload_llama_slots
 
             # Only llama-server slots: a safetensors or MLX model does not run from this tree.
-            if _extra_slots and unload_extra_models(
-                keep = lambda llama: not getattr(llama, "is_active", False), stash = True
-            ):
+            if unload_llama_slots():
                 model_was_active = True
         except Exception as exc:
             logger.debug("llama update: could not stop models kept alongside", error = str(exc))

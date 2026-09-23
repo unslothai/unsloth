@@ -483,6 +483,9 @@ async function readIdleUnloadArmed(): Promise<boolean> {
   return lastIdleUnloadArmed;
 }
 
+// A lookup started before a newer status must not write the quant that status replaced.
+let quantLookupGeneration = 0;
+
 function publishLoadedModels(
   ids: string[],
   statusId?: string | null,
@@ -504,9 +507,11 @@ function publishLoadedModels(
   if (!unchanged) useChatRuntimeStore.setState({ loadedModels: next });
   // Status names the models; only /v1/models carries each one's quant, so look it up once per model.
   if (next.every((m) => m.quant !== undefined)) return;
+  const lookup = ++quantLookupGeneration;
   void listOpenAIModels().then(
     (models) => {
-      // Not dropped when a newer sync started: it applies by id to whatever is loaded now.
+      if (lookup !== quantLookupGeneration) return;
+      // Applied by id to whatever is loaded now.
       const details = new Map(
         models.filter((m) => m.loaded).map((m) => [m.id, m]),
       );

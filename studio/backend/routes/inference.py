@@ -8123,6 +8123,22 @@ def unload_extra_models(
     return dropped
 
 
+def unload_llama_slots() -> int:
+    """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
+    filling = _loading_slot[0] if _loading_slot else None
+    dropped = 0
+    for slot in list(_extra_slots):
+        starting = slot is filling and not getattr(slot.orchestrator, "loading_models", None)
+        if not (slot.llama.is_active or slot.llama.is_loaded or starting):
+            continue
+        dropped += 1
+        try:
+            _drop_extra_slot(slot, True)
+        except Exception as exc:
+            logger.warning("Could not unload an extra model: %s", exc)
+    return dropped
+
+
 def _note_primary_load(request: LoadRequest) -> None:
     """The primary now serves ``request``: what an eviction must bring back."""
     global _primary_request, _primary_account
