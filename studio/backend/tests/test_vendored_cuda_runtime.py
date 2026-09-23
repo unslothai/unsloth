@@ -134,12 +134,18 @@ def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkey
     import utils.prebuilt.runtime_libs as runtime_libs
 
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    system_dir = tmp_path / "system-runtime"
+    system_dir.mkdir()
+    cudart = system_dir / "libcudart.so.13"
+    cublas = system_dir / "libcublas.so.13"
+    cudart.write_bytes(b"")
+    cublas.write_bytes(b"")
     monkeypatch.setattr(
         runtime_libs,
         "_ld_cache_entries",
         lambda: (
-            ("libcudart.so.13", "libc6,x86-64", "/usr/lib/libcudart.so.13"),
-            ("libcublas.so.13", "libc6,x86-64", "/usr/lib/libcublas.so.13"),
+            ("libcudart.so.13", "libc6,x86-64", str(cudart)),
+            ("libcublas.so.13", "libc6,x86-64", str(cublas)),
         ),
     )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
@@ -147,11 +153,38 @@ def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkey
     monkeypatch.setattr(
         runtime_libs,
         "_ld_cache_entries",
-        lambda: (("libcudart.so.13", "libc6,x86-64", "/usr/lib/libcudart.so.13"),),
+        lambda: (("libcudart.so.13", "libc6,x86-64", str(cudart)),),
     )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
         str(runtime_dir.resolve())
     ]
+
+
+def test_ignores_cache_entries_with_missing_targets(tmp_path, monkeypatch):
+    # ldconfig can retain SONAME/ABI records after a library target is removed.
+    # That stale pair cannot satisfy the dynamic loader, so the usable vendored
+    # pair must still be added.
+    import utils.prebuilt.runtime_libs as runtime_libs
+
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    system_dir = tmp_path / "system-runtime"
+    system_dir.mkdir()
+    cudart = system_dir / "libcudart.so.13"
+    cudart.write_bytes(b"")
+    missing_cublas = system_dir / "libcublas.so.13"
+    monkeypatch.setattr(
+        runtime_libs,
+        "_ld_cache_entries",
+        lambda: (
+            ("libcudart.so.13", "libc6,x86-64", str(cudart)),
+            ("libcublas.so.13", "libc6,x86-64", str(missing_cublas)),
+        ),
+    )
+
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
+        str(runtime_dir.resolve())
+    ]
+
 
 
 def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatch):

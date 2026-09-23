@@ -137,8 +137,11 @@ def _loader_already_provides_runtime(major: str) -> bool:
     native_abis = _NATIVE_LOADER_ABIS.get(platform.machine().lower(), frozenset())
     for soname in (f"libcudart.so.{major}", f"libcublas.so.{major}"):
         cache_has_compatible = cached is not None and any(
-            cached_soname == soname and abi in native_abis
-            for cached_soname, abi, _path in cached
+            cached_soname == soname
+            and abi in native_abis
+            and os.path.isfile(path)
+            and os.access(path, os.R_OK)
+            for cached_soname, abi, path in cached
         )
         if cache_has_compatible:
             continue
