@@ -512,3 +512,41 @@ test("a media row is judged by the rule its quant rows use", () => {
   const safetensors = { ...row, id: "unsloth/Some-Image-Model", isGguf: false };
   assert.equal(hfModelFitsDevice(safetensors, mac, { mediaLoad: true }), false);
 });
+
+test("with familyOf, curated families follow the listing's sort, artifacts kept together", () => {
+  const family = (id: string) =>
+    id.toLowerCase().includes("klein") ? "klein" : id.toLowerCase().includes("ltx") ? "ltx" : undefined;
+  const kleinBf16: Row = { id: "unsloth/FLUX.2-klein-9B", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [...SEEDS, kleinBf16];
+  // Trending listing: KLEIN hottest, then an uncurated repo, then LTX; KLEIN's bf16 is not listed.
+  const results: Row[] = [
+    { id: KLEIN, isGguf: true, pipelineTag: "text-to-video" },
+    { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
+    { id: LTX, isGguf: true, pipelineTag: "image-to-video" },
+  ];
+  const order = (familyOf?: (id: string) => string | undefined) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf,
+      }),
+    );
+  assert.deepEqual(order(), [LTX, KLEIN, kleinBf16.id, OTHER]);
+  assert.deepEqual(order(family), [KLEIN, kleinBf16.id, OTHER, LTX]);
+  // A family the listing has not reached yet stays after every listed row.
+  const unlisted = ids(
+    orderRecommendedRows({
+      seeds,
+      results: results.slice(0, 2),
+      keep: keepVideo,
+      deviceFiltered: false,
+      fits: () => true,
+      familyOf: family,
+    }),
+  );
+  assert.deepEqual(unlisted, [KLEIN, kleinBf16.id, OTHER, LTX]);
+});

@@ -327,8 +327,8 @@ export function searchableRecommendedIds(
 }
 
 /** Order Recommended: curated seeds first in catalog order, then the rest of the listing, each
- *  id once. A seed hands off only to a row that survived `keep`, so a painted curated row
- *  does not vanish when the listing reports it with rejected metadata. The taking-over row
+ *  id once. With `familyOf`, families follow the listing's sort instead. A seed hands off only
+ *  to a row that survived `keep`, so a painted curated row does not vanish when the listing reports it with rejected metadata. The taking-over row
  *  inherits the seed's curated size, or a prequantized artifact would flip to the params
  *  guess, which assumes a quant still to come. */
 export function orderRecommendedRows<
@@ -339,8 +339,10 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
+  /** Catalog family of a repo id; when set, families follow the listing's sort. */
+  familyOf?: (id: string) => string | undefined;
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const { seeds, results, keep, deviceFiltered, fits, familyOf } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -358,7 +360,33 @@ export function orderRecommendedRows<
   const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
     (r) => !curatedIds.has(r.id),
   );
-  return [...curated, ...rest];
+  const ordered = [...curated, ...rest];
+  if (!familyOf) return ordered;
+  // A family ranks at its best listed artifact and keeps its rows together. Unlisted families go last.
+  const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
+  const rank = new Map<string, number>();
+  results.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!rank.has(key)) rank.set(key, i);
+  });
+  const firstSeen = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!firstSeen.has(key)) firstSeen.set(key, i);
+  });
+  const sortKey = (r: T, i: number) => {
+    const key = keyOf(r);
+    return [rank.get(key) ?? Infinity, firstSeen.get(key) ?? i, i];
+  };
+  return ordered
+    .map((row, i) => ({ row, key: sortKey(row, i) }))
+    .sort((a, b) => {
+      for (let k = 0; k < a.key.length; k++) {
+        if (a.key[k] !== b.key[k]) return a.key[k] < b.key[k] ? -1 : 1;
+      }
+      return 0;
+    })
+    .map(({ row }) => row);
 }
 
 /** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */
