@@ -543,3 +543,25 @@ def test_the_capture_keeps_spacing_indentation_and_language_in_a_fence(tmp_path)
         assert got["fences"][0]["text"] != lit["fences"][0]["text"], why
     assert other_lang["fences"][0]["text"] == lit["fences"][0]["text"]
     assert other_lang["fences"][0]["lang"] == "javascript" and lit["fences"][0]["lang"] == "python"
+
+
+def test_the_capture_keeps_where_a_fence_breaks_its_lines(tmp_path):
+    """Lines, not a run of characters: a line break moved within the code is a different fence."""
+    lit, moved, merged, trailing, blank_lit, blank_shell = _node_readings(
+        tmp_path,
+        [
+            _message(_highlighted("a\nbc")),
+            _message(_shell("ab\nc")),
+            _message(_shell("abc")),
+            _message(_shell("a\nbc\n\n")),
+            _message(_highlighted("a\n\n\nbc")),
+            _message(_shell("a\n\n\nbc")),
+        ],
+    )
+    assert moved["fences"][0]["text"] != lit["fences"][0]["text"], "a line break moved"
+    assert merged["fences"][0]["text"] != lit["fences"][0]["text"], "two lines joined"
+    # The shell trims trailing newlines; that is not a difference.
+    assert trailing["fences"][0]["text"] == lit["fences"][0]["text"]
+    # Blank lines render as a line holding a lone newline, and count once, as in the shell.
+    assert blank_lit["fences"][0]["text"] == blank_shell["fences"][0]["text"]
+    assert blank_lit["fences"][0]["text"] != lit["fences"][0]["text"]

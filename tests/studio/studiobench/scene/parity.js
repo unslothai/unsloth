@@ -105,18 +105,33 @@
   // happened to stay low then calls those actions stable, and a backend-only pull request fails.
   // So each message also carries its fences, read in the SAME walk: whether each was latched, its
   // full digest, its language, and a digest of its TEXT alone, plus a digest of the message with
-  // every fence replaced by a marker. The text drops LINE BREAKS only: streamdown emits one span per
-  // line with no newline between them, the shell one text node with them. Every other space is
-  // kept, so `x = 1` against `x=1`, an indentation change and a space inside a string all still
-  // differ. `analysis/parity.fence_latch_residue` compares a fence latched on both arms, or on
-  // neither, in full, and one latched on ONE arm on its language and text.
+  // every fence replaced by a marker. The text is read as LINES, since that is all the two forms
+  // disagree on: the shell is one text node split by newlines, the highlighted fence one element
+  // per line with none between them (a blank line holding a lone "\n"). Both are brought to lines
+  // joined by one newline, trailing blank lines dropped, and every other character is kept, so
+  // `x = 1` against `x=1`, an indentation change, a space inside a string and a line break moved
+  // within the code all still differ. `analysis/parity.fence_latch_residue` compares a fence
+  // latched on both arms, or on neither, in full, and one latched on ONE arm on its language and
+  // text.
   const FENCE_ATTR = "data-streamdown";
   const FENCE_ROOT = "code-block";
   const FENCE_BODY = "code-block-body";
   const FENCE_DEFERRED_ATTR = "data-unsloth-fence-deferred";
   const FENCE_MARKER = "<!fence>";
 
-  const fenceText = (raw) => normSubs((raw || "").replace(/\r?\n/g, ""));
+  // Marks where the walk met an element directly inside a fence body's <code>: one per line of a
+  // highlighted fence. The shell's <code> holds only text, so it never carries one.
+  const FENCE_LINE = "\u0001";
+  const fenceText = (raw) => {
+    const s = raw || "";
+    const lines = s.includes(FENCE_LINE)
+      ? s
+          .split(FENCE_LINE)
+          .filter((line, k) => k > 0 || line !== "")
+          .map((line) => line.replace(/\r?\n/g, ""))
+      : s.split(/\r?\n/);
+    return normSubs(lines.join("\n").replace(/\n+$/, ""));
+  };
 
   // `dropAttrs` is a Set of attributes this digest does not compare AT ALL, unlike VOLATILE_ATTRS
   // which keeps the presence. `elide` is a Set of ELEMENTS whose subtree is not serialised: a marker
@@ -202,6 +217,7 @@
           }
         } else if (child.nodeType === 1) {
           flush();
+          if (fence !== null && inBody && el.tagName === "CODE") fence.body += FENCE_LINE;
           walk(child, depth + 1);
         }
       }
