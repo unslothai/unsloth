@@ -1698,6 +1698,16 @@ export function useChatModelRuntime() {
         // load that had already pre-applied its settings, that field holds the superseded target's
         // transient config, and declining here would leave the resident model wearing it.
         restorePreviousConfig();
+        // No load will consume this rollback after a declined confirmation. If X
+        // is still resident, a later pick must snapshot its current settings instead
+        // of inheriting the config captured before this cancelled replacement.
+        // Keep the target when A already unloaded X, or when a newer pick owns it.
+        if (
+          modelSelectionIntentEpoch === loadIntentId &&
+          pendingReplacementRollback?.residentUnloaded === false
+        ) {
+          pendingReplacementRollback = null;
+        }
         return;
       }
       // Re-check the tracked picker for a load that was already starting when this lifecycle lease was acquired.

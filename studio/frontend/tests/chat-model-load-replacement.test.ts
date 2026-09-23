@@ -203,6 +203,73 @@ test("rollback state is inherited from the run being replaced", () => {
   );
 });
 
+test("declining B before A unloads X lets C inherit X's newly edited settings", () => {
+  const runtime = read(RUNTIME);
+  // Execute the actual confirmation-decline branch rather than asserting only that
+  // some cleanup string exists elsewhere in the hook.
+  const decline = section(
+    runtime,
+    "if (!stopDecision.proceed) {",
+    "// Re-check the tracked picker for a load",
+  );
+  const selectRollback = section(
+    runtime,
+    "if (pendingReplacementRollback?.config) {",
+    "// The cancelled run's own rollback target",
+  );
+  const declineB = new Function(
+    "state",
+    `let pendingReplacementRollback = state.pending;
+     const modelSelectionIntentEpoch = state.epoch;
+     const loadIntentId = 2;
+     const stopDecision = { proceed: false };
+     const releasePreflightLifecycleLease = () => { state.released = true; };
+     const restorePreviousConfig = () => { state.restored = true; };
+     try { ${decline} } finally { state.pending = pendingReplacementRollback; }`,
+  ) as (state: {
+    pending: { checkpoint: string; config: string; residentUnloaded: boolean } | null;
+    epoch: number;
+    released?: boolean;
+    restored?: boolean;
+  }) => void;
+  const chooseC = new Function(
+    "state",
+    `let pendingReplacementRollback = state.pending;
+     let previousConfigForReplacement = state.fresh;
+     ${selectRollback}
+     return previousConfigForReplacement;`,
+  ) as (state: { pending: { config: string } | null; fresh: string }) => string;
+
+  // A was replacing resident X, but B cancelled A before its preliminary unload.
+  const resident = {
+    pending: { checkpoint: "X", config: "X-old", residentUnloaded: false },
+    epoch: 2,
+    released: false,
+    restored: false,
+  };
+  declineB(resident);
+  assert.equal(resident.released, true);
+  assert.equal(resident.restored, true);
+  assert.equal(chooseC({ pending: resident.pending, fresh: "X-edited" }), "X-edited");
+
+  // If A already unloaded X, the marker still owns the backend rollback target.
+  const unloaded = {
+    pending: { checkpoint: "X", config: "X-old", residentUnloaded: true },
+    epoch: 2,
+  };
+  declineB(unloaded);
+  assert.equal(chooseC({ pending: unloaded.pending, fresh: "no-resident" }), "X-old");
+
+  // A late B decline must not discard a marker needed by a newer selection.
+  const superseded = {
+    pending: { checkpoint: "X", config: "X-old", residentUnloaded: false },
+    epoch: 3,
+  };
+  declineB(superseded);
+  assert.equal(chooseC({ pending: superseded.pending, fresh: "X-edited" }), "X-old");
+});
+
+
 test("cacheRam stays in the load tuning snapshot", () => {
   const runtime = read(RUNTIME);
   const tuning = section(
