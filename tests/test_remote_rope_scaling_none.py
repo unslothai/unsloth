@@ -156,5 +156,4 @@ def test_remote_scaling_dict_does_not_repeat_the_base_its_config_keeps():
 def test_is_torch_fx_available_imports_as_in_4x():
     # Ling / BailingMoe, DeepSeek-V3 and Kimi-K2 remote code import it at module level.
     from transformers.utils.import_utils import is_torch_available, is_torch_fx_available
-
     assert is_torch_fx_available() == is_torch_available()
