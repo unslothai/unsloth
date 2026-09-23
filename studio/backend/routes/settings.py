@@ -2057,11 +2057,8 @@ def update_openai_auto_switch_override(
             ):
                 _kept_reasoning_budget = -1
                 _kept_reasoning_budget_message = ""
-            # A -c the caller sends with this save is what its own load runs with, since llama.cpp
-            # takes the last -c over the slider value, so store the context the same way.
-            # Otherwise an API auto-switch strips the flag as a stale shadow of the slider
-            # (#11511). Flags carried over from an earlier save keep that stale-flag rule, and so
-            # does a fill, which keeps a stored row's flags rather than this payload's.
+            # A -c sent with this save is what its load runs at (llama.cpp takes the last -c); store it as
+            # the context or auto-switch strips it as stale (#11511). Carried-over flags and fills keep that rule.
             max_seq_length = payload.max_seq_length
             custom_context_length = payload.custom_context_length
             if payload.llama_extra_args is not None and not payload.fill_absent_fields:

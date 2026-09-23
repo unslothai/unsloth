@@ -7663,11 +7663,8 @@ def _public_model_identifier(requested: str, resolved: str) -> str:
 
 
 def _canonical_model_identity(model_id: Optional[str]) -> str:
-    """Case-folded identity of *model_id*, with an HF cache snapshot path
-    (``models--org--name/snapshots/<sha>``, either slash) read as ``org/name``.
-    The picker loads a cached repo by that path and an API auto-switch by the
-    repo id, so both spellings must name one model. Other local paths stay as
-    they are: two files that share a stem are still two models."""
+    """Case-folded *model_id*, reading an HF cache snapshot path as its ``org/name`` repo id.
+    Other local paths stay distinct: two files sharing a stem are two models."""
     from core.inference.model_ids import hf_cache_repo_id
 
     if not model_id:
