@@ -9,6 +9,7 @@ register("./helpers/toast-resolver.mjs", import.meta.url);
 
 const { calls } = await import("./helpers/toast-stub.mjs");
 const { createPickToast } = await import("../src/lib/diffusion-pick-toast.ts");
+const { readSrc } = await import("./helpers/kit.ts");
 
 type Raise = {
   kind: string;
@@ -142,3 +143,20 @@ test("a cancelled or retired pick drops its toast", () => {
   pick.dismiss(undefined);
   assert.equal(shown().length, 1, "an absent id dropped something");
 });
+
+test("every cancelled pick drops its toast on both pages", () => {
+  // A cancelled pick can no longer load, so a toast left up would promise a load that never comes.
+  for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+    const lines = readSrc(page).split("\n");
+    const cancels = lines.flatMap((line, i) => (line.includes("pickGuard.cancel();") ? [i] : []));
+    assert.ok(cancels.length > 0, page);
+    for (const i of cancels) {
+      const after = lines
+        .slice(i + 1, i + 4)
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n");
+      assert.match(after, /pickToast\.dismissAll\(\);/, `${page}:${i + 1}`);
+    }
+  }
+});
+

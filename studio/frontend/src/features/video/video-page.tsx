@@ -1098,6 +1098,8 @@ function VideoGenerator({
     // Cancel, not release: a resolving pick or a staged download would load back what was just
     // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
     pickGuard.cancel();
+    // That pick can no longer load, so its toast must not keep promising it will.
+    pickToast.dismissAll();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response; the counter is what those compare against.
     cancelSeq.current += 1;
@@ -1114,7 +1116,7 @@ function VideoGenerator({
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard, revertPick]);
+  }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -2877,7 +2879,8 @@ function VideoGenerator({
     setPendingH3Load(null);
     abandonPick();
     pickGuard.cancel();
-  }, [abandonPick, pickGuard]);
+    pickToast.dismissAll();
+  }, [abandonPick, pickGuard, pickToast]);
 
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model; the ref remains the

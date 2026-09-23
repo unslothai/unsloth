@@ -1565,6 +1565,8 @@ export function ImagesPage({
     // need was inert anyway, since the marker was cleared when the PLAN resolved rather than when
     // the download finished.
     pickGuard.cancel();
+    // That pick can no longer load, so its toast must not keep promising it will.
+    pickToast.dismissAll();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response, and those still apply terminal state; the counter is what
     // they compare against.
@@ -1585,7 +1587,7 @@ export function ImagesPage({
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard, revertPick]);
+  }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -3362,6 +3364,7 @@ export function ImagesPage({
       }
       // The deploy owns the page now: a resolving pick or a staged download would load over the base it is about to.
       pickGuard.cancel();
+      pickToast.dismissAll();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -3379,7 +3382,7 @@ export function ImagesPage({
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, quant, revertPick, setPageMode],
+    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
