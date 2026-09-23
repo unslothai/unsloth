@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -111,4 +112,39 @@ test("a runtime left running after a failed setup is not ready", () => {
   assert.equal(ready("ready", true), true);
   // Started by a catalog request after a restart.
   assert.equal(ready("idle", true), true);
+});
+
+test("NPU rows: downloaded ones on device, all of them to browse, by query", () => {
+  const { api } = client(() => new Response(null));
+  const model = (id: string, downloaded: boolean) => ({
+    id,
+    model_path: `lemonade:${id}`,
+    checkpoint: id.replace("-FLM", ""),
+    size_gb: 1,
+    downloaded,
+    labels: [],
+    supports_vision: false,
+    supports_reasoning: false,
+    supports_tools: false,
+    max_context_length: null,
+  });
+  const models = [model("qwen3-0.6b-FLM", true), model("gemma3-4b-FLM", false)];
+  const ids = (onDevice: boolean, query: string) =>
+    api.npuRowsFor(models, { onDevice, query }).map((m) => m.id);
+  assert.deepEqual(ids(true, ""), ["qwen3-0.6b-FLM"]);
+  assert.deepEqual(ids(false, ""), ["qwen3-0.6b-FLM", "gemma3-4b-FLM"]);
+  assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
+  assert.deepEqual(ids(true, "gemma"), []);
+  assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+});
+
+test("the picker's NPU format holds no Hub repo", () => {
+  for (const [id, gguf] of [
+    ["unsloth/Qwen3-0.6B-GGUF", true],
+    ["mlx-community/Qwen3-8B-4bit", false],
+    ["unsloth/Qwen3-0.6B", false],
+  ] as const) {
+    assert.equal(matchesFormatFilter(id, gguf, "npu"), false);
+    assert.equal(matchesFormatFilter(id, gguf, "all"), true);
+  }
 });

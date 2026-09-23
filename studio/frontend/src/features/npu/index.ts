@@ -6,6 +6,12 @@ export {
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
+  npuRowsFor,
 } from "./api";
-export { NpuModelPanel } from "./npu-model-panel";
+export { NpuSetupNotice } from "./npu-setup-notice";
+export {
+  type NpuCatalog,
+  type NpuPickerSource,
+  useNpuCatalog,
+} from "./use-npu-catalog";
 export { useNpuStatus } from "./use-npu-status";

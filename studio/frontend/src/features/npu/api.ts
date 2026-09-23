@@ -61,6 +61,26 @@ export interface NpuModel {
   max_context_length: number | null;
 }
 
+/** The NPU rows a picker section shows: downloaded ones on device, all of them to browse. */
+export function npuRowsFor(
+  models: NpuModel[] | null,
+  {
+    onDevice,
+    query,
+  }: {
+    onDevice: boolean;
+    query: string;
+  },
+): NpuModel[] {
+  const needle = query.trim().toLowerCase();
+  return (models ?? []).filter(
+    (model) =>
+      (!onDevice || model.downloaded) &&
+      (!needle ||
+        `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
+  );
+}
+
 export interface NpuDownloadEvent {
   event: string;
   percent?: number;
