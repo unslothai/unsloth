@@ -448,3 +448,17 @@ export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBud
       : `a ${gpuGb}GB GPU`;
   return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
 }
+
+/** What an empty Recommended list says: a failed search or a backing-off hub is not an empty catalog. */
+export function recommendedEmptyState({
+  isLoading,
+  error,
+  hubPhase,
+}: {
+  isLoading: boolean;
+  error: string | null;
+  hubPhase: "available" | "probing" | "unavailable";
+}): "loading" | "failed" | "empty" {
+  if (isLoading) return "loading";
+  return error || hubPhase !== "available" ? "failed" : "empty";
+}

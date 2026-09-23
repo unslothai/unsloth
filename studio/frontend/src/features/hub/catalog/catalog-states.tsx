@@ -14,7 +14,8 @@ import type { ReactNode } from "react";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { HubFailure } from "@/features/hub/lib/network";
+import { useHubAvailability } from "../hooks/use-online-status";
+import { clearRemoteBackoff, type HubFailure } from "../lib/network";
 import { useIsAccountOwner } from "@/features/auth";
 import { updateHubSource } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -136,7 +137,8 @@ export function NetworkErrorState({
         <p className="text-ui-11 text-muted-foreground/70">{message}</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        {offlineLike ? null : <UseModelScopeButton />}
+        {/* A reachable hub answering an HTTP error is no reason to switch hubs. */}
+        {failure && !offlineLike ? <UseModelScopeButton /> : null}
         {onSwitchDevice ? (
           <button
             type="button"
@@ -158,6 +160,55 @@ export function NetworkErrorState({
           />
           Try again
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** {@link NetworkErrorState} sized for a picker list, reading the hub's own availability. */
+export function HubFailureHint({
+  message,
+  onRetry,
+}: {
+  message: string | null;
+  onRetry: () => void;
+}) {
+  const { phase, failure } = useHubAvailability();
+  const { title, body, offlineLike } = describeFailure(
+    failure,
+    phase === "available",
+    "models",
+    useHubName(),
+  );
+  return (
+    <div className="flex flex-col gap-2 px-2.5 py-2">
+      <div className="space-y-0.5">
+        <p className="text-xs font-medium text-foreground">{title}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{body}</p>
+        {/* A classified failure already names the cause; an HTTP error only has its message. */}
+        {failure || !message ? null : (
+          <p className="text-xs text-muted-foreground/70">{message}</p>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {failure && !offlineLike ? <UseModelScopeButton /> : null}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            // A retry must probe now, not wait out the backoff.
+            clearRemoteBackoff();
+            onRetry();
+          }}
+          className="h-8 rounded-full"
+        >
+          <HugeiconsIcon
+            icon={Refresh01Icon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          Try again
+        </Button>
       </div>
     </div>
   );
