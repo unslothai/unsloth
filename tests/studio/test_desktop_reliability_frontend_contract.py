@@ -841,7 +841,8 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
         assert padding is not None and padding > 0, (name, values)
         assert header is not None and control is not None, (name, values)
         assert padding + control <= header, (name, padding, control, header)
-    assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
+    # #11660 moved the chat split from md to lg, so tablets stack.
+    assert "pt-[var(--studio-content-top-inset,0px)] lg:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
@@ -2375,9 +2376,10 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
     # -action mask, which is why the two are asserted together -- the small padding is
     # only correct while the fade is there to dissolve the last control into the footer.
     assert "panel-scroll-fade-action" in section
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    # max-sm:px-5 since #11660: a phone gives the controls the 40px the gutter took.
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
-    assert "border-t border-foreground/10 px-10 py-3" in section
+    assert "border-t border-foreground/10 px-10 max-sm:px-5 py-3" in section
 
 
 def test_audio_page_matches_the_image_rail_header_and_action_footer():
@@ -2408,7 +2410,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert RAIL_WIDTH in layout
     assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
@@ -2423,7 +2425,7 @@ def test_image_train_rail_matches_create_and_header():
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "pl-10 max-sm:pl-5 @[50rem]:w-[408px]" in layout
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
