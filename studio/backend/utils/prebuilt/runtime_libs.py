@@ -105,7 +105,7 @@ def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
             match = re.match(r"\s*(\S+)\s+\(([^)]*)\)\s+=>\s+(\S+)", line)
             if match:
                 soname, abi_text, path = match.groups()
-                abi = abi_text.strip()
+                abi = abi_text.strip().lower()
                 entries.append((soname, abi, path))
         return tuple(entries)
     return None

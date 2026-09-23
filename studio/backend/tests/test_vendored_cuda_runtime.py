@@ -23,6 +23,7 @@ import utils.prebuilt.runtime_libs as runtime_libs
 # The list as this host builds it, read before the autouse fixture below masks it:
 # the multiarch arms assert on the shipped value, not on a pinned one.
 _REAL_LOADER_DEFAULT_LIB_DIRS = runtime_libs._LOADER_DEFAULT_LIB_DIRS
+_REAL_LD_CACHE_ENTRIES = runtime_libs._ld_cache_entries
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason = "the vendored roots are Linux paths"
@@ -228,6 +229,45 @@ def test_ignores_foreign_abi_cache_entries(tmp_path, monkeypatch):
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == [
         str(runtime_dir.resolve())
     ]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader cache only")
+def test_recognizes_aarch64_ldconfig_abi_spelling_case_insensitively(tmp_path, monkeypatch):
+    import utils.prebuilt.runtime_libs as runtime_libs
+
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", _REAL_LD_CACHE_ENTRIES)
+
+    runtime_dir = _make_runtime(tmp_path, "cuda_v13")
+    system_dir = tmp_path / "system-cache"
+    system_dir.mkdir()
+    cudart = system_dir / "libcudart.so.13"
+    cublas = system_dir / "libcublas.so.13"
+    cudart.write_bytes(b"")
+    cublas.write_bytes(b"")
+    monkeypatch.setattr(runtime_libs.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(runtime_libs.shutil, "which", lambda _candidate: None)
+    original_exists = runtime_libs.os.path.exists
+    monkeypatch.setattr(
+        runtime_libs.os.path,
+        "exists",
+        lambda path: True if path == "/sbin/ldconfig" else original_exists(path),
+    )
+    result = type("Result", (), {
+        "returncode": 0,
+        "stdout": (
+            f"libcudart.so.13 (libc6,AArch64) => {cudart}\n"
+            f"libcublas.so.13 (libc6,AArch64) => {cublas}\n"
+        ),
+    })()
+    monkeypatch.setattr(runtime_libs.subprocess, "run", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
+
+    assert runtime_libs._ld_cache_entries() == (
+        ("libcudart.so.13", "libc6,aarch64", str(cudart)),
+        ("libcublas.so.13", "libc6,aarch64", str(cublas)),
+    )
+    assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
+
 
 
 
