@@ -7782,6 +7782,7 @@ class DiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "transformer_cache_stats": None,
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
@@ -7815,6 +7816,7 @@ class DiffusionBackend:
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": state.resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),

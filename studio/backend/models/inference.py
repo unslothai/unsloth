@@ -4475,6 +4475,11 @@ class DiffusionStatusResponse(BaseModel):
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"
     )
+    transformer_cache_stats: Optional[dict] = Field(
+        None,
+        description = "Static step skip only: mode, schedule and the last generation's "
+        "calls / computed / skipped transformer calls; null for any other cache",
+    )
     workflows: list[str] = Field(
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "

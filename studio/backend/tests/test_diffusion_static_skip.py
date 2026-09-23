@@ -94,7 +94,12 @@ class _Out(dict):
 class _DiT:
     """Class ``forward`` + class ``cache_context``, the two things the layer reads."""
 
-    def __init__(self, *, container = "tuple", prefix = 0):
+    def __init__(
+        self,
+        *,
+        container = "tuple",
+        prefix = 0,
+    ):
         self.calls: list = []
         self.contexts: list = []
         self.container = container
@@ -398,7 +403,12 @@ class _GraphDiT:
     def __init__(self):
         self.calls = 0
 
-    def forward(self, hidden_states, timestep = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states,
+        timestep = None,
+        return_dict = True,
+    ):
         self.calls += 1
         return (_FakeTensor((1, 4), value = ("out", self.calls), tag = "out"),)
 
@@ -543,7 +553,9 @@ def _record_speed(monkeypatch, dmod):
 
 
 @pytest.mark.parametrize("request_cache", ["off", "static"])
-def test_static_load_keeps_the_uncached_graph_decisions(fake_runtime, tmp_path, monkeypatch, request_cache):
+def test_static_load_keeps_the_uncached_graph_decisions(
+    fake_runtime, tmp_path, monkeypatch, request_cache
+):
     from core.inference import diffusion as dmod
 
     seen = _record_speed(monkeypatch, dmod)
@@ -626,7 +638,12 @@ class _LoopDiT:
     def cache_context(self, name):
         yield
 
-    def forward(self, hidden_states = None, timestep = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states = None,
+        timestep = None,
+        return_dict = True,
+    ):
         self.calls += 1
         return (_Tensorish(self.calls),)
 
@@ -714,7 +731,8 @@ def test_generate_arms_the_schedule_with_the_effective_steps(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "reset_static_step_skip",
-        lambda p, steps, **k: armed.append((steps, k.get("step_signal"))) or real_reset(p, steps, **k),
+        lambda p, steps, **k: armed.append((steps, k.get("step_signal")))
+        or real_reset(p, steps, **k),
     )
     # img2img at strength 0.5 denoises int(25 * 0.5) = 12 steps.
     monkeypatch.setattr(dmod, "effective_request_strength", lambda *a, **k: 0.5)
@@ -749,7 +767,10 @@ def test_image_load_request_accepts_static_and_video_does_not():
 
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
 
-    assert DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache == "static"
+    assert (
+        DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
+        == "static"
+    )
     with pytest.raises(ValidationError):
         VideoLoadRequest(model_path = "org/model", transformer_cache = "static")
 
@@ -761,3 +782,23 @@ def test_stats_of_the_last_generation_survive_the_post_render_reset():
     assert live["calls"] == 25 and live["skipped"] > 0
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"] == live
+
+
+def test_status_route_carries_the_last_generation_skip_counts():
+    import inspect
+
+    from core.inference import diffusion
+    from models.inference import DiffusionStatusResponse
+
+    pipe = _installed()
+    _run(pipe, 25)
+    ss.reset_static_step_skip(pipe, None)  # the post-render reset
+    stats = ss.static_skip_stats(pipe)
+    assert stats["stats"]["skipped"] > 0
+    body = DiffusionStatusResponse(
+        loaded = True, transformer_cache = "static", transformer_cache_stats = stats
+    )
+    assert body.model_dump()["transformer_cache_stats"]["stats"] == stats["stats"]
+    assert DiffusionStatusResponse().transformer_cache_stats is None
+    src = inspect.getsource(diffusion.DiffusionBackend.status)
+    assert '"transformer_cache_stats": static_skip_stats(state.pipe)' in src
