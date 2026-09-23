@@ -2680,7 +2680,7 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
 
     for quant in _GGUF_QUANT_PREFERENCE:
         for f in gguf_files:
-            if quant in f:
+            if quant.lower() in f.lower():
                 return f
 
     return gguf_files[0]
