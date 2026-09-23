@@ -409,12 +409,6 @@ function useMonitorLayout(
     if (top !== previousTop) {
       hasDraggedTopRef.current = true;
     }
-    // A horizontal move while docked replaces any saved full-width X; vertical
-    // motion or a move clamped at the edge preserves it for undocking.
-    if (narrowedRef.current && left !== previousLeft) {
-      chosenLeftRef.current = null;
-    }
-
     session.startX = event.clientX;
     session.startY = event.clientY;
     session.left = left;
@@ -436,10 +430,10 @@ function useMonitorLayout(
     const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
       session;
     dragSessionRef.current = null;
-    // Save X only after an effective horizontal move at full width. Vertical
-    // movement and dock-clamped horizontal attempts leave the edge anchor intact.
-    if (left !== baseLeft && !narrowedRef.current) {
-      chosenLeftRef.current = left;
+    // Only the released horizontal position is a new choice. Returning to the
+    // starting X keeps the saved full-width position even after intermediate moves.
+    if (left !== baseLeft) {
+      chosenLeftRef.current = narrowedRef.current ? null : left;
     }
     // Written to the node as well as to state, in this order, so handing the
     // offset back to left/top cannot show a frame at the spot it started from.
