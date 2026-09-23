@@ -617,7 +617,7 @@ test("an external pick cancels the local load it replaces", () => {
   // and the stale-intent guard keeps a superseded pick from writing to the store.
   assert.match(external, /if \(!isModelSelectionIntentCurrent\(externalIntentId\)\) return;/);
   assert.match(external, /live\.setCheckpoint\(value, null\);/);
-  assert.match(external, /restoreConfigForExternalReplacement\(externalIntentId\);/);
+  assert.doesNotMatch(external, /restoreConfigForExternalReplacement\(externalIntentId\);/);
   assert.match(external, /discardExternalReplacement\(externalIntentId\);/);
   assert.match(page, /isModelSelectionIntentCurrent,/);
 });
@@ -798,4 +798,24 @@ test("approved Hub credentials inherit a settled run rollback before replacement
   assert.ok(prompt < adoption && adoption < inherit && inherit < restore);
   assert.match(selection, /!activeRunBeforeCredentials\.loadAttemptPath/);
   assert.match(selection, /current\.params\.checkpoint ===\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
+});
+
+test("failed external stop discards rollback without restoring stale resident config", () => {
+  const page = read(CHAT_PAGE);
+  const failure = section(page, "if (!stopped) {", "return;");
+  assert.match(failure, /discardExternalReplacement\(externalIntentId\)/);
+  assert.doesNotMatch(failure, /restoreConfigForExternalReplacement\(externalIntentId\)/);
+});
+
+test("approved Hub credentials snapshot config from a successfully settled prior load", () => {
+  const runtime = read(RUNTIME);
+  const refresh = section(
+    runtime,
+    "// A prior run may have failed while this pick was waiting for Hub credentials.",
+    "if (pendingReplacementRollback?.config)",
+  );
+  assert.match(refresh, /activeLoadRunRef\.current !== activeRunBeforeCredentials/);
+  assert.match(refresh, /activeRunBeforeCredentials\.loadAttemptPath/);
+  assert.match(refresh, /current\.params\.checkpoint !==\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
+  assert.match(refresh, /previousConfigForReplacement = currentRuntimePerModelConfig\(\{\s*includeMaxSeqLength: true/);
 });

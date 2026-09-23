@@ -2379,7 +2379,6 @@ export function ChatPage({
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
     discardExternalReplacement,
-    restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
     selectModel,
     ejectModel,
@@ -3208,7 +3207,7 @@ export function ChatPage({
             if (!stopped) {
               // The backend is uncertain after a failed stop, so drop the rollback marker a
               // later local pick would otherwise inherit from the run that did not stop.
-              restoreConfigForExternalReplacement(externalIntentId);
+              discardExternalReplacement(externalIntentId);
               return;
             }
             discardExternalReplacement(externalIntentId);
@@ -3429,7 +3428,6 @@ export function ChatPage({
       cancelLoadingForReplacement,
       invalidatePendingModelSelection,
       discardExternalReplacement,
-      restoreConfigForExternalReplacement,
       isModelSelectionIntentCurrent,
     ],
   );

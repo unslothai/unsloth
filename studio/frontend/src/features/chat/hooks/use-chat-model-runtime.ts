@@ -1014,9 +1014,6 @@ export function useChatModelRuntime() {
             // it from touching shared state, but hold the slot until it has actually
             // unwound, or a replacement could overlap the run it just replaced.
             await run.settledPromise;
-            // A forced /load can unload the old resident while cancelling active generation,
-            // even though this run never called /unload. Reconcile status after the run settles
-            // before preserving the old checkpoint or releasing the slot.
             if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
               try {
                 const status = await getInferenceStatus();
@@ -1038,15 +1035,6 @@ export function useChatModelRuntime() {
               (!run.loadAttemptPath && run.residentModelUnloaded) ||
               (run.loadAttemptPath && run.forceCancelActive && run.residentModelUnloaded)
             ) {
-              try {
-                // The run applied its target's config before the preliminary unload, so the store
-                // still names the former resident while holding the cancelled target's settings.
-                restoreRollbackConfigForClear(run);
-                clearCheckpoint();
-                await refresh();
-              } catch {
-                // The cancel's own error reporting stands; the slot is still released.
-              }
             }
             activeLoadRunRef.current = releaseOwnedModelLoadRun(
               activeLoadRunRef.current,
@@ -1243,17 +1231,27 @@ export function useChatModelRuntime() {
 
       // A prior run may have failed while this pick was waiting for Hub credentials. If it
       // never unloaded the resident, it could not restore its staged config after losing intent.
-      if (
-        activeRunBeforeCredentials &&
-        activeLoadRunRef.current !== activeRunBeforeCredentials &&
-        !activeRunBeforeCredentials.residentModelUnloaded &&
-        !activeRunBeforeCredentials.loadAttemptPath &&
-        useChatRuntimeStore.getState().params.checkpoint ===
-          activeRunBeforeCredentials.rollbackCheckpoint
-      ) {
-        if (activeRunBeforeCredentials.rollbackConfig) {
-          previousConfigForReplacement = activeRunBeforeCredentials.rollbackConfig;
-          restoreRollbackConfigForClear(activeRunBeforeCredentials);
+      if (activeRunBeforeCredentials && activeLoadRunRef.current !== activeRunBeforeCredentials) {
+        const current = useChatRuntimeStore.getState();
+        if (
+          !activeRunBeforeCredentials.residentModelUnloaded &&
+          !activeRunBeforeCredentials.loadAttemptPath &&
+          current.params.checkpoint === activeRunBeforeCredentials.rollbackCheckpoint
+        ) {
+          if (activeRunBeforeCredentials.rollbackConfig) {
+            previousConfigForReplacement = activeRunBeforeCredentials.rollbackConfig;
+            restoreRollbackConfigForClear(activeRunBeforeCredentials);
+          }
+        } else if (
+          activeRunBeforeCredentials.loadAttemptPath &&
+          current.params.checkpoint != null &&
+          current.params.checkpoint !== activeRunBeforeCredentials.rollbackCheckpoint
+        ) {
+          // The prior run successfully made its own model resident while credentials were open.
+          // It is now this replacement's rollback target, so snapshot its effective config.
+          previousConfigForReplacement = currentRuntimePerModelConfig({
+            includeMaxSeqLength: true,
+          });
         }
       }
 
