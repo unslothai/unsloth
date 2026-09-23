@@ -173,6 +173,12 @@ def test_browser_resolve_relays_to_a_session_and_redirects_anyone_else(hub, monk
         == "https://www.modelscope.cn/datasets/org/ds/resolve/master/img/a.png"
     )
     assert seen == []
+    assert (
+        browser.get(
+            "/Qwen/Tiny/resolve/main/config.json", headers = {"Authorization": "Bearer stale"}
+        ).status_code
+        == 401
+    )
     signed_in = True
     relayed = browser.get("/Qwen/Tiny/resolve/main/config.json")
     assert (relayed.status_code, relayed.json()) == (200, {"model_type": "qwen2"})

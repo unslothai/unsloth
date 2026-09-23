@@ -7,16 +7,24 @@ import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { DEFAULT_HF_ENDPOINT } from "@/lib/hf-endpoint";
+import { DEFAULT_HF_ENDPOINT, type HubSource } from "@/lib/hf-endpoint";
+import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import {
+  type HubEndpointSettings,
   type HubSettings,
   InvalidHubEndpointError,
   loadHubSettings,
   updateHubSettings,
+  updateHubSource,
 } from "../api/hub-settings";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
+
+const SOURCES: { value: HubSource; label: string }[] = [
+  { value: "huggingface", label: "Hugging Face" },
+  { value: "modelscope", label: "ModelScope" },
+];
 
 // The page's CSP is set when it is served, so browsing picks up a new endpoint on reload.
 // Module scope, so the notice outlives this section unmounting until that reload.
@@ -51,7 +59,7 @@ export function HubSettingsSection() {
     };
   }, [t]);
 
-  const save = async (next: HubSettings) => {
+  const save = async (next: HubEndpointSettings) => {
     setSaving(true);
     setError(null);
     try {
@@ -85,6 +93,28 @@ export function HubSettingsSection() {
   const locked = !settings || saving || !isOwner;
   const endpointChanged =
     settings !== null && draftEndpoint.trim() !== settings.hfEndpoint;
+  const saveSource = async (source: HubSource) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await updateHubSource(source);
+      // A page served under ModelScope does not allow a custom endpoint's origins.
+      if (
+        settings?.activeSource === "modelscope" &&
+        saved.activeSource === "huggingface" &&
+        saved.hfEndpoint
+      ) {
+        reloadPending = true;
+        setReloadNeeded(true);
+      }
+      setSettings(saved);
+    } catch {
+      setError(t("settings.general.hub.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const saveEndpoint = () =>
     settings &&
     void save({
@@ -96,6 +126,49 @@ export function HubSettingsSection() {
 
   return (
     <SettingsSection title={t("settings.general.hub.sectionTitle")}>
+      <SettingsRow
+        alignTop={true}
+        label={t("settings.general.hub.source")}
+        description={t("settings.general.hub.sourceDescription")}
+      >
+        <div className="flex flex-col items-end gap-1">
+          <div
+            role="radiogroup"
+            aria-label={t("settings.general.hub.source")}
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+          >
+            {SOURCES.map((option) => {
+              const active = settings?.source === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  data-settings-label={option.label}
+                  aria-checked={active}
+                  disabled={locked}
+                  onClick={() => {
+                    if (!active) void saveSource(option.value);
+                  }}
+                  className={cn(
+                    "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed",
+                    active
+                      ? "hub-tab-toggle-pill text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <span className="relative z-10">{option.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {settings && settings.source !== settings.activeSource ? (
+            <span className="max-w-[300px] text-right text-xs text-destructive">
+              {t("settings.general.hub.sourceFallback")}
+            </span>
+          ) : null}
+        </div>
+      </SettingsRow>
       <SettingsRow
         alignTop={true}
         label={t("settings.general.hub.endpoint")}
@@ -126,6 +199,11 @@ export function HubSettingsSection() {
               {saving ? t("common.saving") : t("common.save")}
             </Button>
           </div>
+          {settings?.source === "modelscope" ? (
+            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+              {t("settings.general.hub.endpointInactive")}
+            </span>
+          ) : null}
           {reloadNeeded && isTauri ? (
             // The desktop webview's CSP is built at launch from the environment.
             <span className="max-w-[300px] text-right text-xs text-muted-foreground">

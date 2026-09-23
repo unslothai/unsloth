@@ -87,6 +87,10 @@ export const es = {
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
     rateLimitedBody:
       "Espera un momento y vuelve a intentar la búsqueda de {noun}.",
+    modelScope: "ModelScope",
+    useModelScope: "Usar ModelScope",
+    useModelScopeHint: "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Ajustes.",
+    useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
@@ -946,6 +950,10 @@ export const es = {
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
       hub: {
+        source: "Origen de los modelos",
+        sourceDescription: "Dónde busca y descarga el hub de modelos. Elige ModelScope si Hugging Face está bloqueado o es lento en tu red.",
+        sourceFallback: "No se pudo iniciar ModelScope, así que se usa Hugging Face. Revisa los registros de Unsloth Studio.",
+        endpointInactive: "Se usa cuando Hugging Face es el origen de los modelos.",
         sectionTitle: "Hub de modelos",
         endpoint: "Endpoint de Hugging Face",
         endpointDescription: "De dónde se descargan los modelos y conjuntos de datos. Déjalo vacío para usar huggingface.co o escribe un espejo como https://hf-mirror.com.",

@@ -225,6 +225,9 @@ def build_router(*, browser: bool) -> APIRouter:
         path = _file_path(path)
         session = browser and await _studio_session(request)
         if browser and not session:
+            if "authorization" in request.headers:
+                # A stale session: the page refreshes it on a 401, but cannot read a cross-origin redirect.
+                return _error(401, None, "Sign in again to browse ModelScope.")
             # Anonymous loads (README images) must not cost upstream lookups.
             return RedirectResponse(ms.branch_url(kind, repo, revision, path), status_code = 302)
 

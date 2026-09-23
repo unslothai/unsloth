@@ -87,6 +87,10 @@ export const ja = {
       "一致する{noun}が複数あります。リストから1つ選択してください。",
     rateLimitedTitle: "Hugging Face のレート制限に達しました",
     rateLimitedBody: "しばらく待ってから、{noun}の検索を再試行してください。",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope を使う",
+    useModelScopeHint: "代わりに ModelScope で検索・ダウンロードします。設定からいつでも戻せます。",
+    useModelScopeFailed: "ModelScope に切り替えられませんでした。",
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",
@@ -917,6 +921,10 @@ export const ja = {
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
       hub: {
+        source: "モデルの取得元",
+        sourceDescription: "モデルハブの検索とダウンロード先です。ネットワークで Hugging Face がブロックされている、または遅い場合は ModelScope を選んでください。",
+        sourceFallback: "ModelScope を起動できなかったため、Hugging Face を使用しています。Unsloth Studio のログを確認してください。",
+        endpointInactive: "Hugging Face がモデルの取得元のときに使用されます。",
         sectionTitle: "モデルハブ",
         endpoint: "Hugging Face エンドポイント",
         endpointDescription: "モデルとデータセットのダウンロード元です。空欄なら huggingface.co、ミラーを使う場合は https://hf-mirror.com などを入力します。",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -479,6 +479,7 @@ function RowActions({
   onSelect: (id: string) => void;
 }) {
   const hfEndpoint = useHfEndpoint();
+  const hubName = useHubName();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
     "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
@@ -548,7 +549,7 @@ function RowActions({
               strokeWidth={1.75}
               className="size-4"
             />
-            Open on Hugging Face
+            Open on {hubName}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

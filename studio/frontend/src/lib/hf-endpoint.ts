@@ -16,9 +16,20 @@ import { createStore } from "zustand/vanilla";
 export const DEFAULT_HF_ENDPOINT = "https://huggingface.co";
 export const DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co";
 
-const store = createStore<{ endpoint: string; datasetsServer: string }>(() => ({
+/** Where the Hub calls go. With ModelScope the endpoint is the backend's Hub-compatible adapter. */
+export type HubSource = "huggingface" | "modelscope";
+
+const store = createStore<{
+  endpoint: string;
+  datasetsServer: string;
+  source: HubSource;
+  /** Kept after a switch back: requests already queued for the adapter still go there. */
+  modelScopeBase: string | null;
+}>(() => ({
   endpoint: DEFAULT_HF_ENDPOINT,
   datasetsServer: DEFAULT_DATASETS_SERVER,
+  source: "huggingface",
+  modelScopeBase: null,
 }));
 
 /**
@@ -48,26 +59,68 @@ function usableEndpoint(raw: string | null | undefined): string | null {
 export function setHfEndpoints(
   endpoint?: string | null,
   datasetsServer?: string | null,
+  source?: string | null,
 ): void {
   const next = {
     endpoint: usableEndpoint(endpoint),
     datasetsServer: usableEndpoint(datasetsServer),
   };
-  store.setState((prev) => ({
-    endpoint: next.endpoint ?? prev.endpoint,
-    datasetsServer: next.datasetsServer ?? prev.datasetsServer,
-  }));
+  store.setState((prev) => {
+    const nextSource =
+      source === "huggingface" || source === "modelscope" ? source : prev.source;
+    // The endpoint names which hub it is: never keep one hub's with the other's name.
+    const applied = next.endpoint ? nextSource : prev.source;
+    return {
+      endpoint: next.endpoint ?? prev.endpoint,
+      datasetsServer: next.datasetsServer ?? prev.datasetsServer,
+      source: applied,
+      modelScopeBase:
+        next.endpoint && applied === "modelscope" ? next.endpoint : prev.modelScopeBase,
+    };
+  });
 }
 
 export function resetHfEndpoints(): void {
   store.setState({
     endpoint: DEFAULT_HF_ENDPOINT,
     datasetsServer: DEFAULT_DATASETS_SERVER,
+    source: "huggingface",
+    modelScopeBase: null,
   });
 }
 
 export function getHfEndpoint(): string {
   return store.getState().endpoint;
+}
+
+export function getHubSource(): HubSource {
+  return store.getState().source;
+}
+
+/** Whether `url` is served by the backend's ModelScope adapter, whatever the source is now. */
+export function isModelScopeHubUrl(url: string): boolean {
+  const base = store.getState().modelScopeBase;
+  return base !== null && url.startsWith(`${base}/`);
+}
+
+let sessionRefresh: (() => Promise<boolean>) | null = null;
+
+/** Registered by features/auth, which this module cannot import. */
+export function setHubSessionRefresh(refresh: () => Promise<boolean>): void {
+  sessionRefresh = refresh;
+}
+
+export function refreshHubSession(): Promise<boolean> {
+  return sessionRefresh ? sessionRefresh() : Promise.resolve(false);
+}
+
+export function useHubSource(): HubSource {
+  return useStore(store, (s) => s.source);
+}
+
+/** The hub's name as the UI shows it. */
+export function useHubName(): string {
+  return useHubSource() === "modelscope" ? "ModelScope" : "Hugging Face";
 }
 
 export function getHfDatasetsServerBase(): string {

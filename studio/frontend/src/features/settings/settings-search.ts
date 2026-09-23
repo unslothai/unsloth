@@ -30,6 +30,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
     "settings.general.hub.sectionTitle",
+    "settings.general.hub.source",
     "settings.general.hub.endpoint",
     "settings.general.hub.datasetsServer",
     "settings.general.downloads.sectionTitle",

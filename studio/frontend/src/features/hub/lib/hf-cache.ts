@@ -4,6 +4,7 @@
 import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
 import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { hubFetch } from "./network";
 import { LruMap } from "./lru-map";
 import { fingerprintToken } from "./token-fingerprint";
 
@@ -120,6 +121,7 @@ export async function cachedModelInfo(
         ]),
       );
       const result = await modelInfo({
+        fetch: hubFetch,
         ...params,
         additionalFields,
       });

@@ -87,6 +87,10 @@ export const ru = {
     rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
     rateLimitedBody:
       "Подождите немного, затем повторите поиск в категории «{noun}».",
+    modelScope: "ModelScope",
+    useModelScope: "Использовать ModelScope",
+    useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
+    useModelScopeFailed: "Не удалось переключиться на ModelScope.",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
@@ -934,6 +938,10 @@ export const ru = {
         saveError: "Не удалось обновить настройку автозапуска.",
       },
       hub: {
+        source: "Источник моделей",
+        sourceDescription: "Где хаб моделей ищет и откуда скачивает. Выберите ModelScope, если Hugging Face заблокирован или медленно работает в вашей сети.",
+        sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth Studio.",
+        endpointInactive: "Используется, когда источником моделей выбран Hugging Face.",
         sectionTitle: "Хаб моделей",
         endpoint: "Эндпоинт Hugging Face",
         endpointDescription: "Откуда загружаются модели и датасеты. Оставьте пустым для huggingface.co или укажите зеркало, например https://hf-mirror.com.",

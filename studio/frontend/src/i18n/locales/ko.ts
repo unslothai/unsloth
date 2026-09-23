@@ -85,6 +85,10 @@ export const ko = {
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
     rateLimitedBody: "잠시 기다린 후 {noun} 검색을 다시 시도하세요.",
+    modelScope: "ModelScope",
+    useModelScope: "ModelScope 사용",
+    useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
+    useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -925,6 +929,10 @@ export const ko = {
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
       hub: {
+        source: "모델 소스",
+        sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
+        sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth Studio 로그를 확인하세요.",
+        endpointInactive: "Hugging Face가 모델 소스일 때 사용됩니다.",
         sectionTitle: "모델 허브",
         endpoint: "Hugging Face 엔드포인트",
         endpointDescription: "모델과 데이터셋을 내려받는 곳입니다. 비워 두면 huggingface.co를 사용하고, 미러를 쓰려면 https://hf-mirror.com 같은 주소를 입력하세요.",

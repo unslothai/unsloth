@@ -87,6 +87,10 @@ export const ptBR = {
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
     rateLimitedBody:
       "Aguarde um momento e tente buscar {noun} novamente.",
+    modelScope: "ModelScope",
+    useModelScope: "Usar ModelScope",
+    useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
+    useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
@@ -939,6 +943,10 @@ export const ptBR = {
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
       hub: {
+        source: "Origem dos modelos",
+        sourceDescription: "Onde o hub de modelos pesquisa e baixa. Escolha ModelScope se o Hugging Face estiver bloqueado ou lento na sua rede.",
+        sourceFallback: "Não foi possível iniciar o ModelScope, então o Hugging Face está em uso. Verifique os logs do Unsloth Studio.",
+        endpointInactive: "Usado quando o Hugging Face é a origem dos modelos.",
         sectionTitle: "Hub de modelos",
         endpoint: "Endpoint do Hugging Face",
         endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",

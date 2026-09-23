@@ -84,6 +84,10 @@ export const zhCN = {
     multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",
+    modelScope: "ModelScope",
+    useModelScope: "使用 ModelScope",
+    useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
+    useModelScopeFailed: "无法切换到 ModelScope。",
     hfToken: {
       label: "HF token",
       saved: "已保存",
@@ -909,6 +913,10 @@ export const zhCN = {
         saveError: "无法更新登录时启动设置。",
       },
       hub: {
+        source: "模型来源",
+        sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",
+        sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth Studio 日志。",
+        endpointInactive: "仅在模型来源为 Hugging Face 时使用。",
         sectionTitle: "模型中心",
         endpoint: "Hugging Face 端点",
         endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",

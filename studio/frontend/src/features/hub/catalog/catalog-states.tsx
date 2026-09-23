@@ -13,7 +13,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLayoutEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import type { HubFailure } from "@/features/hub/lib/network";
+import { useIsAccountOwner } from "@/features/auth";
+import { updateHubSource } from "@/features/settings";
+import { useT } from "@/i18n";
+import { useHubName, useHubSource } from "@/lib/hf-endpoint";
 
 // Only a browser reporting itself offline earns "You're offline". Calling a DNS
 // filter or extension block "offline" is what made these bugs undiagnosable.
@@ -21,24 +26,25 @@ function describeFailure(
   failure: HubFailure | null | undefined,
   online: boolean,
   resourceLabel: "models" | "datasets",
+  hub: string,
 ): { title: string; body: string; offlineLike: boolean } {
   switch (failure?.kind) {
     case "browser-offline":
       return {
         title: "You're offline",
-        body: `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`,
+        body: `Reconnect to the internet to browse ${resourceLabel} from ${hub}.`,
         offlineLike: true,
       };
     case "timeout":
       return {
-        title: "Hugging Face timed out",
+        title: `${hub} timed out`,
         body: failure.message,
         offlineLike: false,
       };
     case "network-opaque":
     case "unknown":
       return {
-        title: "Can't reach Hugging Face",
+        title: `Can't reach ${hub}`,
         body: failure.message,
         offlineLike: false,
       };
@@ -47,15 +53,49 @@ function describeFailure(
   }
   return online
     ? {
-        title: "Couldn't reach Hugging Face",
+        title: `Couldn't reach ${hub}`,
         body: "The discovery feed couldn't load. Check your connection or try again.",
         offlineLike: false,
       }
     : {
-        title: "Can't reach Hugging Face",
-        body: `Unsloth couldn't load ${resourceLabel} from Hugging Face.`,
+        title: `Can't reach ${hub}`,
+        body: `Unsloth couldn't load ${resourceLabel} from ${hub}.`,
         offlineLike: false,
       };
+}
+
+// Offered where Hugging Face cannot be reached; only the owner can change the source.
+function UseModelScopeButton() {
+  const t = useT();
+  const isOwner = useIsAccountOwner();
+  const source = useHubSource();
+  const [switching, setSwitching] = useState(false);
+  const [failed, setFailed] = useState(false);
+  if (!isOwner || source !== "huggingface") return null;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <Button
+        size="sm"
+        disabled={switching}
+        title={t("picker.useModelScopeHint")}
+        onClick={() => {
+          setSwitching(true);
+          setFailed(false);
+          updateHubSource("modelscope")
+            .catch(() => setFailed(true))
+            .finally(() => setSwitching(false));
+        }}
+        className="h-8 rounded-full"
+      >
+        {t("picker.useModelScope")}
+      </Button>
+      {failed ? (
+        <span className="text-ui-11 text-destructive">
+          {t("picker.useModelScopeFailed")}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 export function NetworkErrorState({
@@ -77,6 +117,7 @@ export function NetworkErrorState({
     failure,
     online,
     resourceLabel,
+    useHubName(),
   );
   const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
@@ -95,6 +136,7 @@ export function NetworkErrorState({
         <p className="text-ui-11 text-muted-foreground/70">{message}</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
+        {offlineLike ? null : <UseModelScopeButton />}
         {onSwitchDevice ? (
           <button
             type="button"
@@ -134,6 +176,7 @@ export function DiscoverFetchMoreState({
   onFetchMore: () => void;
   onClearFilters: () => void;
 }) {
+  const hubName = useHubName();
   return (
     <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
@@ -145,7 +188,7 @@ export function DiscoverFetchMoreState({
         </p>
         <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           Scanned {scannedCount.toLocaleString()} results. Load another page to
-          keep searching Hugging Face.
+          keep searching {hubName}.
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2 pt-1">

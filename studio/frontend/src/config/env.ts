@@ -10,6 +10,9 @@ import {
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
+// The backend's Hub-compatible adapter over ModelScope; same origin, so the page CSP already allows it.
+const MODELSCOPE_HUB_PATH = "/api/hub/modelscope";
+
 export const env = {
   MODE: import.meta.env.MODE,
   DEV: import.meta.env.DEV,
@@ -168,6 +171,7 @@ export async function fetchDeviceType(options?: {
         secure?: boolean;
         hf_endpoint?: string;
         hf_datasets_server?: string;
+        hub_source?: string;
       };
       // Once the store holds an authoritative (server-reported) platform, a non-forced response
       // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
@@ -177,7 +181,13 @@ export async function fetchDeviceType(options?: {
       // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
-      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
+      setHfEndpoints(
+        data.hub_source === "modelscope"
+          ? new URL(apiUrl(MODELSCOPE_HUB_PATH), window.location.href).href
+          : data.hf_endpoint,
+        data.hf_datasets_server,
+        data.hub_source,
+      );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
