@@ -495,3 +495,76 @@ def test_stop_loading_an_npu_model_does_not_wait_for_the_load(monkeypatch):
     response = asyncio.run(_run())
     assert response.status == "unloaded"
     assert cancelled == ["qwen3-0.6b-FLM"]
+
+
+def test_an_owner_npu_model_is_hidden_from_managed_accounts(monkeypatch):
+    """An NPU load publishes the owner as the loader, as a GPU load does."""
+    from auth import policy
+    from hub.services.models import account_access
+    from models.inference import LoadRequest, UnloadRequest
+    from routes import inference as routes
+    from utils.account_context import AccountContext, run_as
+
+    bob = AccountContext("b" * 32, "bob")
+    model = nb.NpuModel(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3:0.6b",
+        size_gb = 0.66,
+        downloaded = True,
+        labels = ("reasoning", "chat"),
+        max_context_length = 40960,
+    )
+
+    class _Npu:
+        is_loaded = False
+        loaded_model = None
+        loaded_context_length = None
+        unloads = 0
+
+        def load(self, model_id, ctx):
+            self.is_loaded, self.loaded_model, self.loaded_context_length = True, model, 8192
+
+        def unload(self):
+            self.unloads += 1
+
+        def cancel_load(self, model_id):
+            return False
+
+    npu = _Npu()
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: npu)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(account_access, "_resident_accounts", {})
+    monkeypatch.setattr(account_access, "_resident_sharers", {})
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+
+    async def _nothing_loaded(_backend):
+        return None
+
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _nothing_loaded)
+
+    response = asyncio.run(
+        routes._load_npu_model(
+            LoadRequest(model_path = model.model_path),
+            current_request_counted = False,
+            on_reload_confirmed = None,
+            load_cancel_event = None,
+        )
+    )
+    assert response.status == "loaded"
+    assert routes._loaded_slot_ident() == model.model_path
+    assert not account_access.resident_hidden("chat", routes._loaded_slot_ident())
+
+    def _as_bob():
+        return account_access.resident_hidden("chat", routes._loaded_slot_ident())
+
+    assert run_as(bob, _as_bob) is True
+    with pytest.raises(HTTPException) as info:
+        run_as(
+            bob,
+            asyncio.run,
+            routes._unload_model_impl(UnloadRequest(model_path = model.model_path), "bob"),
+        )
+    assert info.value.status_code == 404
+    assert npu.unloads == 0

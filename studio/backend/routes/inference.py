@@ -10434,6 +10434,11 @@ def _loaded_slot_ident() -> Optional[str]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and llama_backend.model_identifier:
         return str(llama_backend.model_identifier)
+    from core.inference.npu_backend import peek_npu_backend
+
+    npu = peek_npu_backend()
+    if npu is not None and npu.is_loaded:
+        return npu.loaded_model.model_path
     return None
 
 
@@ -15842,6 +15847,7 @@ async def _load_npu_model(
         and not request.force_reload
         and (requested_ctx is None or requested_ctx == npu.loaded_context_length)
     ):
+        account_access.join_resident("chat")
         return _npu_load_response(npu, "already_loaded")
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
@@ -15870,7 +15876,8 @@ async def _load_npu_model(
         raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    account_access.join_resident("chat")
+    # Records the owner as the loader, so resident_hidden keeps the model from managed accounts.
+    account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
     return _npu_load_response(npu, "loaded")
 
@@ -18501,6 +18508,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
 
     try:
         if is_npu_model_path(request.model_path):
+            if account_access.managed_account():
+                # Only the owner loads NPU models, so no managed account shares or stops one.
+                raise HTTPException(status_code = 404, detail = "Model not found")
             npu = peek_npu_backend()
             # "Stop loading": /load holds the lifecycle gate until /v1/load returns.
             if npu is not None and await asyncio.to_thread(

@@ -354,8 +354,12 @@ class LemonadeNpuBackend:
         return {"ready": ready, "problems": problems, "report": report}
 
     def shutdown(self) -> None:
-        # A load holds the lock for as long as /v1/load runs.
+        # load() and enable() hold the lock across lemond requests of up to 900 s; stopping lemond
+        # first ends them. start() refuses to respawn it once the process is shutting down.
         self.cancel_load()
+        server = self._server
+        if server is not None:
+            server.stop()
         with self._lock:
             self._loaded = None
             if self._server is not None:

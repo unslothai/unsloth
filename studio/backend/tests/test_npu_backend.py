@@ -230,6 +230,34 @@ def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
     assert npu.loading_model is None
 
 
+def test_shutdown_does_not_wait_for_enable(npu, monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "60")
+    errors: list[BaseException] = []
+
+    def _enable():
+        try:
+            npu.enable()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target = _enable)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not any(r["path"] == "/v1/install" for r in _requests(npu)):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    started = time.monotonic()
+    npu.shutdown()
+    assert time.monotonic() - started < 30
+    thread.join(timeout = 30)
+    assert not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], nb.NpuError)
+    assert npu.status()["runtime_running"] is False
+
+
 def test_a_restarted_runtime_reports_nothing_loaded(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
