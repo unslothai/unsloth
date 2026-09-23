@@ -5430,9 +5430,32 @@ export function HubModelPicker({
     );
 
 
-  // Beside the gear on a loaded row once several are loaded; with one, the footer ejects it.
+  // Ejects one of several loaded models; with one, the footer's button does it.
+  const ejectsRow = (modelId: string) =>
+    Boolean(onEject) && loadedModels.length > 1 && isKeptLoaded(modelId);
+
+  // In the row's menu where the gutter already holds the gear and the menu.
+  const ejectMenuItems = (modelId: string) =>
+    ejectsRow(modelId) && onEject
+      ? [
+          {
+            key: "eject",
+            label: "Eject",
+            icon: (
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+            ),
+            onSelect: () => onEject(modelId),
+          },
+        ]
+      : undefined;
+
+  // A loaded-models row has no gear, so its eject is a button of its own.
   const renderEjectAction = (modelId: string) =>
-    onEject && loadedModels.length > 1 && isKeptLoaded(modelId) ? (
+    onEject && ejectsRow(modelId) ? (
       <Tooltip delayDuration={0}>
         <TooltipTrigger asChild={true}>
           <button
@@ -5877,7 +5900,6 @@ export function HubModelPicker({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          {renderEjectAction(c.repo_id)}
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
@@ -5887,6 +5909,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            items={ejectMenuItems(c.repo_id)}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin to top",
@@ -6114,7 +6137,6 @@ export function HubModelPicker({
         <span
           className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}
         >
-          {renderEjectAction(c.repo_id)}
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
@@ -6137,6 +6159,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
+            items={ejectMenuItems(c.repo_id)}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin to top",
