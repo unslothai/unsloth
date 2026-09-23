@@ -404,6 +404,9 @@ def test_an_eval_first_training_capable_remote_moe_is_left_alone():
         ("self.ep_size == 1 and self.training", True),
         ("not self.training and self.ep_size == 1", False),
         ("self.training or self.ep_size == 2", True),
+        ("(self.training and self.ep_size == 1) or self.use_fused", True),
+        ("not (self.training and self.ep_size == 1)", False),
+        ("not (not self.training or self.ep_size != 1)", True),
     ],
 )
 def test_a_compound_training_predicate_is_recognised(predicate, trains_in_body):
@@ -421,6 +424,7 @@ def test_a_compound_training_predicate_is_recognised(predicate, trains_in_body):
                 self.experts = nn.ModuleList([nn.Linear(2, 2)])
                 self.gate = nn.Linear(2, 1)
                 self.ep_size = 1
+                self.use_fused = False
 
             def forward(self, hidden_states):
                 if {predicate}:
