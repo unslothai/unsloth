@@ -29,6 +29,8 @@ _MAIN_PIN = _STUDIO_DIR / "backend" / "requirements" / "diffusers-main.txt"
 _REPAIR_TIMEOUT_S = 120
 # The installer's exit codes for --repair-diffusers-main.
 _INSTALLED, _NOTHING_TO_DO = 0, 1
+# The installer's DIFFUSERS_MAIN_MIN_PYTHON: diffusers main needs 3.10, and 3.9 stays supported.
+_MAIN_MIN_PYTHON = (3, 10)
 
 # Unattended, so secrets and index redirects stay out, as in mlx_repair. The Windows names are what
 # Python, git and uv need to start at all there; UV_OFFLINE is the operator's no-network switch.
@@ -144,6 +146,22 @@ def _record_failure() -> None:
         logger.warning("diffusers self-heal could not record its failure: %s", exc)
 
 
+def _installer_would_skip() -> bool:
+    """The installer's no-op gates: a start it would skip must not block or claim to install."""
+    if sys.version_info[:2] < _MAIN_MIN_PYTHON:
+        return True
+    try:
+        from studio.install_manifest import read_manifest
+        manifest = read_manifest() or {}
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+    step_results = manifest.get("step_results")
+    update_failed = (
+        isinstance(step_results, dict) and step_results.get("diffusers-main.txt") == "failed"
+    )
+    return manifest.get("diffusers_main_repair") == "failed" or update_failed
+
+
 def _run_repair(echo: Callable[[str], None]) -> bool:
     from utils.child_stdio import utf8_child_env
     from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
@@ -212,7 +230,7 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     if _opted_out() or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
     # Check the lock too: an active install may have temporarily removed the metadata.
-    if _diffusers_is_an_index_install():
+    if _diffusers_is_an_index_install() and not _installer_would_skip():
         echo("  - installing the pinned Diffusers build (first start after an update)...")
     elif _peer_holds_pass():
         echo("  - waiting for another Unsloth install or update to finish...")

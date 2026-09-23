@@ -21,6 +21,7 @@ if str(_BACKEND) not in sys.path:
 import utils.diffusers_repair as dr  # noqa: E402
 
 _REAL_PEER_HOLDS_PASS = dr._peer_holds_pass
+_REAL_INSTALLER_WOULD_SKIP = dr._installer_would_skip
 
 
 class _Dist:
@@ -38,6 +39,7 @@ def _reset(monkeypatch):
     monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
+    monkeypatch.setattr(dr, "_installer_would_skip", lambda: False)
 
 
 def _installed_diffusers(monkeypatch, direct_url):
@@ -221,6 +223,49 @@ def test_a_start_during_a_peers_pass_waits_it_out(monkeypatch):
     assert dr.repair_diffusers_before_imports(lines.append) is False
     assert started and started[0][-1] == "--repair-diffusers-main"
     assert lines == ["  - waiting for another Unsloth install or update to finish..."]
+
+
+def _manifest(monkeypatch, manifest):
+    import types
+
+    monkeypatch.setattr(dr, "_installer_would_skip", _REAL_INSTALLER_WOULD_SKIP)
+    fake = types.SimpleNamespace(read_manifest = lambda: manifest)
+    monkeypatch.setitem(sys.modules, "studio.install_manifest", fake)
+
+
+@pytest.mark.parametrize(
+    "min_python, manifest",
+    [
+        ((99, 0), {}),  # Python 3.9 against the real (3, 10) floor
+        ((3, 0), {"diffusers_main_repair": "failed"}),
+        ((3, 0), {"step_results": {"diffusers-main.txt": "failed"}}),
+    ],
+)
+def test_a_start_the_installer_would_skip_spawns_nothing(monkeypatch, min_python, manifest):
+    """Every start would otherwise block on a no-op installer and claim it is installing."""
+    _installed_diffusers(monkeypatch, None)
+    _manifest(monkeypatch, manifest)
+    monkeypatch.setattr(dr, "_MAIN_MIN_PYTHON", min_python)
+    monkeypatch.setattr(dr.subprocess, "Popen", lambda *a, **k: pytest.fail("started a repair"))
+    lines = []
+    assert dr.repair_diffusers_before_imports(lines.append) is False
+    assert lines == []
+
+
+def test_a_skipped_start_still_waits_out_a_peers_pass(monkeypatch):
+    _installed_diffusers(monkeypatch, None)
+    _manifest(monkeypatch, {"diffusers_main_repair": "failed"})
+    monkeypatch.setattr(dr, "_peer_holds_pass", lambda: True)
+    started, lines = [], []
+    monkeypatch.setattr(dr.subprocess, "Popen", lambda argv, **kw: started.append(argv) or _Proc(1))
+    assert dr.repair_diffusers_before_imports(lines.append) is False
+    assert started
+    assert lines == ["  - waiting for another Unsloth install or update to finish..."]
+
+
+def test_the_python_floor_matches_the_installer():
+    source = dr._INSTALLER.read_text(encoding = "utf-8")
+    assert f"DIFFUSERS_MAIN_MIN_PYTHON = {dr._MAIN_MIN_PYTHON!r}" in source
 
 
 @pytest.mark.parametrize(
