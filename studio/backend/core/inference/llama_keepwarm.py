@@ -55,14 +55,20 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
+# Serializes loads. A load into a new slot holds only this, so inference keeps starting.
+_load_lock = threading.Lock()
+
+
 @contextlib.asynccontextmanager
-async def _unload_gate(cancel_event: threading.Event | None = None):
+async def _unload_gate(
+    cancel_event: threading.Event | None = None, lock: threading.Lock = _lifecycle_lock
+):
     # Acquire off the loop: non-blocking first (the common uncontended case), else poll a non-blocking acquire off a
     # short sleep. Polling keeps the wait off this loop AND cancellation-safe -- a cancel lands during the sleep, when
     # the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
     acquired = False
     try:
-        while not _lifecycle_lock.acquire(blocking = False):
+        while not lock.acquire(blocking = False):
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError()
             await asyncio.sleep(0.02)
@@ -72,7 +78,7 @@ async def _unload_gate(cancel_event: threading.Event | None = None):
         yield
     finally:
         if acquired:
-            _lifecycle_lock.release()
+            lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -391,6 +397,30 @@ def set_current_response_scope(scope) -> None:
     _current_response_scope.set(scope if isinstance(scope, dict) else None)
 
 
+_END_CALLBACKS_SCOPE_KEY = "unsloth.end_callbacks"
+_ENDED_SCOPE_KEY = "unsloth.request_ended"
+
+
+def on_request_end(callback) -> bool:
+    """Run ``callback`` once the current tracked request has ended. False outside one."""
+    scope = _current_response_scope.get()
+    if not isinstance(scope, dict) or scope.get(_ENDED_SCOPE_KEY):
+        return False
+    scope.setdefault(_END_CALLBACKS_SCOPE_KEY, []).append(callback)
+    return True
+
+
+def _run_end_callbacks(scope) -> None:
+    if not isinstance(scope, dict):
+        return
+    scope[_ENDED_SCOPE_KEY] = True
+    for callback in scope.pop(_END_CALLBACKS_SCOPE_KEY, ()):
+        try:
+            callback()
+        except Exception as exc:
+            logger.debug("request end callback failed: %s", exc)
+
+
 def mark_current_response_failed() -> None:
     """Flag the current response failed via the contextvar the middleware set, so an
     OpenAI-family streaming error emitted deep in a generator (no direct scope handle)
@@ -498,6 +528,10 @@ def inference_lifecycle_gate():
     """The gate a model swap holds so new inference can't start mid-load. Process-
     wide, so a swap on one loop blocks inference starting on any other loop."""
     return _unload_gate()
+
+
+def model_load_gate():
+    return _unload_gate(lock = _load_lock)
 
 
 def note_model_loaded(backend = None) -> None:
@@ -715,6 +749,7 @@ class LlamaKeepWarmMiddleware:
             if ended["done"]:
                 return
             ended["done"] = True
+            _run_end_callbacks(scope)
             code = status["code"]
             if media_owner is not None:
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
@@ -836,12 +871,20 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import get_llama_cpp_backend
+            from routes.inference import (
+                get_llama_cpp_backend,
+                release_chat_gpu_claim,
+                unload_extra_models,
+            )
 
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
             # request
             async with _unload_gate():
+                if _is_idle(ttl) and await asyncio.to_thread(
+                    unload_extra_models, _user_pinned, True, True
+                ):
+                    await asyncio.to_thread(release_chat_gpu_claim)
                 # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)
                 if current != seen_model:

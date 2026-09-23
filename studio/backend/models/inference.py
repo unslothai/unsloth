@@ -71,6 +71,14 @@ class LoadRequest(BaseModel):
         False,
         description = "Start a fresh runtime even when the active settings already match",
     )
+    alongside: bool = Field(
+        False,
+        description = "Keep the loaded model and serve this one next to it",
+    )
+    force_alongside: bool = Field(
+        False,
+        description = "Load alongside even when it only partly fits the free GPU memory",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -1510,6 +1518,11 @@ class LoadResponse(_InferenceRuntimeFields):
         "current_gb, needed_gb, suggested_gb, machine_gb, host_left_gb and a prose "
         "message. Null once the user has dismissed it at this allocation, and on every "
         "load where enlarging the allocation would not help. The model still loaded.",
+    )
+    evicted: list[str] = Field(
+        default_factory = list,
+        description = "Models loaded alongside that were unloaded to make room for this one. "
+        "Each reloads when a request names it.",
     )
 
 

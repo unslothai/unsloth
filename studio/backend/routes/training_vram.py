@@ -66,6 +66,28 @@ def summarize_resident_chat() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
+    try:
+        import routes.inference as _inference
+        for slot in list(_inference._extra_slots):
+            pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
+            filling = _inference._loading_slot is not None and _inference._loading_slot[0] is slot
+            name = (
+                slot.orchestrator.active_model_name
+                or pending
+                or (
+                    slot.llama.is_active
+                    and getattr(slot.llama, "_gpu_offload_active", None) is not False
+                    and (slot.llama.model_identifier or "gguf")
+                )
+                or (filling and _inference._loading_slot[1])
+            )
+            if name:
+                # A model kept alongside cannot be sized here, so the caller frees rather than keeps.
+                gguf_name = gguf_name or name
+                loading = True
+    except Exception as e:
+        logger.warning("Could not inspect models loaded alongside: %s", e)
+
     return {
         "hf": hf_name,
         "gguf": gguf_name,
@@ -441,6 +463,20 @@ def free_chat_models_for_training(reason: str) -> List[str]:
             freed.append(f"gguf:{name}")
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
+
+    try:
+        from routes.inference import _extra_slots, unload_extra_models
+        kept = [
+            slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
+            for slot in list(_extra_slots)
+        ]
+        if kept:
+            logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
+            # Stashed, so a request naming one brings it back once training is done.
+            unload_extra_models(stash = True)
+            freed.extend(f"kept:{name}" for name in kept)
+    except Exception as e:
+        logger.warning("Could not unload models kept alongside: %s", e)
 
     return freed
 

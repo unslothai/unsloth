@@ -11,6 +11,7 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
+export { listOpenAIModels } from "./api/openai-models";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,

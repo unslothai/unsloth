@@ -2284,7 +2284,7 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     # And the rollback that makes the reseed necessary is still ordered before the
     # hydration it protects, in the adopt path.
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = runtime[runtime.index("const confirmedStatus = await readPickStatus()") :]
     adopt = adopt[: adopt.index("void refreshContextUsage(")]
     assert (
         adopt.index("restorePreviousConfig();")
@@ -2688,7 +2688,7 @@ def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     loadable. The ordering requirement is unchanged and is what this still pins.
     """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = src[src.index("const confirmedStatus = await readPickStatus()") :]
     branch = branch[: branch.index("void refreshContextUsage(")]
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
     # Landing before the checkpoint moves, so nothing reads the pair half updated.

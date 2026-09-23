@@ -1574,6 +1574,7 @@ export function SharedComposer({
         applyCompareStopDecision();
         const resp = await loadModel({
           model_path: sel.id,
+          alongside: useChatRuntimeStore.getState().keepModelsLoaded,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,

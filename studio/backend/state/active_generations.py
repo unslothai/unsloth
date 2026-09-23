@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from utils.account_context import current_account_id
 
@@ -115,12 +115,23 @@ class ActiveGeneration:
         return False
 
 
-def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only."""
+def _matching(
+    account_id: Optional[str], exclude: Collection[threading.Event]
+) -> list[dict[str, Any]]:
+    return [
+        e
+        for e in _ACTIVE.values()
+        if (account_id is None or e["account_id"] == account_id) and e["event"] not in exclude
+    ]
+
+
+def snapshot(
+    account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()
+) -> list[dict[str, Any]]:
+    """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only.
+    ``exclude`` leaves out the runs holding those cancel events."""
     with _LOCK:
-        entries = [
-            e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
-        ]
+        entries = _matching(account_id, exclude)
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -136,25 +147,25 @@ def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
     ]
 
 
-def active_thread_ids(account_id: Optional[str] = None) -> list[str]:
+def active_thread_ids(
+    account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()
+) -> list[str]:
     """Distinct conversation ids with a generation in flight, in start order.
 
     A first turn that races persistence has no thread id yet: count() sees it,
     this cannot name it.
     """
     seen: list[str] = []
-    for e in snapshot(account_id):
+    for e in snapshot(account_id, exclude):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
-def count(account_id: Optional[str] = None) -> int:
+def count(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
     with _LOCK:
-        if account_id is None:
-            return len(_ACTIVE)
-        return sum(1 for e in _ACTIVE.values() if e["account_id"] == account_id)
+        return len(_matching(account_id, exclude))
 
 
 def foreign_count(account_id: str) -> int:
@@ -163,21 +174,24 @@ def foreign_count(account_id: str) -> int:
         return sum(1 for e in _ACTIVE.values() if e["account_id"] != account_id)
 
 
-def cancel_all(account_id: Optional[str] = None) -> int:
+def cancel_all(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
     """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
     ``account_id``; None means everyone and is for shutdown only."""
     with _LOCK:
-        events = [
-            e["event"]
-            for e in _ACTIVE.values()
-            if account_id is None or e["account_id"] == account_id
-        ]
+        events = [e["event"] for e in _matching(account_id, exclude)]
     for ev in events:
         try:
             ev.set()
         except Exception:
             pass
     return len(events)
+
+
+def thread_ids_for(events: Collection[threading.Event]) -> list[str]:
+    """Distinct conversation ids of the runs holding these cancel events."""
+    with _LOCK:
+        ids = [e["thread_id"] for e in _ACTIVE.values() if e["event"] in events and e["thread_id"]]
+    return list(dict.fromkeys(ids))
 
 
 def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:

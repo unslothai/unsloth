@@ -253,6 +253,7 @@ _WANTED = {
     "_PENDING_CANCEL_TTL_S",
     "_prune_pending",
     "_TrackedCancel",
+    "_slot_lock",
     "_cancel_by_keys",
     "_cancel_by_cancel_id_or_stash",
 }
@@ -317,7 +318,9 @@ def _registry_source():
 def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(), mod
+        'import contextvars\nrouted_slot = contextvars.ContextVar("routed_slot", default = None)\n'
+        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(),
+        mod,
     )
     return mod
 

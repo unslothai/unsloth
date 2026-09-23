@@ -1657,7 +1657,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     "the residency verdict is no longer callable against a second status",
   );
   const decision = USE_CHAT_MODEL_RUNTIME.search(
-    /const confirmedStatus = await getInferenceStatus\(\)/,
+    /const confirmedStatus = await readPickStatus\(\)/,
   );
   assert.ok(
     decision > 0,
@@ -1685,8 +1685,9 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   );
   // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
-    USE_CHAT_MODEL_RUNTIME.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
-      decision + "const confirmedStatus = ".length,
+    USE_CHAT_MODEL_RUNTIME.includes(
+      "getInferenceStatus(undefined, modelId).catch(() => null);",
+    ),
     "the re-read no longer tolerates a failed status",
   );
 });
@@ -1936,4 +1937,13 @@ test("legacy status without reasoning request echoes keeps its comparison", () =
     reasoning_budget: 32,
     reasoning_budget_message: "Conclude now.",
   }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
+});
+
+test("a pick asks the status about its own model, so one loaded alongside is adopted", () => {
+  assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(currentCheckpoint && \(!keepModelsLoaded \|\| forceReload\)\)/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /alongside: keepModelsLoaded,/);
 });

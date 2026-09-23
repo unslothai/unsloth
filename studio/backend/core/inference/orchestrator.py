@@ -8,6 +8,7 @@ Qwen needs 4.57.x), the old subprocess is killed and a new one spawned with the 
 Pattern follows core/training/training.py."""
 
 import atexit
+import contextvars
 import base64
 import os
 import signal
@@ -3126,16 +3127,24 @@ _inference_backend = None
 _inference_backend_lock = threading.Lock()
 
 
+# The slot (llama backend + orchestrator) serving a model loaded alongside the primary; set per request.
+routed_slot: contextvars.ContextVar = contextvars.ContextVar("routed_slot", default = None)
+
+
 def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
     """The orchestrator if one exists, else None. Never constructs one. For callers that only
     describe what is already loaded: constructing reaches get_default_models() -> get_device(),
     which blocks on the torch import during the warm."""
-    return _inference_backend
+    slot = routed_slot.get()
+    return slot.orchestrator if slot is not None else _inference_backend
 
 
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend
+    slot = routed_slot.get()
+    if slot is not None:
+        return slot.orchestrator
     # Double-checked: the cheap read keeps the hot path lock-free, the recheck picks a builder
     if _inference_backend is None:
         with _inference_backend_lock:
