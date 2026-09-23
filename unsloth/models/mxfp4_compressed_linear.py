@@ -182,6 +182,10 @@ class Mxfp4PackedLinear(nn.Linear):
 
 
 def is_mxfp4_scheme(scheme, default_format = None) -> bool:
+    # The packed forward only dequantizes the weight: a scheme that also quantizes
+    # activations is not one it can run.
+    if any(getattr(scheme, f, None) is not None for f in ("input_activations", "output_activations")):
+        return False
     fmt = getattr(scheme, "format", None) or default_format
     fmt = getattr(fmt, "value", fmt)
     if fmt != MXFP4_FORMAT:
@@ -289,6 +293,10 @@ def adopt_compressed_mxfp4_modules(
             continue
         packed = getattr(module, "_parameters", {}).get("weight_packed")
         if packed is None:
+            # Another compressed layout (FP8 keeps its compressed weight under `weight`) still
+            # needs compressed-tensors' model-wide decompress hook.
+            if getattr(module, "quantization_scheme", None) is not None:
+                others += 1
             continue
         scale = module._parameters.get("weight_scale")
         scheme = getattr(module, "quantization_scheme", None)

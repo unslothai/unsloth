@@ -209,9 +209,10 @@ def test_weight_property_is_an_exact_read_only_decode():
         make_mxfp4_packed_linear(48, 32)
 
 
-def _ct_compressed_model(targets_ignore = ()):
+def _ct_compressed_model(targets_ignore = (), groups = None):
     """Three Linears laid out by compressed-tensors itself: quantization config applied, then
-    compressed in memory, with its decompress-on-first-forward hook registered."""
+    compressed in memory, with its decompress-on-first-forward hook registered. ``groups``
+    replaces the one MXFP4 group targeting every Linear."""
     from compressed_tensors.compressors import ModelCompressor
     from compressed_tensors.quantization import QuantizationConfig, apply_quantization_config
 
@@ -247,12 +248,24 @@ def _ct_compressed_model(targets_ignore = ()):
             }
         },
     }
+    if groups is not None:
+        quant["config_groups"] = groups
     qc = QuantizationConfig.model_validate(quant)
     apply_quantization_config(model, qc, run_compressed = False)
     for m in (model.a, model.b, model.latent):
-        m.weight_scale.data.fill_(125)
+        m.weight_scale.data.fill_(125 if m.weight_scale.dtype == torch.uint8 else 0.01)
     ModelCompressor(quantization_config = qc).compress_model(model)
     return model
+
+
+_MXFP4_WEIGHTS = {
+    "num_bits": 4,
+    "type": "float",
+    "strategy": "group",
+    "group_size": 32,
+    "symmetric": True,
+    "scale_dtype": "torch.uint8",
+}
 
 
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
@@ -884,3 +897,40 @@ def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
     merged = model.merge_and_unload()
     with torch.no_grad():
         assert merged(input_ids = torch.tensor([[1, 2, 3, 4]], device = device)).logits.isfinite().all()
+
+
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+def test_adoption_declines_a_scheme_that_also_quantizes_activations():
+    """The packed forward only dequantizes the weight; compressed-tensors' own forward also
+    quantizes the input. Adopting such a module would silently drop that."""
+    from unsloth.models.mxfp4_compressed_linear import is_mxfp4_scheme
+
+    activations = {"num_bits": 8, "type": "int", "strategy": "token", "dynamic": True, "symmetric": True}
+    groups = {"group_0": {"targets": ["Linear"], "weights": _MXFP4_WEIGHTS, "input_activations": activations}}
+    model = _ct_compressed_model(groups = groups)
+    assert not is_mxfp4_scheme(model.a.quantization_scheme, "mxfp4-pack-quantized")
+    reference = copy.deepcopy(model)
+    assert adopt_compressed_mxfp4_modules(model, dtype = torch.bfloat16) == 0
+    assert type(model.a) is nn.Linear and hasattr(model, "ct_decompress_hook")
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    with torch.no_grad():
+        assert torch.equal(model(x), reference(x))
+
+
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+def test_adoption_declines_when_another_compressed_format_needs_the_hook():
+    """An FP8 module keeps its compressed weight under `weight`; compressed-tensors' model-wide
+    hook still has to decompress it, so the MXFP4 modules are not adopted either."""
+    fp8 = {"num_bits": 8, "type": "float", "strategy": "channel", "symmetric": True, "dynamic": False}
+    groups = {
+        "group_0": {"targets": ["re:^a$", "re:^b$"], "weights": _MXFP4_WEIGHTS, "format": "mxfp4-pack-quantized"},
+        "group_1": {"targets": ["re:^latent$"], "weights": fp8, "format": "float-quantized"},
+    }
+    model = _ct_compressed_model(groups = groups)
+    assert model.latent.weight.dtype == torch.float8_e4m3fn
+    reference = copy.deepcopy(model)
+    assert adopt_compressed_mxfp4_modules(model, dtype = torch.bfloat16) == 0
+    assert type(model.a) is nn.Linear and hasattr(model, "ct_decompress_hook")
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    with torch.no_grad():
+        assert torch.equal(model(x), reference(x))
