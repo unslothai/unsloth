@@ -96,7 +96,7 @@ def _secret_backed_names() -> frozenset[str]:
                     _SECRET.search(e) for e in _EXPRESSION.findall(value)
                 ):
                     names.add(key)
-    return frozenset(names - {"GITHUB_TOKEN"})
+    return frozenset(names)
 
 
 SECRET_BACKED = _secret_backed_names()
@@ -170,6 +170,9 @@ def test_an_aliased_secret_is_tracked_under_the_name_the_script_reads():
     assert "VIRUS_TOTAL_API_TOKEN" in SECRET_BACKED
     # kaggle-t4-notebook-ci.yml explains `secrets.A || secrets.B` in a comment; neither is real.
     assert "A" not in SECRET_BACKED and "B" not in SECRET_BACKED
+    # GitHub does not export the run token to the environment by itself; a script reading
+    # $GITHUB_TOKEN needs the mapping like any other secret.
+    assert "GITHUB_TOKEN" in SECRET_BACKED
 
 
 def test_an_inline_read_of_an_alias_is_caught_in_a_workflow_that_never_maps_it(tmp_path):
@@ -272,3 +275,19 @@ def test_a_misspelled_or_swapped_secret_is_caught():
     assert _misdrawn(doc("${{ secrets.HF_TOKEN }}"), "w") == [
         "w: DOCKER_API_KEY draws on ['HF_TOKEN'], not DOCKER_API_KEY"
     ]
+
+
+def test_a_step_reading_the_run_token_must_map_it(tmp_path):
+    workflow = tmp_path / "t.yml"
+    workflow.write_text(
+        "on: push\n"
+        "jobs:\n"
+        "  api:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Call\n"
+        "        run: |\n"
+        '          curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com\n',
+        encoding = "utf-8",
+    )
+    assert _unmapped(workflow) == ["t.yml :: api :: Call reads GITHUB_TOKEN without mapping it"]
