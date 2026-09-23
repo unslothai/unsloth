@@ -130,8 +130,11 @@ def _stable_section(out: str) -> str:
 
 def _runs():
     return [
-        pytest.param("pr11727", {"model_change", "reasoning_toggle", "select_all_copy", "settings"},
-                     id = "11727-quiet-null"),
+        pytest.param(
+            "pr11727",
+            {"model_change", "reasoning_toggle", "select_all_copy", "settings"},
+            id = "11727-quiet-null",
+        ),
         pytest.param("pr11724", {"image_upload"}, id = "11724-undecided-null"),
     ]
 
@@ -177,10 +180,18 @@ def test_the_workflow_null_audit_still_passes_with_fence_readings(tmp_path, caps
     annotate(result, null)
     rdir = _write(result, tmp_path / "parity-result")
     ndir = _write(null, tmp_path / "parity-null-control")
-    rc = U.main([
-        "--audit-null", "--allow-undecided", "image_upload",
-        "--compared-in", str(rdir), "--min-reps", "2", str(ndir),
-    ])
+    rc = U.main(
+        [
+            "--audit-null",
+            "--allow-undecided",
+            "image_upload",
+            "--compared-in",
+            str(rdir),
+            "--min-reps",
+            "2",
+            str(ndir),
+        ]
+    )
     assert rc == 0, capsys.readouterr().out
 
 
@@ -269,7 +280,12 @@ def test_a_build_whose_fences_never_upgrade_is_not_excused(tmp_path, capsys, tag
 # ── the rule itself ──────────────────────────────────────────────────────────────────────────
 
 
-def _cap(fences: list[dict], unfenced: str = "u", digest: str = "d", role: str = "assistant"):
+def _cap(
+    fences: list[dict],
+    unfenced: str = "u",
+    digest: str = "d",
+    role: str = "assistant",
+):
     msg = {"i": 0, "role": role, "digest": digest, "chars": 10}
     if fences is not None:
         msg["fences"] = fences
@@ -286,7 +302,11 @@ def _cap(fences: list[dict], unfenced: str = "u", digest: str = "d", role: str =
     }
 
 
-def _f(latched: bool, text: str = "t", digest: str | None = None) -> dict:
+def _f(
+    latched: bool,
+    text: str = "t",
+    digest: str | None = None,
+) -> dict:
     return {"latched": latched, "text": text, "digest": digest or ("hl" if latched else "sh")}
 
 
@@ -379,13 +399,21 @@ CODE = "def f(x):\n    return x + 1\n\nprint(f(2))"
 def _shell(code: str) -> dict:
     """What `code-fence-defer.tsx`'s FenceShell renders for a fence nobody has reached."""
     return {
-        "attrs": {"data-streamdown": "code-block", "data-unsloth-fence-deferred": "true",
-                  "data-language": "python", "class": "my-4 flex"},
+        "attrs": {
+            "data-streamdown": "code-block",
+            "data-unsloth-fence-deferred": "true",
+            "data-language": "python",
+            "class": "my-4 flex",
+        },
         "children": [
-            {"attrs": {"data-streamdown": "code-block-header", "data-language": "python"},
-             "children": [{"tag": "span", "children": ["python"]}]},
-            {"attrs": {"data-streamdown": "code-block-body", "data-language": "python"},
-             "children": [{"tag": "pre", "children": [{"tag": "code", "children": [code]}]}]},
+            {
+                "attrs": {"data-streamdown": "code-block-header", "data-language": "python"},
+                "children": [{"tag": "span", "children": ["python"]}],
+            },
+            {
+                "attrs": {"data-streamdown": "code-block-body", "data-language": "python"},
+                "children": [{"tag": "pre", "children": [{"tag": "code", "children": [code]}]}],
+            },
         ],
     }
 
@@ -395,26 +423,45 @@ def _highlighted(code: str) -> dict:
     lines = []
     for line in code.split("\n"):
         tokens = [t for t in line.replace(" ", "\0 \0").split("\0") if t] or ["\n"]
-        lines.append({"tag": "span", "attrs": {"class": "block"}, "children": [
-            {"tag": "span", "attrs": {"style": "--sdm-c:#fff"}, "children": [t]} for t in tokens
-        ]})
+        lines.append(
+            {
+                "tag": "span",
+                "attrs": {"class": "block"},
+                "children": [
+                    {"tag": "span", "attrs": {"style": "--sdm-c:#fff"}, "children": [t]}
+                    for t in tokens
+                ],
+            }
+        )
     return {
-        "attrs": {"data-streamdown": "code-block", "data-language": "python",
-                  "class": "my-4 flex", "style": "content-visibility:auto"},
+        "attrs": {
+            "data-streamdown": "code-block",
+            "data-language": "python",
+            "class": "my-4 flex",
+            "style": "content-visibility:auto",
+        },
         "children": [
-            {"attrs": {"data-streamdown": "code-block-header", "data-language": "python"},
-             "children": [{"tag": "span", "children": ["python"]}]},
-            {"attrs": {"data-streamdown": "code-block-actions"},
-             "children": [{"tag": "button", "attrs": {"title": "Copy Code"}}]},
-            {"attrs": {"data-streamdown": "code-block-body", "data-language": "python"},
-             "children": [{"tag": "pre", "children": [{"tag": "code", "children": lines}]}]},
+            {
+                "attrs": {"data-streamdown": "code-block-header", "data-language": "python"},
+                "children": [{"tag": "span", "children": ["python"]}],
+            },
+            {
+                "attrs": {"data-streamdown": "code-block-actions"},
+                "children": [{"tag": "button", "attrs": {"title": "Copy Code"}}],
+            },
+            {
+                "attrs": {"data-streamdown": "code-block-body", "data-language": "python"},
+                "children": [{"tag": "pre", "children": [{"tag": "code", "children": lines}]}],
+            },
         ],
     }
 
 
 def _message(fence: dict, prose: str = "Here is the function.") -> dict:
-    return {"attrs": {"data-role": "assistant"},
-            "children": [{"tag": "p", "children": [prose]}, fence, {"tag": "p", "children": ["Done."]}]}
+    return {
+        "attrs": {"data-role": "assistant"},
+        "children": [{"tag": "p", "children": [prose]}, fence, {"tag": "p", "children": ["Done."]}],
+    }
 
 
 def _node_readings(tmp_path: Path, specs: list[dict]) -> list[dict]:
@@ -427,19 +474,28 @@ def _node_readings(tmp_path: Path, specs: list[dict]) -> list[dict]:
     spec_file.write_text(json.dumps(specs), encoding = "utf-8")
     got = subprocess.run(
         [exe, str(harness), str(PARITY_JS), str(spec_file)],
-        capture_output = True, text = True, timeout = 60, check = True,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        check = True,
     )
     return json.loads(got.stdout)
 
 
 def test_the_capture_reads_a_shell_and_its_highlighted_fence_as_one_text(tmp_path):
-    shell, lit, edited, reworded, bare = _node_readings(tmp_path, [
-        _message(_shell(CODE)),
-        _message(_highlighted(CODE)),
-        _message(_highlighted(CODE.replace("x + 1", "x + 2"))),
-        _message(_shell(CODE), prose = "Here is a different sentence."),
-        {"attrs": {"data-role": "assistant"}, "children": [{"tag": "p", "children": ["no code"]}]},
-    ])
+    shell, lit, edited, reworded, bare = _node_readings(
+        tmp_path,
+        [
+            _message(_shell(CODE)),
+            _message(_highlighted(CODE)),
+            _message(_highlighted(CODE.replace("x + 1", "x + 2"))),
+            _message(_shell(CODE), prose = "Here is a different sentence."),
+            {
+                "attrs": {"data-role": "assistant"},
+                "children": [{"tag": "p", "children": ["no code"]}],
+            },
+        ],
+    )
     # The false alarm, reproduced at the DOM: one fence, two serialisations.
     assert shell["digest"] != lit["digest"]
     assert shell["fences"][0]["latched"] is False and lit["fences"][0]["latched"] is True

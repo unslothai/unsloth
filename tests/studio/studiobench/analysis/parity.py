@@ -161,12 +161,16 @@ def _latched_fences(capture: dict) -> Optional[int]:
     for m in capture.get("messages") or []:
         fences = m.get("fences") if isinstance(m, dict) else None
         if isinstance(fences, list):
-            total = (total or 0) + sum(1 for f in fences if isinstance(f, dict) and f.get("latched"))
+            total = (total or 0) + sum(
+                1 for f in fences if isinstance(f, dict) and f.get("latched")
+            )
     return total
 
 
 def fence_latch_residue(
-    base: Optional[dict], treat: Optional[dict], skip: Optional[set[int]] = None
+    base: Optional[dict],
+    treat: Optional[dict],
+    skip: Optional[set[int]] = None,
 ) -> list[int]:
     """Messages whose digests differ ONLY in which of their code fences had been scrolled past.
 
