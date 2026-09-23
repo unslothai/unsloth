@@ -845,6 +845,29 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     assert {m["id"] for m in copied}.isdisjoint({"m1", "m2", "m3"})
 
 
+@pytest.mark.parametrize("linked_tip", [False, True])
+@pytest.mark.parametrize("branch_message_id", [None, "m2"])
+def test_fork_preserves_legacy_ancestry(tmp_path, monkeypatch, linked_tip, branch_message_id):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages(
+        "src",
+        [_msg("m1", None, 1), _msg("m2", None, 2), _msg("m3", "m2" if linked_tip else None, 3)],
+    )
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = branch_message_id,
+        new_thread_id = "fork-1",
+        new_title = "fork",
+        created_at = 4,
+        id_factory = iter(("copy-1", "copy-2", "copy-3")).__next__,
+    )
+    copied = studio_db.list_chat_messages("fork-1")
+    expected = ["m1", "m2", "m3"] if branch_message_id is None else ["m1", "m2"]
+    assert [row["content"][0]["text"] for row in copied] == expected
+    assert [row["parentId"] for row in copied] == [None, *[row["id"] for row in copied[:-1]]]
+
+
 def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_project(_project("project-1"))

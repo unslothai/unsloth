@@ -226,7 +226,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Reclaim disk
         run: |
@@ -243,14 +243,14 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
@@ -290,7 +290,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
@@ -307,7 +307,7 @@ jobs:
     outputs:
       digest: ${{ steps.manifest_digest.outputs.digest }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-core-*
@@ -316,14 +316,14 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # latest=auto would tag :latest on a v* push, colliding with the Studio image
@@ -418,7 +418,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Reclaim disk
         run: |
@@ -435,14 +435,14 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
@@ -492,7 +492,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
@@ -509,7 +509,7 @@ jobs:
     outputs:
       digest: ${{ steps.studio_manifest_digest.outputs.digest }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digests-studio-*
@@ -518,14 +518,14 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # latest=false disables the implicit latest=auto, which would emit :latest on
@@ -617,9 +617,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Sync docker/DOCKERHUB.md to the Docker Hub page
+        # Key by env, not interpolated into the script: an expanded ${{ secrets.* }}
+        # is written into the step's temporary shell script on the runner and, in a
+        # command line, into the process argv table. Masking covers the log, not the
+        # places the value comes to rest.
+        env:
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
@@ -629,9 +635,11 @@ jobs:
           # is not allowed", whatever its scopes. The token needs the repository
           # edit permission on ${IMAGE_NAME}.
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
@@ -658,7 +666,7 @@ jobs:
     runs-on: [self-hosted, gpu]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Both images are pulled by the digest their merge job resolved and verified, so
       # there is no tag to re-derive here and no `enable=` expression to keep in step
@@ -706,9 +714,11 @@ jobs:
           NIGHTLY_KEEP_DAYS: "60"
         run: |
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; handle tags of run ${{ github.run_id }} were not removed."

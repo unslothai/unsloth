@@ -1,6 +1,7 @@
 export const INITIAL_STARTUP_MESSAGE = "Starting Unsloth...";
 export const MODELS_STARTUP_MESSAGE = "Loading models...";
 export const SERVER_STARTUP_MESSAGE = "Nearly done...";
+export const UPDATE_STARTUP_MESSAGE = "Finishing update...";
 export const STATUS_MESSAGE_ROTATION_MS = 5_000;
 
 export interface InstallProgressMessage {
@@ -59,7 +60,8 @@ export function installProgressMessage(
 export type StartupMessage =
   | typeof INITIAL_STARTUP_MESSAGE
   | typeof MODELS_STARTUP_MESSAGE
-  | typeof SERVER_STARTUP_MESSAGE;
+  | typeof SERVER_STARTUP_MESSAGE
+  | typeof UPDATE_STARTUP_MESSAGE;
 
 const STARTUP_WAITING_MESSAGES = [
   INITIAL_STARTUP_MESSAGE,

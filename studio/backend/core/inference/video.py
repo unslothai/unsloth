@@ -446,14 +446,29 @@ class _VideoGenerationCancelled(Exception):
 
 
 @contextlib.contextmanager
-def _scheduler_step_progress(pipe: Any, on_step: Any):
+def _scheduler_step_progress(
+    pipe: Any,
+    on_step: Any,
+    on_step_done: Any = None,
+):
     """Progress + cancellation for pipelines WITHOUT callback_on_step_end.
 
     HunyuanVideo15Pipeline exposes no per-step callback, but every denoise step
     makes exactly one ``scheduler.step`` call, so wrapping that method gives the
-    same per-step tick the callback path gets. ``on_step`` receives the 1-based
-    step count and may raise (_VideoGenerationCancelled) to abort the loop. The
-    original method is always restored, even when the pipeline raises.
+    same per-step tick the callback path gets. The original method is always
+    restored, even when the pipeline raises.
+
+    Two hooks, because they want opposite sides of the call:
+
+    ``on_step`` runs BEFORE the scheduler step and receives the 1-based step count. It is the
+    cancellation check, and may raise (_VideoGenerationCancelled) to abort the loop -- which has to
+    happen before the step's work is submitted, not after.
+
+    ``on_step_done`` runs AFTER the original step returns, with the same count. It is the progress
+    tick, and it belongs here because ``scheduler.step`` is what enqueues the step's latent update
+    (and on MiniMax-H3 the audio scheduler update after it). Marking the step from the pre-hook
+    would place the marker ahead of kernels that step still owes, so the marker could signal while
+    that step was still running -- the same lie this wrapper exists to remove, one step wide.
     """
     scheduler = pipe.scheduler
     original = scheduler.step
@@ -462,13 +477,273 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
     def _step(*args: Any, **kwargs: Any) -> Any:
         count["n"] += 1
         on_step(count["n"])
-        return original(*args, **kwargs)
+        result = original(*args, **kwargs)
+        if on_step_done is not None:
+            on_step_done(count["n"])
+        return result
 
     scheduler.step = _step
     try:
         yield
     finally:
         scheduler.step = original
+
+
+def _record_cuda_event() -> Any:
+    """A ``torch.cuda.Event`` recorded on the current stream, or None when that is not possible.
+
+    Never raises and never synchronises: an event recorded here is only ever polled with
+    ``query()``, so it costs one enqueued marker and nothing on the critical path. Returns None on
+    a CPU/MPS host, and refuses to record inside a CUDA-graph capture -- an event recorded there
+    becomes part of the graph, and querying such an event is prohibited in every capture mode.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        event = torch.cuda.Event()
+        event.record()
+        return event
+    except Exception:  # noqa: BLE001 -- progress reporting must never fail a render
+        return None
+
+
+class _CompletedStepTicker:
+    """The denoise step the GPU has FINISHED, not the one the CPU has enqueued.
+
+    With the denoiser's forward replayed from a captured CUDA graph the Python loop enqueues every
+    step and returns long before the GPU has run them: on MiniMax-H3 at 960x544x124 over 30 steps
+    the 29 host-side ticks land in 0.9 s and the GPU is still 26 s from done. A counter driven by
+    ``scheduler.step`` or ``callback_on_step_end`` therefore runs the bar to the end of the denoise
+    while no denoising has happened, and the user watches an apparent freeze at the far right of a
+    bar that claims a second remains.
+
+    So mark each step's place in the stream with a ``torch.cuda.Event`` and report the last one
+    that has completed. ``query()`` does not block and does not serialise, which is the whole
+    point: a ``synchronize()`` per step would give the same honest number and hand back the
+    CUDA-graph win that the video speed path exists for.
+
+    Falls back to the enqueued count on any host without usable CUDA events (CPU, MPS), which is
+    exactly today's behaviour and is correct there -- without a graph to run ahead of, the host
+    count IS the progress.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = max(0, int(total))
+        self._lock = threading.Lock()
+        self._events: list = []
+        self._event_backed = False
+        self._enqueued = 0
+        self._done = 0
+        self._scanned = 0
+        self._boundary: Any = None
+        self._boundary_marked = False
+
+    @property
+    def event_backed(self) -> bool:
+        """Whether any step is being tracked by a real GPU event."""
+        with self._lock:
+            return self._event_backed
+
+    def mark_boundary(self) -> bool:
+        """Mark the end of the denoise in the stream, from the host position that knows it.
+
+        Returns True when a real event was recorded, meaning the caller must WAIT for
+        ``boundary_reached()`` before calling the denoise finished. False means there is no event
+        to wait on (a host with no CUDA events), and the boundary is reached the moment it is
+        marked, because there is no queue for the host to have run ahead of.
+        """
+        event = _record_cuda_event()
+        with self._lock:
+            self._boundary = event
+            self._boundary_marked = True
+        return event is not None
+
+    @property
+    def boundary_marked(self) -> bool:
+        """Whether the end of the denoise has been marked yet."""
+        with self._lock:
+            return self._boundary_marked
+
+    def boundary_reached(self) -> bool:
+        """Whether the GPU has actually reached the marked end of the denoise.
+
+        True when nothing was marked or the marker cannot be read: this gates a phase label, so an
+        unreadable marker must not strand the bar in the denoise phase forever.
+        """
+        with self._lock:
+            if not self._boundary_marked:
+                return False
+            event = self._boundary
+        if event is None:
+            return True
+        try:
+            return bool(event.query())
+        except Exception:  # noqa: BLE001 -- an unqueryable marker counts as reached
+            return True
+
+    def record(self, enqueued: int) -> None:
+        """Note that step ``enqueued`` (1-based) has been submitted to the device."""
+        enqueued = int(enqueued)
+        with self._lock:
+            if enqueued <= self._enqueued:
+                return
+            self._enqueued = enqueued
+            if len(self._events) >= self.total:
+                return
+        event = _record_cuda_event()
+        if event is None:
+            return
+        with self._lock:
+            # The step number travels WITH the event, so a step that could not be marked costs its
+            # own tick and never shifts the ones after it.
+            self._events.append((enqueued, event))
+            self._event_backed = True
+
+    def completed(self) -> int:
+        """Steps the GPU has finished. Never decreases, never exceeds what was enqueued, never
+        blocks, and never raises."""
+        with self._lock:
+            if not self._event_backed:
+                return self._enqueued
+            pending = self._events[self._scanned :]
+            done, scanned = self._done, self._scanned
+        for enqueued, event in pending:
+            try:
+                if not event.query():
+                    break
+            except Exception:  # noqa: BLE001 -- an unqueryable event just stops the scan
+                break
+            done = max(done, enqueued)
+            scanned += 1
+        with self._lock:
+            self._done = max(self._done, done)
+            self._scanned = max(self._scanned, scanned)
+            return self._done
+
+
+@contextlib.contextmanager
+def _hold_off_cuda_graph_capture():
+    """Yield True while it is safe to query a CUDA event, holding off any capture that would start.
+
+    Delegates to the CUDA-graph layer, which owns the lock capture entry takes. A missing graph
+    layer means there is no capture to collide with, so the answer is True.
+    """
+    try:
+        from . import diffusion_cuda_graph
+        guard = diffusion_cuda_graph.hold_off_capture
+    except Exception:  # noqa: BLE001 -- no graph layer means no capture to avoid
+        yield True
+        return
+    with guard() as clear:
+        yield clear
+
+
+@contextlib.contextmanager
+def _completed_step_poller(pump: Any, poll_seconds: float = 0.1):
+    """Keep advancing the reported progress from the GPU while the caller sits inside ``pipe()``.
+
+    The host-side ticks stop the moment the loop has enqueued its last step, so after that nothing
+    would ever ask the events again -- which is precisely the stretch the bar used to lie through.
+    A daemon thread polling at 10 Hz costs a couple of ``cudaEventQuery`` calls per tick. ``pump``
+    must not raise, but is guarded anyway: no progress update may fail a render.
+
+    The whole pump runs inside the capture hold-off, not just a check before it. Reading a flag and
+    then querying would leave a window for a capture to begin in between, and that query would land
+    inside the capture and invalidate it, poisoning the graph wrapper and dropping the load to the
+    eager path for the rest of its life.
+    """
+    stop = threading.Event()
+
+    def _run() -> None:
+        while not stop.is_set():
+            stop.wait(poll_seconds)
+            try:
+                with _hold_off_cuda_graph_capture() as clear:
+                    if not clear:
+                        continue
+                    pump()
+            except Exception:  # noqa: BLE001 -- progress must never fail a render
+                pass
+
+    thread = threading.Thread(target = _run, name = "video-denoise-progress", daemon = True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout = 2.0)
+
+
+# The decoders a video pipeline may run after its denoise loop, in the order the modular MiniMax-H3
+# workflow runs them. Wrapping the bound method is the one hook every family shares.
+_DECODE_ATTRS = ("vae", "audio_vae")
+
+# How hard the end-of-denoise marker tries before it gives up and flips the phase at the host
+# position. The hold-off refuses without blocking, so most refusals are the 10 Hz poller holding
+# the lock for a couple of event queries; 20 tries 20 ms apart covers several poll ticks and costs
+# nothing when uncontended, while a real capture outlasts it and takes the host-position fallback.
+_BOUNDARY_MARK_ATTEMPTS = 20
+_BOUNDARY_MARK_RETRY_SECONDS = 0.02
+
+
+@contextlib.contextmanager
+def _decode_phase(pipe: Any, on_decode: Any):
+    """Flip the reported phase to "decode" the instant the decoder is entered.
+
+    HunyuanVideo-1.5, Wan and MiniMax-H3's modular workflow all run the decode INSIDE the pipeline
+    call with nothing between the denoise loop and it, so a phase set only after ``pipe()`` returns
+    reports the whole decode as the last denoise step. On H3 that decode plus its post-processing
+    is ~3.9 s of the render, and the VAE decode is the memory peak.
+
+    Note what this hook is and is not: it is the one HOST position that knows the denoise loop is
+    over, and nothing more. On a family where the host runs ahead of the device, the denoise
+    kernels can still be queued when it fires, so the caller must treat it as "mark the boundary",
+    not as "the denoise finished" -- see ``_CompletedStepTicker.mark_boundary``.
+
+    ``on_decode`` fires at most once per generation and must not raise. Every wrapper installed
+    here is removed again, including when the decode raises -- and restored to whatever was there,
+    since the speed layer may have already put a compiled decode in the instance ``__dict__``.
+    """
+    fired = {"done": False}
+    restore: list = []
+
+    def _wrap(original: Any):
+        def _decode(*args: Any, **kwargs: Any) -> Any:
+            if not fired["done"]:
+                fired["done"] = True
+                on_decode()
+            return original(*args, **kwargs)
+
+        return _decode
+
+    for name in _DECODE_ATTRS:
+        owner = getattr(pipe, name, None)
+        original = getattr(owner, "decode", None) if owner is not None else None
+        if not callable(original):
+            continue
+        had_own = "decode" in getattr(owner, "__dict__", {})
+        try:
+            owner.decode = _wrap(original)
+        except Exception:  # noqa: BLE001 -- a decoder that refuses assignment goes unreported
+            continue
+        restore.append((owner, original, had_own))
+    try:
+        yield
+    finally:
+        for owner, original, had_own in restore:
+            try:
+                if had_own:
+                    owner.decode = original
+                else:
+                    # Nothing was shadowing the class method, so leave nothing behind -- a bound
+                    # method parked in a module's __dict__ is a reference cycle back to the module.
+                    del owner.decode
+            except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                pass
 
 
 def _assert_pick_is_not_speech(
@@ -591,6 +866,11 @@ class _VideoLoadingState:
     asset_repos: tuple[str, ...] = ()
 
 
+def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
+    from .sd_cpp_backend import physical_card_name
+    return physical_card_name(ordinal)
+
+
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     """``(size, mtime_ns)`` of an sd.cpp binary, or None when it cannot be read.
 
@@ -604,6 +884,23 @@ def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     except OSError:
         return None
     return (stat.st_size, stat.st_mtime_ns)
+
+
+def _note_sd_cpp_accelerator_failure(
+    binary: Optional[str],
+    output: str,
+    *,
+    card: Optional[str] = None,
+) -> None:
+    try:
+        from .sd_cpp_backend import note_accelerator_failure_from_output
+        note_accelerator_failure_from_output(binary, output, source = "video", card = card)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not record the sd.cpp accelerator failure: %s", exc)
+
+
+# "Not read yet", distinct from None, the real answer for a binary the installer does not own.
+_UNREAD_ACCELERATOR = object()
 
 
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
@@ -1902,10 +2199,19 @@ class VideoBackend:
         )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
+            _accelerator_fingerprint,
             _install_allowed,
+            _installed_accelerator_of,
+            accelerator_probe_failure_is_decisive,
+            accelerator_verdict_keeps_gpu,
+            usable_or_recorded_failure,
             ensure_h3_sd_cpp_binary,
+            fallback_accelerator_for,
+            note_accelerator_runtime_failure,
+            preferred_accelerator,
+            selected_card_identity,
+            sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
-            sd_cpp_lists_accelerator_device,
             sd_cpp_supports_graph_cut,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -1947,23 +2253,89 @@ class VideoBackend:
         # on disk (managed or user-supplied) is still discovered and used; when there is none, the ensure returns None
         # and the refusal below names it, which is the honest answer for a load that was told not to fetch anything.
         allow_install = _install_allowed() and not local_files_only
-        binary = ensure_h3_sd_cpp_binary(
-            allow_install = allow_install,
-            accelerator = _install_accelerator_for(target.backend),
+        # Read back per card, as it is recorded, so one card's failure does not divert another.
+        selected_card = selected_card_identity(gpu_ordinal)
+        accelerator = preferred_accelerator(_install_accelerator_for(target.backend), selected_card)
+        binary = usable_or_recorded_failure(
+            ensure_h3_sd_cpp_binary(
+                allow_install = allow_install,
+                accelerator = accelerator,
+            ),
+            accelerator,
+            selected_card,
         )
         native_device = target.device
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
         # consults it). Re-checked under the reader claim, so a replacement that arrives mid-load cannot silently change
         # the answer this device choice rests on.
         listed_accelerator: Optional[bool] = None
+        decided_accelerator: Any = _UNREAD_ACCELERATOR
         if target.backend not in ("cpu", "mps"):
             # Under the claim, like the recheck. This probe SPAWNS the managed sd-cli, so leaving it unclaimed lets an
             # install started by another in-process load extract over the executing binary: on Windows that fails on the
             # locked file, on Linux it can leave the replacement half-written. The later claimed recheck cannot undo
             # damage this first probe already allowed.
             from .sd_cpp_backend import _tree_reader as _claim_tree
+
             with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
-                listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+                # Raw: None (could not be asked) is how a ROCm build without its runtime answers.
+                accelerator_verdict = sd_cpp_accelerator_device_verdict(binary) if binary else False
+                decided_accelerator = _installed_accelerator_of(binary)
+                # An ensure can keep another class's build; its answer is not evidence about this one.
+                accelerator_probe_ran = bool(binary) and decided_accelerator == accelerator
+            listed_accelerator = accelerator_verdict_keeps_gpu(accelerator_verdict)
+            if not accelerator_verdict:
+                fallback = fallback_accelerator_for(accelerator)
+                if fallback:
+                    # Before the fallback ensure replaces the tree and its bundle tag.
+                    failed_fingerprint = _accelerator_fingerprint(binary)
+                    fallback_binary = usable_or_recorded_failure(
+                        ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = fallback),
+                        fallback,
+                        selected_card,
+                    )
+                    fallback_verdict: Optional[bool] = None
+                    fallback_class: Optional[str] = None
+                    if fallback_binary:
+                        with _claim_tree(fallback_binary, cancel_event, VIDEO_CANCELLED_MSG):
+                            fallback_verdict = sd_cpp_accelerator_device_verdict(fallback_binary)
+                            fallback_class = _installed_accelerator_of(fallback_binary)
+                    # The class too: an ensure that cannot deliver this rung can hand back the ROCm
+                    # build itself, whose second "yes" would record ROCm and pin an uninstalled rung.
+                    if fallback_verdict and fallback_class == fallback:
+                        logger.warning(
+                            "video.sd_cpp_accelerator_fallback: the %s stable-diffusion.cpp build "
+                            "does not run on this host, using the %s build instead",
+                            accelerator,
+                            fallback,
+                        )
+                        # Proven only when the own build answered: a timeout is not proof, and a bare
+                        # "CPU only" is proof only when the runtime is provably unloadable here.
+                        note_accelerator_runtime_failure(
+                            accelerator,
+                            proven = (
+                                accelerator_probe_ran
+                                and accelerator_verdict is not None
+                                and (
+                                    accelerator_verdict is not False
+                                    or accelerator_probe_failure_is_decisive(accelerator)
+                                )
+                            ),
+                            fingerprint = failed_fingerprint,
+                            card = selected_card,
+                        )
+                        binary = fallback_binary
+                        accelerator = fallback
+                        decided_accelerator = fallback_class
+                        listed_accelerator = True
+                    elif fallback_binary:
+                        # The binary now in the tree, with its own reading; `and` so it can only lower it.
+                        binary = fallback_binary
+                        decided_accelerator = fallback_class
+                        listed_accelerator = listed_accelerator and accelerator_verdict_keeps_gpu(
+                            fallback_verdict
+                        )
+                        accelerator = fallback
         if target.backend not in ("cpu", "mps") and not listed_accelerator:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker functional with the CPU prebuilt when
             # the user has not supplied a locally compiled CUDA binary through the normal sd.cpp discovery path. The
@@ -1972,8 +2344,13 @@ class VideoBackend:
             # therefore skipped the fallback from the second load on, left native_device on the GPU, and applied GPU
             # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the next chat/image
             # acquire evicted a model to make room for one that was never there.
-            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            binary = usable_or_recorded_failure(
+                ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu"),
+                "cpu",
+                selected_card,
+            )
             native_device = "cpu"
+            decided_accelerator = _installed_accelerator_of(binary)
             # The baseline this branch is compared against is the DECISION, not a fresh probe of what came back. An
             # install can replace the returned CPU binary with a GPU build between that ensure and this line, and
             # probing here would record ITS answer -- after which the re-check under the claim below compares the
@@ -1990,6 +2367,9 @@ class VideoBackend:
             raise RuntimeError(
                 "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
             )
+        # The class too: two builds can both enumerate a GPU, so the boolean re-vet cannot tell them apart.
+        if decided_accelerator is _UNREAD_ACCELERATOR:
+            decided_accelerator = _installed_accelerator_of(binary)
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -2046,6 +2426,7 @@ class VideoBackend:
             _tree_reader,
             sd_cpp_accelerator_device_verdict,
             sd_cpp_binary_vets_for_h3,
+            sd_cpp_device_named,
         )
         from .sd_cpp_engine import is_managed_binary
 
@@ -2084,6 +2465,17 @@ class VideoBackend:
             # baseline to compare against. A CPU or MPS target never asked the question, so this would spawn
             # --list-devices for an answer the test below cannot use -- on every H3 load, and for the full probe timeout
             # when the build hangs on it.
+            current_accelerator = _installed_accelerator_of(binary)
+            if (
+                decided_accelerator is not None
+                and current_accelerator is not None
+                and current_accelerator != decided_accelerator
+            ):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary changed while this model was loading, and the "
+                    "one now at that path was built for a different accelerator. Try the load "
+                    "again."
+                )
             fresh_accelerator = (
                 sd_cpp_accelerator_device_verdict(binary)
                 if listed_accelerator is not None and binary
@@ -2112,6 +2504,12 @@ class VideoBackend:
                 if native_device == "cpu"
                 else sd_cpp_device_name_for_ordinal(binary, native_ordinal)
             )
+            if native_device_name is None and native_ordinal is not None:
+                # `Vulkan0` is not a physical index; pin by card name instead.
+                selected_name, selected_position = _physical_card_name(native_ordinal)
+                native_device_name = sd_cpp_device_named(
+                    binary, selected_name, position = selected_position
+                )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -2154,6 +2552,7 @@ class VideoBackend:
             # Pinned under the reader claim above, where this exact file answered --help with the H3 options. Taking it
             # at generation time instead would compare a replacement against itself.
             binary_identity = binary_identity,
+            selected_card = selected_card,
             files = SdCppModelFiles(
                 diffusion_model = str(resolved[0]),
                 llm = str(resolved[1]),
@@ -2685,22 +3084,14 @@ class VideoBackend:
         ``_fetch_te_prequant`` does for the encoder; the injection then resolves the cached file.
         Both candidate names are tried in the load's order. Best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
+        from core.inference.diffusion_prequant import candidate_filenames_of
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         for source in sources:
             # A local path override is opened straight off disk; there is nothing to fetch.
             if getattr(source, "kind", None) != "repo":
                 continue
-            names = list(
-                dict.fromkeys(
-                    n
-                    for n in (
-                        getattr(source, "filename", None),
-                        getattr(source, "fallback_filename", None),
-                    )
-                    if n
-                )
-            )
+            names = list(dict.fromkeys(candidate_filenames_of(source)))
             for index, name in enumerate(names):
                 try:
                     hf_hub_download_with_xet_fallback(
@@ -2827,18 +3218,13 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
             logger.warning("video.denoiser_prequant_unavailable: %s: %s", location, exc)
             return None, []
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         files: list[tuple[str, int]] = []
         for src in sources:
-            # Root name first, then the legacy scheme name: the load tries them in that order.
-            wanted = [
-                n
-                for n in (
-                    getattr(src, "filename", None),
-                    getattr(src, "fallback_filename", None),
-                )
-                if n
-            ]
+            # In the load's order: safetensors, then the pickle, then the legacy scheme name.
+            wanted = list(candidate_filenames_of(src))
             found = next((n for n in wanted if n in by_name), None)
             if found is None:
                 return None, []
@@ -2870,13 +3256,12 @@ class VideoBackend:
             return None
         from core.inference.diffusion import DiffusionBackend
 
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
         cached: list[str] = []
         for src in sources:
-            for name in (
-                getattr(src, "filename", None),
-                getattr(src, "fallback_filename", None),
-            ):
-                if name and DiffusionBackend._hub_file_is_cached(src.location, name):
+            for name in candidate_filenames_of(src):
+                if DiffusionBackend._hub_file_is_cached(src.location, name):
                     cached.append(src.location)
                     break
         if len(cached) == len(sources):
@@ -2895,24 +3280,63 @@ class VideoBackend:
         Only a component listed here may have its dense weights dropped from a plan or an
         estimate: an unpublished / gated / renamed artifact keeps its dense encoder, exactly as
         the load's own fallback does. Checked per source so one missing repo cannot sink the
-        whole plan."""
-        found: dict[str, list[tuple[str, int]]] = {}
-        for component, source in sources.items():
-            if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
-                continue
-            try:
-                info = api.model_info(source.location, files_metadata = True)
-            except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
-                logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
-                continue
-            files = [
-                (s.rfilename, int(s.size or 0))
-                for s in (info.siblings or [])
-                if s.rfilename == source.filename
-            ]
-            if files:
-                found[component] = files
-        return found
+        whole plan.
+
+        Delegated rather than reimplemented. This was a second copy of the image-side logic
+        matching only the PRIMARY name, so the moment the resolver started preferring a
+        safetensors spelling every hosted encoder here read as absent, its dense shards went back
+        into the pull, and the load fetched the .pt on top of them. One implementation is what
+        keeps the plan and the resolver naming the same artifact."""
+        from .diffusion_te_prequant import te_prequant_hub_files
+        return te_prequant_hub_files(sources, api, logger)
+
+    @staticmethod
+    def _te_fetch_miss(exc: BaseException, *, local_files_only: bool) -> bool:
+        """Whether ``exc`` means this NAME is absent, so the next candidate is worth a try.
+
+        ``LocalEntryNotFoundError`` subclasses ``EntryNotFoundError`` and means two different things
+        depending on the mode: offline it is a cache miss, which is the only verdict there is, while
+        online huggingface_hub raises it when the Hub could not be REACHED and the entry may well
+        exist. Mirrors ``diffusion_te_prequant._resolve_checkpoint_path`` on purpose, so the prefetch
+        plan and the load agree about what counts as a miss.
+        """
+        try:
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+        except Exception:  # noqa: BLE001 - an unknown hub layout keeps today's behaviour
+            return True
+        if isinstance(exc, LocalEntryNotFoundError):
+            return bool(local_files_only)
+        if isinstance(exc, EntryNotFoundError):
+            return True
+        return VideoBackend._te_fetch_miss_by_name(exc, local_files_only = local_files_only)
+
+    # Class names the xet fallback can only hand back as TEXT. Matched on the whole leading token,
+    # so "LocalEntryNotFoundError" is never read as the remote one by a substring test.
+    _REMOTE_MISS_NAMES = frozenset({"EntryNotFoundError", "RemoteEntryNotFoundError"})
+    _LOCAL_MISS_NAMES = frozenset({"LocalEntryNotFoundError"})
+
+    @staticmethod
+    def _te_fetch_miss_by_name(exc: BaseException, *, local_files_only: bool) -> bool:
+        """The same verdict for an exception whose TYPE did not survive the download.
+
+        ``hf_hub_download_with_xet_fallback`` runs the fetch in a child process and re-raises by
+        class name, and ``unsloth_zoo`` only preserves the names it knows: huggingface_hub 1.x
+        raises ``RemoteEntryNotFoundError`` for a 404, which is not on that list, so the parent sees
+        a bare ``RuntimeError`` reading ``"RemoteEntryNotFoundError: 404 ..."``. Without this a
+        404 on the preferred safetensors name stops the walk, every ``.pt``-only repo keeps its
+        dense encoder in the base download and then fetches the ``.pt`` on top of it, which is the
+        double download the candidate list exists to avoid.
+
+        Deliberately narrow: only a RuntimeError whose message BEGINS with one of those class names,
+        which is the exact shape ``_raise_child_error`` produces.
+        """
+        if not isinstance(exc, RuntimeError):
+            return False
+        message = str(exc)
+        name = message.split(":", 1)[0].strip() if ":" in message else ""
+        if name in VideoBackend._LOCAL_MISS_NAMES:
+            return bool(local_files_only)
+        return name in VideoBackend._REMOTE_MISS_NAMES
 
     @staticmethod
     def _base_download_files(
@@ -3563,24 +3987,44 @@ class VideoBackend:
             # the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
-            try:
-                hf_hub_download_with_xet_fallback(
-                    source.location,
-                    source.filename,
-                    hf_token,
-                    cancel_event = cancel,
-                    reuse_other_cache_root = True,
-                    local_files_only = local_files_only,
-                )
-            except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
-                if cancel.is_set():
-                    raise
-                logger.warning(
-                    "video.te_prequant_fetch_failed: %s/%s: %s",
-                    source.location,
-                    source.filename,
-                    exc,
-                )
+            # Every candidate, in the resolver's order: the preferred name is now a safetensors
+            # spelling most repos do not host, so stopping at it would fail every fetch and report
+            # no skippable component, which is the dense encoder downloaded twice over.
+            from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
+
+            names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+            got = False
+            for name in names:
+                try:
+                    hf_hub_download_with_xet_fallback(
+                        source.location,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
+                        reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- no pre-cast file means the dense encoder
+                    if cancel.is_set():
+                        raise
+                    logger.warning(
+                        "video.te_prequant_fetch_failed: %s/%s: %s",
+                        source.location,
+                        name,
+                        exc,
+                    )
+                    # Advance only on "this NAME is absent", the same distinction the resolver
+                    # makes. Anything else (an unreachable Hub, auth, a corrupt cache) is about the
+                    # REPO, so trying the next spelling repeats a slow failure and, worse, can
+                    # report a legacy artifact as fetched while the loader refuses to advance past
+                    # the same error: the plan would then drop the dense encoder and the load would
+                    # have neither.
+                    if not VideoBackend._te_fetch_miss(exc, local_files_only = local_files_only):
+                        break
+                    continue
+                got = True
+                break
+            if not got:
                 continue
             fetched.append(component)
         return tuple(fetched)
@@ -4289,9 +4733,10 @@ class VideoBackend:
             )
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         elif transformer_quant_pinned is not None and not dense_transformer_supported(target):
-            transformer_quant_decline = (
-                "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
-            )
+            # Ask the helper rather than repeating its fallback: on ROCm and on the Windows torchao
+            # stub it knows a truer reason, and an AMD owner reading "needs a CUDA GPU" while
+            # holding a working GPU learns nothing about why it declined.
+            transformer_quant_decline = dense_transformer_unsupported_reason(target)
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         if denoiser_injected:
             transformer_quant_engaged = denoiser_seed_scheme
@@ -6134,41 +6579,129 @@ class VideoBackend:
                     "error": None,
                 }
 
-                def _tick(done: int) -> None:
+                ticker = _CompletedStepTicker(steps)
+
+                def _report(done: int) -> None:
+                    """Publish a step the GPU has actually finished. Monotonic, and silent once the
+                    denoise is over so a late poll cannot walk the bar back under a later phase."""
+                    done = max(0, min(int(done), steps))
+                    if self._gen.get("phase") != "denoise":
+                        return
+                    if done <= int(self._gen.get("step") or 0):
+                        return
                     elapsed = time.monotonic() - started
                     self._gen.update(
                         step = done,
                         eta_seconds = (elapsed / max(1, done)) * max(0, steps - done),
                     )
 
+                def _tick(enqueued: int) -> None:
+                    """One denoise step has now been fully SUBMITTED, latent update included. What
+                    gets reported is what the GPU has completed; only a host with no usable CUDA
+                    events falls back to this count.
+
+                    Inside the capture hold-off for the same reason the poller is: recording and
+                    querying an event are both prohibited while ANOTHER thread is capturing a graph,
+                    because torch captures in cudaStreamCaptureModeGlobal, under which a concurrent
+                    capture in any thread bars every thread from potentially unsafe calls. This
+                    pipeline's own capture is caught by ``is_current_stream_capturing``; a second
+                    pipeline's is not, and Studio runs image and video renders side by side. A tick
+                    skipped here costs that step its marker and nothing else: the step number travels
+                    with the event, so the later ones do not shift, and the poller keeps reporting."""
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if not clear:
+                            return
+                        ticker.record(enqueued)
+                        _report(ticker.completed())
+
+                def _finish_denoise() -> None:
+                    """The denoise is provably over, so complete the bar rather than leaving it
+                    wherever the last event landed. Also why the bar no longer stops one short:
+                    MiniMax-H3's loop makes 29 ``scheduler.step`` calls for a 30-step render, and
+                    nothing else ever reported the last step."""
+                    self._gen.update(step = steps, eta_seconds = None)
+
+                def _enter_decode_phase() -> None:
+                    _finish_denoise()
+                    self._gen.update(phase = "decode", eta_seconds = None)
+
+                def _on_decode() -> None:
+                    """The decoder was entered, which is a HOST position: on a family whose host
+                    runs ahead the denoise kernels may still be queued, and flipping here would
+                    jump the bar to steps/steps while the GPU was still denoising. So mark the
+                    boundary in the stream and let the poller flip when the GPU reaches it. With no
+                    event to wait on there is no queue to have run ahead of, so flip at once.
+
+                    Marking records an event, so it takes the capture hold-off too, and it RETRIES:
+                    the hold-off acquires its lock without blocking, so a refusal can mean nothing
+                    worse than the 10 Hz poller holding it for its own queries at that instant, and
+                    giving up there would flip the bar to steps/steps with the denoise queue still
+                    draining, which is the exact lie this boundary exists to remove. The retries are
+                    short and only run when contended. A capture that outlasts them really does leave
+                    nothing to wait on, and the host position is then the only answer there is."""
+                    marked = False
+                    for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                        with _hold_off_cuda_graph_capture() as clear:
+                            if clear:
+                                marked = ticker.mark_boundary()
+                                break
+                        time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                    if not marked:
+                        _enter_decode_phase()
+
+                def _pump() -> None:
+                    """One poll, inside the capture hold-off. Advances the step from the GPU, and
+                    takes the denoise to complete only once the GPU has reached the marked end."""
+                    if self._gen.get("phase") != "denoise":
+                        return
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _enter_decode_phase()
+                        return
+                    _report(ticker.completed())
+
                 def _on_step(p, step_index, timestep, callback_kwargs):
+                    # diffusers calls this at the END of a loop iteration, after scheduler.step, so
+                    # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
                         p._interrupt = True
                         return callback_kwargs
                     _tick(step_index + 1)
                     return callback_kwargs
 
-                def _on_scheduler_step(done: int) -> None:
-                    # No cooperative _interrupt here, so cancellation must unwind the denoise loop via an exception
+                def _on_scheduler_step_cancel(done: int) -> None:
+                    # Runs BEFORE the scheduler step. No cooperative _interrupt here, so
+                    # cancellation must unwind the denoise loop via an exception, and it has to do
+                    # that before the step's work is submitted rather than after.
                     if cancel.is_set():
                         raise _VideoGenerationCancelled()
-                    _tick(done)
 
                 # Driven off scheduler.step, not the callback below: only some families expose a callback and every one needs the right step index.
                 from .diffusion_nvfp4_protect import protect_generation
 
                 protect_ctx = protect_generation(pipe, steps, logger = logger)
 
-                if "callback_on_step_end" in call_params:
+                has_step_callback = "callback_on_step_end" in call_params
+                if has_step_callback:
                     kwargs["callback_on_step_end"] = _on_step
-                    progress_ctx = contextlib.nullcontext()
-                else:
-                    # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and restore
-                    # afterwards. Same for H3's modular workflow: ModularPipeline takes no callback (an unknown input is
-                    # only warned about), but MiniMaxH3LoopSchedulerStep calls components.scheduler.step --
-                    # pipe.scheduler -- once per denoise step, so the wrapper ticks and can unwind a multi-minute run on
-                    # Cancel.
-                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
+
+                @contextlib.contextmanager
+                def progress_ctx():
+                    """Everything that reports on a denoise, entered as one unit around ``pipe()``."""
+                    with contextlib.ExitStack() as stack:
+                        if not has_step_callback:
+                            # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and
+                            # restore afterwards. Same for H3's modular workflow: ModularPipeline takes no callback (an
+                            # unknown input is only warned about), but MiniMaxH3LoopSchedulerStep calls
+                            # components.scheduler.step -- pipe.scheduler -- once per denoise step, so the wrapper ticks
+                            # and can unwind a multi-minute run on Cancel. Cancel before the step, tick after it.
+                            stack.enter_context(
+                                _scheduler_step_progress(pipe, _on_scheduler_step_cancel, _tick)
+                            )
+                        # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
+                        # every one of them gets its decode phase from the decoder itself.
+                        stack.enter_context(_decode_phase(pipe, _on_decode))
+                        stack.enter_context(_completed_step_poller(_pump))
+                        yield
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle
                 if state.cache_auto:
@@ -6195,7 +6728,7 @@ class VideoBackend:
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
-                    with torch.inference_mode(), protect_ctx, progress_ctx, sigma_ctx:
+                    with torch.inference_mode(), protect_ctx, progress_ctx(), sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
@@ -6210,6 +6743,9 @@ class VideoBackend:
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
+                # The pipeline returned, so every step ran whatever the last event said. This is
+                # also the only place a latent-only render (no decoder entered) can complete.
+                _finish_denoise()
                 self._gen.update(phase = "export", eta_seconds = None)
                 if fam.modular_workflow:
                     video_frames = output["videos"][0]
@@ -6609,6 +7145,13 @@ class VideoBackend:
                         )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                except RuntimeError as exc:
+                    # #9278: the build starts, then dies in hipBLAS mid-render.
+                    if not cancel.is_set() and VIDEO_CANCELLED_MSG not in str(exc):
+                        _note_sd_cpp_accelerator_failure(
+                            binary, str(exc), card = getattr(runtime, "selected_card", None)
+                        )
+                    raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._gen.update(phase = "export", eta_seconds = None)

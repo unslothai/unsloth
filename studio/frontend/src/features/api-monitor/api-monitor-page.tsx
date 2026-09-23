@@ -349,6 +349,10 @@ function PayloadBlock({
   loading?: boolean;
   tone?: "error";
 }): ReactElement {
+  const preview =
+    body.length > 12_000
+      ? `${body.slice(0, 11_997).replace(/[\uD800-\uDBFF]$/, "")}...`
+      : body;
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -356,12 +360,12 @@ function PayloadBlock({
           {title}
         </h3>
         <div className="flex items-center gap-1">
-          {truncated ? (
+          {truncated || preview !== body ? (
             <span className="text-ui-10 text-muted-foreground">
               preview only
             </span>
           ) : null}
-          {body ? (
+          {body && !truncated ? (
             <CopyButton value={body} label={`Copy ${title.toLowerCase()}`} />
           ) : null}
         </div>
@@ -374,7 +378,7 @@ function PayloadBlock({
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
-        {loading && !body ? "Loading…" : body || "–"}
+        {loading && !body ? "Loading…" : preview || "–"}
       </pre>
     </section>
   );

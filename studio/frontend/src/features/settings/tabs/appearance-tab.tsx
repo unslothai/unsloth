@@ -182,10 +182,7 @@ export function AppearanceTab() {
           <ChatFontRow />
         </SettingsRow>
         <SettingsGroupDivider />
-        <SettingsRow
-          label={t("settings.appearance.custom.contrast.label")}
-          description={t("settings.appearance.custom.contrast.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
         </SettingsRow>
       </SettingsSection>

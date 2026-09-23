@@ -579,7 +579,7 @@ async def test_graceful_supervisor_shutdown_is_interrupted(durable_run, monkeypa
     await supervisor.stop()
     run = runs_db.get_run("run-1", "alice")
     assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
-    assert run["error"] == "Studio shut down during generation"
+    assert run["error"] == "Unsloth shut down during generation"
 
 
 def test_thread_delete_captures_durable_run_before_cascade(durable_run):
@@ -653,3 +653,34 @@ async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run
     finally:
         release.set()
         await asyncio.sleep(0)
+
+
+# ── The durable marker is production state, so a test must read it off the producer ──
+# Every approval test constructs `cancel.durable = True` by hand, which means the line in
+# _ensure_reservation that actually sets it was pinned by nothing: deleting it left the whole
+# backend suite green while silently returning every parked approval to the 3600s auto-deny.
+# Same for durable_run_id, which is how the gate asks whether anyone is still watching.
+
+
+def test_the_producers_cancel_event_carries_the_durable_marker_and_its_run_id():
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    try:
+        assert supervisor._ensure_reservation("run-durable", thread_id = "thread-1") is True
+        cancel_event = supervisor._cancel_events["run-durable"]
+        assert getattr(cancel_event, "durable", False) is True, (
+            "state.tool_approvals.wait_tool_decision reads this to park an approval instead of "
+            "auto-denying it, so without it a tool turn that outlives its tab still loses the call"
+        )
+        assert getattr(cancel_event, "durable_run_id", None) == "run-durable", (
+            "the gate resolves attendance by run id (state/run_subscribers.py); without it an "
+            "attended approval cannot be told from an abandoned one and expires at the park ceiling"
+        )
+    finally:
+        supervisor.cancel("run-durable")
+        registration = supervisor._active_registrations.pop("run-durable", None)
+        if registration is not None:
+            registration.__exit__(None, None, None)
+        supervisor._cancel_events.pop("run-durable", None)
+        activity = supervisor._activities.pop("run-durable", None)
+        if activity is not None:
+            activity.finish()
