@@ -24,6 +24,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
@@ -244,6 +245,8 @@ from .device_type import arch_lacks_bf16, hip_visible_archs
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_image_processing_reexports,
+    fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
     fix_xformers_performance_issue,
@@ -287,10 +290,27 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
+# composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
+# plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
+fix_transformers_composite_prefix_renaming()
+# After the repair above, never before it, and this is the ONLY call: on exactly the releases
+# the repair covers, warning first tells users to downgrade away from a version that now works,
+# and a second call cannot retract a warning already logged. The check reads the live attribute,
+# so a repair that declined to install still warns. Being this late also keeps it below
+# `disable_torchaudio_if_cuda_mismatched`, which matters because this is the only check here
+# that IMPORTS transformers rather than reading its metadata.
+# A run that loads no pre-quantized multimodal checkpoint never fails either way.
+check_transformers_prequantized_vlm_quant_state()
+del check_transformers_prequantized_vlm_quant_state
 # Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
+# modules are imported and patched when a checkpoint's own modeling file runs,
+# not on every `import unsloth`.
+fix_transformers5_image_processing_reexports()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.

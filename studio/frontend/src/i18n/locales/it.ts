@@ -131,6 +131,8 @@ export const it = {
       noChatsYet: "Ancora nessuna chat",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nessuna chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tutti i progetti fissati",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -186,13 +188,6 @@ export const it = {
       sortPinnedChats: "Ordina le chat fissate",
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
-    },
-    drag: {
-      reorder: "Riordina",
-      pin: "Fissa",
-      unpin: "Sblocca",
-      moveTo: "Sposta in {name}",
-      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -537,7 +532,16 @@ export const it = {
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
       path: "Posizione",
       pathCopy: "Copia il percorso",
-      refreshSection: "Aggiornamento",
+      currentSession: "Attuale",
+      statusLive: "In diretta",
+      statusPaused: "In pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtra righe",
+      lineCount: "{count} righe",
+      filteredLineCount: "{shown} di {total} righe",
+      wrapLines: "Righe a capo",
+      jumpToLatest: "Vai alla fine",
+      noMatches: "Nessuna riga corrisponde al filtro.",
       mode: "Modalità",
       modeLive: "In tempo reale",
       modeInterval: "Ogni 3 secondi",
@@ -1440,6 +1444,13 @@ export const it = {
             hfHub: "Cache dei modelli Hugging Face",
           },
         },
+        lowDisk: {
+          title: "Lo spazio su disco sta per esaurirsi",
+          criticalTitle: "Lo spazio su disco è quasi esaurito",
+          description:
+            "{free} liberi su {total}. Svuotare le cache può liberare spazio.",
+          action: "Controlla le cache",
+        },
       },
       environment: {
         title: "Ambiente",
@@ -1972,6 +1983,7 @@ export const it = {
       expires: "Scadenza: {value}",
       actionsFor: "Azioni per {name}",
       copyPrefix: "Copia il prefisso",
+      copyFailed: "Impossibile copiare",
       revokeToken: "Revoca il token",
       revokeTitle: "Revocare il token di accesso «{name}»?",
       revokeDescription:

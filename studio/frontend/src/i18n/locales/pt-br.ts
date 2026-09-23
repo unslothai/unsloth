@@ -166,6 +166,8 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos os projetos fixados",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -221,13 +223,6 @@ export const ptBR = {
       sortPinnedChats: "Ordenar conversas fixadas",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
-    },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fixar",
-      unpin: "Desafixar",
-      moveTo: "Mover para {name}",
-      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -571,7 +566,16 @@ export const ptBR = {
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
       path: "Local",
       pathCopy: "Copiar caminho",
-      refreshSection: "Atualização",
+      currentSession: "Atual",
+      statusLive: "Ao vivo",
+      statusPaused: "Pausado",
+      statusStale: "Desatualizado",
+      filterPlaceholder: "Filtrar linhas",
+      lineCount: "{count} linhas",
+      filteredLineCount: "{shown} de {total} linhas",
+      wrapLines: "Quebrar linhas",
+      jumpToLatest: "Ir para o fim",
+      noMatches: "Nenhuma linha corresponde ao filtro.",
       mode: "Modo",
       modeLive: "Ao vivo",
       modeInterval: "A cada 3 segundos",
@@ -1445,6 +1449,13 @@ export const ptBR = {
             hfHub: "Cache de modelos do Hugging Face",
           },
         },
+        lowDisk: {
+          title: "O espaço em disco está acabando",
+          criticalTitle: "O espaço em disco está criticamente baixo",
+          description:
+            "{free} livres de {total}. Limpar os caches pode liberar espaço.",
+          action: "Ver caches",
+        },
         futureDownloads: "Apenas novos downloads",
         environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
         locationFree: "{free} livres",
@@ -1978,6 +1989,7 @@ export const ptBR = {
       expires: "Expira {value}",
       actionsFor: "Ações para {name}",
       copyPrefix: "Copiar prefixo",
+      copyFailed: "Não foi possível copiar",
       revokeToken: "Revogar token",
       revokeTitle: 'Revogar token de acesso "{name}"?',
       revokeDescription:

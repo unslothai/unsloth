@@ -16,7 +16,6 @@ lets this run in seconds rather than behind a GGUF download.
 
 import json
 import os
-import re
 import sys
 import time
 import uuid
@@ -303,14 +302,14 @@ def read_globals(page):
     )
 
 
-def check_reasoning_page_navigation(page, token):
-    step("saved reasoning pages render the selected source range")
+def check_reasoning_transcript(page, token):
+    step("saved reasoning scrolls continuously with bounded content and full-source copy")
     source = "\n\n".join(
         f"Step {index:04d}. Compare this observation with the preceding reasoning "
         "and keep the complete trace available for inspection."
         for index in range(400)
     )
-    thread_id = seed_thread(page, token, "Reasoning page navigation")
+    thread_id = seed_thread(page, token, "Continuous reasoning transcript")
     messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
     messages.append(
         {
@@ -337,32 +336,49 @@ def check_reasoning_page_navigation(page, token):
     # reworded the trigger to "Worked for ...", and a driver that names the copy fails the
     # whole leg on a wording change while the button it wants is right there. The slot is
     # what the component guarantees; the wording is product copy and moves.
-    page.locator('[data-slot="reasoning-trigger"]').first.click()
-    navigation = page.get_by_role("navigation", name = "Reasoning pages")
+    trigger = page.locator('[data-slot="reasoning-trigger"]').first
+    if trigger.get_attribute("data-state") == "open":
+        trigger.click()
+        expect(page.locator('[data-slot="reasoning-transcript"]')).to_have_count(0)
+    trigger.click()
     body = page.locator('[data-slot="reasoning-text"]')
+    transcript = page.locator('[data-slot="reasoning-transcript"]')
+    expect(transcript).to_be_visible()
+    expect(page.locator('[data-slot="reasoning-page-navigation"]')).to_have_count(0)
+    expect(body).to_contain_text("Step 0000.")
+    assert len(body.inner_text()) < 20000, "saved reasoning mounted the entire trace"
 
-    def expect_selected_page():
-        expect(navigation).to_be_visible()
-        match = re.search(r"(\d+)–(\d+) of (\d+)", navigation.inner_text())
-        assert match, "missing reasoning source range"
-        start, end, total = map(int, match.groups())
-        assert total == len(source)
-        assert 0 < end - start + 1 <= 8192
-        expect(body).to_have_text(source[start - 1 : end].replace("\n", ""))
-        return start, end
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.get_by_role("button", name = "Copy reasoning", exact = True).click()
+    expect(page.get_by_role("button", name = "Copied", exact = True)).to_be_visible()
+    assert page.evaluate("navigator.clipboard.readText()") == source
 
-    latest = expect_selected_page()
-    navigation.get_by_role("button", name = "Earlier", exact = True).click()
-    earlier = expect_selected_page()
-    assert earlier[1] < latest[0]
-    navigation.get_by_role("button", name = "Earlier", exact = True).click()
-    oldest = expect_selected_page()
-    assert oldest[1] < earlier[0]
-    navigation.get_by_role("button", name = "Newer", exact = True).click()
-    assert expect_selected_page() == earlier
-    navigation.get_by_role("button", name = "Latest", exact = True).click()
-    assert expect_selected_page() == latest
+    viewport = page.locator(".aui-thread-viewport")
+    box = viewport.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    # One wheel is not the end of a virtualized transcript. It stops at the bottom of the height
+    # ESTIMATED for the passages not yet mounted, and measuring the ones it mounts grows the
+    # transcript under it: measured against this build, the first wheel stopped at scrollTop 8468
+    # of 15637 and the second reached the end. On CI the retries then waited on a window that
+    # nothing was going to move. A reader keeps scrolling; so does this, bounded.
+    for _ in range(12):
+        page.mouse.wheel(0, 100000)
+        page.wait_for_timeout(250)
+        if "Step 0399." in body.inner_text():
+            break
+    expect(body).to_contain_text("Step 0399.")
+    assert len(body.inner_text()) < 20000, "scrolling mounted the entire trace"
     expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+    expect(body).not_to_contain_text("The final answer stays separate.")
+
+    trigger.click()
+    expect(transcript).to_have_count(0)
+    page.wait_for_timeout(300)
+    header_top = trigger.bounding_box()["y"]
+    trigger.click()
+    expect(body).to_contain_text("Step 0000.")
+    page.wait_for_timeout(300)
+    assert abs(trigger.bounding_box()["y"] - header_top) < 3, "reopening moved the header"
 
 
 def main():
@@ -521,7 +537,7 @@ def main():
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
 
-        check_reasoning_page_navigation(page, token)
+        check_reasoning_transcript(page, token)
 
         if page_errors:
             fail(f"page errors during the run: {page_errors[:3]!r}")

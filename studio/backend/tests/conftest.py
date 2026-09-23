@@ -322,6 +322,31 @@ def _isolate_generation_state():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_wal_keepers():
+    """Close the WAL keepers a test opened, so the next test starts without them.
+
+    ``storage.studio_db`` holds one keeper connection per database in a module global, and
+    ``get_connection`` opens one on its own for any managed account, which is the correct
+    behaviour in a server and the reason nothing else closes them in a test. So every test that
+    touched a managed account's studio.db, tests/multi_account/test_alice_bob_matrix.py among
+    them, handed its keepers to whatever ran next in the same xdist worker, and
+    test_wal_keeper_declines_when_the_filesystem_refused_wal's ``assert not _wal_keepers``
+    failed with somebody else's account databases. Reproduced by running the matrix ahead of it.
+
+    Only what the test itself added is closed, and through ``close_wal_keeper_for`` so the
+    close listeners run exactly as they would in the product.
+    """
+    from storage import studio_db
+
+    before = set(studio_db._wal_keepers)
+    unsupported = set(studio_db._wal_unsupported)
+    yield
+    for path in set(studio_db._wal_keepers) - before:
+        studio_db.close_wal_keeper_for(path)
+    studio_db._wal_unsupported.intersection_update(unsupported)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 

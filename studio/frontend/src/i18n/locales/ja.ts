@@ -166,6 +166,8 @@ export const ja = {
       noChatsYet: "チャットがまだありません",
       // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "すべてのプロジェクトをピン留め済み",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -221,13 +223,6 @@ export const ja = {
       sortPinnedChats: "ピン留めチャットを並べ替え",
       moveUp: "上へ移動",
       moveDown: "下へ移動",
-    },
-    drag: {
-      reorder: "並べ替え",
-      pin: "ピン留め",
-      unpin: "ピン留めを解除",
-      moveTo: "{name} に移動",
-      moveToRecents: "最近に移動",
     },
     dialog: {
       deleteChat: {
@@ -571,7 +566,16 @@ export const ja = {
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
       path: "場所",
       pathCopy: "パスをコピー",
-      refreshSection: "更新",
+      currentSession: "現在",
+      statusLive: "ライブ",
+      statusPaused: "一時停止",
+      statusStale: "古い",
+      filterPlaceholder: "行を絞り込む",
+      lineCount: "{count} 行",
+      filteredLineCount: "{total} 行中 {shown} 行",
+      wrapLines: "行を折り返す",
+      jumpToLatest: "最新へ移動",
+      noMatches: "フィルターに一致する行はありません。",
       mode: "モード",
       modeLive: "ライブ",
       modeInterval: "3 秒ごと",
@@ -1414,6 +1418,13 @@ export const ja = {
             hfHub: "Hugging Faceモデルキャッシュ",
           },
         },
+        lowDisk: {
+          title: "ディスクの空き容量が少なくなっています",
+          criticalTitle: "ディスクの空き容量が非常に少なくなっています",
+          description:
+            "{total}中{free}が空きです。キャッシュを削除すると空き容量を増やせます。",
+          action: "キャッシュを確認",
+        },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",
         locationFree: "{free} 空き",
@@ -1933,6 +1944,7 @@ export const ja = {
       expires: "有効期限 {value}",
       actionsFor: "{name} のアクション",
       copyPrefix: "プレフィックスをコピー",
+      copyFailed: "コピーできませんでした",
       revokeToken: "トークンを失効",
       revokeTitle: 'アクセストークン "{name}" を失効させますか？',
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",

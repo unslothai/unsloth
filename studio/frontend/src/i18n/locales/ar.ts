@@ -164,6 +164,8 @@ export const ar = {
       noChatsYet: "لا توجد محادثات بعد",
       // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "كل المشاريع مثبتة",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -219,13 +221,6 @@ export const ar = {
       sortPinnedChats: "ترتيب المحادثات المثبتة",
       moveUp: "تحريك لأعلى",
       moveDown: "تحريك لأسفل",
-    },
-    drag: {
-      reorder: "إعادة ترتيب",
-      pin: "تثبيت",
-      unpin: "إلغاء التثبيت",
-      moveTo: "نقل إلى {name}",
-      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -569,7 +564,16 @@ export const ar = {
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
       path: "الموقع",
       pathCopy: "نسخ المسار",
-      refreshSection: "التحديث",
+      currentSession: "الحالي",
+      statusLive: "مباشر",
+      statusPaused: "متوقف مؤقتًا",
+      statusStale: "قديم",
+      filterPlaceholder: "تصفية الأسطر",
+      lineCount: "{count} سطر",
+      filteredLineCount: "{shown} من {total} سطر",
+      wrapLines: "التفاف الأسطر",
+      jumpToLatest: "الانتقال إلى الأحدث",
+      noMatches: "لا توجد أسطر تطابق عامل التصفية.",
       mode: "الوضع",
       modeLive: "مباشر",
       modeInterval: "كل 3 ثوانٍ",
@@ -1433,6 +1437,13 @@ export const ar = {
             hfHub: "ذاكرة نماذج Hugging Face المؤقتة",
           },
         },
+        lowDisk: {
+          title: "مساحة القرص على وشك النفاد",
+          criticalTitle: "مساحة القرص منخفضة بشكل حرج",
+          description:
+            "{free} متاحة من أصل {total}. مسح ذاكرات التخزين المؤقت يمكن أن يحرّر مساحة.",
+          action: "مراجعة ذاكرات التخزين المؤقت",
+        },
         futureDownloads: "التنزيلات الجديدة فقط",
         environmentManaged: "يُدار عبر متغيّر البيئة {variable}.",
         locationFree: "{free} متاح",
@@ -1962,6 +1973,7 @@ export const ar = {
       expires: "الانتهاء: {value}",
       actionsFor: "إجراءات {name}",
       copyPrefix: "نسخ البادئة",
+      copyFailed: "تعذّر النسخ",
       revokeToken: "إلغاء التوكن",
       revokeTitle: 'إلغاء توكن الوصول "{name}"؟',
       revokeDescription:

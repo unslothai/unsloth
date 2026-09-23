@@ -1034,6 +1034,157 @@ def fetch_download_host_json(ops: ModuleOps, url: str) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
+_WEB_METADATA_MAX_BYTES = 4 * 1024 * 1024
+
+_ATOM_RELEASE_TAG_RE = re.compile(
+    r"<link[^>]+href=\"[^\"]*/releases/tag/(?P<tag>[^\"/?#]+)\"", re.IGNORECASE
+)
+
+_DOWNLOAD_HREF_RE = re.compile(
+    r"href=\"[^\"]*?/releases/download/(?P<tag>[^\"/]+)/(?P<name>[^\"/]+)\"", re.IGNORECASE
+)
+
+_CLIPBOARD_TAG_RE = re.compile(r"<clipboard-copy\b(?P<attrs>[^>]*)>", re.IGNORECASE)
+
+_ARIA_DIGEST_FOR_RE = re.compile(
+    r"aria-label=\"Copy to clipboard digest for (?P<name>[^\"]+)\"", re.IGNORECASE
+)
+
+_ATTR_DIGEST_RE = re.compile(r"value=\"sha256:(?P<hex>[0-9a-f]{64})\"", re.IGNORECASE)
+
+
+def _fetch_web_metadata(ops: ModuleOps, url: str) -> str:
+    """GET a github.com (not api.github.com) metadata page, unauthenticated.
+
+    The web host is outside the anonymous API's hourly budget, which is the whole point
+    of the callers below. No token is ever attached.
+    """
+    data = ops.download_bytes(
+        url,
+        timeout = 30,
+        headers = {"User-Agent": ops.USER_AGENT},
+    )
+    if len(data) > _WEB_METADATA_MAX_BYTES:
+        raise RuntimeError(f"release metadata page at {url} was implausibly large")
+    return data.decode("utf-8", "replace")
+
+
+def web_release_tags(
+    ops: ModuleOps,
+    repo: str,
+    *,
+    limit: int = 30,
+) -> list[str]:
+    """Recent release tags, newest first, from github.com/<repo>/releases.atom.
+
+    The only tokenless surface that ORDERS releases, so it is what restores the
+    older-release walk-back, and the only one that can name the newest nightly.
+    """
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases.atom"
+    body = _fetch_web_metadata(ops, url)
+    tags: list[str] = []
+    for match in _ATOM_RELEASE_TAG_RE.finditer(body):
+        tag = urllib.parse.unquote(match.group("tag")).strip()
+        if tag and tag not in tags:
+            tags.append(tag)
+        if len(tags) >= limit:
+            break
+    return tags
+
+
+_PRERELEASE_LABEL_RE = re.compile(r"Label--warning[^>]*>\s*Pre-release\s*<", re.IGNORECASE)
+
+
+def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
+    """Whether <repo>@<tag> is marked pre-release, read from its release page.
+
+    The feed and the asset fragment both omit it, and asserting a value we did not read
+    would let the web path select a release the REST path filters out. Draft is not
+    asked: a draft is not served anonymously, so reaching this page proves publication.
+    """
+    url = (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/tag/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    return _PRERELEASE_LABEL_RE.search(_fetch_web_metadata(ops, url)) is not None
+
+
+def _web_release_prerelease_or_default(
+    ops: ModuleOps, repo: str, tag: str, default: bool | None
+) -> bool:
+    """The release's prerelease flag, or *default* when the page cannot be read.
+
+    The assets and their digests have already loaded by this point, so discarding them
+    because one more request failed would drop a usable release for a fact the caller
+    may already know from the tag.
+    """
+    try:
+        return web_release_prerelease(ops, repo, tag)
+    except Exception as exc:  # noqa: BLE001 - a known answer beats losing the release
+        if default is None:
+            raise
+        ops.log(f"could not read the release label for {repo}@{tag} ({exc}); assuming {default}")
+        return default
+
+
+def web_release_payload(
+    ops: ModuleOps,
+    repo: str,
+    tag: str,
+    *,
+    prerelease_default: bool | None = None,
+) -> dict[str, Any]:
+    """An ordinary release payload for <repo>@<tag>, built without api.github.com.
+
+    Shaped like the REST payload on purpose: release_asset_map and release_asset_digests
+    keep reading the same fields, so digest enforcement stays authoritative instead of
+    being bypassed by a second code path. An asset whose link is not for this exact repo
+    and tag, or whose digest is absent or not a sha256, is dropped rather than guessed
+    at, since these archives are extracted, chmod 0o755'd and executed.
+    """
+    quoted_repo = urllib.parse.quote(repo, safe = "/")
+    url = (
+        f"https://github.com/{quoted_repo}/releases/expanded_assets/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    body = _fetch_web_metadata(ops, url)
+    published = {
+        urllib.parse.unquote(row.group("name")).strip()
+        for row in _DOWNLOAD_HREF_RE.finditer(body)
+        if urllib.parse.unquote(row.group("tag")).strip() == tag
+    }
+    # The copy-to-clipboard control names its asset in the same element; pairing two
+    # lists by position would misassign a hash the first time a row moves or is omitted.
+    digests: dict[str, str] = {}
+    conflicting: set[str] = set()
+    for control in _CLIPBOARD_TAG_RE.finditer(body):
+        attrs = control.group("attrs")
+        labelled = _ARIA_DIGEST_FOR_RE.search(attrs)
+        value = _ATTR_DIGEST_RE.search(attrs)
+        if labelled is None or value is None:
+            continue
+        name = labelled.group("name").strip()
+        digest = value.group("hex").lower()
+        if digests.setdefault(name, digest) != digest:
+            conflicting.add(name)
+    assets = [
+        {
+            "name": name,
+            "browser_download_url": release_asset_download_url(repo, tag, name),
+            "digest": f"sha256:{digests[name]}",
+        }
+        for name in sorted(published & (digests.keys() - conflicting))
+    ]
+    if not assets:
+        raise RuntimeError(f"no digest-bearing assets were published for {repo}@{tag}")
+    return {
+        "tag_name": tag,
+        "draft": False,
+        "prerelease": _web_release_prerelease_or_default(ops, repo, tag, prerelease_default),
+        "assets": assets,
+    }
+
+
 # ── Archive extraction (traversal/symlink guarded) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
     def safe_extract_path(base: Path, member_name: str) -> Path:

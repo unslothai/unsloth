@@ -899,9 +899,10 @@ class HttpChatBackend:
             "model_path": model,
             "hf_token": hf_token,
             "max_seq_length": max_seq_length,
-            "load_in_4bit": load_in_4bit,
             "tensor_parallel": tensor_parallel,
         }
+        if load_in_4bit is not None:
+            payload["load_in_4bit"] = load_in_4bit
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
         if speculative_type is not None:
@@ -1000,6 +1001,14 @@ class HttpChatBackend:
 
     def close(self) -> None:
         pass
+
+
+def server_load_opts(ctx, load_opts: dict) -> dict:
+    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    opts = dict(load_opts)
+    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
+        opts["load_in_4bit"] = None
+    return opts
 
 
 def connect_studio_server(

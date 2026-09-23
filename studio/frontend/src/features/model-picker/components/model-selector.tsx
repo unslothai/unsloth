@@ -168,11 +168,11 @@ function ModelSelectorTrigger({
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
-            "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
+            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
           // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
@@ -218,12 +218,11 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* Hellix carries more descent than the caps use, so a box-centred label reads ~0.05em
-            low against the icons. Lift name and description together to keep their baseline. */}
-        <span className="relative -top-[0.05em] flex min-w-0 flex-1 items-baseline">
+        {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
+        <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
           <span
             className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
               triggerLabelClassName,
             )}
           >

@@ -166,6 +166,8 @@ export const es = {
       noChatsYet: "Aún no hay chats",
       // Shown under an empty project folder in the sidebar.
       noChats: "Sin chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos los proyectos fijados",
       showMore: "Mostrar más",
       showLess: "Mostrar menos",
       settings: "Configuración",
@@ -221,13 +223,6 @@ export const es = {
       sortPinnedChats: "Ordenar chats fijados",
       moveUp: "Subir",
       moveDown: "Bajar",
-    },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fijar",
-      unpin: "Desfijar",
-      moveTo: "Mover a {name}",
-      moveToRecents: "Mover a Recientes",
     },
     dialog: {
       deleteChat: {
@@ -572,7 +567,16 @@ export const es = {
       sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
       path: "Ubicación",
       pathCopy: "Copiar ruta",
-      refreshSection: "Actualización",
+      currentSession: "Actual",
+      statusLive: "En vivo",
+      statusPaused: "En pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtrar líneas",
+      lineCount: "{count} líneas",
+      filteredLineCount: "{shown} de {total} líneas",
+      wrapLines: "Ajustar líneas",
+      jumpToLatest: "Ir al final",
+      noMatches: "Ninguna línea coincide con el filtro.",
       mode: "Modo",
       modeLive: "En vivo",
       modeInterval: "Cada 3 segundos",
@@ -1457,6 +1461,13 @@ export const es = {
             hfHub: "Caché de modelos de Hugging Face",
           },
         },
+        lowDisk: {
+          title: "Queda poco espacio en disco",
+          criticalTitle: "El espacio en disco es críticamente bajo",
+          description:
+            "{free} libres de {total}. Borrar las cachés puede liberar espacio.",
+          action: "Revisar cachés",
+        },
         futureDownloads: "Solo las descargas nuevas",
         environmentManaged: "Gestionado por la variable de entorno {variable}.",
         locationFree: "{free} libres",
@@ -1997,6 +2008,7 @@ export const es = {
       expires: "Caduca {value}",
       actionsFor: "Acciones para {name}",
       copyPrefix: "Copiar prefijo",
+      copyFailed: "No se pudo copiar",
       revokeToken: "Revocar token",
       revokeTitle: '¿Revocar el token de acceso "{name}"?',
       revokeDescription:

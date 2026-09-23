@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 
 from utils.account_context import is_owner_context
@@ -1308,12 +1308,33 @@ def _close_keeper(conn: sqlite3.Connection) -> None:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
+#: Called when a keeper is closed, so modules holding their own long-lived connections can drop
+#: them too. Closing the keeper is meant to leave the database checkpointed and its -wal gone
+#: (#9934), and any other open connection silently prevents that.
+_keeper_close_listeners: list[Callable[[], None]] = []
+
+
+def on_wal_keeper_closed(listener: Callable[[], None]) -> None:
+    _keeper_close_listeners.append(listener)
+
+
+def _notify_keeper_closed() -> None:
+    for listener in tuple(_keeper_close_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.warning("A WAL keeper close listener failed", exc_info = True)
+
+
 def close_wal_keeper_for(path: str | Path) -> None:
     db_path = Path(path).resolve()
     with _wal_keeper_lock:
         conn = _wal_keepers.pop(db_path, None)
         if conn is not None:
             _close_keeper(conn)
+    # Unconditionally: journal_mode=WAL declines on filesystems without shared memory, so those
+    # installs never have a keeper to close, and the caller still means "let go of this database".
+    _notify_keeper_closed()
 
 
 def close_wal_keeper() -> None:
@@ -1322,6 +1343,7 @@ def close_wal_keeper() -> None:
             _close_keeper(conn)
         _wal_keepers.clear()
         _wal_unsupported.clear()
+    _notify_keeper_closed()
 
 
 def create_run(
@@ -3884,9 +3906,13 @@ def _detach_research_message_json(
     )
 
 
+class ChatForkActiveGenerationError(RuntimeError):
+    """A durable generation prevents copying a settled chat."""
+
+
 def fork_chat_thread(
     source_thread_id: str,
-    branch_message_id: str,
+    branch_message_id: Optional[str],
     new_thread_id: str,
     new_title: str,
     created_at: int,
@@ -3896,6 +3922,8 @@ def fork_chat_thread(
     the new thread dict (with messages copied) or None if source missing. Reset both code-exec
     container ids; the per-provider snapshot is handled by the route layer. `id_factory()` produces
     fresh message uuids, injected for testability."""
+    from storage.research_runs_db import ACTIVE_STATUSES as active_research_statuses
+
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3907,26 +3935,57 @@ def fork_chat_thread(
         if src is None:
             conn.rollback()
             return None
-        branch_row = conn.execute(
-            "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-            (source_thread_id, branch_message_id),
-        ).fetchone()
+        # admission and copying share the write lock, including the gap before supervisor registration.
+        research_status_placeholders = ",".join("?" for _ in active_research_statuses)
+        if (
+            _active_chat_generation_run_ids(conn, {source_thread_id})
+            or conn.execute(
+                f"SELECT 1 FROM research_runs WHERE thread_id = ? "
+                f"AND status IN ({research_status_placeholders}) LIMIT 1",
+                (source_thread_id, *sorted(active_research_statuses)),
+            ).fetchone()
+            is not None
+        ):
+            raise ChatForkActiveGenerationError(
+                "This chat is still generating. Fork it once it finishes."
+            )
+        rows = conn.execute(
+            """SELECT * FROM chat_messages WHERE thread_id = ?
+               ORDER BY created_at,
+                 CASE role WHEN 'system' THEN 0 WHEN 'user' THEN 1
+                           WHEN 'assistant' THEN 2 ELSE 99 END,
+                 id""",
+            (source_thread_id,),
+        ).fetchall()
+        by_id = {row["id"]: row for row in rows}
+        branch_row = (
+            (rows[-1] if rows else None)
+            if branch_message_id is None
+            else by_id.get(branch_message_id)
+        )
         if branch_row is None:
             conn.rollback()
             return None
+        branch_message_id = branch_row["id"]
+        # match the runtime's sequential legacy prefix while preserving recorded branches and later roots.
+        parents: dict[str, Optional[str]] = {}
+        previous_id = None
+        saw_recorded_parent = False
+        for row in rows:
+            parent = row["parent_id"]
+            parents[row["id"]] = (
+                previous_id if parent is None and not saw_recorded_parent else parent
+            )
+            if parent is not None:
+                saw_recorded_parent = True
+            previous_id = row["id"]
         ancestry: list[sqlite3.Row] = []
         cursor_row = branch_row
         seen: set[str] = set()
         while cursor_row is not None and cursor_row["id"] not in seen:
             ancestry.append(cursor_row)
             seen.add(cursor_row["id"])
-            parent = cursor_row["parent_id"]
-            if not parent:
-                break
-            cursor_row = conn.execute(
-                "SELECT * FROM chat_messages WHERE thread_id = ? AND id = ?",
-                (source_thread_id, parent),
-            ).fetchone()
+            cursor_row = by_id.get(parents[cursor_row["id"]])
         ancestry.reverse()  # root .. branch msg
         id_map: dict[str, str] = {row["id"]: id_factory() for row in ancestry}
         src_dict = dict(src)
@@ -3961,7 +4020,7 @@ def fork_chat_thread(
                 (
                     id_map[row["id"]],
                     new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    id_map.get(parents[row["id"]]),
                     row["role"],
                     content_json,
                     row["attachments_json"],

@@ -166,6 +166,8 @@ export const ru = {
       noChatsYet: "Пока нет чатов",
       // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Все проекты закреплены",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -221,13 +223,6 @@ export const ru = {
       sortPinnedChats: "Сортировать закреплённые чаты",
       moveUp: "Переместить вверх",
       moveDown: "Переместить вниз",
-    },
-    drag: {
-      reorder: "Переставить",
-      pin: "Закрепить",
-      unpin: "Открепить",
-      moveTo: "Переместить в {name}",
-      moveToRecents: "Переместить в Недавние",
     },
     dialog: {
       deleteChat: {
@@ -571,7 +566,16 @@ export const ru = {
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
       path: "Расположение",
       pathCopy: "Копировать путь",
-      refreshSection: "Обновление",
+      currentSession: "Текущий",
+      statusLive: "В реальном времени",
+      statusPaused: "Пауза",
+      statusStale: "Устарел",
+      filterPlaceholder: "Фильтр строк",
+      lineCount: "Строк: {count}",
+      filteredLineCount: "{shown} из {total} строк",
+      wrapLines: "Перенос строк",
+      jumpToLatest: "К последним",
+      noMatches: "Ни одна строка не соответствует фильтру.",
       mode: "Режим",
       modeLive: "В реальном времени",
       modeInterval: "Каждые 3 секунды",
@@ -1441,6 +1445,13 @@ export const ru = {
             hfHub: "Кеш моделей Hugging Face",
           },
         },
+        lowDisk: {
+          title: "Заканчивается место на диске",
+          criticalTitle: "Критически мало места на диске",
+          description:
+            "Свободно {free} из {total}. Очистка кешей может освободить место.",
+          action: "Посмотреть кеши",
+        },
         futureDownloads: "Только новые загрузки",
         environmentManaged: "Управляется переменной окружения {variable}.",
         locationFree: "{free} свободно",
@@ -1975,6 +1986,7 @@ export const ru = {
       expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
+      copyFailed: "Не удалось скопировать",
       revokeToken: "Отозвать токен",
       revokeTitle: 'Отозвать токен доступа «{name}»?',
       revokeDescription:

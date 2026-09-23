@@ -167,6 +167,8 @@ export const hi = {
       noChatsYet: "अभी तक कोई चैट नहीं",
       // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -222,13 +224,6 @@ export const hi = {
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
-    },
-    drag: {
-      reorder: "क्रम बदलें",
-      pin: "पिन करें",
-      unpin: "अनपिन करें",
-      moveTo: "{name} में ले जाएँ",
-      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -572,7 +567,16 @@ export const hi = {
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
       path: "स्थान",
       pathCopy: "पथ कॉपी करें",
-      refreshSection: "रिफ़्रेश",
+      currentSession: "वर्तमान",
+      statusLive: "लाइव",
+      statusPaused: "रुका हुआ",
+      statusStale: "पुराना",
+      filterPlaceholder: "पंक्तियाँ फ़िल्टर करें",
+      lineCount: "{count} पंक्तियाँ",
+      filteredLineCount: "{total} में से {shown} पंक्तियाँ",
+      wrapLines: "पंक्तियाँ रैप करें",
+      jumpToLatest: "नवीनतम पर जाएँ",
+      noMatches: "फ़िल्टर से कोई पंक्ति मेल नहीं खाती।",
       mode: "मोड",
       modeLive: "लाइव",
       modeInterval: "हर 3 सेकंड",
@@ -1436,6 +1440,13 @@ export const hi = {
             hfHub: "Hugging Face मॉडल कैश",
           },
         },
+        lowDisk: {
+          title: "डिस्क स्पेस कम हो रहा है",
+          criticalTitle: "डिस्क स्पेस बेहद कम है",
+          description:
+            "{total} में से {free} खाली। कैश साफ़ करने से जगह खाली हो सकती है।",
+          action: "कैश देखें",
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",
@@ -1968,6 +1979,7 @@ export const hi = {
       expires: "समाप्त होता है {value}",
       actionsFor: "{name} के लिए कार्रवाइयां",
       copyPrefix: "प्रीफ़िक्स कॉपी करें",
+      copyFailed: "कॉपी नहीं हो सका",
       revokeToken: "टोकन रद्द करें",
       revokeTitle: "क्या “{name}” एक्सेस टोकन रद्द करें?",
       revokeDescription:
