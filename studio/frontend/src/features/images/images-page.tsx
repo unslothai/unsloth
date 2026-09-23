@@ -4163,8 +4163,7 @@ export function ImagesPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
-            // Centered over the settings column. A left obstruction keeps its inset on that side only.
-            "pointer-events-none flex h-full min-w-0 items-start justify-center overflow-hidden pr-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
