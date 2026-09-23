@@ -111,6 +111,28 @@ def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
     return None
 
 
+def _ldconfig_executable_available() -> bool:
+    for candidate in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
+        exe = shutil.which(candidate) if "/" not in candidate else candidate
+        if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
+            return True
+    return False
+
+
+def _loader_resolves_sonames(sonames: tuple[str, ...]) -> bool:
+    """Ask the dynamic loader in a child process, without loading CUDA into Studio."""
+    script = "import ctypes, sys; [ctypes.CDLL(name) for name in sys.argv[1:]]"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", script, *sonames],
+            capture_output = True,
+            timeout = 10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 _NATIVE_LOADER_ABIS: dict[str, frozenset[str]] = {
     "x86_64": frozenset({"libc6,x86-64", "libc6,x86-64-v2", "libc6,x86-64-v3", "libc6,x86-64-v4"}),
     "amd64": frozenset({"libc6,x86-64", "libc6,x86-64-v2", "libc6,x86-64-v3", "libc6,x86-64-v4"}),
@@ -131,9 +153,12 @@ def _loader_already_provides_runtime(major: str) -> bool:
     LD_LIBRARY_PATH outranks both the cache and default dirs, so never add the
     vendored pair if either source already provides both native-ABI libraries.
     """
+    sonames = (f"libcudart.so.{major}", f"libcublas.so.{major}")
     cached = _ld_cache_entries()
+    if cached is None and not _ldconfig_executable_available() and _loader_resolves_sonames(sonames):
+        return True
     native_abis = _NATIVE_LOADER_ABIS.get(platform.machine().lower(), frozenset())
-    for soname in (f"libcudart.so.{major}", f"libcublas.so.{major}"):
+    for soname in sonames:
         cache_has_compatible = cached is not None and any(
             cached_soname == soname
             and abi in native_abis
