@@ -26,7 +26,12 @@ import torch
 
 def _load_function(name):
     # Only torch is needed, so run the function without importing unsloth (CPU CI has no unsloth_zoo).
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models", "loader_utils.py")
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "unsloth",
+        "models",
+        "loader_utils.py",
+    )
     tree = ast.parse(open(path, encoding = "utf-8").read())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     namespace = {"torch": torch}
