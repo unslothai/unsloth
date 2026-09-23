@@ -101,6 +101,49 @@ def _translate_rope_scaling(rope_scaling):
 _CLASSES = None
 
 
+_NGRAM_TRACKING_CACHES = {}
+
+
+def _ngram_tracking_cache_class(cls):
+    """``cls`` with its beam reorder, batch select / repeat and crop also applied to the token
+    history the n-gram embedding reads, so the history follows the key/value layers."""
+    tracked = _NGRAM_TRACKING_CACHES.get(cls)
+    if tracked is not None:
+        return tracked
+
+    class NgramTrackingCache(cls):
+        def reorder_cache(self, beam_idx, *args, **kwargs):
+            out = super().reorder_cache(beam_idx, *args, **kwargs)
+            history = self._unsloth_ngram_history
+            self._unsloth_ngram_history = history.index_select(0, beam_idx.to(history.device))
+            return out
+
+        def batch_select_indices(self, indices, *args, **kwargs):
+            out = super().batch_select_indices(indices, *args, **kwargs)
+            history = self._unsloth_ngram_history
+            if torch.is_tensor(indices):
+                indices = indices.to(history.device)
+            self._unsloth_ngram_history = history[indices]
+            return out
+
+        def batch_repeat_interleave(self, repeats, *args, **kwargs):
+            out = super().batch_repeat_interleave(repeats, *args, **kwargs)
+            self._unsloth_ngram_history = self._unsloth_ngram_history.repeat_interleave(
+                repeats, dim = 0
+            )
+            return out
+
+        def crop(self, *args, **kwargs):
+            out = super().crop(*args, **kwargs)
+            self._unsloth_ngram_history = self._unsloth_ngram_history[..., : self.get_seq_length()]
+            return out
+
+    NgramTrackingCache.__name__ = cls.__name__
+    NgramTrackingCache.__qualname__ = cls.__qualname__
+    _NGRAM_TRACKING_CACHES[cls] = NgramTrackingCache
+    return NgramTrackingCache
+
+
 def _classes():
     """Build the config and model classes on first use, so importing Unsloth does not import
     transformers' longcat_flash modules."""
@@ -287,19 +330,24 @@ def _classes():
         ):
             if inputs_embeds is None and input_ids is not None:
                 topk = getattr(self.config, "index_topk", None)
-                if (
-                    topk
-                    and input_ids.shape[-1] > topk
-                    and not getattr(self, "_unsloth_lsa_warned", False)
-                ):
+                cached = 0
+                if past_key_values is not None:
+                    try:
+                        cached = int(past_key_values.get_seq_length())
+                    except Exception:
+                        cached = 0
+                total = cached + input_ids.shape[-1]
+                if topk and total > topk and not getattr(self, "_unsloth_lsa_warned", False):
                     self._unsloth_lsa_warned = True
                     warnings.warn(
                         f"Unsloth: LongCat sparse attention selects every key only up to {topk} "
-                        f"tokens. This {input_ids.shape[-1]} token sequence runs dense attention, "
+                        f"tokens. This {total} token sequence runs dense attention, "
                         "which differs from the sparse attention used at inference.",
                         stacklevel = 2,
                     )
-                context = getattr(past_key_values, "_unsloth_ngram_context", None)
+                history = getattr(past_key_values, "_unsloth_ngram_history", None)
+                keep = self.ngram_embeddings.n - 1
+                context = None if history is None else history[..., -keep:]
                 inputs_embeds = self.ngram_embeddings(
                     self.embed_tokens(input_ids), input_ids, context
                 )
@@ -312,9 +360,13 @@ def _classes():
                     except TypeError:
                         past_key_values = DynamicCache()
                 if past_key_values is not None:
-                    keep = self.ngram_embeddings.n - 1
-                    seen = input_ids if context is None else torch.cat([context, input_ids], dim = -1)
-                    past_key_values._unsloth_ngram_context = seen[..., -keep:]
+                    # The whole id history rides on the cache and follows its beam reorders and
+                    # crops; the key/value layers alone cannot give the n-gram ids back.
+                    seen = input_ids if history is None else torch.cat([history, input_ids], dim = -1)
+                    past_key_values._unsloth_ngram_history = seen
+                    cache_class = type(past_key_values)
+                    if cache_class not in _NGRAM_TRACKING_CACHES.values():
+                        past_key_values.__class__ = _ngram_tracking_cache_class(cache_class)
             return super().forward(
                 input_ids = None,
                 attention_mask = attention_mask,

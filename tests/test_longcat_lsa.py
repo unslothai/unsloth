@@ -459,6 +459,25 @@ def test_cached_decode_matches_full_forward(tiny):
     torch.testing.assert_close(torch.cat(steps), full, atol = 1e-4, rtol = 1e-4)
 
 
+def test_ngram_history_follows_beam_reorder_and_crop(tiny):
+    # Beam search reorders the cache and assisted decoding crops it; the n-gram history the
+    # next step reads must move with the key/value layers or rows mix their histories.
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    ids = _tokens(cfg, 2, 14)
+    swapped = ids.flip(0)
+    with torch.no_grad():
+        full = model(input_ids = swapped).logits
+        cache = model(input_ids = ids[:, :9], use_cache = True).past_key_values
+        cache.reorder_cache(torch.tensor([1, 0]))
+        out = model(input_ids = swapped[:, 9:10], past_key_values = cache, use_cache = True)
+        torch.testing.assert_close(out.logits[:, -1], full[:, 9], atol = 1e-4, rtol = 1e-4)
+        cache = out.past_key_values
+        cache.crop(9)
+        out = model(input_ids = swapped[:, 9:11], past_key_values = cache, use_cache = True)
+        torch.testing.assert_close(out.logits[:, -1], full[:, 10], atol = 1e-4, rtol = 1e-4)
+
+
 def test_bf16_keeps_router_fp32_and_sglang_norm_eps(tiny):
     path, cfg, sd = tiny
     model = _load(path, dtype = torch.bfloat16)
@@ -517,6 +536,19 @@ def test_long_sequence_warns_once(tmp_path):
             model(input_ids = ids)
     messages = [str(w.message) for w in caught if "sparse attention" in str(w.message)]
     assert len(messages) == 1, messages
+
+
+def test_cached_decode_past_index_topk_warns(tmp_path):
+    cfg, sd = _write_tiny(str(tmp_path), index_topk = 8)
+    model = _load(str(tmp_path)).eval()
+    ids = _tokens(cfg, 1, 12)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        with torch.no_grad():
+            cache = model(input_ids = ids[:, :8], use_cache = True).past_key_values
+            model(input_ids = ids[:, 8:9], past_key_values = cache, use_cache = True)
+    messages = [str(w.message) for w in caught if "sparse attention" in str(w.message)]
+    assert len(messages) == 1 and "9 token" in messages[0], messages
 
 
 def test_4bit_keeps_the_mla_up_projections_in_16bit():
