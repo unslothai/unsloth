@@ -17990,6 +17990,9 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(target, ast.Subscript) and self._is_environ(target.value):
                 self._record_env_proxy(target.slice, value)
                 return
+            if isinstance(target, ast.Attribute) and self._is_environ(target):
+                self._record_env_mapping(value)  # `os.environ = {...}` replaces it wholesale
+                return
             self.pending_proxies.append(
                 (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
             )

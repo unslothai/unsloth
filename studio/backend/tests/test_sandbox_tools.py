@@ -1126,6 +1126,11 @@ class TestNetworkTargetResolution:
                 f"SOCKSProxyManager('socks5://pypi.org:1080').request('GET', 'http://{_H}/')",
                 id = "request_through_a_socks_proxy_manager",
             ),
+            pytest.param(
+                f"import os, requests\nos.environ = {{'HTTPS_PROXY': 'http://{_H}:8080'}}\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_replaced_wholesale",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
