@@ -166,9 +166,9 @@ export function FolderBrowser({
         </DialogHeader>
 
         {/* Breadcrumb */}
-        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-ui-11 text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-0.5 border-t border-border px-6 py-2 font-mono text-ui-11 text-muted-foreground">
           {crumbs.length === 0 ? (
-            <span className="text-muted-foreground/60">(loading…)</span>
+            <span className="text-muted-foreground/80">(loading…)</span>
           ) : (
             crumbs.map((c, i) => (
               <span key={c.value} className="flex items-center gap-0.5">
@@ -181,7 +181,7 @@ export function FolderBrowser({
                   {c.label}
                 </button>
                 {i < crumbs.length - 1 && (
-                  <span className="text-muted-foreground/40">/</span>
+                  <span className="text-muted-foreground/80">/</span>
                 )}
               </span>
             ))
@@ -190,14 +190,14 @@ export function FolderBrowser({
 
         {/* Suggestions (quick-pick chips) */}
         {data?.suggestions && data.suggestions.length > 0 && (
-          <div className="flex flex-wrap gap-1 border-t border-border/50 px-6 py-2">
+          <div className="flex flex-wrap gap-1 border-t border-border px-6 py-2">
             {data.suggestions.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => navigate(s, showHidden)}
                 disabled={loading}
-                className="rounded-full border border-border/50 px-2 py-0.5 font-mono text-ui-10 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                className="rounded-full border border-border px-2 py-0.5 font-mono text-ui-10 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
                 title={s}
               >
                 {s.length > 36 ? `…${s.slice(-33)}` : s}
@@ -210,7 +210,7 @@ export function FolderBrowser({
         toggling Show hidden) and just dim it, so the dialog doesn't collapse and
         flash. The full-height spinner only shows on the first load, when there
         is no data yet. */}
-        <div className="max-h-64 min-h-24 overflow-y-auto border-t border-border/50">
+        <div className="max-h-64 min-h-24 overflow-y-auto border-t border-border">
           {error && (
             <div className="px-6 py-3 text-xs text-destructive">{error}</div>
           )}
@@ -246,21 +246,21 @@ export function FolderBrowser({
               {data.entries.length === 0 &&
                 (!showModelHints ||
                   !(data.model_files_here && data.model_files_here > 0)) && (
-                  <div className="px-6 py-3 text-xs text-muted-foreground/60">
+                  <div className="px-6 py-3 text-xs text-muted-foreground/80">
                     (empty directory)
                   </div>
                 )}
               {showModelHints &&
                 data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
-                  <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-foreground/70">
+                  <div className="border-t border-border px-6 py-1.5 text-ui-10 text-muted-foreground">
                     {data.model_files_here} model file
                     {data.model_files_here === 1 ? "" : "s"} in this folder.
                     Click "Use this folder" to scan it.
                   </div>
                 )}
               {data.truncated === true && (
-                <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-muted-foreground/70">
+                <div className="border-t border-border px-6 py-1.5 text-ui-10 text-muted-foreground/80">
                   Showing first {data.entries.length} entries. Narrow the path
                   to see more.
                 </div>
@@ -275,7 +275,7 @@ export function FolderBrowser({
                   }}
                   className={cn(
                     "flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs transition-colors hover:bg-muted hover:text-foreground",
-                    e.hidden && "text-muted-foreground/60",
+                    e.hidden && "text-muted-foreground/80",
                   )}
                 >
                   <HugeiconsIcon
@@ -284,12 +284,12 @@ export function FolderBrowser({
                       "size-3 shrink-0",
                       e.has_models
                         ? "text-foreground"
-                        : "text-muted-foreground/50",
+                        : "text-muted-foreground/80",
                     )}
                   />
                   <span className="truncate font-mono">{e.name}</span>
                   {showModelHints && e.has_models && (
-                    <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-ui-9 uppercase tracking-wider text-muted-foreground">
+                    <span className="ml-auto shrink-0 rounded-full border border-border px-1.5 py-0 text-ui-9 uppercase tracking-wider text-muted-foreground">
                       models
                     </span>
                   )}
@@ -300,7 +300,7 @@ export function FolderBrowser({
         </div>
 
         {/* Footer */}
-        <DialogFooter className="flex items-center justify-between gap-2 border-t border-border/50 px-6 py-3">
+        <DialogFooter className="flex items-center justify-between gap-2 border-t border-border px-6 py-3">
           <label
             htmlFor="folder-browser-show-hidden"
             className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"

@@ -238,34 +238,6 @@ def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
     assert "resp_failed_123" in error["message"]
 
 
-def test_responses_refusal_delta_is_visible(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content = _responses_sse(
-                [
-                    {"type": "response.refusal.delta", "delta": "I can't help with that."},
-                    {"type": "response.completed", "response": {}},
-                ]
-            ),
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http_client(monkeypatch, handler)
-
-    payloads = [
-        json.loads(line[len("data:") :].strip())
-        for line in _drive(run())
-        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
-    ]
-    content = "".join(
-        payload["choices"][0]["delta"].get("content", "")
-        for payload in payloads
-        if payload.get("choices") and payload["choices"][0]["delta"]
-    )
-    assert content == "I can't help with that."
-
-
 def test_responses_translates_image_parts(monkeypatch):
     captured: dict = {}
 

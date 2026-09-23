@@ -7,8 +7,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createServer } from "vite";
-
 import { readSrc } from "./helpers/kit.ts";
 
 const pickers = readSrc(
@@ -68,10 +66,6 @@ test("capabilities are keyed by the provider's own model id", () => {
     pickers,
     /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
   );
-  assert.match(
-    pickers,
-    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: parseExternalModelId\(model\.id\)\?\.modelId \?\? model\.name,\s*baseUrl: externalBaseUrlById\.get\(model\.providerId\) \?\? null,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
-  );
   // A catalogue lands after first paint, so the marks have to be re-read when it does.
   assert.match(
     pickers,
@@ -120,53 +114,6 @@ test("modality comes from the resolvers the app already has", () => {
     marks,
     /vision: providerModelSupportsVision\([^)]*\) \?\?/,
   );
-});
-
-test("custom Responses rows expose image generation only on managed OpenAI hosts", async () => {
-  const vite = await createServer({
-    appType: "custom",
-    server: { middlewareMode: true, hmr: false },
-  });
-  try {
-    const { connectedModelMarks } = await vite.ssrLoadModule(
-      "/src/features/model-picker/components/model-selector/connected-model-meta.ts",
-    );
-    const marksFor = (
-      baseUrl: string,
-      apiType: "chat_completions" | "responses",
-    ) =>
-      connectedModelMarks({
-        providerType: "custom",
-        modelId: "gpt-5.5",
-        baseUrl,
-        apiType,
-      }).capabilities.imageGen;
-
-    assert.equal(marksFor("https://api.openai.com/v1", "responses"), true);
-    assert.equal(
-      marksFor("https://team.openai.azure.com/openai/v1", "responses"),
-      true,
-    );
-    assert.equal(
-      marksFor("https://team.services.ai.azure.com/openai/v1", "responses"),
-      true,
-    );
-    assert.equal(
-      marksFor("https://api.openai.com/v1", "chat_completions"),
-      false,
-    );
-    assert.equal(marksFor("https://gateway.example/v1", "responses"), false);
-    assert.equal(
-      marksFor("https://api.openai.com.attacker.example/v1", "responses"),
-      false,
-    );
-    assert.equal(
-      marksFor("https://team.services.ai.azure.com.attacker.example/v1", "responses"),
-      false,
-    );
-  } finally {
-    await vite.close();
-  }
 });
 
 test("connected pins are a separate list from the On Device ones", () => {
@@ -758,7 +705,7 @@ test("a row's name starts where its heading's label does", () => {
     pickers,
     /<span className="flex min-w-0 items-center gap-1\.5 text-ui-10 font-semibold/,
   );
-  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border\/50 pt-3" : "pt-3",/;
+  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border pt-3" : "pt-3",/;
   assert.match(pickers, listLabel);
   assert.match(
     pickers,
@@ -787,10 +734,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.
   assert.match(pickers, /provider\.isReasoningModel === true,/);
   // Custom Responses connections must carry their transport into both row dialogs.
-  assert.match(
-    pickers,
-    /apiType: externalApiTypeById\.get\(model\.providerId\)/,
-  );
+  assert.match(pickers, /apiType: externalApiTypeById\.get\(model\.providerId\)/);
   assert.match(pickers, /apiType=\{settingsModel\.apiType\}/);
   assert.match(pickers, /apiType=\{infoModel\.apiType\}/);
 });

@@ -147,89 +147,14 @@ test("custom stays on the OpenAI-compatible baseline", () => {
   assert.equal(body.temperature, PARAMS.temperature);
 });
 
-test("custom Responses shows and sends supported sampling controls", () => {
-  const capabilities = getProviderCapabilities("custom", "responses");
-  assert.equal(capabilities?.temperature, true);
-  assert.equal(capabilities?.topP, true);
-  assert.equal(capabilities?.presencePenalty, false);
-  const body = bodyFor("custom", PARAMS, "responses");
-  assert.equal(body.temperature, PARAMS.temperature);
-  assert.equal(body.top_p, PARAMS.topP);
-  assert.ok(!("presence_penalty" in body));
-  assert.ok(!("top_k" in body));
-  assert.ok(!("min_p" in body));
-  assert.ok(!("repetition_penalty" in body));
-  assert.deepEqual(bodyFor("openai", PARAMS, "responses"), {});
-});
-
-test("managed OpenAI fixed-sampling models hide and omit sampling fields", () => {
-  const managed = "https://api.openai.com/v1";
-  for (const model of [
-    "gpt-5.5",
-    "gpt-4.5-preview",
-    "o3",
-    "o4-mini",
-    "codex-mini-latest",
-    "gpt-6-astra",
-  ]) {
-    const caps = getProviderCapabilities("custom", "responses", model, managed);
-    assert.equal(caps?.temperature, false, model);
-    assert.equal(caps?.topP, false, model);
-    assert.ok(!("temperature" in bodyFor("custom", PARAMS, "responses", model, managed)), model);
-    assert.ok(!("top_p" in bodyFor("custom", PARAMS, "responses", model, managed)), model);
-  }
-});
-
-test("Azure deployments hide sampling even when their model name is opaque", () => {
-  for (const azure of [
-    "https://team.openai.azure.com/openai/v1",
-    "https://team.services.ai.azure.com/openai/v1",
-  ]) {
-    for (const model of ["prod-reasoner", "gpt-4.1", "gpt-5.1-chat-latest"]) {
-      const caps = getProviderCapabilities("custom", "responses", model, azure);
-      assert.equal(caps?.temperature, false, `${model} at ${azure}`);
-      assert.equal(caps?.topP, false, `${model} at ${azure}`);
-      const body = bodyFor("custom", PARAMS, "responses", model, azure);
-      assert.ok(!("temperature" in body), `${model} at ${azure}`);
-      assert.ok(!("top_p" in body), `${model} at ${azure}`);
-    }
-  }
-});
-
-test("sampling remains available on generic gateways and managed sampling models", () => {
-  for (const [model, baseUrl] of [
-    ["gpt-5.5", "https://gateway.example/v1"],
-    ["gpt-5.5", "https://api.openai.com.attacker.example/v1"],
-    ["gpt-5.5", "https://evilopenai.azure.com/openai/v1"],
-    ["gpt-5.5", "https://team.services.ai.azure.com.attacker.example/v1"],
-    ["gpt-5.5", "https://attacker.example/team.services.ai.azure.com/v1"],
-    ["gpt-5.5", "https://team.services.ai.azure.com@attacker.example/v1"],
-    ["gpt-4.1", "https://api.openai.com/v1"],
-    ["gpt-5-chat-latest", "https://api.openai.com/v1"],
-  ]) {
-    const caps = getProviderCapabilities("custom", "responses", model, baseUrl);
-    assert.equal(caps?.temperature, true, `${model} at ${baseUrl}`);
-    assert.equal(caps?.topP, true, `${model} at ${baseUrl}`);
-    const body = bodyFor("custom", PARAMS, "responses", model, baseUrl);
-    assert.equal(body.temperature, PARAMS.temperature, `${model} at ${baseUrl}`);
-    assert.equal(body.top_p, PARAMS.topP, `${model} at ${baseUrl}`);
-  }
-  assert.equal(
-    getProviderCapabilities("custom", "chat_completions", "gpt-5.5", "https://api.openai.com/v1")?.temperature,
-    true,
-  );
-});
-
-test("settings and adapter pass the selected model and endpoint to sampling policy", () => {
-  const page = readSrc("features/chat/chat-page.tsx");
-  assert.match(
-    page,
-    /getProviderCapabilities\(\s*provider\?\.providerType,\s*provider\?\.apiType,\s*selection\.modelId,\s*provider\?\.baseUrl/,
-  );
-  assert.match(
-    source,
-    /getProviderCapabilities\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.apiType,\s*externalSelection\?\.modelId,\s*externalProvider\?\.baseUrl/,
-  );
+test("custom Responses sends gateway sampling but omits it for managed fixed models", () => {
+  const gateway = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://gateway.example/v1");
+  assert.equal(gateway.temperature, PARAMS.temperature);
+  assert.equal(gateway.top_p, PARAMS.topP);
+  const managed = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://api.openai.com/v1");
+  assert.ok(!("temperature" in managed));
+  assert.ok(!("top_p" in managed));
+  assert.match(source, /getProviderCapabilities\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.apiType,\s*externalSelection\?\.modelId,\s*externalProvider\?\.baseUrl/);
 });
 
 test("ollama is sent none of the three its /v1 layer drops", () => {

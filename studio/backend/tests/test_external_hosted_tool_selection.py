@@ -59,9 +59,7 @@ def _request():
     )
 
 
-def _install(
-    monkeypatch, provider_type: str, *, base_url: str | None = None, api_type: str | None = None
-):
+def _install(monkeypatch, provider_type: str, *, base_url = None, api_type = None):
     from core.inference.providers import get_base_url
     from routes import inference as inf
 
@@ -221,32 +219,20 @@ def test_a_self_hosted_loop_is_still_sent_no_tool_flags(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "base_url,api_type,expected_hosted_tools",
+    "base_url,expected_hosted_tools",
     [
-        (
-            "https://api.openai.com/v1",
-            "responses",
-            ["code_execution", "image_generation"],
-        ),
-        (
-            "https://resource.openai.azure.com/openai/v1",
-            "responses",
-            ["code_execution", "image_generation"],
-        ),
-        ("https://gateway.example/v1", "responses", None),
-        ("https://api.openai.com.attacker.example/v1", "responses", None),
-        ("https://api.openai.com/v1", "chat_completions", None),
+        ("https://api.openai.com/v1", ["code_execution", "image_generation"]),
+        ("https://resource.services.ai.azure.com/openai/v1", ["code_execution", "image_generation"]),
+        ("https://gateway.example/v1", None),
+        ("https://api.openai.com.attacker.example/v1", None),
     ],
 )
 def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
-    monkeypatch, base_url, api_type, expected_hosted_tools
+    monkeypatch, base_url, expected_hosted_tools
 ):
     transport = _loop_transport(
-        monkeypatch,
-        "custom",
-        ["web_search", "code_execution", "image_generation"],
-        base_url = base_url,
-        api_type = api_type,
+        monkeypatch, "custom", ["web_search", "code_execution", "image_generation"],
+        base_url = base_url, api_type = "responses",
     )
     assert "web_search" in transport._selected_local_tool_names
     assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools

@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import types
+
 import pytest
 
 from core.inference.diffusion_convrot import rotation_metadata, rotation_metadata_error
@@ -70,3 +72,184 @@ def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published
         == "Z-Image-Turbo-INT8-ConvRot.pt"
     )
     assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
+
+
+def test_a_safetensors_upload_needs_a_name_the_loader_would_ask_for():
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+    # Every DERIVED name ends in .pt, so no build ever asks the Hub for a safetensors artifact
+    # unless the family declares one. Publishing under a derived name produces a file nothing can
+    # reach, on a repo that looks like it has a checkpoint.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+    assert (
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = False,
+            safetensors = True,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+        == "Z-Image-Turbo-FP8.safetensors"
+    )
+
+
+def test_a_safetensors_build_refuses_a_declared_name_that_reads_as_a_pickle():
+    build = _script()
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None
+    # H3 declares a .pt name for int8. Uploading a safetensors artifact there gives every loader a
+    # file whose extension says pickle and whose bytes are not one, so the load fails for a reason
+    # that has nothing to do with the real mistake. Refuse at build time and say which name to fix.
+    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
+        build.upload_destination(h3, "int8", rotated = False, safetensors = True)
+
+
+def test_a_rotated_pickle_build_refuses_a_declared_name_that_reads_as_safetensors():
+    """The mirror image, and the one a family reaches by MOVING to safetensors.
+
+    Once a family points prequant_filenames at a .safetensors artifact, a rotated pickle build for
+    that same family would publish torch.save bytes under a safetensors name. Every loader
+    dispatches on the extension, hands the file to safe_open and rejects it, so the artifact is
+    unopenable for a reason that says nothing about the real mistake. Guarding only the
+    safetensors-build direction left this one live.
+    """
+    build = _script()
+    fam = types.SimpleNamespace(
+        name = "qwen-image-2.1",
+        prequant_filenames = (("fp8", "Qwen-Image-2.1-FP8.safetensors"),),
+    )
+    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
+        build.upload_destination(fam, "fp8", rotated = True, safetensors = False)
+
+
+def test_an_override_still_has_to_match_the_container_it_is_naming():
+    """The escape hatch skips the family table, not the extension.
+
+    Every loader dispatches on the extension alone, so a safetensors build published as ``.pt`` is
+    read as a pickle and a pickle published as ``.safetensors`` is read from a header it does not
+    have. Both upload cleanly and neither can ever be opened, after the hours the quantization
+    took, which is why this is refused before the upload rather than reported after it.
+    """
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+
+    with pytest.raises(ValueError, match = r"does not end in '\.safetensors'"):
+        build.upload_destination(
+            zimage, "fp8", rotated = False, safetensors = True, override = "Z-Image-Turbo-FP8.pt"
+        )
+    with pytest.raises(ValueError, match = r"does not end in '\.pt'"):
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = True,
+            safetensors = False,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+    # The matching pairs are untouched, including the rotated escape hatch above.
+    assert (
+        build.upload_destination(
+            zimage, "fp8", rotated = True, override = "Z-Image-Turbo-FP8-ConvRot.pt"
+        )
+        == "Z-Image-Turbo-FP8-ConvRot.pt"
+    )
+    assert (
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = False,
+            safetensors = True,
+            override = "Z-Image-Turbo-FP8.safetensors",
+        )
+        == "Z-Image-Turbo-FP8.safetensors"
+    )
+
+
+def test_a_plain_safetensors_build_derives_the_name_the_loader_now_asks_for_first():
+    """The refusal above predates the derived chain leading with safetensors.
+
+    ``derived_prequant_filenames`` puts ``<Model>-<SCHEME>.safetensors`` ahead of both .pt
+    spellings, so the reachability that refusal protects is exactly what the chain supplies, and a
+    family with no declared entry should not have to pass an override it could compute itself.
+    """
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
+    assert zimage is not None
+
+    name = build.upload_destination(
+        zimage,
+        "fp8",
+        rotated = False,
+        safetensors = True,
+        upload_repo = "unsloth/Z-Image-Turbo-FP8",
+    )
+    assert name == "Z-Image-Turbo-FP8.safetensors", name
+    # And it is really the first name the loader asks that repo for, read from the resolver
+    # rather than restated here, so the two cannot drift apart.
+    from core.inference.diffusion_prequant import derived_prequant_filenames
+
+    assert derived_prequant_filenames("unsloth/Z-Image-Turbo-FP8", "fp8")[0] == name
+
+    # A ROTATED build still has no derived spelling that carries the marker, so it still refuses.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(
+            zimage,
+            "fp8",
+            rotated = True,
+            safetensors = True,
+            upload_repo = "unsloth/Z-Image-Turbo-FP8",
+        )
+    # No upload repo means nothing to derive from, so it refuses rather than guessing.
+    with pytest.raises(ValueError, match = "prequant_filenames"):
+        build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
+
+
+def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsys, monkeypatch):
+    """``--base-model-id`` decides what a PUBLISHED file claims to be, so the loader's deliberately
+    tail-tolerant comparison is the wrong gate here: ``other/Qwen-Image-2.1`` passes it, and the
+    loader's equally tolerant check then accepts those weights as the official family base.
+
+    Driven through ``main`` so the refusal is the one a builder would actually hit, and it has to
+    land BEFORE the download: nothing below is stubbed, so reaching the load would fail differently.
+    """
+    # main() imports torch, torchao and diffusers before it reads a single argument. torchao the
+    # guard really needs (the scheme tables import it); diffusers it does not, and the backend CI
+    # shards do not install it. An empty stand-in only when it is absent: the refusal lands before
+    # any diffusers attribute is read, and the accepted arm below already expects the
+    # AttributeError an empty diffusers gives, so the guard is still exercised end to end.
+    pytest.importorskip("torchao")
+    if importlib.util.find_spec("diffusers") is None:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    build = _script()
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.base_repo == "Qwen/Qwen-Image-2.1"
+
+    argv = [
+        "--base",
+        "./temp/qwen_image_21",
+        "--family",
+        "qwen-image-2.1",
+        "--scheme",
+        "int8",
+        "--out",
+        "/nonexistent/out.pt",
+        "--base-model-id",
+        "other/Qwen-Image-2.1",
+    ]
+    assert build.main(argv) == 2
+    message = capsys.readouterr().out
+    assert "other/Qwen-Image-2.1" in message and "Qwen/Qwen-Image-2.1" in message
+
+    # The canonical id is accepted, and whitespace around it is not a different model. "Accepted"
+    # here means the run gets PAST this guard: what it reaches next is the transformer class lookup,
+    # which on a diffusers predating the family raises rather than returning 2, and either way it is
+    # no longer this refusal.
+    for accepted in ("Qwen/Qwen-Image-2.1", "  Qwen/Qwen-Image-2.1  "):
+        try:
+            rc = build.main(argv[:-1] + [accepted])
+        except AttributeError as exc:
+            assert fam.transformer_class in str(exc), exc
+            continue
+        assert rc != 2 or "is not" not in capsys.readouterr().out, accepted

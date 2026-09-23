@@ -83,6 +83,22 @@ _MAX_TRACKED_START_REQUESTS = 64
 _MAX_START_CANCEL_TOMBSTONES = 1024
 _START_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
+DEFAULT_TRAINING_OPTIMIZER = "adamw_8bit"
+XPU_SAFE_TRAINING_OPTIMIZER = "adamw_torch"
+XPU_DEVICE_BACKEND = "xpu"
+PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
+ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_32bit"
+# Not a bit-width question: XPU routes optimizer_update_32bit to Triton too
+# (bitsandbytes backends/xpu/ops.py), which asserts on a SYCL toolchain we do not ship.
+XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS = frozenset(
+    (
+        DEFAULT_TRAINING_OPTIMIZER,
+        PAGED_BITSANDBYTES_TRAINING_OPTIMIZER,
+        ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER,
+        PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER,
+    )
+)
 
 _pyplot = None
 _pyplot_failed = False
@@ -198,8 +214,25 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
     return is_apple_silicon_training_platform()
 
 
+def normalize_training_optimizer_for_device(optimizer: Any, *, device_backend: str) -> Any:
+    if not isinstance(optimizer, str):
+        return optimizer
+    optimizer_key = optimizer.strip().lower().replace("-", "_")
+    if (
+        device_backend == XPU_DEVICE_BACKEND
+        and optimizer_key in XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS
+    ):
+        return XPU_SAFE_TRAINING_OPTIMIZER
+    return optimizer
+
+
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     """Build the normalized worker config shared by Unsloth and the CLI adapter."""
+    device_backend = get_device().value
+    optimizer = normalize_training_optimizer_for_device(
+        values.get("optim", DEFAULT_TRAINING_OPTIMIZER),
+        device_backend = device_backend,
+    )
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -258,7 +291,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
         "packing": values.get("packing", False),
-        "optim": values.get("optim", "adamw_8bit"),
+        "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
         "lora_r": values.get("lora_r", 16),
@@ -298,7 +331,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
-    config["device_backend"] = get_device().value
+    config["device_backend"] = device_backend
     return config
 
 
@@ -653,6 +686,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1051,6 +1085,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -1198,6 +1236,7 @@ class TrainingBackend:
         # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
+        self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
 
@@ -1723,7 +1762,7 @@ class TrainingBackend:
             lora_rank = config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
+            optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
         )
 
         defer_auto_selection = False
@@ -1925,6 +1964,7 @@ class TrainingBackend:
             self._last_full_config = config
             self._last_hf_cache_env = cache_env
             self._in_model_load = False
+            self._model_download_repo_id = None
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
@@ -2637,6 +2677,7 @@ class TrainingBackend:
                 )
                 with self._lock:
                     self._in_model_load = False
+                    self._model_download_repo_id = None
                     self._event_queue = event_queue
                     self._stop_queue = stop_queue
                     self._proc = new_proc
@@ -3014,6 +3055,12 @@ class TrainingBackend:
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
+                self._model_download_repo_id = None
+            return
+        if etype == "model_load_resolved":
+            with self._lock:
+                if self._in_model_load:
+                    self._model_download_repo_id = event["repo_id"]
             return
         if etype == "model_load_completed":
             with self._lock:
@@ -3064,6 +3111,9 @@ class TrainingBackend:
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")

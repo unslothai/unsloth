@@ -79,7 +79,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -101,6 +100,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
@@ -183,6 +183,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -496,7 +497,7 @@ function PendingImageThumb({
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -685,7 +686,7 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -2061,7 +2062,7 @@ export function SharedComposer({
         onSelect={() => setRagEnabled(!ragEnabled)}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-        Chat with Files
+        Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
@@ -2082,8 +2083,8 @@ export function SharedComposer({
     ),
     skills: (
       <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-        <BookOpenIcon />
-        Agent Skills
+        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
+        Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2302,7 +2303,7 @@ export function SharedComposer({
         {pendingAudio && (
           <div
             data-composer-attachment="audio"
-            className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">

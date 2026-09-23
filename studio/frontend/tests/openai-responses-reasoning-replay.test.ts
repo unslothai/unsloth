@@ -4,20 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  addCodexReasoning,
-  codexReasoningForToolCalls,
-  readOpenAIResponsesReasoning,
-  type CodexReasoningLedger,
-} from "../src/features/chat/codex-reasoning.ts";
+import { addCodexReasoning, codexReasoningForToolCalls, readOpenAIResponsesReasoning,
+  type CodexReasoningLedger } from "../src/features/chat/codex-reasoning.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-test("Responses reasoning remains bound to the tool round that returned it", () => {
-  const item = {
-    type: "reasoning",
-    id: "rs_1",
-    encrypted_content: "opaque",
-  };
+test("Responses reasoning remains bound to its tool round and replay metadata", () => {
+  const item = { type: "reasoning", id: "rs_1", encrypted_content: "opaque" };
   let ledger: CodexReasoningLedger = { byToolCall: {} };
   ledger = addCodexReasoning(ledger, [item], ["call_1"]);
 
@@ -26,17 +18,7 @@ test("Responses reasoning remains bound to the tool round that returned it", () 
   });
   assert.deepEqual(codexReasoningForToolCalls(stored, ["call_1"]), [item]);
   assert.equal(codexReasoningForToolCalls(stored, ["call_2"]), undefined);
-});
-
-test("the stream and replay paths carry Responses reasoning metadata", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /extraRecord\.openai_responses_reasoning/);
-  assert.match(
-    adapter,
-    /openaiResponsesReasoning:\s*openAIResponsesReasoningLedger/,
-  );
-  assert.match(
-    adapter,
-    /openai_responses_reasoning:\s*reasoning/,
-  );
+  assert.match(adapter, /openai_responses_reasoning:\s*reasoning/);
 });

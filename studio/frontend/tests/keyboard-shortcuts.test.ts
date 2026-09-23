@@ -1090,12 +1090,15 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
   );
 
   // Two instances of the action now exist on the last message, the chord's and
-  // the button's, so the in-flight flag cannot be either one's own state: the
-  // chord followed by a click would post two forks with two thread ids.
+  // the button's, and the sidebar row menu is a third, so the in-flight flag cannot be any one
+  // of their own state: the chord followed by a click would post two forks with two thread ids.
+  // It lives in its own module so every caller reads the one flag.
+  const FORK_STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
   assert.match(
-    THREAD,
-    /const useForkInFlight = create<\{\n\s*forking: boolean;/,
+    FORK_STORE,
+    /export const useForkInFlight = create<\{\n\s*forking: boolean;/,
   );
+  assert.ok(!THREAD.includes("const useForkInFlight = create<"));
   assert.match(THREAD, /const pending = useForkInFlight\(\(s\) => s\.forking\);/);
   assert.match(
     THREAD,
@@ -1159,10 +1162,15 @@ test("the rename chord does not land in a surface only a row can show", async ()
     APP_SIDEBAR,
     /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
   );
-  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
+  // The menu names the list its row is in, so a chat on screen twice renames in the row the
+  // user opened, not in both at once.
   assert.match(
     APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true\)/,
+    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
   );
 
   // The pill is gated on it, so a dialog rename cannot also arm a row that is
@@ -1255,17 +1263,29 @@ test("the composer chords outlive the recording bar", async () => {
 test("a collapsed sidebar section is not published for the chords", async () => {
   // Navigation and Select all walk what is on screen, so a section the user
   // closed counts as gone, the same as a closed project folder.
+  // Pinned is walked in its drawn order, folders and chats together, behind its disclosure.
   assert.match(
     APP_SIDEBAR,
-    /chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems/,
+    /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(/,
   );
   assert.match(
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
   );
-  assert.match(APP_SIDEBAR, /organizeBy !== "project" \|\| !projectsOpen/);
+  // Folders follow the section they render in: the pinned ones close with Pinned, the rest
+  // with Projects, so neither disclosure speaks for the other's rows.
+  assert.match(
+    APP_SIDEBAR,
+    /folderChatItems\(true, \[row\.project\]\)/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
+  );
+  // In one list every project chat is a Recents row, so a folder must not list it again.
+  assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
   // And the published lists are the filtered ones.
-  assert.match(APP_SIDEBAR, /pinnedItems: visiblePinnedItems,/);
+  assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
@@ -1582,26 +1602,30 @@ test("the published chat lists stop where the sidebar stops", async () => {
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   for (const group of [
-    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\)/,
-    /\(chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
+    /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  // Select All reads the same three arrays, so it cannot reach further than
-  // the walk does.
+  // Select All reads the same rows the walk does, so it cannot reach further.
   const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
   assert.ok(selectAll !== -1, "selectAllChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
-    /\.\.\.visiblePinnedItems,\n\s*\.\.\.renderedProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
+    /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\n\s*\.\.\.pinnedSectionChatItems,\n\s*\.\.\.sectionProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
   );
   // Gating the arrays is enough because nothing renders from them.
   const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
-    "visiblePinnedItems",
+    "pinnedSectionChatItems",
     "visibleRecentItems",
-    "renderedProjectChatItems",
+    "renderedChatItems",
+    "sectionProjectChatItems",
   ]) {
     assert.ok(!rendered.includes(name), `${name} is read by the JSX too`);
   }
@@ -1658,21 +1682,30 @@ test("a selection does not outlive the rows it was made on", async () => {
     APP_SIDEBAR,
     /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
   );
-  // The three ways a folder row leaves without the sidebar going with it.
+  // The ways a folder row leaves without the sidebar going with it — including its section
+  // closing, which for a pinned folder is Pinned, not Projects.
   assert.match(
     APP_SIDEBAR,
-    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\) \{\n\s*return new Set<string>\(\);\n\s*\}\n\s*return new Set\(visibleProjectRecords\.map\(\(project\) => project\.id\)\);/,
+    /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen\) return new Set<string>\(\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(pinnedOpen\) \{\n\s*for \(const project of pinnedProjectRecords\) ids\.add\(project\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
   );
   // Both counts feed the flag, which is why both have to be pruned.
   assert.match(
     APP_SIDEBAR,
     /const selectionActive =\n?\s*selectionCount > 0 \|\| projectSelectionCount > 0;/,
   );
-  // Built from the three arrays that already carry every disclosure state, so
+  // Built from the draw-order list, which already carries every disclosure state, so
   // a collapse or a "show less" needs nothing restated here.
   assert.match(
     APP_SIDEBAR,
-    /const renderedChatIds = useMemo\(\(\) => \{[\s\S]*?visiblePinnedItems[\s\S]*?renderedProjectChatItems[\s\S]*?visibleRecentItems/,
+    /const renderedChatIds = useMemo\(\n\s*\(\) => new Set\(renderedChatItems\.map\(\(item\) => item\.id\)\),/,
   );
   // Which is what makes the four bulk branches safe to leave as they are.
   for (const id of [
@@ -1793,9 +1826,11 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
 test("the rows the selection guard reads keep their identity", async () => {
   for (const name of [
     "visibleProjectRecords",
-    "visiblePinnedItems",
+    "pinnedRows",
     "visibleRecentItems",
-    "renderedProjectChatItems",
+    "sectionProjectChatItems",
+    "pinnedSectionChatItems",
+    "renderedChatItems",
     "renderedChatIds",
   ]) {
     const at = APP_SIDEBAR.indexOf(`const ${name} = `);
@@ -1806,6 +1841,10 @@ test("the rows the selection guard reads keep their identity", async () => {
       `${name} is rebuilt every render and feeds a selection effect`,
     );
   }
+  // The builder those lists memoise on has to hold its identity too, or they rebuild with it.
+  const builder = APP_SIDEBAR.indexOf("const folderChatItems = ");
+  assert.notEqual(builder, -1, "folderChatItems is gone");
+  assert.match(APP_SIDEBAR.slice(builder, builder + 64), /= useCallback\(/);
 });
 
 // The root of the chain the test above pins. groupThreads returns a fresh

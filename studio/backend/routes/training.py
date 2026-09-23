@@ -52,6 +52,7 @@ try:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -73,6 +74,7 @@ except ImportError:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -86,6 +88,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
@@ -1719,6 +1722,12 @@ async def start_training(
             if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
+        device_backend = getattr(_hw.DEVICE, "value", "") or ""
+        training_optimizer = normalize_training_optimizer_for_device(
+            request.optim,
+            device_backend = device_backend,
+        )
+
         training_kwargs = {
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
@@ -1765,7 +1774,7 @@ async def start_training(
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
-            "optim": request.optim,
+            "optim": training_optimizer,
             "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,
             "lora_r": request.lora_r,
@@ -2271,6 +2280,9 @@ def _build_training_status(
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
             "output_dir": getattr(backend, "_output_dir", None) or None,
+            "model_download_repo_id": (
+                getattr(backend, "_model_download_repo_id", None) if is_active else None
+            ),
         }
 
     metric_history = None
@@ -2301,9 +2313,16 @@ def _build_training_status(
 
 
 @router.get("/status")
-async def get_training_status(current_subject: str = Depends(get_current_subject)):
+async def get_training_status(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """
     Get the current training status.
+
+    Redacted for an API-key caller like every other route that can name a host path: the
+    worker's own progress line quotes the model it is loading, and for a local model that is
+    an absolute path, which would hand back what the inventory took the trouble to hide.
     """
     try:
         backend = get_training_backend()
@@ -2315,7 +2334,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 continue
             status = _build_training_status(backend, identity, is_active)
             if _training_status_identity(backend) == identity:
-                return status
+                return redact_host_paths(status, via_api_key = via_api_key)
         raise HTTPException(status_code = 409, detail = "Training state changed during status read")
     except HTTPException:
         raise
@@ -2457,6 +2476,7 @@ async def stream_training_progress(
 
             elapsed_seconds = getattr(progress, "elapsed_seconds", None) if progress else None
             eta_seconds = getattr(progress, "eta_seconds", None) if progress else None
+            session_start_step = getattr(progress, "session_start_step", None) if progress else None
             grad_norm = grad_norm_override
             if grad_norm is None and progress:
                 grad_norm = getattr(progress, "grad_norm", None)
@@ -2475,6 +2495,7 @@ async def stream_training_progress(
                 epoch = epoch,
                 elapsed_seconds = elapsed_seconds,
                 eta_seconds = eta_seconds,
+                session_start_step = session_start_step,
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
@@ -4590,6 +4611,35 @@ async def import_diffusion_dataset_example(
                         # Best effort: one unrestorable entry must not mask the original failure.
                         pass
 
+            # Hold the datasets registry for this repo across the fetch.
+            #
+            # Both loaders call load_dataset / snapshot_download directly rather than going
+            # through a managed download, so nothing here claimed the registry and a Clear of
+            # hf_hub, hf_xet or hf_datasets passed every guard: begin_cache_purge asks about
+            # jobs, owners and deletes, and this import was none of the three. The snapshot then
+            # went out from under the copy and the import failed in front of the user.
+            #
+            # claim_repository_owner is the same reservation a managed download takes, and it
+            # excludes a purge in both directions: it refuses while one is running, and
+            # begin_cache_purge refuses while an owner is held.
+            _import_registry = None
+            _import_owner = object()
+            try:
+                from hub.utils.download_registry import get_datasets_registry
+                _import_registry = get_datasets_registry()
+            except Exception as exc:  # noqa: BLE001 - a broken registry must not kill an import
+                logger.debug(f"Could not reach the datasets registry for the import: {exc}")
+            if _import_registry is not None:
+                granted, reason = _import_registry.claim_repository_owner(
+                    entry["repo"], _import_owner
+                )
+                if not granted:
+                    if reason == "deleting":
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = "A cache clear is running. Try the import again in a moment.",
+                        )
+                    _import_registry = None  # already busy with this repo; do not release it
             try:
                 try:
                     if entry["loader"] == "imagefolder_jsonl":
@@ -4633,6 +4683,11 @@ async def import_diffusion_dataset_example(
                         ),
                     )
             finally:
+                if _import_registry is not None:
+                    try:
+                        _import_registry.release_repository_owner(entry["repo"], _import_owner)
+                    except Exception as exc:  # noqa: BLE001 - a held claim must not mask the error
+                        logger.debug(f"Could not release the import claim: {exc}")
                 shutil.rmtree(staging, ignore_errors = True)
                 shutil.rmtree(rescue, ignore_errors = True)
         return _import_response(entry, folder, imported = imported)

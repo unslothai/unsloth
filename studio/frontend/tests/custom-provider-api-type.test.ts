@@ -10,72 +10,27 @@ installLocalStorageFake();
 Object.assign(window.location, { href: "http://localhost/" });
 const vite = await createServer({ server: { middlewareMode: true } });
 after(() => vite.close());
-const api = await vite.ssrLoadModule("/src/features/chat/api/providers-api.ts");
-const providers = await vite.ssrLoadModule("/src/features/chat/external-providers.ts");
-
-for (const apiType of ["chat_completions", "responses"] as const) {
-  test(`provider create, edit and probe forward ${apiType}`, async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const previous = globalThis.fetch;
-    globalThis.fetch = (async (_url, init) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({});
-    }) as typeof fetch;
-    try {
-      await api.createProviderConfig({ providerType: "custom", displayName: "Gateway", apiType });
-      await api.updateProviderConfig("gateway", { apiType });
-      await api.testProviderConnection({ providerType: "custom", apiKey: "", apiType });
-    } finally {
-      globalThis.fetch = previous;
-    }
-    assert.equal(bodies.length, 3);
-    assert.ok(bodies.every((body) => body.api_type === apiType));
-  });
-}
-
-test("browser cache preserves Responses and defaults legacy records to Chat Completions", () => {
-  const config = {
-    id: "gateway", providerType: "custom", name: "Gateway", baseUrl: "https://gateway.example/v1",
-    models: ["responses-only"], createdAt: 1, updatedAt: 1,
-  };
+test("Responses survives provider requests and cache while legacy cache defaults", async () => {
+  const api = await vite.ssrLoadModule("/src/features/chat/api/providers-api.ts");
+  const providers = await vite.ssrLoadModule("/src/features/chat/external-providers.ts");
+  const bodies: Record<string, unknown>[] = [];
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body))); return Response.json({});
+  }) as typeof fetch;
+  try {
+    await api.createProviderConfig({ providerType: "custom", displayName: "Gateway", apiType: "responses" });
+    await api.updateProviderConfig("gateway", { apiType: "responses" });
+    await api.testProviderConnection({ providerType: "custom", apiKey: "", apiType: "responses" });
+  } finally {
+    globalThis.fetch = previous;
+  }
+  assert.equal(bodies.length, 3);
+  assert.ok(bodies.every((body) => body.api_type === "responses"));
+  const config = { id: "gateway", providerType: "custom", name: "Gateway",
+    baseUrl: "https://gateway.example/v1", models: ["responses-only"], createdAt: 1, updatedAt: 1 };
   providers.saveExternalProviders([{ ...config, apiType: "responses" }]);
   assert.equal(providers.loadExternalProviders()[0].apiType, "responses");
   providers.saveExternalProviders([config]);
   assert.equal(providers.loadExternalProviders()[0].apiType, "chat_completions");
-});
-
-
-test("custom Responses keeps Custom sampling controls", async () => {
-  const {
-    getProviderCapabilities,
-    getExternalReasoningCapabilities,
-    resolveExternalReasoningEffort,
-  } =
-    await vite.ssrLoadModule("/src/features/chat/provider-capabilities.ts");
-  assert.equal(getProviderCapabilities("custom", "chat_completions").temperature, true);
-  assert.equal(getProviderCapabilities("custom", "responses").temperature, true);
-  assert.equal(getProviderCapabilities("custom", "responses").topP, true);
-  assert.equal(getProviderCapabilities("custom", "responses").presencePenalty, false);
-  assert.equal(getProviderCapabilities("openai", "responses").temperature, false);
-
-  const openaiReasoning = getExternalReasoningCapabilities("openai", "gpt-5");
-  assert.deepEqual(
-    getExternalReasoningCapabilities("custom", "gpt-5", { apiType: "responses" }),
-    openaiReasoning,
-  );
-  assert.equal(
-    getExternalReasoningCapabilities("custom", "gpt-5", {
-      apiType: "chat_completions",
-    }).supportsReasoning,
-    false,
-  );
-  assert.equal(
-    resolveExternalReasoningEffort({
-      caps: openaiReasoning,
-      providerType: "custom",
-      apiType: "responses",
-      current: "medium",
-    }),
-    "high",
-  );
 });

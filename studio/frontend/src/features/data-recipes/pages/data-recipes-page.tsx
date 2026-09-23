@@ -242,7 +242,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
@@ -258,7 +258,7 @@ function LearningRecipeCards({
               >
                 {template.difficulty}
               </Badge>
-              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
+              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
                 <HugeiconsIcon
                   icon={template.icon}
                   className="size-5 text-foreground/90"

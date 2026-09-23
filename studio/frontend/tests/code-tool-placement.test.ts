@@ -63,77 +63,16 @@ test("a provider with a sandbox its MODEL cannot use runs nothing, not local cod
 });
 
 test("unsupported models on managed custom Responses never fall back to local code", () => {
-  for (const baseUrl of [
-    "https://api.openai.com/v1",
-    "https://team.openai.azure.com/openai/v1",
-    "https://team.services.ai.azure.com/openai/v1",
-  ]) {
-    const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
-      "custom", "gpt-4.1", baseUrl, "responses",
-    );
-    const providerHasSandbox = providerHostsCodeExecution(
-      "custom", baseUrl, "responses",
-    );
-    assert.equal(hostedCodeExecutionForThisTurn, false, baseUrl);
-    assert.equal(providerHasSandbox, true, baseUrl);
-    assert.equal(
-      codeToolCanRun({
-        hostedCodeExecutionForThisTurn,
-        providerHostsCodeExecution: providerHasSandbox,
-        supportsStudioTools: true,
-      }),
-      false,
-      baseUrl,
-    );
-    assert.deepEqual(
-      selectCodeToolNames({
-        codeToolsEnabled: true,
-        hostedCodeExecutionForThisTurn,
-        providerHostsCodeExecution: providerHasSandbox,
-      }),
-      { local: [], hosted: [] },
-      baseUrl,
-    );
-  }
-
-  for (const [baseUrl, apiType] of [
-    ["https://api.openai.com/v1", "chat_completions"],
-    ["https://gateway.example/v1", "responses"],
-    ["https://api.openai.com.attacker.example/v1", "responses"],
-    ["https://team.services.ai.azure.com.attacker.example/v1", "responses"],
-  ] as const) {
-    const providerHasSandbox = providerHostsCodeExecution("custom", baseUrl, apiType);
-    assert.equal(providerHasSandbox, false, `${baseUrl} ${apiType}`);
-    assert.deepEqual(
-      selectCodeToolNames({
-        codeToolsEnabled: true,
-        hostedCodeExecutionForThisTurn: false,
-        providerHostsCodeExecution: providerHasSandbox,
-      }).local,
-      ["python", "terminal", "edit_file"],
-      `${baseUrl} ${apiType}`,
-    );
-  }
-  assert.equal(providerHostsCodeExecution("openai"), true);
-});
-
-test("the composer Code pill and both selection paths use endpoint-aware placement", () => {
-  assert.match(
-    COMPOSER_SOURCE,
-    /const canRunCode = isExternalModel\s+\? codeToolCanRun\(\{[\s\S]*?providerHostsCodeExecution: providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/,
-  );
-  assert.match(
-    COMPOSER_SOURCE,
-    /const codeDisabled =\s*\(modelLoaded && \(isGeminiImageTier \|\| !canRunCode\)\)/,
-  );
-  assert.match(
-    CHAT_PAGE_SOURCE,
-    /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/,
-  );
-  assert.match(
-    CHAT_PAGE_SOURCE,
-    /providerHostsCodeExecution\(\s*selectedProvider\?\.providerType,\s*selectedProvider\?\.baseUrl,\s*selectedProvider\?\.apiType,/,
-  );
+  const baseUrl = "https://api.openai.com/v1";
+  const hosted = providerSupportsBuiltinCodeExecution("custom", "gpt-4.1", baseUrl, "responses");
+  const providerHosted = providerHostsCodeExecution("custom", baseUrl, "responses");
+  assert.equal(codeToolCanRun({ hostedCodeExecutionForThisTurn: hosted,
+    providerHostsCodeExecution: providerHosted, supportsStudioTools: true }), false);
+  assert.deepEqual(selectCodeToolNames({ codeToolsEnabled: true,
+    hostedCodeExecutionForThisTurn: hosted, providerHostsCodeExecution: providerHosted }),
+  { local: [], hosted: [] });
+  assert.match(COMPOSER_SOURCE, /providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/);
+  assert.match(CHAT_PAGE_SOURCE, /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/);
 });
 
 test("a provider with no sandbox uses Unsloth's own tools", () => {

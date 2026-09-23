@@ -73,13 +73,13 @@ import {
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
-  Message01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -725,7 +725,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </p>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
             {([
-              ["archived", "archivedChats", "settings.data.archiveChatsLabel", Message01Icon],
+              ["archived", "archivedChats", "settings.data.archiveChatsLabel", MessageCircleIcon],
               [
                 "archived-images",
                 "archivedImages",
