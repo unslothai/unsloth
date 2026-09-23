@@ -141,12 +141,6 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
-# UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
-$NpmRegistryArgs = @()
-if ($env:UNSLOTH_NPM_REGISTRY) {
-    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
-}
-
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -894,6 +888,131 @@ function Invoke-ManagedLlamaCppPreflight {
     substep "Fix access, then run the same install, setup, or update command again" "Yellow"
     Write-StudioLine ""
     return "$reason Nothing was installed."
+}
+
+# A package host that is blocked, or too slow to serve a small index page within the probe
+# budget, is swapped for a public mirror that passes the same probe. Mirrors _mirror_fallback
+# in install.sh; UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+function Test-MirrorIndexConfigured {
+    param([ValidateSet('uv', 'pip')][string]$Tool)
+    if ($Tool -eq 'uv') {
+        if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
+        $pattern = '^\s*(\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+        $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+    } else {
+        if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
+        $pattern = '^\s*(index[-_]url|extra[-_]index[-_]url|no[-_]index)\s*[=:]'
+        $files = @($env:PIP_CONFIG_FILE, "$env:APPDATA\pip\pip.ini", "$env:USERPROFILE\pip\pip.ini", "$env:ProgramData\pip\pip.ini")
+    }
+    foreach ($file in $files) {
+        if ($file -and (Test-Path -LiteralPath $file -PathType Leaf) -and
+            (Select-String -LiteralPath $file -Pattern $pattern -Quiet -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# Maps each URL to ok, slow (answered but missed the budget) or blocked, probing all at once.
+function Invoke-MirrorProbe {
+    param([string[]]$Urls, [int]$Seconds = 10)
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    # Windows PowerShell 5.1 on an older .NET may pin TLS 1.0/1.1, which every probed host refuses. Pin 1.2
+    # for the probe rather than OR it in (Tls|Tls12 still fails the handshake), and leave SystemDefault (0) alone.
+    $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+    if ([int]$savedProtocol -ne 0) {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    }
+    $requests = @{}
+    $heads = @{}
+    $bodies = @{}
+    $results = @{}
+    try {
+        foreach ($url in $Urls) {
+            $requests[$url] = [System.Net.WebRequest]::Create($url)
+            # The CERNET mirrors answer 403 to a request without a User-Agent.
+            $requests[$url].UserAgent = 'unsloth-installer'
+            $heads[$url] = $requests[$url].GetResponseAsync()
+        }
+        do {
+            foreach ($url in $Urls) {
+                if ($results.ContainsKey($url) -or $bodies.ContainsKey($url) -or -not $heads[$url].IsCompleted) { continue }
+                # A 4xx/5xx faults the task, so a completed response is a success.
+                if ($heads[$url].Status -eq 'RanToCompletion') {
+                    $bodies[$url] = $heads[$url].Result.GetResponseStream().CopyToAsync([System.IO.Stream]::Null)
+                } else {
+                    $results[$url] = 'blocked'
+                }
+            }
+            $pending = @($Urls | Where-Object { -not $results.ContainsKey($_) -and -not ($bodies.ContainsKey($_) -and $bodies[$_].IsCompleted) })
+            if ($pending.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $deadline)
+        foreach ($url in $Urls) {
+            if ($results.ContainsKey($url)) { continue }
+            $results[$url] = if (-not $bodies.ContainsKey($url)) { 'blocked' } elseif ($bodies[$url].Status -eq 'RanToCompletion') { 'ok' } else { 'slow' }
+        }
+    } finally {
+        foreach ($url in @($requests.Keys)) {
+            $requests[$url].Abort()
+            if ($heads[$url].Status -eq 'RanToCompletion') { $heads[$url].Result.Dispose() }
+        }
+        [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
+    }
+    return $results
+}
+
+# Exports the mirror env vars for every default host that fails its probe while its mirror passes.
+function Invoke-MirrorFallback {
+    if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
+    $env:_UNSLOTH_MIRROR_PROBED = '1'
+    $cernet = 'https://mirrors.cernet.edu.cn'
+    $pypiMirror = "$cernet/pypi/web/simple"
+    $useUv = -not (Test-MirrorIndexConfigured -Tool uv)
+    $usePip = -not (Test-MirrorIndexConfigured -Tool pip)
+    # Host -> default probe URL, mirror probe URL, mirror value.
+    $hosts = [ordered]@{}
+    if ($useUv -or $usePip) { $hosts['pypi.org'] = @('https://pypi.org/simple/pip/', "$pypiMirror/pip/", $pypiMirror) }
+    if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
+        $hosts['download.pytorch.org'] = @('https://download.pytorch.org/whl/cpu/torchaudio/', "$cernet/pytorch/whl/cpu/torchaudio/", "$cernet/pytorch/whl")
+    }
+    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['nodejs.org'] = @('https://nodejs.org/dist/index.tab', "$cernet/nodejs-release/index.tab", "$cernet/nodejs-release") }
+    if (-not $env:UNSLOTH_NPM_REGISTRY) {
+        $hosts['registry.npmjs.org'] = @('https://registry.npmjs.org/npm/latest', 'https://registry.npmmirror.com/npm/latest', 'https://registry.npmmirror.com')
+    }
+    if ($hosts.Count -eq 0) { return }
+    $default = Invoke-MirrorProbe -Urls @($hosts.Keys | ForEach-Object { $hosts[$_][0] })
+    $failed = @($hosts.Keys | Where-Object { $default[$hosts[$_][0]] -ne 'ok' })
+    if ($failed.Count -eq 0) { return }
+    $mirror = Invoke-MirrorProbe -Urls @($failed | ForEach-Object { $hosts[$_][1] })
+    $used = $false
+    foreach ($name in $failed) {
+        if ($mirror[$hosts[$name][1]] -ne 'ok') { continue }
+        $how = $default[$hosts[$name][0]]
+        $to = $hosts[$name][2]
+        switch ($name) {
+            'pypi.org' {
+                # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
+                if ($useUv -and $how -eq 'slow') {
+                    $env:UV_INDEX = $to
+                    $env:UV_DEFAULT_INDEX = 'https://pypi.org/simple'
+                    if (-not $env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY = 'unsafe-first-match' }
+                } elseif ($useUv) {
+                    $env:UV_DEFAULT_INDEX = $to
+                }
+                if ($usePip) {
+                    $env:PIP_INDEX_URL = $to
+                    if ($how -eq 'slow') { $env:PIP_EXTRA_INDEX_URL = 'https://pypi.org/simple' }
+                }
+            }
+            'download.pytorch.org' { $env:UNSLOTH_PYTORCH_MIRROR = $to }
+            'nodejs.org' { $env:UNSLOTH_NODE_MIRROR = $to }
+            'registry.npmjs.org' { $env:UNSLOTH_NPM_REGISTRY = $to }
+        }
+        step "mirror" "$name is $how; using $to" "Yellow"
+        $used = $true
+    }
+    if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
 }
 
 # Stop every install path consistently when its destination is unreadable.
@@ -4827,6 +4946,15 @@ if ($LASTEXITCODE -eq 0 -and $ScriptsDir -and (Test-Path $ScriptsDir)) {
 Write-StudioLine ""
 step "system" "prerequisites ready"
 Write-StudioLine ""
+
+# Before the first npm, Node or package-index download; may set UNSLOTH_NPM_REGISTRY below.
+Invoke-MirrorFallback
+
+# UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
+$NpmRegistryArgs = @()
+if ($env:UNSLOTH_NPM_REGISTRY) {
+    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
+}
 
 # ==========================================================================
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
