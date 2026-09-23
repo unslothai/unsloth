@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
+import { hubFetch } from "@/lib/hub-fetch";
 import { useEffect, useState } from "react";
 import {
   type DatasetSplitFetchers,
@@ -110,7 +111,7 @@ async function fetchRemoteSplits({
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
-  const response = await fetch(url, { headers, signal });
+  const response = await hubFetch(url, { headers, signal });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(

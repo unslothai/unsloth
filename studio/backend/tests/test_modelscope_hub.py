@@ -163,7 +163,7 @@ def test_browser_resolve_relays_to_a_session_and_redirects_anyone_else(hub, monk
     async def session(_request) -> bool:
         return signed_in
 
-    monkeypatch.setattr(router, "_studio_session", session)
+    monkeypatch.setattr(router, "signed_in", session)
     app = FastAPI()
     app.include_router(build_router(browser = True))
     browser = TestClient(app, follow_redirects = False)

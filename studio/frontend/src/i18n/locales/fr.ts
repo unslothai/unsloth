@@ -966,9 +966,6 @@ export const fr = {
         invalidEndpoint: "Saisissez une URL http(s) sans identifiants ni paramètres. Le http simple ne fonctionne que pour une adresse locale.",
         saveFailed: "Impossible d'enregistrer les réglages du hub.",
         loadFailed: "Impossible de charger les réglages du hub.",
-        reloadNeeded: "Rechargez cette fenêtre pour que la navigation utilise les nouveaux paramètres du Hub. Les téléchargements les utilisent déjà.",
-        reload: "Recharger",
-        desktopBrowsing: "Les téléchargements utilisent déjà les nouveaux paramètres du Hub. Pour naviguer avec eux dans l'application de bureau, définissez HF_ENDPOINT et HF_DATASETS_SERVER dans l'environnement avant de lancer Unsloth.",
       },
       downloads: {
         sectionTitle: "Téléchargements",

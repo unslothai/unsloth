@@ -934,9 +934,6 @@ export const it = {
         invalidEndpoint: "Inserisci un URL http(s) senza credenziali né parametri. http semplice funziona solo con un indirizzo locale.",
         saveFailed: "Impossibile salvare le impostazioni dell'hub.",
         loadFailed: "Impossibile caricare le impostazioni dell'hub.",
-        reloadNeeded: "Ricarica questa finestra perché la navigazione usi le nuove impostazioni dell'Hub. I download le usano già.",
-        reload: "Ricarica",
-        desktopBrowsing: "I download usano già le nuove impostazioni dell'Hub. Per navigare con esse nell'app desktop, imposta HF_ENDPOINT e HF_DATASETS_SERVER nell'ambiente prima di avviare Unsloth.",
       },
       downloads: {
         sectionTitle: "Download",

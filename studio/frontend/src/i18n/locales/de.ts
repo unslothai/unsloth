@@ -967,9 +967,6 @@ export const de = {
         invalidEndpoint: "Geben Sie eine http(s)-URL ohne Anmeldedaten oder Query ein. Reines http funktioniert nur für eine lokale Adresse.",
         saveFailed: "Die Hub-Einstellungen konnten nicht gespeichert werden.",
         loadFailed: "Die Hub-Einstellungen konnten nicht geladen werden.",
-        reloadNeeded: "Laden Sie dieses Fenster neu, damit das Stöbern die neuen Hub-Einstellungen nutzt. Downloads nutzen sie bereits.",
-        reload: "Neu laden",
-        desktopBrowsing: "Downloads nutzen die neuen Hub-Einstellungen bereits. Um in der Desktop-App damit zu stöbern, setzen Sie HF_ENDPOINT und HF_DATASETS_SERVER in der Umgebung, bevor Sie Unsloth starten.",
       },
       downloads: {
         sectionTitle: "Downloads",

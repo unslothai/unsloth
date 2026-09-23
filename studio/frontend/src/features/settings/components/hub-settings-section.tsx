@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { DEFAULT_HF_ENDPOINT, type HubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
@@ -26,10 +25,6 @@ const SOURCES: { value: HubSource; label: string }[] = [
   { value: "modelscope", label: "ModelScope" },
 ];
 
-// The page's CSP is set when it is served, so browsing picks up a new endpoint on reload.
-// Module scope, so the notice outlives this section unmounting until that reload.
-let reloadPending = false;
-
 export function HubSettingsSection() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -37,7 +32,6 @@ export function HubSettingsSection() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reloadNeeded, setReloadNeeded] = useState(reloadPending);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,16 +58,6 @@ export function HubSettingsSection() {
     setError(null);
     try {
       const saved = await updateHubSettings(next);
-      // Either one can move the datasets server off the origins the page allows.
-      if (
-        settings &&
-        (saved.hfEndpoint !== settings.hfEndpoint ||
-          saved.datasetsServerFollowsEndpoint !==
-            settings.datasetsServerFollowsEndpoint)
-      ) {
-        reloadPending = true;
-        setReloadNeeded(true);
-      }
       setSettings(saved);
       // A toggle saves the committed endpoint and leaves an unsaved draft alone.
       if (next.hfEndpoint === draftEndpoint) {
@@ -97,17 +81,7 @@ export function HubSettingsSection() {
     setSaving(true);
     setError(null);
     try {
-      const saved = await updateHubSource(source);
-      // A page served under ModelScope does not allow a custom endpoint's origins.
-      if (
-        settings?.activeSource === "modelscope" &&
-        saved.activeSource === "huggingface" &&
-        saved.hfEndpoint
-      ) {
-        reloadPending = true;
-        setReloadNeeded(true);
-      }
-      setSettings(saved);
+      setSettings(await updateHubSource(source));
     } catch {
       setError(t("settings.general.hub.saveFailed"));
     } finally {
@@ -202,23 +176,6 @@ export function HubSettingsSection() {
           {settings?.source === "modelscope" ? (
             <span className="max-w-[300px] text-right text-xs text-muted-foreground">
               {t("settings.general.hub.endpointInactive")}
-            </span>
-          ) : null}
-          {reloadNeeded && isTauri ? (
-            // The desktop webview's CSP is built at launch from the environment.
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-              {t("settings.general.hub.desktopBrowsing")}
-            </span>
-          ) : reloadNeeded ? (
-            <span className="flex max-w-[300px] items-center justify-end gap-2 text-right text-xs text-muted-foreground">
-              {t("settings.general.hub.reloadNeeded")}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.location.reload()}
-              >
-                {t("settings.general.hub.reload")}
-              </Button>
             </span>
           ) : null}
           {error ? (

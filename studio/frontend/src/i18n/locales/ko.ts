@@ -941,9 +941,6 @@ export const ko = {
         invalidEndpoint: "로그인 정보나 쿼리가 없는 http(s) URL을 입력하세요. http는 로컬 주소에서만 쓸 수 있습니다.",
         saveFailed: "허브 설정을 저장하지 못했습니다.",
         loadFailed: "허브 설정을 불러오지 못했습니다.",
-        reloadNeeded: "이 창을 새로고침하면 탐색에도 새 Hub 설정이 사용됩니다. 다운로드에는 이미 사용 중입니다.",
-        reload: "새로고침",
-        desktopBrowsing: "다운로드에는 이미 새 Hub 설정이 사용됩니다. 데스크톱 앱에서 탐색에도 사용하려면 Unsloth를 실행하기 전에 환경 변수 HF_ENDPOINT와 HF_DATASETS_SERVER를 설정하세요.",
       },
       downloads: {
         sectionTitle: "다운로드",

@@ -25,11 +25,14 @@ const store = createStore<{
   source: HubSource;
   /** Kept after a switch back: requests already queued for the adapter still go there. */
   modelScopeBase: string | null;
+  /** The backend's relays to a custom endpoint, kept for the same reason. */
+  proxyBases: readonly string[];
 }>(() => ({
   endpoint: DEFAULT_HF_ENDPOINT,
   datasetsServer: DEFAULT_DATASETS_SERVER,
   source: "huggingface",
   modelScopeBase: null,
+  proxyBases: [],
 }));
 
 /**
@@ -54,12 +57,14 @@ function usableEndpoint(raw: string | null | undefined): string | null {
 /**
  * Apply the endpoints reported by `/api/health`. A blank, absent or unparseable
  * value leaves the current one alone: older backends report neither field, and
- * resetting would strand a mirror-only deployment on huggingface.co.
+ * resetting would strand a mirror-only deployment on huggingface.co. `proxied`
+ * marks a value that is the backend's relay rather than the endpoint itself.
  */
 export function setHfEndpoints(
   endpoint?: string | null,
   datasetsServer?: string | null,
   source?: string | null,
+  proxied: { endpoint?: boolean; datasetsServer?: boolean } = {},
 ): void {
   const next = {
     endpoint: usableEndpoint(endpoint),
@@ -70,12 +75,17 @@ export function setHfEndpoints(
       source === "huggingface" || source === "modelscope" ? source : prev.source;
     // The endpoint names which hub it is: never keep one hub's with the other's name.
     const applied = next.endpoint ? nextSource : prev.source;
+    const relays = [
+      proxied.endpoint ? next.endpoint : null,
+      proxied.datasetsServer ? next.datasetsServer : null,
+    ].filter((base): base is string => base !== null && !prev.proxyBases.includes(base));
     return {
       endpoint: next.endpoint ?? prev.endpoint,
       datasetsServer: next.datasetsServer ?? prev.datasetsServer,
       source: applied,
       modelScopeBase:
         next.endpoint && applied === "modelscope" ? next.endpoint : prev.modelScopeBase,
+      proxyBases: relays.length ? [...prev.proxyBases, ...relays] : prev.proxyBases,
     };
   });
 }
@@ -86,6 +96,7 @@ export function resetHfEndpoints(): void {
     datasetsServer: DEFAULT_DATASETS_SERVER,
     source: "huggingface",
     modelScopeBase: null,
+    proxyBases: [],
   });
 }
 
@@ -101,6 +112,11 @@ export function getHubSource(): HubSource {
 export function isModelScopeHubUrl(url: string): boolean {
   const base = store.getState().modelScopeBase;
   return base !== null && url.startsWith(`${base}/`);
+}
+
+/** Whether `url` goes through the backend's relay to a custom endpoint or datasets server. */
+export function isProxiedHubUrl(url: string): boolean {
+  return store.getState().proxyBases.some((base) => url.startsWith(`${base}/`));
 }
 
 let sessionRefresh: (() => Promise<boolean>) | null = null;

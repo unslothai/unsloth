@@ -10,8 +10,12 @@ import {
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
-// The backend's Hub-compatible adapter over ModelScope; same origin, so the page CSP already allows it.
+// Backend routes, so same origin: the page CSP already allows them whatever endpoint is saved later.
 const MODELSCOPE_HUB_PATH = "/api/hub/modelscope";
+
+function backendUrl(path: string): string {
+  return new URL(apiUrl(path), window.location.href).href;
+}
 
 export const env = {
   MODE: import.meta.env.MODE,
@@ -172,6 +176,8 @@ export async function fetchDeviceType(options?: {
         hf_endpoint?: string;
         hf_datasets_server?: string;
         hub_source?: string;
+        hub_proxy?: string | null;
+        datasets_server_proxy?: string | null;
       };
       // Once the store holds an authoritative (server-reported) platform, a non-forced response
       // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
@@ -181,12 +187,19 @@ export async function fetchDeviceType(options?: {
       // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
+      // A relay path names its endpoint, so caches keyed on the Hub URL follow a change.
+      const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
+      const datasetsProxy =
+        typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;
       setHfEndpoints(
         data.hub_source === "modelscope"
-          ? new URL(apiUrl(MODELSCOPE_HUB_PATH), window.location.href).href
-          : data.hf_endpoint,
-        data.hf_datasets_server,
+          ? backendUrl(MODELSCOPE_HUB_PATH)
+          : hubProxy
+            ? backendUrl(hubProxy)
+            : data.hf_endpoint,
+        datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
         data.hub_source,
+        { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
       );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;

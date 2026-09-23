@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  getHfEndpoint,
-  isModelScopeHubUrl,
-  refreshHubSession,
-} from "@/lib/hf-endpoint";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { fetchHub } from "@/lib/hub-fetch";
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
@@ -338,56 +335,6 @@ export function sanitizeHubErrorMessage(message: string): string {
   const cleaned = message.replace(/\.?\s*URL:\s*\S+(\.\s*Request ID:\s*\S+)?\.?\s*$/, "");
   return cleaned.trim() || message;
 }
-
-/**
- * The ModelScope adapter is a backend route: it takes the Unsloth session, and a Hugging
- * Face token has no business there. Read from storage directly, as config/env.ts does:
- * importing features/auth would pull in more than the bare-node tests can load.
- */
-function requestUrl(input: Parameters<typeof fetch>[0]): string {
-  return typeof input === "string"
-    ? input
-    : input instanceof URL
-      ? input.href
-      : input.url;
-}
-
-function withHubAuth(
-  input: Parameters<typeof fetch>[0],
-  init: RequestInit,
-): RequestInit {
-  if (!isModelScopeHubUrl(requestUrl(input))) return init;
-  const headers = new Headers(init.headers);
-  let token: string | null = null;
-  try {
-    token = localStorage.getItem("unsloth_auth_token");
-  } catch {
-    token = null;
-  }
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  else headers.delete("Authorization");
-  return { ...init, headers };
-}
-
-// The session token lives an hour and is otherwise refreshed only by authFetch.
-async function fetchHub(
-  input: Parameters<typeof fetch>[0],
-  init: RequestInit,
-): Promise<Response> {
-  const response = await fetch(input, withHubAuth(input, init));
-  if (
-    response.status !== 401 ||
-    !isModelScopeHubUrl(requestUrl(input)) ||
-    !(await refreshHubSession())
-  ) {
-    return response;
-  }
-  return fetch(input, withHubAuth(input, init));
-}
-
-/** `fetch` for Hub SDK calls that take no timeout. */
-export const hubFetch: typeof fetch = (input, init) =>
-  fetchHub(input, init ?? {});
 
 export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],

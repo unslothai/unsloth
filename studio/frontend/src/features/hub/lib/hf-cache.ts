@@ -4,7 +4,7 @@
 import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
 import { getHfEndpoint } from "@/lib/hf-endpoint";
-import { hubFetch } from "./network";
+import { hubFetch } from "@/lib/hub-fetch";
 import { LruMap } from "./lru-map";
 import { fingerprintToken } from "./token-fingerprint";
 

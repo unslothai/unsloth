@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
+import { hubFetch } from "@/lib/hub-fetch";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +34,7 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   if (cached) return cached;
   const p = (async () => {
     try {
-      const res = await fetch(
+      const res = await hubFetch(
         `${base}/first-rows?dataset=${encodeURIComponent(
           repo,
         )}&config=default&split=train`,

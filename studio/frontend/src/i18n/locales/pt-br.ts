@@ -955,9 +955,6 @@ export const ptBR = {
         invalidEndpoint: "Informe uma URL http(s) sem credenciais nem parâmetros. http simples só funciona com um endereço local.",
         saveFailed: "Não foi possível salvar as configurações do hub.",
         loadFailed: "Não foi possível carregar as configurações do hub.",
-        reloadNeeded: "Recarregue esta janela para que a navegação use as novas configurações do Hub. Os downloads já as usam.",
-        reload: "Recarregar",
-        desktopBrowsing: "Os downloads já usam as novas configurações do Hub. Para navegar com elas no app de desktop, defina HF_ENDPOINT e HF_DATASETS_SERVER no ambiente antes de abrir o Unsloth.",
       },
       downloads: {
         sectionTitle: "Downloads",

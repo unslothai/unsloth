@@ -962,9 +962,6 @@ export const es = {
         invalidEndpoint: "Escribe una URL http(s) sin credenciales ni parámetros. http sin cifrar solo funciona con una dirección local.",
         saveFailed: "No se pudo guardar la configuración del hub.",
         loadFailed: "No se pudo cargar la configuración del hub.",
-        reloadNeeded: "Recarga esta ventana para que la exploración use la nueva configuración del Hub. Las descargas ya la usan.",
-        reload: "Recargar",
-        desktopBrowsing: "Las descargas ya usan la nueva configuración del Hub. Para explorar con ella en la app de escritorio, define HF_ENDPOINT y HF_DATASETS_SERVER en el entorno antes de abrir Unsloth.",
       },
       downloads: {
         sectionTitle: "Descargas",

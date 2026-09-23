@@ -933,9 +933,6 @@ export const ja = {
         invalidEndpoint: "ログイン情報やクエリを含まない http(s) の URL を入力してください。http はローカルアドレスでのみ使えます。",
         saveFailed: "ハブ設定を保存できませんでした。",
         loadFailed: "ハブ設定を読み込めませんでした。",
-        reloadNeeded: "このウィンドウを再読み込みすると、閲覧にも新しい Hub 設定が使われます。ダウンロードにはすでに使われています。",
-        reload: "再読み込み",
-        desktopBrowsing: "ダウンロードにはすでに新しい Hub 設定が使われています。デスクトップアプリで閲覧にも使うには、Unsloth を起動する前に環境変数 HF_ENDPOINT と HF_DATASETS_SERVER を設定してください。",
       },
       downloads: {
         sectionTitle: "ダウンロード",

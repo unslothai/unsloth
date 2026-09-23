@@ -925,9 +925,6 @@ export const zhCN = {
         invalidEndpoint: "请输入不含登录信息和查询参数的 http(s) 地址。http 仅适用于本机地址。",
         saveFailed: "无法保存模型中心设置。",
         loadFailed: "无法加载模型中心设置。",
-        reloadNeeded: "重新加载此窗口后，浏览也将使用新的 Hub 设置。下载已在使用这些设置。",
-        reload: "重新加载",
-        desktopBrowsing: "下载已在使用新的 Hub 设置。若要在桌面应用中浏览时也使用它们，请在启动 Unsloth 前在环境变量中设置 HF_ENDPOINT 和 HF_DATASETS_SERVER。",
       },
       downloads: {
         sectionTitle: "下载",

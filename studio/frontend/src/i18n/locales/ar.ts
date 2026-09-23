@@ -944,9 +944,6 @@ export const ar = {
         invalidEndpoint: "أدخل عنوان http(s) بلا بيانات دخول أو استعلام. لا يعمل http العادي إلا مع عنوان محلي.",
         saveFailed: "تعذّر حفظ إعدادات المركز.",
         loadFailed: "تعذّر تحميل إعدادات المركز.",
-        reloadNeeded: "أعد تحميل هذه النافذة ليستخدم التصفح إعدادات Hub الجديدة. التنزيلات تستخدمها بالفعل.",
-        reload: "إعادة التحميل",
-        desktopBrowsing: "التنزيلات تستخدم إعدادات Hub الجديدة الآن. للتصفح بها في تطبيق سطح المكتب، عيّن HF_ENDPOINT وHF_DATASETS_SERVER في البيئة قبل تشغيل Unsloth.",
       },
       downloads: {
         sectionTitle: "التنزيلات",

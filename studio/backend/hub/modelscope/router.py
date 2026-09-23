@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from hub.browser_session import signed_in
 from hub.modelscope import upstream as ms
 from loggers import get_logger
 
@@ -223,7 +224,7 @@ def build_router(*, browser: bool) -> APIRouter:
 
     async def resolve(kind: str, repo: str, revision: str, path: str, request: Request) -> Response:
         path = _file_path(path)
-        session = browser and await _studio_session(request)
+        session = browser and await signed_in(request)
         if browser and not session:
             if "authorization" in request.headers:
                 # A stale session: the page refreshes it on a 401, but cannot read a cross-origin redirect.
@@ -283,21 +284,6 @@ def build_router(*, browser: bool) -> APIRouter:
         return _error(403, None, _UPLOAD_REFUSAL)
 
     return router
-
-
-async def _studio_session(request: Request) -> bool:
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    from auth.authentication import get_current_subject
-
-    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return False
-    try:
-        await get_current_subject(HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token))
-    except HTTPException:
-        return False
-    return True
 
 
 async def _relay(url: str, headers: dict) -> Response:

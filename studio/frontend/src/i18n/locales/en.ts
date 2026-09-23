@@ -949,9 +949,6 @@ export const en = {
         invalidEndpoint: "Enter an http(s) URL without a login or query. Plain http works only for a local address.",
         saveFailed: "Couldn't save the hub settings.",
         loadFailed: "Couldn't load the hub settings.",
-        reloadNeeded: "Reload this window so browsing uses the new Hub settings. Downloads use them already.",
-        reload: "Reload",
-        desktopBrowsing: "Downloads use the new Hub settings now. To browse through them in the desktop app, set HF_ENDPOINT and HF_DATASETS_SERVER in the environment before launching Unsloth.",
       },
       downloads: {
         sectionTitle: "Downloads",

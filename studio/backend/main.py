@@ -401,6 +401,7 @@ from utils.hf_endpoint import (
     csp_connect_sources,
     get_hf_datasets_server,
 )
+from hub import endpoint_proxy as _hub_endpoint_proxy
 from hub.modelscope.router import (
     BROWSER_PREFIX as _MODELSCOPE_BROWSER_PREFIX,
     build_router as _build_modelscope_router,
@@ -1585,7 +1586,7 @@ app.add_middleware(
     allow_headers = ["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
-    expose_headers = ["X-Unsloth-Conflict-Kind"],
+    expose_headers = ["X-Unsloth-Conflict-Kind", *_hub_endpoint_proxy.EXPOSED_HEADERS],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
     # server after remote access was stopped. Keep the stale window short.
@@ -1653,6 +1654,15 @@ app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(
     _build_modelscope_router(browser = True), prefix = _MODELSCOPE_BROWSER_PREFIX, tags = ["hub"]
 )
+for _prefix, _upstream, _pages in (
+    (_hub_endpoint_proxy.HUB_PREFIX, browser_hf_endpoint, True),
+    (_hub_endpoint_proxy.DATASETS_SERVER_PREFIX, get_hf_datasets_server, False),
+):
+    app.include_router(
+        _hub_endpoint_proxy.build_router(_prefix, _upstream, anonymous_pages = _pages),
+        prefix = _prefix,
+        tags = ["hub"],
+    )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
@@ -1931,6 +1941,17 @@ async def health_check(request: Request):
         # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        # A custom endpoint is browsed through the backend: the page's CSP predates the setting.
+        "hub_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.HUB_PREFIX,
+            browser_hf_endpoint(),
+            _HF_ENDPOINT_DEFAULTS["hf_endpoint"],
+        ),
+        "datasets_server_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.DATASETS_SERVER_PREFIX,
+            get_hf_datasets_server(),
+            _HF_ENDPOINT_DEFAULTS["hf_datasets_server"],
+        ),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
