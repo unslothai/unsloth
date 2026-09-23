@@ -174,7 +174,8 @@ def _fill_missing_loss(cls):
     computed from its logits, the same formula transformers uses.
     """
     original = cls.__dict__.get("forward")
-    if original is None or getattr(cls, "_unsloth_original_forward", None) is not None:
+    # Own dict only: a subclass of an already repaired class has its own unwrapped forward.
+    if original is None or "_unsloth_original_forward" in cls.__dict__:
         return False
     try:
         parameters = inspect.signature(original).parameters
@@ -203,6 +204,15 @@ def _fill_missing_loss(cls):
             vocab_size = logits.shape[-1],
             num_items_in_batch = kwargs.get("num_items_in_batch", None),
         )
+
+    def _has_own_loss(output):
+        if isinstance(output, dict):
+            return output.get("loss", None) is not None
+        # return_dict = False: (loss, logits, ...) when labels were given; logits are never 0-d.
+        if isinstance(output, (tuple, list)) and output:
+            first = output[0]
+            return isinstance(first, torch.Tensor) and first.ndim == 0 and first.is_floating_point()
+        return False
 
     try:
         signature = inspect.signature(original)
@@ -240,7 +250,7 @@ def _fill_missing_loss(cls):
         if state["returns_loss"] is None:
             try:
                 output = original(self, *args, **kwargs)
-                if isinstance(output, dict) and output.get("loss", None) is not None:
+                if _has_own_loss(output):
                     state["returns_loss"] = True
                     return output
             except (AttributeError, TypeError, KeyError):

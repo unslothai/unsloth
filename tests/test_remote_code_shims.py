@@ -153,6 +153,30 @@ def test_a_forward_that_returns_its_own_loss_is_left_alone():
     assert float(model(input_ids = ids, labels = ids).loss) == 42.0
 
 
+def test_a_tuple_output_with_its_own_loss_is_left_alone():
+    """return_dict = False gives (loss, logits); the model's own loss must survive the probe."""
+
+    class TupleGood(Outer):
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            **kwargs,
+        ):
+            logits = self.lm_head(self.model(input_ids))
+            return (torch.tensor(42.0), logits) if labels is not None else (logits,)
+
+    TupleGood.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    model = TupleGood(TinyConfig())
+    apply_remote_code_shims(model)
+    ids = torch.randint(0, 32, (1, 4))
+    for _ in range(2):
+        out = model(input_ids = ids, labels = ids)
+        assert float(out[0]) == 42.0 and out[1].shape == (1, 4, 32)
+
+
 def test_transformers_own_classes_are_not_touched():
     from unsloth.models.remote_code_shims import (
         apply_remote_code_shims,
