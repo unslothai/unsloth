@@ -431,10 +431,7 @@ test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can se
   );
 });
 
-// #11557: the per-model hosted Code check claimed a sandbox for openai_codex, whose backend
-// registry declares no hosted tools, so Code sent `code_execution` to a connection that runs
-// nothing and Python / Terminal never reached the model. Both frontend checks must agree with
-// the backend's `hosted_tools` for every provider type it registers.
+// #11557: claiming a sandbox the backend registry lacks sends `code_execution` to a connection that runs nothing.
 test("hosted Code is only claimed where the backend registry hosts code_execution", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(
@@ -463,7 +460,7 @@ test("hosted Code is only claimed where the backend registry hosts code_executio
     "gemini-3-pro",
   ];
   for (const [, providerType] of entries) {
-    // studio_tools on, since that is what the removed openai_codex branch keyed on.
+    // studio_tools on: what the removed openai_codex branch keyed on.
     setProviderModelCapabilities(
       providerType,
       Object.fromEntries(models.map((m) => [m, { studio_tools: true }])),
