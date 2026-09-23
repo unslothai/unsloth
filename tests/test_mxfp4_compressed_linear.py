@@ -1016,3 +1016,29 @@ def test_merge_and_unmerge_under_an_accelerate_hook():
         assert torch.equal(packed_model(x), dense_model(x))
         packed_model.unmerge_adapter()
         assert torch.equal(packed_model(x), with_lora)
+
+
+@_apply(needs_gpu_loader_any)
+def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatch):
+    """Every compressed-tensors load passes through the hook; one that is not all MXFP4 (INT4
+    Kimi-K2.7 has half a million keys) must not have its keys read or planned."""
+    import importlib.util
+    import unsloth.models.compressed_tensors_bnb as ctb
+    from transformers import AutoModelForCausalLM
+    from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_compressed_tensors_bnb.py")
+    spec = importlib.util.spec_from_file_location("_k3s_ct_bnb_tests", path)
+    ct_bnb_tests = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ct_bnb_tests)
+
+    calls = []
+    real = ctb._checkpoint_keys
+    monkeypatch.setattr(ctb, "_checkpoint_keys", lambda files: calls.append(files) or real(files))
+    assert install_compressed_tensors_keep_packed()
+    int4_dir, _ = ct_bnb_tests._write_tiny_packed_llama(str(tmp_path / "int4"))
+    AutoModelForCausalLM.from_pretrained(int4_dir, dtype = torch.bfloat16, device_map = {"": 0})
+    assert calls == []
+    mxfp4_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path / "mxfp4"))
+    model = AutoModelForCausalLM.from_pretrained(mxfp4_dir, dtype = torch.bfloat16, device_map = {"": 0})
+    assert len(calls) == 1 and sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7

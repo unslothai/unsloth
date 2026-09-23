@@ -432,20 +432,27 @@ def install_compressed_tensors_keep_packed() -> bool:
         try:
             from .compressed_tensors_bnb import (
                 _checkpoint_keys,
-                _match_packed_linears,
-                _zoo_saves_packed_modules,
+                keep_mxfp4_experts_packed,
                 plan_mxfp4_keep_packed,
             )
 
-            if not _zoo_saves_packed_modules():
+            # Only an all-MXFP4 checkpoint is planned: reading and matching every key of any
+            # other one (INT4 Kimi-K2.7) took about a second for nothing.
+            if not keep_mxfp4_experts_packed(config.to_dict()):
                 return result
             keys = _checkpoint_keys(kwargs.get("checkpoint_files"))
             plan = plan_mxfp4_keep_packed(model, keys) if keys else None
-            matched = _match_packed_linears(model, keys) if plan is not None else None
         except Exception:
-            plan = matched = None
-        if plan is None or not matched:
+            plan = None
+        if plan is None:
             return result
+        # Every packed Linear is adopted, the experts a stack takes after load included.
+        packed_names = set(plan.linears) | {
+            f"{name}.experts.{index}.{proj}"
+            for name, block, _, _ in plan.blocks
+            for index in range(len(block.experts))
+            for proj in ("w1", "w2", "w3")
+        }
         # transformers 5.x does not pass the load dtype here; the model was built in it.
         dtype = kwargs.get("dtype")
         if not isinstance(dtype, torch.dtype):
@@ -453,7 +460,7 @@ def install_compressed_tensors_keep_packed() -> bool:
         adopted = adopt_compressed_mxfp4_modules(
             model,
             default_format = fmt,
-            packed_names = set(matched),
+            packed_names = packed_names,
             dtype = dtype if isinstance(dtype, torch.dtype) else None,
         )
         if adopted:
