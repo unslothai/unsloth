@@ -43,20 +43,22 @@ PROMPTS = [
 
 def main() -> None:
     if DEVICE_TYPE_TORCH not in ("cuda", "xpu"):
-        print(f"[SKIP] GRPO + fast_inference needs a CUDA or XPU GPU (device is {DEVICE_TYPE_TORCH}).")
+        print(
+            f"[SKIP] GRPO + fast_inference needs a CUDA or XPU GPU (device is {DEVICE_TYPE_TORCH})."
+        )
         return
     if importlib.util.find_spec("vllm") is None:
         print("[SKIP] vLLM is not installed for this device; fast_inference is unavailable.")
         return
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL,
-        max_seq_length=256,
-        load_in_4bit=False,
-        fast_inference=True,       # attach a colocated vLLM engine
-        max_lora_rank=LORA_RANK,
-        gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
-        enforce_eager=True,        # skip CUDA graph capture for fast startup
+        model_name = MODEL,
+        max_seq_length = 256,
+        load_in_4bit = False,
+        fast_inference = True,  # attach a colocated vLLM engine
+        max_lora_rank = LORA_RANK,
+        gpu_memory_utilization = GPU_MEMORY_UTILIZATION,
+        enforce_eager = True,  # skip CUDA graph capture for fast startup
     )
     device = model.device
     print(f"[INFO] Loaded {MODEL} on {device} with fast_inference=True")
@@ -67,11 +69,11 @@ def main() -> None:
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=LORA_RANK,
-        target_modules=TARGET_MODULES,
-        lora_alpha=LORA_RANK,
-        use_gradient_checkpointing=False,
-        random_state=SEED,
+        r = LORA_RANK,
+        target_modules = TARGET_MODULES,
+        lora_alpha = LORA_RANK,
+        use_gradient_checkpointing = False,
+        random_state = SEED,
     )
 
     dataset = Dataset.from_dict({"prompt": PROMPTS})
@@ -84,22 +86,22 @@ def main() -> None:
         return [float(len(c[0]["content"])) + i / (n + 1) for i, c in enumerate(completions)]
 
     trainer = GRPOTrainer(
-        model=model,
-        processing_class=tokenizer,
-        reward_funcs=[length_reward_func],
-        args=GRPOConfig(
-            learning_rate=5e-6,
-            per_device_train_batch_size=NUM_GENERATIONS,
-            gradient_accumulation_steps=1,
-            num_generations=NUM_GENERATIONS,
-            max_prompt_length=MAX_PROMPT_LENGTH,
-            max_completion_length=MAX_COMPLETION_LENGTH,
-            max_steps=MAX_STEPS,
-            logging_steps=1,
-            report_to="none",
-            seed=SEED,
+        model = model,
+        processing_class = tokenizer,
+        reward_funcs = [length_reward_func],
+        args = GRPOConfig(
+            learning_rate = 5e-6,
+            per_device_train_batch_size = NUM_GENERATIONS,
+            gradient_accumulation_steps = 1,
+            num_generations = NUM_GENERATIONS,
+            max_prompt_length = MAX_PROMPT_LENGTH,
+            max_completion_length = MAX_COMPLETION_LENGTH,
+            max_steps = MAX_STEPS,
+            logging_steps = 1,
+            report_to = "none",
+            seed = SEED,
         ),
-        train_dataset=dataset,
+        train_dataset = dataset,
     )
     if not trainer.args.use_vllm:
         raise RuntimeError("GRPO is not configured to use vLLM")
@@ -118,13 +120,13 @@ def main() -> None:
         if not condition:
             reasons.append(reason)
 
-    check(all(math.isfinite(loss) for loss in losses),
-          f"loss is not finite: {losses}")
-    check(len(grad_norms) == len(steps),
-          "some steps logged no grad_norm")
+    check(all(math.isfinite(loss) for loss in losses), f"loss is not finite: {losses}")
+    check(len(grad_norms) == len(steps), "some steps logged no grad_norm")
     # Sign check only: a step can legitimately be near zero (0.004 observed), so any tighter lower bound would be flaky.
-    check(all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
-          f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}")
+    check(
+        all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
+        f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}",
+    )
 
     # Key names differ across the supported TRL range, so accept either.
     lengths = [s.get("completion_length", s.get("completions/mean_length")) for s in steps]
@@ -136,26 +138,33 @@ def main() -> None:
     # model-specific values.
     max_reward = MAX_COMPLETION_LENGTH * MAX_CHARS_PER_TOKEN
 
-    check(all(l is not None and 0.0 < l <= MAX_COMPLETION_LENGTH for l in lengths),
-          f"completion length missing, or rollout was empty: {lengths}")
-    check(all(r is not None and 0.0 < r <= max_reward for r in rewards),
-          f"reward missing, or outside (0, {max_reward}]: {rewards}")
-    check(all(s is not None and 0.0 < s <= max_reward for s in reward_stds),
-          f"no reward spread, so GRPO advantages were all zero: {reward_stds}")
-    check(all(z in (None, 0.0) for z in zero_stds),
-          f"some reward groups had no spread: {zero_stds}")
-    check(all(k is None or math.isfinite(k) for k in kls),
-          f"kl is not finite: {kls}")
-    check(all(k is None or abs(k) < MAX_KL for k in kls),
-          f"kl diverged (>= {MAX_KL}): {kls}")
+    check(
+        all(l is not None and 0.0 < l <= MAX_COMPLETION_LENGTH for l in lengths),
+        f"completion length missing, or rollout was empty: {lengths}",
+    )
+    check(
+        all(r is not None and 0.0 < r <= max_reward for r in rewards),
+        f"reward missing, or outside (0, {max_reward}]: {rewards}",
+    )
+    check(
+        all(s is not None and 0.0 < s <= max_reward for s in reward_stds),
+        f"no reward spread, so GRPO advantages were all zero: {reward_stds}",
+    )
+    check(
+        all(z in (None, 0.0) for z in zero_stds), f"some reward groups had no spread: {zero_stds}"
+    )
+    check(all(k is None or math.isfinite(k) for k in kls), f"kl is not finite: {kls}")
+    check(all(k is None or abs(k) < MAX_KL for k in kls), f"kl diverged (>= {MAX_KL}): {kls}")
 
     if reasons:
         print(f"[FAIL] GRPO + vLLM fast inference on {device} did not meet the success criteria:")
         for reason in reasons:
             print(f"    - {reason}")
     else:
-        print(f"[PASS] GRPO + vLLM fast inference on {device} ({len(steps)} steps, "
-              f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, rollouts non-empty)")
+        print(
+            f"[PASS] GRPO + vLLM fast inference on {device} ({len(steps)} steps, "
+            f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, rollouts non-empty)"
+        )
 
 
 if __name__ == "__main__":

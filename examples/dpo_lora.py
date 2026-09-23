@@ -38,39 +38,39 @@ def main() -> None:
         return
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL,
-        max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=False,
+        model_name = MODEL,
+        max_seq_length = MAX_SEQ_LENGTH,
+        load_in_4bit = False,
     )
     device = model.device
     print(f"[INFO] Loaded {MODEL} on {device}")
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=LORA_RANK,
-        target_modules=TARGET_MODULES,
-        lora_alpha=LORA_RANK,
-        use_gradient_checkpointing=False,
-        random_state=SEED,
+        r = LORA_RANK,
+        target_modules = TARGET_MODULES,
+        lora_alpha = LORA_RANK,
+        use_gradient_checkpointing = False,
+        random_state = SEED,
     )
 
     dataset = Dataset.from_dict({"prompt": PROMPTS, "chosen": CHOSEN, "rejected": REJECTED})
 
     trainer = DPOTrainer(
-        model=model,
-        ref_model=None,        # unsloth/PEFT reuses the base model as the frozen reference
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=DPOConfig(
-            max_length=MAX_SEQ_LENGTH,
-            max_prompt_length=64,
-            per_device_train_batch_size=2,
-            max_steps=MAX_STEPS,
-            learning_rate=5e-6,
-            logging_steps=1,
-            seed=SEED,
-            save_strategy="no",
-            report_to="none",
+        model = model,
+        ref_model = None,  # unsloth/PEFT reuses the base model as the frozen reference
+        processing_class = tokenizer,
+        train_dataset = dataset,
+        args = DPOConfig(
+            max_length = MAX_SEQ_LENGTH,
+            max_prompt_length = 64,
+            per_device_train_batch_size = 2,
+            max_steps = MAX_STEPS,
+            learning_rate = 5e-6,
+            logging_steps = 1,
+            seed = SEED,
+            save_strategy = "no",
+            report_to = "none",
         ),
     )
 
@@ -86,29 +86,29 @@ def main() -> None:
         if not condition:
             reasons.append(reason)
 
-    check(all(math.isfinite(loss) for loss in losses),
-          f"loss is not finite: {losses}")
-    check(len(grad_norms) == len(steps),
-          "some steps logged no grad_norm")
-    check(all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
-          f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}")
+    check(all(math.isfinite(loss) for loss in losses), f"loss is not finite: {losses}")
+    check(len(grad_norms) == len(steps), "some steps logged no grad_norm")
+    check(
+        all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
+        f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}",
+    )
 
     # DPO-specific: Checks for the reward margin (chosen minus rejected)
     # Over a few steps the margin can move in either direction.
     margins = [s["rewards/margins"] for s in steps if "rewards/margins" in s]
-    check(bool(margins),
-          "no rewards/margins logged, the reference model never scored a batch")
-    check(all(math.isfinite(m) for m in margins),
-          f"rewards/margins is not finite: {margins}")
+    check(bool(margins), "no rewards/margins logged, the reference model never scored a batch")
+    check(all(math.isfinite(m) for m in margins), f"rewards/margins is not finite: {margins}")
 
     if reasons:
         print(f"[FAIL] DPO LoRA on {device} did not meet the success criteria:")
         for reason in reasons:
             print(f"    - {reason}")
     else:
-        print(f"[PASS] DPO LoRA on {device} ({len(steps)} steps, "
-              f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, "
-              f"reward margin {margins[0]:.4f} -> {margins[-1]:.4f})")
+        print(
+            f"[PASS] DPO LoRA on {device} ({len(steps)} steps, "
+            f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, "
+            f"reward margin {margins[0]:.4f} -> {margins[-1]:.4f})"
+        )
 
 
 if __name__ == "__main__":
