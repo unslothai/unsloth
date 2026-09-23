@@ -202,15 +202,22 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    const partial = Boolean(
-      resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
-    );
+    // Only what a GGUF load borrowed: neither on device as this model nor a download to continue.
+    const companionPrefetch =
+      (resource.cachedRow?.companionPrefetch ??
+        resource.localRow?.companionPrefetch) === true;
+    const partial =
+      !companionPrefetch &&
+      Boolean(
+        resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
+      );
     return {
       id: result.id,
       owner: ownerOf(result.id),
       repo: repoOf(result.id),
       result,
-      isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
+      isAvailableOnDevice:
+        !companionPrefetch && Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
