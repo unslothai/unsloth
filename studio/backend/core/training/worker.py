@@ -55,7 +55,6 @@ from utils.hf_dataset_options import hf_dataset_split_instruction_names
 # core.training.trainer.
 from core.training.dataset_bounds import (
     bound_dataset_rows,
-    epoch_after_steps,
     max_train_rows_for_config,
     record_row_bound,
     row_bound_for_resume,
@@ -2669,11 +2668,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     # An mlx.launch run shards the batch across its processes the same way DDP does, and it advertises the count in
     # the env this reads.
-    mlx_world_size = _data_parallel_world_size()
     mlx_max_train_rows = max_train_rows_for_config(
         config,
         branch_never_packs = is_vlm and not mlx_raw_text_mode,
-        world_size = mlx_world_size,
+        world_size = _data_parallel_world_size(),
     )
     # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from whatever dataset it is handed, so
     # bounding a checkpoint written without one continues on unrelated rows. Same marker, same rule as the CUDA path.
@@ -2960,6 +2958,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
+    # `streaming` stays off: without a pass length zoo cannot end an epoch on an optimizer step or report a real epoch.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -2977,7 +2976,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         use_cce = True,
         compile = True,
         gradient_checkpointing = use_grad_checkpoint,
-        streaming = is_vlm,
         packing = bool(config.get("packing", False)),
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
@@ -3098,11 +3096,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if resume_from_checkpoint:
         start_step = _checkpoint_state(Path(resume_from_checkpoint)) or 0
 
-    try:
-        dataset_rows = len(dataset)
-    except TypeError:
-        dataset_rows = 0
-
     def _on_step(
         step,
         total,
@@ -3115,22 +3108,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         grad_norm = None,
     ):
         eta = session_eta_seconds(elapsed, step, start_step, total) or 0
-        epoch = 0
-        if total > 0:
-            trainer_epoch = (
-                None if is_vlm else getattr(getattr(trainer, "state", None), "epoch", None)
-            )
-            epoch = (
-                round(trainer_epoch, 2)
-                if trainer_epoch is not None
-                else epoch_after_steps(
-                    step, batch_size, grad_accum, dataset_rows, world_size = mlx_world_size
-                )
-            )
         _send(
             "progress",
             step = step,
-            epoch = epoch,
+            epoch = round(trainer.state.epoch, 2) if trainer.state.epoch else 0,
             loss = loss,
             learning_rate = lr,
             total_steps = total,
