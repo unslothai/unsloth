@@ -89,14 +89,17 @@ def _group_is_fp8(group) -> bool:
 
 def _activations_map_onto_fp8(inputs) -> bool:
     """transformers' static fp8 keeps one scalar activation scale per Linear, so static input
-    scales must be per-tensor fp8; dynamic ones are computed on the fly."""
+    scales must be per-tensor fp8. Its dynamic scheme quantizes per token, which is what a
+    dynamic "token" group declares and a finer form of "tensor"; channel, group or block
+    activation scaling has no counterpart and is declined."""
     if not isinstance(inputs, dict):
         return False
     if str(inputs.get("type", "")).lower() != "float" or int(inputs.get("num_bits", 0) or 0) != 8:
         return False
+    strategy = inputs.get("strategy", "tensor")
     if inputs.get("dynamic", False):
-        return True
-    return inputs.get("strategy", "tensor") in (None, "tensor")
+        return strategy in (None, "tensor", "token")
+    return strategy in (None, "tensor")
 
 
 def modelopt_fp8_plan(config) -> Optional[dict]:

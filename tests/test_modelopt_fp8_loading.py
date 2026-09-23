@@ -134,6 +134,22 @@ def test_plan_declines_everything_else():
                 }
             }
         ),
+        **{
+            f"dynamic {strategy} activations": _sarvam_quant(
+                config_groups = {
+                    "g": {
+                        "weights": {"num_bits": 8, "type": "float"},
+                        "input_activations": {
+                            "num_bits": 8,
+                            "type": "float",
+                            "dynamic": True,
+                            "strategy": strategy,
+                        },
+                    }
+                }
+            )
+            for strategy in ("channel", "group", "block")
+        },
         "int8 activations": _sarvam_quant(
             config_groups = {
                 "g": {
@@ -555,3 +571,18 @@ def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_pat
     kwargs = planner_quantization_kwargs(rewritten_quantization_config = bf16)
     model, _, _ = planner.build_meta_model(str(tmp_path), **kwargs)
     assert type(model.model.layers[0].self_attn.q_proj).__name__ == "Linear"
+
+
+def test_dynamic_token_and_tensor_activations_map_onto_per_token_fp8():
+    # transformers' dynamic fp8 scales activations per token.
+    for strategy in ("token", "tensor", None):
+        inputs = {"num_bits": 8, "type": "float", "dynamic": True}
+        if strategy is not None:
+            inputs["strategy"] = strategy
+        quant = _sarvam_quant(
+            config_groups = {
+                "g": {"weights": {"num_bits": 8, "type": "float"}, "input_activations": inputs}
+            }
+        )
+        plan = modelopt_fp8_plan(SimpleNamespace(quantization_config = quant))
+        assert plan is not None and plan["activation_scheme"] == "dynamic", strategy
