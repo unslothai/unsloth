@@ -3450,6 +3450,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_download_worker.py",
         "core/inference/tools.py",
         "core/training/diffusion_training_service.py",
+        "utils/diffusers_repair.py",
         "utils/prebuilt/update_flow.py",
         "utils/process_lifetime.py",
         "utils/torch_device_probe.py",

@@ -356,7 +356,16 @@ def check_reasoning_transcript(page, token):
     viewport = page.locator(".aui-thread-viewport")
     box = viewport.bounding_box()
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    page.mouse.wheel(0, 100000)
+    # One wheel is not the end of a virtualized transcript. It stops at the bottom of the height
+    # ESTIMATED for the passages not yet mounted, and measuring the ones it mounts grows the
+    # transcript under it: measured against this build, the first wheel stopped at scrollTop 8468
+    # of 15637 and the second reached the end. On CI the retries then waited on a window that
+    # nothing was going to move. A reader keeps scrolling; so does this, bounded.
+    for _ in range(12):
+        page.mouse.wheel(0, 100000)
+        page.wait_for_timeout(250)
+        if "Step 0399." in body.inner_text():
+            break
     expect(body).to_contain_text("Step 0399.")
     assert len(body.inner_text()) < 20000, "scrolling mounted the entire trace"
     expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
