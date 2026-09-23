@@ -262,8 +262,10 @@ class StaticStepSkip:
         steps: Optional[int],
         *,
         step_signal: bool = False,
+        keep_stats: bool = False,
     ) -> "StaticStepSkip":
-        """Start a generation of ``steps`` effective denoise steps (None: compute every step)."""
+        """Start a forward of ``steps`` effective denoise steps (None: compute every step). ``keep_stats``
+        carries the counters over, for the later chunks of one generation."""
         self.plan = (
             static_schedule(steps, head = self.head, tail = self.tail, every = self.every)
             if self.armed
@@ -277,6 +279,8 @@ class StaticStepSkip:
         self.ordinal = 0
         self.counters: dict = {}
         self.history: dict = {}
+        if keep_stats:
+            return self
         if self.stats["calls"]:
             # The generation that just ended, kept for the status route once the per-call reset clears it.
             self.last_stats = dict(self.stats)
@@ -484,12 +488,14 @@ def reset_static_step_skip(
     steps: Optional[int],
     *,
     step_signal: bool = False,
+    keep_stats: bool = False,
 ) -> bool:
-    """Arm the schedule for one pipeline call of ``steps`` effective denoise steps."""
+    """Arm the schedule for one pipeline call of ``steps`` effective denoise steps. ``keep_stats``
+    adds this call's counts to the running generation's instead of starting new ones."""
     skip = _find(pipe)
     if skip is None:
         return False
-    skip.reset(steps, step_signal = step_signal)
+    skip.reset(steps, step_signal = step_signal, keep_stats = keep_stats)
     return True
 
 
