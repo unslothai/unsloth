@@ -1777,8 +1777,10 @@ def _patch_remote_code_module(
     mask_keyword_changes = (),
 ):
     """Restore the 4.x defaults one remote-code module relies on. Class attributes, not instance
-    ones, so a value the checkpoint sets still wins and nothing new reaches a saved config.json."""
-    if module is None or getattr(module, _REMOTE_CODE_LEGACY_FLAG, False):
+    ones, so a value the checkpoint sets still wins and nothing new reaches a saved config.json.
+    Every step checks what it already did instead of a module flag: transformers re-executes a
+    changed remote file inside the same module object, and its new classes need the patch too."""
+    if module is None:
         return
     namespace = getattr(module, "__dict__", {})
     module_name = getattr(module, "__name__", None)
@@ -1828,10 +1830,6 @@ def _patch_remote_code_module(
             value.compute_default_rope_parameters = staticmethod(
                 _compute_legacy_default_rope_parameters
             )
-    try:
-        setattr(module, _REMOTE_CODE_LEGACY_FLAG, True)
-    except Exception:
-        pass
 
 
 def _patch_remote_code_package(

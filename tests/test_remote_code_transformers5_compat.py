@@ -160,6 +160,19 @@ def test_transformers4_remote_model_builds_and_runs(unsloth_loaded, legacy_repo)
     assert torch.allclose(model.rotary_emb.inv_freq.float(), expected)
 
 
+def test_a_remote_file_edited_between_loads_is_patched_again(unsloth_loaded, legacy_repo):
+    """transformers 5.4 re-executes a changed local remote file inside the same module object
+    (5.17 puts the content hash in the module name), so the classes it defines the second time
+    need the defaults as well."""
+    from transformers import AutoConfig
+
+    assert AutoConfig.from_pretrained(legacy_repo, trust_remote_code = True).pad_token_id is None
+    source = legacy_repo / "configuration_legacy_toy.py"
+    source.write_text(source.read_text() + "\n# edited between loads\n")
+    config = AutoConfig.from_pretrained(legacy_repo, trust_remote_code = True)
+    assert config.pad_token_id is None
+
+
 def test_checkpoint_token_ids_still_win(unsloth_loaded, legacy_repo):
     from transformers import AutoConfig
 
