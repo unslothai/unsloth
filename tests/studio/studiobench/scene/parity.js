@@ -64,7 +64,7 @@
       .replace(/\b[a-z]+:\/\/[^/\s]+/gi, "")
       .replace(ID_RE, "#ID");
 
-  const normSubs = (s) =>
+  const normText = (s) =>
     (s || "")
       // `295ms`, `1.2 s`, `3 min` -> a placeholder. Wall clock, not content.
       .replace(/\b\d+(\.\d+)?\s?(ms|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)\b/gi, "#T")
@@ -73,8 +73,9 @@
       // Absolute timestamps.
       .replace(/\b\d{1,2}:\d{2}(:\d{2})?\s?(am|pm)?\b/gi, "#T")
       // Backend-minted ids that reach the DOM as TEXT rather than as an attribute.
-      .replace(ID_RE, "#ID");
-  const normText = (s) => normSubs(s).replace(/\s+/g, " ").trim();
+      .replace(ID_RE, "#ID")
+      .replace(/\s+/g, " ")
+      .trim();
 
   // FNV-1a, 32 bit, unsigned hex. Not cryptographic: a change detector over two runs of one page.
   const hash = (str) => {
@@ -108,9 +109,9 @@
   // every fence replaced by a marker. The text is read as LINES, since that is all the two forms
   // disagree on: the shell is one text node split by newlines, the highlighted fence one element
   // per line with none between them (a blank line holding a lone "\n"). Both are brought to lines
-  // joined by one newline, trailing blank lines dropped, and every other character is kept, so
-  // `x = 1` against `x=1`, an indentation change, a space inside a string and a line break moved
-  // within the code all still differ. `analysis/parity.fence_latch_residue` compares a fence
+  // joined by one newline, trailing blank lines dropped, and every other character is kept as
+  // written, so `x = 1` against `x=1`, an indentation change, a space inside a string, a line break
+  // moved within the code and a changed duration or id literal all still differ. `analysis/parity.fence_latch_residue` compares a fence
   // latched on both arms, or on neither, in full, and one latched on ONE arm on its language and
   // text.
   const FENCE_ATTR = "data-streamdown";
@@ -130,7 +131,9 @@
           .filter((line, k) => k > 0 || line !== "")
           .map((line) => line.replace(/\r?\n/g, ""))
       : s.split(/\r?\n/);
-    return normSubs(lines.join("\n").replace(/\n+$/, ""));
+    // Not normText: its placeholders are for UI prose, and inside code `"295ms"`, a timestamp or an id literal is
+    // the content itself.
+    return lines.join("\n").replace(/\n+$/, "");
   };
 
   // `dropAttrs` is a Set of attributes this digest does not compare AT ALL, unlike VOLATILE_ATTRS

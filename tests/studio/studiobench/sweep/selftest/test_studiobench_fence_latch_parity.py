@@ -565,3 +565,17 @@ def test_the_capture_keeps_where_a_fence_breaks_its_lines(tmp_path):
     # Blank lines render as a line holding a lone newline, and count once, as in the shell.
     assert blank_lit["fences"][0]["text"] == blank_shell["fences"][0]["text"]
     assert blank_lit["fences"][0]["text"] != lit["fences"][0]["text"]
+
+
+def test_the_capture_keeps_literals_that_look_volatile_in_prose(tmp_path):
+    """The time and id placeholders are for UI prose; inside code a literal is the content."""
+    lit, duration, clock = _node_readings(
+        tmp_path,
+        [
+            _message(_highlighted('timeout = "295ms"\nat = "10:30"')),
+            _message(_shell('timeout = "310ms"\nat = "10:30"')),
+            _message(_shell('timeout = "295ms"\nat = "11:45"')),
+        ],
+    )
+    assert duration["fences"][0]["text"] != lit["fences"][0]["text"], "a duration literal changed"
+    assert clock["fences"][0]["text"] != lit["fences"][0]["text"], "a time literal changed"
