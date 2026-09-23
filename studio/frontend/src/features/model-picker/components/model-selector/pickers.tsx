@@ -895,8 +895,13 @@ function isRuntimeLoadedModel(
   activeGgufVariant: string | null | undefined,
   modelId: string,
   variantPolicy: "none" | "required" | "ignore",
+  aliasIds: readonly string[] = [],
 ): boolean {
-  if (!modelIdsMatchForPicker(loadedModelId, modelId)) return false;
+  if (
+    !modelIdsMatchForPicker(loadedModelId, modelId) &&
+    !aliasIds.some((id) => modelIdsMatchForPicker(loadedModelId, id))
+  )
+    return false;
   if (variantPolicy === "ignore") return true;
   const hasActiveGgufVariant = !ggufVariantsMatchForPicker(
     activeGgufVariant,
@@ -3243,6 +3248,30 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
+  // Ids for the same files: the row, its unsloth mirror and the vendor repo the mirror copies.
+  // A copy cached under one loads for the others, so rows match all of them.
+  const aliasesOf = useCallback(
+    (id: string): string[] => {
+      const artifact = catalog && artifactForRepoId(id, catalog)?.artifact;
+      return artifact?.upstreamRepoId
+        ? [id, artifact.repoId, artifact.upstreamRepoId]
+        : [id];
+    },
+    [catalog],
+  );
+  const isValueRow = useCallback(
+    (id: string) =>
+      value === id ||
+      aliasesOf(id).some((alias) => modelIdsMatchForPicker(value, alias)),
+    [value, aliasesOf],
+  );
+  // The id on disk for a row: itself, else a cached alias.
+  const cachedIdFor = useCallback(
+    (id: string): string | null =>
+      aliasesOf(id).find((alias) => downloadedSet.has(alias.toLowerCase())) ??
+      null,
+    [aliasesOf, downloadedSet],
+  );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -3252,6 +3281,12 @@ export function HubModelPicker({
     () =>
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
     [cachedGguf, cachedModels],
+  );
+  // A complete alias loads instead, so the row is downloaded, not partial.
+  const isPartialRow = useCallback(
+    (id: string) =>
+      cachedIdFor(id) === null && partialSet.has(id.toLowerCase()),
+    [cachedIdFor, partialSet],
   );
 
   // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
@@ -3516,7 +3551,7 @@ export function HubModelPicker({
     const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
-      downloadedSet.has(r.id.toLowerCase()) ||
+      cachedIdFor(r.id) !== null ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget)?.fits ??
@@ -3544,6 +3579,12 @@ export function HubModelPicker({
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
     // into the wider Hub. Same keep/fits gates.
     const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    // A vendor repo whose unsloth mirror is listed above is the same files.
+    for (const r of unslothRows) {
+      const upstream =
+        catalog && artifactForRepoId(r.id, catalog)?.artifact.upstreamRepoId;
+      if (upstream) above.add(upstream.toLowerCase());
+    }
     const communityRows = communityBrowse.results
       .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
       .filter((r) => isLoadableCommunityRepo(r.id))
@@ -3556,7 +3597,7 @@ export function HubModelPicker({
     diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
-    downloadedSet,
+    cachedIdFor,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
@@ -4661,7 +4702,10 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        .filter((id) => normalizeForSearch(id).includes(q))
+        // A mirror row also answers to its vendor id.
+        .filter((id) =>
+          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         )
@@ -4670,7 +4714,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(id.toLowerCase()) ||
+            cachedIdFor(id) !== null ||
             searchRowFits({ id }),
         )
     );
@@ -4679,16 +4723,21 @@ export function HubModelPicker({
     debouncedQuery,
     catalogSeedIds,
     recommendedIds,
+    aliasesOf,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
-    downloadedSet,
+    cachedIdFor,
     searchRowFits,
   ]);
 
+  // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
   const recommendedSet = useMemo(
-    () => new Set(filteredRecommendedIds),
-    [filteredRecommendedIds],
+    () =>
+      new Set(
+        filteredRecommendedIds.flatMap(aliasesOf).map((id) => id.toLowerCase()),
+      ),
+    [filteredRecommendedIds, aliasesOf],
   );
 
   // One pipeline for both listings, so community rows clear the same gates; `owned` is the only difference.
@@ -4700,7 +4749,7 @@ export function HubModelPicker({
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(r.id.toLowerCase()) ||
+            cachedIdFor(r.id) !== null ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -4709,7 +4758,7 @@ export function HubModelPicker({
         // Search reaches the live Hub, so without this a query re-lands the exact curated row the seed
         // and Recommended filters just dropped, clickable and still refused at load.
         .filter(curatedOfferable)
-        .filter((id) => !recommendedSet.has(id))
+        .filter((id) => !recommendedSet.has(id.toLowerCase()))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors on Mac, matching the
         // empty Recommended view.
         .filter(
@@ -4728,7 +4777,7 @@ export function HubModelPicker({
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
-      downloadedSet,
+      cachedIdFor,
       searchRowFits,
       isMac,
       curatedOfferable,
@@ -5235,16 +5284,17 @@ export function HubModelPicker({
       if (isKnownGgufRepo(id)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        // Cached repos load now; uncached ones download via the Hub manager.
-        onSelect(id, {
+        // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
+        const cached = cachedIdFor(id);
+        onSelect(cached ?? id, {
           source: "hub",
           isLora: false,
-          isDownloaded: downloadedSet.has(id.toLowerCase()),
+          isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
+    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -7169,8 +7219,8 @@ export function HubModelPicker({
                               // A community row without its owner reads as an unsloth upload, and two
                               // publishers would collide.
                               hideOwner={isUnslothOwned(id)}
-                              downloaded={downloadedSet.has(id.toLowerCase())}
-                              partial={partialSet.has(id.toLowerCase())}
+                              downloaded={cachedIdFor(id) !== null}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
@@ -7179,16 +7229,17 @@ export function HubModelPicker({
                                 info?.meta ??
                                 (isG ? "GGUF" : extractParamLabel(id))
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isG ? "required" : "none",
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isG) {
@@ -7279,8 +7330,8 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
-                            downloaded={downloadedSet.has(id.toLowerCase())}
-                            partial={partialSet.has(id.toLowerCase())}
+                            downloaded={cachedIdFor(id) !== null}
+                            partial={isPartialRow(id)}
                             partialResumable={partialResumableSet.has(
                               id.toLowerCase(),
                             )}
@@ -7292,16 +7343,17 @@ export function HubModelPicker({
                                 ? (recommendedMeta.get(id)?.meta ?? "GGUF")
                                 : (vram?.detail ?? extractParamLabel(id))
                             }
-                            selected={value === id}
+                            selected={isValueRow(id)}
                             loaded={isRuntimeLoadedModel(
                               loadedModelId,
                               activeGgufVariant,
                               id,
                               isKnownGgufRepo(id) ? "required" : "none",
+                              aliasesOf(id),
                             )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
-                              value === id,
+                              isValueRow(id),
                             )}
                             onClick={() => {
                               if (isKnownGgufRepo(id)) {
@@ -7404,7 +7456,7 @@ export function HubModelPicker({
                               // Typed results are Hub rows like any other, so a repo left
                               // half-downloaded is marked here too. Without it the row reads
                               // as never fetched while the click resumes a download.
-                              partial={partialSet.has(id.toLowerCase())}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
@@ -7420,16 +7472,17 @@ export function HubModelPicker({
                                       .filter(Boolean)
                                       .join(" · ")
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isSearchGguf ? "required" : "none",
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isSearchGguf) {

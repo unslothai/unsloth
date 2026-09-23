@@ -7,7 +7,10 @@ import test from "node:test";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
+  artifactForRepoId,
   curatedSizeBytesFor,
+  groupForRepoId,
+  loadSpecFor,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import { classifyGgufFit } from "../src/lib/gguf-fit.ts";
 import {
@@ -572,6 +575,21 @@ test("with familyOf, unsloth rows lead even when a vendor family trends higher",
     ),
     ["unsloth/Hot-Model-GGUF", "unsloth/Cold-Model-GGUF", "Vendor/Hot-Model"],
   );
+});
+
+test("a vendor id resolves to the unsloth mirror that replaced it", () => {
+  for (const [vendor, mirror] of [
+    ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"],
+    ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"],
+    ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+  ]) {
+    const hit = artifactForRepoId(vendor, IMAGE_CATALOG);
+    assert.equal(hit?.artifact.repoId, mirror, vendor);
+    assert.equal(hit?.artifact.gated, undefined, vendor);
+    // A cached vendor copy still loads as a pipeline.
+    assert.equal(loadSpecFor(vendor, IMAGE_CATALOG)?.kind, "pipeline", vendor);
+    assert.equal(groupForRepoId(vendor, IMAGE_CATALOG), groupForRepoId(mirror, IMAGE_CATALOG));
+  }
 });
 
 test("with familyOf, an unslothai family the unsloth listing cannot rank keeps its curated slot", () => {
