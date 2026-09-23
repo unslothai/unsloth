@@ -60,6 +60,10 @@ export function ArtifactCard({
   const selectedArtifactId = useChatArtifactsStore(
     (state) => state.selectedArtifactId,
   );
+  const openView = useChatArtifactsStore((state) => state.requestedView);
+  const closeArtifactSurface = useChatArtifactsStore(
+    (state) => state.closeArtifactSurface,
+  );
   const artifact = useMemo<ChatArtifact>(
     () =>
       createChatArtifact({
@@ -112,6 +116,10 @@ export function ArtifactCard({
 
   const renderButton = (view: ArtifactViewMode) => {
     const isCode = view === "source";
+    const showing =
+      surface === "panel" &&
+      selectedArtifactId === artifact.id &&
+      openView === view;
     return (
       <button
         key={view}
@@ -122,8 +130,17 @@ export function ArtifactCard({
           isStreaming &&
             "border-border/80 bg-muted/20 dark:border-border/70 dark:bg-muted/15",
         )}
-        onClick={() => openArtifact(artifact, { surface, view })}
-        aria-label={`Open ${artifact.title} ${isCode ? "code" : "preview"}`}
+        onClick={() => {
+          // The card is the way back in, so it is also the way out: clicking the view
+          // already on screen hides the panel. Clicking the other one switches to it.
+          if (showing) {
+            closeArtifactSurface();
+            return;
+          }
+          openArtifact(artifact, { surface, view });
+        }}
+        aria-expanded={showing}
+        aria-label={`${showing ? "Hide" : "Open"} ${artifact.title} ${isCode ? "code" : "preview"}`}
       >
         {isStreaming ? (
           <span

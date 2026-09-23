@@ -358,6 +358,16 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  // The width the user dragged to, so hiding and reopening the panel gives it back
+  // rather than snapping to the default every time. Sampled when a drag ends, never
+  // from the panel's onResize: that fires on every frame of the open and close
+  // animations too, so closing would record whatever width the animation passed
+  // through on its way to zero.
+  const artifactPanelWidthRef = useRef<string | null>(null);
+  const rememberArtifactPanelWidth = useCallback(() => {
+    const size = artifactPanelRef.current?.getSize().asPercentage;
+    if (size != null && size > 5) artifactPanelWidthRef.current = `${size}%`;
+  }, []);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -386,19 +396,34 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
-  // Dragging the panel shut leaves showContextPanel true, so the layout effect below
-  // never runs again and opening another artifact resizes nothing. Bring it back here
-  // instead, only when it is actually collapsed, so a width the user chose survives.
-  const openArtifactId = artifact?.id ?? null;
+  // A width belongs to the chat it was dragged in. Another thread, or a new one,
+  // starts from the default.
+  const artifactPanelThread = threadId ?? activeThreadId ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
   useEffect(() => {
-    if (!showContextPanel || !openArtifactId) return;
+    artifactPanelWidthRef.current = null;
+  }, [artifactPanelThread]);
+
+  // Dragging the panel shut leaves showContextPanel true, so the layout effect below
+  // never runs again and opening an artifact resizes nothing. Bring it back here
+  // instead, only when it is actually shut, so a width the user chose survives. Keyed
+  // on the open count rather than the artifact: reopening the selected one is the
+  // common way to hit this, and its ID does not change.
+  const artifactOpenSequence = useChatArtifactsStore(
+    (state) => state.openSequence,
+  );
+  useEffect(() => {
+    if (!showContextPanel || artifactOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
-    if (!panel?.isCollapsed()) return;
-    // expand() alone restores whatever width it had before, which for a panel dragged
-    // to nothing is nothing.
+    if (!panel) return;
+    // A drag can stop just short of the collapse threshold, which is shut as far as
+    // anyone looking at it is concerned.
+    if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
+    // expand() alone restores the width from before the collapse, which for a panel
+    // dragged to nothing is nothing.
     panel.expand();
-    panel.resize(ARTIFACT_PANEL_DEFAULT_SIZE);
-  }, [openArtifactId, showContextPanel]);
+    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
+  }, [artifactOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -419,7 +444,11 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(
+          showContextPanel
+            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            : "0%",
+        );
       });
     });
     const surfaceTimerId = showContextPanel
@@ -478,6 +507,12 @@ const SingleContent = memo(function SingleContent({
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          onPointerDown={() => {
+            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
+              once: true,
+            });
+          }}
+          onKeyUp={rememberArtifactPanelWidth}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
             !artifactLayoutActive &&

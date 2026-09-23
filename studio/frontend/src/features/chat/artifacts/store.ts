@@ -22,6 +22,9 @@ export function clearAutoOpenedArtifacts(): void {
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
+  // Bumped on every open, including reopening the one already selected, which is
+  // otherwise invisible to anything watching the selected ID.
+  openSequence: number;
   surface: ChatArtifactSurface;
   // View the surface should show on the next open (Preview vs Code button).
   requestedView: ArtifactViewMode;
@@ -39,6 +42,7 @@ type ChatArtifactsState = {
 export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   artifactsById: {},
   selectedArtifactId: null,
+  openSequence: 0,
   surface: "panel",
   requestedView: "preview",
   openArtifact: (artifact, options) =>
@@ -48,6 +52,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
+      openSequence: state.openSequence + 1,
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
