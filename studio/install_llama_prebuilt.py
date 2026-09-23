@@ -6344,8 +6344,10 @@ def build_validation_sandbox_plan(
         bwrap_path = _resolve_command_path("bwrap")
         sandbox_usable = bwrap_path is not None and _bwrap_can_sandbox(bwrap_path)
         gpu_server = purpose == _VALIDATION_PURPOSE_SERVER and enable_gpu_layers
-        if sandbox_usable and gpu_server and not (
-            gpu_backend in {"cuda", "rocm"} and _binary_is_setuid_root(bwrap_path)
+        if (
+            sandbox_usable
+            and gpu_server
+            and not (gpu_backend in {"cuda", "rocm"} and _binary_is_setuid_root(bwrap_path))
         ):
             # Only setuid bwrap binds CUDA/ROCm device nodes (Vulkan gets none), and
             # GPU access inside a non-setuid bwrap's user namespace is unproven. A CPU
@@ -6628,10 +6630,10 @@ def _elf_requests_audit_modules(path: Path) -> bool | None:
             order = "<" if ident[5] == 1 else ">"
             header = handle.read(48 if is64 else 36)
             if is64:
-                phoff, = struct.unpack_from(order + "Q", header, 16)
+                (phoff,) = struct.unpack_from(order + "Q", header, 16)
                 phentsize, phnum = struct.unpack_from(order + "HH", header, 38)
             else:
-                phoff, = struct.unpack_from(order + "I", header, 12)
+                (phoff,) = struct.unpack_from(order + "I", header, 12)
                 phentsize, phnum = struct.unpack_from(order + "HH", header, 26)
             for index in range(min(phnum, 4096)):
                 handle.seek(phoff + index * phentsize)
@@ -6650,7 +6652,7 @@ def _elf_requests_audit_modules(path: Path) -> bool | None:
                 dynamic = handle.read(min(filesz, 1 << 20))
                 step = 16 if is64 else 8
                 for start in range(0, len(dynamic) - step + 1, step):
-                    tag, = struct.unpack_from(order + ("q" if is64 else "i"), dynamic, start)
+                    (tag,) = struct.unpack_from(order + ("q" if is64 else "i"), dynamic, start)
                     if tag == 0:
                         break
                     if tag in _ELF_DT_AUDIT_TAGS:

@@ -8059,7 +8059,7 @@ def test_linux_server_helper_survives_non_bmp_text_and_restores_loader_env(tmp_p
     )
     fake_server.chmod(0o755)
     helper = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
-        [str(fake_server), "--port", "1", "\U0001F600"], {}, timeout = 5
+        [str(fake_server), "--port", "1", "\U0001f600"], {}, timeout = 5
     )
     result = subprocess.run(
         helper,
@@ -8068,12 +8068,12 @@ def test_linux_server_helper_survives_non_bmp_text_and_restores_loader_env(tmp_p
         timeout = 60,
         env = {
             "PATH": "/usr/bin:/bin",
-            "EMOJI": "\U0001F600",
+            "EMOJI": "\U0001f600",
             "UNSLOTH_VALIDATION_LD_LIBRARY_PATH": "/opt/bundle",
         },
     )
     assert "UnicodeEncodeError" not in result.stdout + result.stderr
-    assert marker.read_text() == "/opt/bundle||\U0001F600"
+    assert marker.read_text() == "/opt/bundle||\U0001f600"
 
 
 def test_run_validation_capture_uses_launcher_env_for_linux_bwrap(monkeypatch):
@@ -9372,12 +9372,16 @@ def _synthetic_elf(path: Path, *, is64: bool, little: bool, dynamic_tags: list[i
         header = struct.pack(
             order + "HHIQQQIHHHHHH", 3, 62, 1, 0, ehdr_size, 0, 0, ehdr_size, phentsize, 1, 0, 0, 0
         )
-        phdr = struct.pack(order + "IIQQQQQQ", 2, 6, dyn_offset, 0, 0, len(dynamic), len(dynamic), 8)
+        phdr = struct.pack(
+            order + "IIQQQQQQ", 2, 6, dyn_offset, 0, 0, len(dynamic), len(dynamic), 8
+        )
     else:
         header = struct.pack(
             order + "HHIIIIIHHHHHH", 3, 3, 1, 0, ehdr_size, 0, 0, ehdr_size, phentsize, 1, 0, 0, 0
         )
-        phdr = struct.pack(order + "IIIIIIII", 2, dyn_offset, 0, 0, len(dynamic), len(dynamic), 6, 4)
+        phdr = struct.pack(
+            order + "IIIIIIII", 2, dyn_offset, 0, 0, len(dynamic), len(dynamic), 6, 4
+        )
     assert len(dynamic) % dyn_step == 0
     path.write_bytes(ident + header + phdr + dynamic)
     return path
@@ -9389,8 +9393,12 @@ def test_elf_audit_module_detection_reads_the_dynamic_section(tmp_path, is64, li
     detect = INSTALL_LLAMA_PREBUILT._elf_requests_audit_modules
     dt_needed, dt_audit, dt_depaudit = 1, 0x6FFFFEFC, 0x6FFFFEFB
     plain = _synthetic_elf(tmp_path / "plain", is64 = is64, little = little, dynamic_tags = [dt_needed])
-    audit = _synthetic_elf(tmp_path / "audit", is64 = is64, little = little, dynamic_tags = [dt_needed, dt_audit])
-    depaudit = _synthetic_elf(tmp_path / "dep", is64 = is64, little = little, dynamic_tags = [dt_depaudit])
+    audit = _synthetic_elf(
+        tmp_path / "audit", is64 = is64, little = little, dynamic_tags = [dt_needed, dt_audit]
+    )
+    depaudit = _synthetic_elf(
+        tmp_path / "dep", is64 = is64, little = little, dynamic_tags = [dt_depaudit]
+    )
     assert detect(plain) is False
     assert detect(audit) is True
     assert detect(depaudit) is True
@@ -9455,7 +9463,11 @@ def test_bwrap_capability_probe_resolves_true_from_the_fixed_path(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_sandbox_capability", {})
     monkeypatch.setenv("PATH", "/nonexistent-shadow")
 
-    def fake_which(name, mode = os.F_OK | os.X_OK, path = None):
+    def fake_which(
+        name,
+        mode = os.F_OK | os.X_OK,
+        path = None,
+    ):
         seen[name] = path
         return "/usr/bin/true" if name == "true" else None
 
@@ -9494,4 +9506,4 @@ def test_macos_validation_plan_keeps_payload_env_off_the_command_line(monkeypatc
     assert "-i" not in plan.command
     assert f"DYLD_LIBRARY_PATH={tmp_path}" in plan.command
     assert plan.env == {"SOME_TOKEN": "s3cr3t-value", "HOME": "/h"}
-    assert plan.command[-len(command):] == command
+    assert plan.command[-len(command) :] == command
