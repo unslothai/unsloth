@@ -590,6 +590,7 @@ test("a vendor id resolves to the unsloth mirror that replaced it", () => {
     assert.equal(loadSpecFor(vendor, IMAGE_CATALOG)?.kind, "pipeline", vendor);
     assert.equal(groupForRepoId(vendor, IMAGE_CATALOG), groupForRepoId(mirror, IMAGE_CATALOG));
   }
+});
 
 test("with familyOf, an unslothai family the unsloth listing cannot rank keeps its curated slot", () => {
   const family = (id: string) => id.toLowerCase().replace(/-gguf$/, "");
