@@ -855,15 +855,6 @@ def _new_stacked_experts(experts, dims, dtype, device):
     )
 
 
-def swap_in_packed_mxfp4_experts(model, keys, dtype) -> list:
-    """Replace each MXFP4-packed remote-code expert ModuleList with an ``Mxfp4StackedExperts``.
-    All or nothing: if any packed MoE layer cannot be matched to a block the ports' dispatch
-    runs, nothing is swapped."""
-    prefixes = packed_expert_prefixes(keys)
-    blocks = _swappable_expert_blocks(model, prefixes) if prefixes else None
-    return _swap_in_stacks(blocks or [], dtype)
-
-
 def _swap_in_stacks(blocks, dtype) -> list:
     swapped = []
     for name, module, _, dims in blocks:
@@ -990,17 +981,13 @@ class _StackPackedExperts:
         target_patterns = None,
         **kwargs,
     ):
-        from unsloth_zoo.mxfp4_stacked_experts import (
-            stack_packed_expert_blocks,
-            stack_packed_expert_scales,
-        )
+        from unsloth_zoo.mxfp4_stacked_experts import stack_packed_experts
 
         as_list = lambda v: v if isinstance(v, list) else [v]  # noqa: E731
         per_projection = [
             as_list(input_dict.pop(pattern)) for pattern in source_patterns if pattern in input_dict
         ]
-        stack = stack_packed_expert_scales if self.scales else stack_packed_expert_blocks
-        return {target_patterns[0]: stack(per_projection)}
+        return {target_patterns[0]: stack_packed_experts(per_projection, blocks = not self.scales)}
 
     @property
     def reverse_op(self):

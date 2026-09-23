@@ -33,11 +33,12 @@ from torch import nn
 import unsloth  # noqa: F401
 from unsloth.models.compressed_tensors_bnb import (
     _StackPackedExperts,
+    _swap_in_stacks,
     _transformers_supports_weight_converters,
     arm_compressed_tensors_bnb_loading,
     keep_mxfp4_experts_packed,
     packed_expert_prefixes,
-    swap_in_packed_mxfp4_experts,
+    plan_mxfp4_keep_packed,
 )
 from unsloth.models.remote_moe_shims import (
     is_remote_deepseek_moe,
@@ -58,6 +59,12 @@ except Exception:
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
 H, I, E, K = 64, 64, 4, 2
+
+
+def _swap_planned_stacks(model, keys, dtype):
+    """What a kept-packed load does before the weights load: swap in the planned stacks."""
+    plan = plan_mxfp4_keep_packed(model, keys)
+    return _swap_in_stacks(plan.blocks if plan is not None else [], dtype)
 
 MODELING = """
 import torch
@@ -287,7 +294,7 @@ def _tiny_model(name, layers = 2, source = MODELING):
 
 def test_swap_replaces_every_packed_layer_on_meta():
     mod, model = _tiny_model("transformers_modules.k3c_swap_a.modeling_tinymoe")
-    swapped = swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16)
+    swapped = _swap_planned_stacks(model, _keys(), torch.bfloat16)
     assert swapped == ["layers.0.mlp", "layers.1.mlp"]
     for layer in model.layers:
         experts = layer.mlp.experts
@@ -304,17 +311,17 @@ def test_swap_is_all_or_nothing():
     # Layer 1's experts are not all packed: layer 0 must not be swapped either, so no
     # stacking converter can claim layer 1's keys.
     keys = _keys(drop = "model.layers.1.mlp.experts.0.w2.weight_packed")
-    assert swap_in_packed_mxfp4_experts(model, keys, torch.bfloat16) == []
+    assert _swap_planned_stacks(model, keys, torch.bfloat16) == []
     # One packed layer that no module matches.
     keys = _keys(layers = 3)
-    assert swap_in_packed_mxfp4_experts(model, keys, torch.bfloat16) == []
+    assert _swap_planned_stacks(model, keys, torch.bfloat16) == []
     assert all(isinstance(layer.mlp.experts, nn.ModuleList) for layer in model.layers)
     # Experts with a bias are not the plain w1 / w2 / w3 layout.
     _, model = _tiny_model("transformers_modules.k3c_swap_c.modeling_tinymoe")
     for layer in model.layers:
         for expert in layer.mlp.experts:
             expert.w2 = nn.Linear(I, H, bias = True, device = "meta")
-    assert swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16) == []
+    assert _swap_planned_stacks(model, _keys(), torch.bfloat16) == []
 
 
 def test_stacking_op_keeps_w1_then_w3_and_expert_order():
@@ -344,7 +351,7 @@ def test_stacking_op_keeps_w1_then_w3_and_expert_order():
 
 def test_expert_lora_stays_opt_in():
     _, model = _tiny_model("transformers_modules.k3c_lora.modeling_tinymoe")
-    swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16)
+    _swap_planned_stacks(model, _keys(), torch.bfloat16)
     auto = ["experts.gate_up_proj", "experts.down_proj"]
     assert packed_expert_target_parameters(model, auto, ["q_proj", "down_proj"]) is None
     assert packed_expert_target_parameters(model, auto, ["w1"]) == ["experts.gate_up_proj"]
@@ -361,7 +368,7 @@ def test_packed_experts_are_found_under_peft_wrappers():
     from unsloth.models.remote_moe_shims import _is_packed_experts
 
     _, model = _tiny_model("transformers_modules.k3c_wrapped.modeling_tinymoe")
-    swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16)
+    _swap_planned_stacks(model, _keys(), torch.bfloat16)
 
     class Wrapper(nn.Module):
         def __init__(self, base_layer):
@@ -393,7 +400,7 @@ def test_packed_block_trains_and_matches_its_per_expert_view():
     mod, _ = _tiny_model("transformers_modules.k3c_dispatch.modeling_tinymoe")
     config = mod.TinyMoeConfig(num_hidden_layers = 1)
     model = mod.TinyMoeForCausalLM(config).to(torch.bfloat16)
-    assert swap_in_packed_mxfp4_experts(model, _keys(layers = 1), torch.bfloat16) == ["layers.0.mlp"]
+    assert _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16) == ["layers.0.mlp"]
     _materialize_packed(model)
     block = model.layers[0].mlp
     assert is_remote_deepseek_moe(block)
@@ -549,8 +556,6 @@ def test_keep_packed_off_restores_the_nf4_experts(tmp_path, monkeypatch):
 
 
 def test_plan_stacks_the_experts_and_keeps_every_other_packed_linear_all_or_nothing():
-    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
-
     _, model = _tiny_model("transformers_modules.k3s_plan_a.modeling_tinymoe")
     plan = plan_mxfp4_keep_packed(model, _keys())
     assert [name for name, *_ in plan.blocks] == ["layers.0.mlp", "layers.1.mlp"]
@@ -691,7 +696,7 @@ def _packed_tiny_model(name):
     mod, _ = _tiny_model(name)
     config = mod.TinyMoeConfig(num_hidden_layers = 2)
     model = mod.TinyMoeForCausalLM(config).to(torch.bfloat16)
-    swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16)
+    _swap_planned_stacks(model, _keys(), torch.bfloat16)
     _materialize_packed(model)
     return mod, model
 
@@ -830,7 +835,7 @@ def _peft_target_parameters(model, monkeypatch, **kwargs):
 def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, monkeypatch):
     mod, _ = _tiny_model("transformers_modules.k3s_scope.modeling_tinymoe")
     model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
-    swap_in_packed_mxfp4_experts(model, _keys(layers = 1), torch.bfloat16)
+    _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
     _materialize_packed(model)
     model.max_seq_length = 64
     # Something left to train when a family is scoped out.
@@ -876,8 +881,6 @@ def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
     """A stack runs only through the shim's dispatch: a block the shim leaves alone (its own
     training branch, or expert parallel) would index or iterate the stack itself, which breaks
     under an expert LoRA wrapper. Such experts stay packed one Linear each instead."""
-    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
-
     assert TRAINING_MODELING != MODELING
     _, model = _tiny_model("transformers_modules.k3s_train_branch.modeling_tinymoe", source = TRAINING_MODELING)
     assert not is_remote_deepseek_moe(model.layers[0].mlp)
@@ -892,8 +895,6 @@ def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
 def test_a_packed_linear_without_its_scale_is_not_kept_packed():
     """Every packed weight needs its scale in the checkpoint: kept packed, a missing one would be
     left as uninitialised bytes (the loader only reports it as missing)."""
-    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
-
     _, model = _tiny_model("transformers_modules.k3s_noscale.modeling_tinymoe")
     extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra)).linears == ["layers.0.proj"]

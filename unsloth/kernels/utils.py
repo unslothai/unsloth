@@ -341,7 +341,8 @@ def has_mxfp4_base(*projs):
     LoRA kernels keep the 16-bit weight they are handed alive until the backward, so layers on
     a packed base use the PEFT forward, whose base call dequantizes again in backward instead."""
     return any(
-        getattr(type(getattr(p, "base_layer", p)), "_unsloth_mxfp4_packed", False) for p in projs
+        getattr(type(getattr(p, "base_layer", p)), "_unsloth_mxfp4_packed_linear", False)
+        for p in projs
     )
 
 

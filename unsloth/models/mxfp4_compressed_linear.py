@@ -143,7 +143,7 @@ class Mxfp4PackedLinear(nn.Linear):
     ``weight``) that runs forward and backward on the fly from the packed bytes."""
 
     # Read by the fast LoRA paths (``kernels.utils.has_mxfp4_base``) without importing this.
-    _unsloth_mxfp4_packed = True
+    _unsloth_mxfp4_packed_linear = True
     compute_dtype = torch.bfloat16
 
     def forward(self, x):
