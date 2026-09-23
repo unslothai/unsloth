@@ -112,15 +112,25 @@ def _torchao_version() -> Optional[str]:
         return None
 
 
-def safetensors_prequant_supported() -> bool:
-    """Whether this install can read (and write) safetensors pre-quant checkpoints."""
-    if _torchao_helpers() is None:
-        return False
+def safetensors_importable() -> bool:
+    """Whether the base ``safetensors`` reader is present.
+
+    torchao is only needed for files that carry its flattened subclass metadata. A published
+    text-encoder checkpoint can be plain tensors end to end, so a Windows ROCm install without
+    torchao can still read it without pretending to support torchao checkpoints.
+    """
     try:
         import safetensors  # noqa: F401
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def safetensors_prequant_supported() -> bool:
+    """Whether this install can read (and write) torchao-flattened safetensors checkpoints."""
+    if _torchao_helpers() is None:
+        return False
+    return safetensors_importable()
 
 
 def _first(value: Any) -> Any:
@@ -364,27 +374,39 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     kernel-preference pin) then runs unchanged on both containers, so the two formats cannot drift
     into having different acceptance rules.
     """
+    from safetensors import safe_open
+
+    with safe_open(path, framework = "pt", device = device) as handle:
+        raw = dict(handle.metadata() or {})
+        fmt = raw.get(UNSLOTH_FORMAT_KEY)
+        if not fmt:
+            raise ValueError(
+                f"{path} is a safetensors file but not an Unsloth pre-quant checkpoint "
+                f"(no {UNSLOTH_FORMAT_KEY!r} in its header)"
+            )
+        metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
+        # torchao's writer records the reconstruction recipe in the header. Without it there are
+        # only plain tensors here, and the Windows ROCm install must not be asked for torchao just
+        # to copy them out of the file.
+        if "tensor_names" not in raw:
+            from safetensors.torch import load_file
+
+            return {
+                "format": str(fmt),
+                "state_dict": load_file(path, device = device),
+                "metadata": metadata,
+            }
+        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+
     helpers = _torchao_helpers()
     if helpers is None:
         raise RuntimeError(
-            "this install cannot read a safetensors pre-quant checkpoint: torchao >= "
+            "this install cannot read a torchao safetensors pre-quant checkpoint: torchao >= "
             f"{'.'.join(str(p) for p in MIN_TORCHAO_VERSION)} is required for "
             "torchao.prototype.safetensors.safetensors_support"
         )
-    from safetensors import safe_open
 
     _, unflatten = helpers
-    with safe_open(path, framework = "pt", device = device) as handle:
-        raw = dict(handle.metadata() or {})
-        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
-
-    fmt = raw.get(UNSLOTH_FORMAT_KEY)
-    if not fmt:
-        raise ValueError(
-            f"{path} is a safetensors file but not an Unsloth pre-quant checkpoint "
-            f"(no {UNSLOTH_FORMAT_KEY!r} in its header)"
-        )
-    metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
 
     # Lifted out BEFORE unflatten: torchao would rsplit these on "." and fail, and they are plain
     # tensors that never needed it. Keyed off the prefix rather than the header list, so a file

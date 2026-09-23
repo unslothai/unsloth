@@ -419,6 +419,39 @@ def test_the_real_installed_torchao_answers_the_int8_question(monkeypatch):
         assert answer is not False, f"torchao {torchao.__version__} should flatten int8"
 
 
+def test_a_plain_safetensors_prequant_loads_without_torchao(tmp_path, monkeypatch):
+    """The hosted text-encoder artifact is plain tensors in a plain safetensors container.
+
+    torchao is only needed to rebuild its flattened subclasses. On Windows ROCm torchao may be
+    absent entirely, so the loader must take the base safetensors path rather than report the
+    missing ``.pt`` fallback as a 404.
+    """
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+
+    state = {
+        "layers.0.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        "layers.1.weight": torch.tensor([5.0, 6.0]),
+    }
+    path = str(tmp_path / "text_encoder-FP8.safetensors")
+    safetensors_torch.save_file(
+        state,
+        path,
+        metadata = {
+            ps.UNSLOTH_FORMAT_KEY: "fp8",
+            ps.UNSLOTH_METADATA_KEY: json.dumps({"scheme": "fp8"}),
+        },
+    )
+
+    loaded = ps.load_prequant_safetensors(path)
+    assert loaded["format"] == "fp8"
+    assert loaded["metadata"] == {"scheme": "fp8"}
+    assert set(loaded["state_dict"]) == set(state)
+    for key, value in state.items():
+        assert torch.equal(loaded["state_dict"][key], value)
+
+
 # ── root-level plain tensors ─────────────────────────────────────────────────
 
 
