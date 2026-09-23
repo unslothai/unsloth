@@ -942,7 +942,7 @@ export function ContrastSliderRow() {
         step={1}
         onChange={(value) => patch({ contrast: value })}
         ariaLabel={t("settings.appearance.custom.contrast.label")}
-        className="panel-field h-8 w-[84px] shrink-0"
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
         fixedWidth={true}
         size={4}
       />

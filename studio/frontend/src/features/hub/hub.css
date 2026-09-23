@@ -183,7 +183,7 @@
     pointer-events: none;
     position: absolute;
     z-index: 5;
-    width: 44px;
+    width: calc(44px * var(--ui-space-scale, 1));
     opacity: 0;
     transition: opacity 240ms ease;
   }
@@ -195,7 +195,7 @@
   .hub-page .hub-carousel-fade-left {
     /* -8px matches the scroller's -mx-2 bleed so the opaque edge sits on the
        clip edge and no card peeks out beside the fade. */
-    left: -8px;
+    left: calc(-8px * var(--ui-space-scale, 1));
     background: linear-gradient(
       to right,
       var(--background),
@@ -206,7 +206,7 @@
 
   .hub-page .hub-carousel-fade-right {
     /* Mirror of fade-left: offset by the -mx-2 bleed to reach the clip edge. */
-    right: -8px;
+    right: calc(-8px * var(--ui-space-scale, 1));
     background: linear-gradient(
       to left,
       var(--background),
@@ -869,8 +869,8 @@
   .hub-download-fab {
     position: relative;
     display: inline-flex;
-    width: 2.75rem;
-    height: 2.75rem;
+    width: calc(2.75rem * var(--ui-space-scale, 1));
+    height: calc(2.75rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -903,9 +903,9 @@
     top: -3px;
     right: -3px;
     display: inline-flex;
-    width: 1.125rem;
-    min-width: 1.125rem;
-    height: 1.125rem;
+    width: calc(1.125rem * var(--ui-space-scale, 1));
+    min-width: calc(1.125rem * var(--ui-space-scale, 1));
+    height: calc(1.125rem * var(--ui-space-scale, 1));
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
@@ -1178,7 +1178,7 @@
 	   @apply so the cascade is explicit and predictable. */
   .hub-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: calc(2.25rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -1208,18 +1208,17 @@
     cursor: not-allowed;
   }
 
-  /* Every glyph inside a hub action button — explicit icon, spinner, or
-	   embedded SVG — locks to 16px so swapping icons or replacing the
-	   spinner can't drift the layout. */
+  /* Every glyph in a hub action button (icon, spinner or embedded SVG) locks
+	   to one scaled size so swapping icons can't drift the layout. */
   .hub-action-btn svg {
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 
   .hub-run-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: calc(2.25rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -1260,8 +1259,8 @@
   }
 
   .hub-run-action-btn svg {
-    width: 0.9rem;
-    height: 0.9rem;
+    width: calc(0.9rem * var(--ui-space-scale, 1));
+    height: calc(0.9rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 
@@ -1271,8 +1270,8 @@
   .hub-cta-indicator {
     position: relative;
     display: inline-flex;
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
@@ -1285,11 +1284,11 @@
 	   `.group/dl` ancestor for the hover scope (the Hub download row). */
   .hub-row-action {
     position: absolute;
-    right: 0.25rem;
+    right: calc(0.25rem * var(--ui-space-scale, 1));
     top: 50%;
     display: inline-flex;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: calc(1.75rem * var(--ui-space-scale, 1));
+    height: calc(1.75rem * var(--ui-space-scale, 1));
     transform: translateY(-50%);
     align-items: center;
     justify-content: center;
@@ -1314,8 +1313,8 @@
   }
 
   .hub-row-action svg {
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 }
@@ -1338,7 +1337,7 @@
     flex-shrink: 0;
     align-items: center;
     gap: calc(0.4rem * var(--ui-space-scale, 1));
-    height: 2rem;
+    height: calc(2rem * var(--ui-space-scale, 1));
     padding-inline: calc(0.7rem * var(--ui-space-scale, 1));
     border-radius: 9999px;
     border: 1px solid color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);

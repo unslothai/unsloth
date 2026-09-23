@@ -74,7 +74,7 @@ test("a partial is marked the way the Hub marks one", () => {
   const start = PICKERS.indexOf("function PartialBadge(");
   assert.ok(start > 0, "the picker has a partial mark");
   const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
-  assert.match(badge, /size-\[5px\] rounded-full bg-status-warning/);
+  assert.match(badge, /size-\[calc\(5px\*var\(--ui-space-scale,1\)\)\] rounded-full bg-status-warning/);
   assert.match(badge, /aria-label="Partial download"/);
   assert.ok(
     MODELS_TABLE.includes('aria-label="Partial download"') &&

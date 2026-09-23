@@ -552,7 +552,7 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
+          className="flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
         >
           <Glyph className="size-3" />
         </span>
@@ -608,11 +608,11 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
         {/* Hit area, so hovering the dot is not a pixel hunt. */}
         <span
           aria-label={label}
-          className="flex size-[14px] shrink-0 items-center justify-center"
+          className="flex size-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
-            className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
+            className={cn("size-[calc(5px*var(--ui-space-scale,1))] rounded-full", FORMAT_TONE_DOT[tone])}
           />
         </span>
       </TooltipTrigger>
@@ -635,7 +635,7 @@ function DownloadedBadge() {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-success"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success"
           />
         </span>
       </TooltipTrigger>
@@ -660,7 +660,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-warning"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
           />
         </span>
       </TooltipTrigger>
@@ -785,7 +785,7 @@ function VramBadge({
             event.stopPropagation();
           }}
           className={cn(
-            "flex size-[18px] shrink-0 items-center justify-center",
+            "flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center",
             verdict.tone,
             revealOnHover &&
               "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
@@ -1229,7 +1229,7 @@ function ModelRow({
               tone="success"
               label="Loaded"
               className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
-              dotClassName="size-[5px]"
+              dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
           {alignMeta !== "device" && quantChip ? (
@@ -1293,7 +1293,7 @@ function ModelRow({
                   tone="success"
                   label="Loaded"
                   className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
-                  dotClassName="size-[5px]"
+                  dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                 />
               )}
               {partial ? <PartialBadge resumable={partialResumable} /> : null}
@@ -1408,7 +1408,7 @@ function ModelRow({
             connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
           side="right"
-          className="tooltip-compact max-w-[15rem] break-words"
+          className="tooltip-compact max-w-[calc(15rem*var(--ui-space-scale,1))] break-words"
         >
           {tooltipBody}
         </TooltipContent>
@@ -6252,7 +6252,7 @@ export function HubModelPicker({
           className={cn(
             // The list sits within the menu padding so gaps match; scroll-py and symmetric px keep the
             // focus ring off the overflow clip edges during keyboard nav.
-            "model-list-scroll max-h-[335px] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}
