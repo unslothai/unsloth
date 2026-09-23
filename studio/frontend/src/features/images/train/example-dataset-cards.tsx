@@ -9,7 +9,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
+import {
+  getHfDatasetsServerBase,
+  hasDatasetsServer,
+  useHfDatasetsServer,
+  useHubSource,
+} from "@/lib/hf-endpoint";
 import { hubFetch } from "@/lib/hub-fetch";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -26,6 +31,7 @@ import {
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
+  if (!hasDatasetsServer()) return [];
   // Keyed by server too: an empty result cached against the default would
   // otherwise never be retried against a mirror that arrives later.
   const base = getHfDatasetsServerBase();
@@ -69,6 +75,7 @@ export function shortExampleLabel(label: string): string {
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
   const hfDatasetsServer = useHfDatasetsServer();
+  const hubSource = useHubSource();
   useEffect(() => {
     let cancelled = false;
     void fetchPreviews(repo).then((u) => {
@@ -77,7 +84,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
     return () => {
       cancelled = true;
     };
-  }, [repo, hfDatasetsServer]);
+  }, [repo, hfDatasetsServer, hubSource]);
 
   if (!urls || urls.length === 0) return null;
   return (

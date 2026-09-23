@@ -139,6 +139,11 @@ export function useHubName(): string {
   return useHubSource() === "modelscope" ? "ModelScope" : "Hugging Face";
 }
 
+/** The datasets-server knows Hugging Face repos only: a ModelScope id would get another dataset's data. */
+export function hasDatasetsServer(): boolean {
+  return store.getState().source !== "modelscope";
+}
+
 export function getHfDatasetsServerBase(): string {
   return store.getState().datasetsServer;
 }
