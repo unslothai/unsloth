@@ -738,7 +738,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger aria-label={label} className="h-8 w-[calc(160px*var(--ui-space-scale,1))] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[calc(160px*var(--ui-space-scale,1))] max-sm:w-[min(calc(160px*var(--ui-space-scale,1)),50vw)] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -4160,7 +4160,7 @@ export function ImagesPage({
       {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -4228,7 +4228,7 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -4279,7 +4279,7 @@ export function ImagesPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -5162,7 +5162,7 @@ export function ImagesPage({
             <div
               ref={stripRef}
               // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 py-3"
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 max-sm:px-5 py-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;

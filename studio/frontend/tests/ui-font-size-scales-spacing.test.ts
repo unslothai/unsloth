@@ -401,7 +401,7 @@ test("a scaled media rail leaves the preview its minimum", () => {
   for (const [file, width, split] of [
     ["features/images/images-page.tsx", "408px", "@[50rem]"],
     ["features/audio/audio-page.tsx", "408px", "@[50rem]"],
-    ["features/video/video-page.tsx", "400px", "md"],
+    ["features/video/video-page.tsx", "400px", "lg"],
   ] as const) {
     const source = readSrc(file);
     assert.ok(
@@ -410,7 +410,7 @@ test("a scaled media rail leaves the preview its minimum", () => {
       ),
       `${file} rail can outgrow its split`,
     );
-    if (split !== "md") {
+    if (split !== "lg") {
       assert.ok(
         source.includes(
           `grid-cols-[minmax(0,calc(${width}*var(--ui-space-scale,1)))_minmax(13rem,1fr)]`,

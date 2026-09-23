@@ -869,6 +869,9 @@ html[data-chat-font] .aui-root {
 }
 
 @theme inline {
+	/* Named so they sort after lg/xl. 3xl = 1920px, 4xl = 2560px. */
+	--breakpoint-3xl: 120rem;
+	--breakpoint-4xl: 160rem;
 	/* UI typography scale (Settings > Appearance). Every token multiplies
 	   its CSS base size by --ui-font-scale, so text follows the preference
 	   while rem-based layout stays put. The CSS base is 16px; the app default
@@ -4109,5 +4112,12 @@ body.sidebar-row-dragging * {
 	/* Align the arrow with page content while retaining its hit area. */
 	.settings-back-button {
 		margin-inline-start: calc(-0.75rem * var(--ui-space-scale, 1));
+	}
+}
+
+/* Keep tooltips on screen on phones. Unlayered to beat call site max-w. */
+@media (max-width: 639px) {
+	[data-slot="tooltip-content"] {
+		max-width: calc(100vw - 1rem);
 	}
 }

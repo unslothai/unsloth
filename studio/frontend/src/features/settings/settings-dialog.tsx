@@ -479,6 +479,8 @@ export function SettingsDialog() {
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Larger surface on 4K / ultrawide.
+            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -494,7 +496,13 @@ export function SettingsDialog() {
           >
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border">
+            <aside
+              className={cn(
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                // Narrower rail on tablets, unless the scale has stacked it.
+                !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
+              )}
+            >
               <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}

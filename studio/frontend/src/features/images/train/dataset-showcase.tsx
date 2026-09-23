@@ -106,7 +106,7 @@ function ShowcaseTile({
             onClick={remove}
             disabled={deleting}
             aria-label={`Remove ${filename}`}
-            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
+            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 pointer-coarse:opacity-100 shadow-sm ring-1 ring-border backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
           >
             {deleting ? (
               <Spinner className="size-2.5" />

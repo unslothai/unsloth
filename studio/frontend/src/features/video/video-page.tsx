@@ -117,6 +117,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
@@ -596,7 +597,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[calc(160px*var(--ui-space-scale,1))] text-xs">
+          <SelectTrigger className="h-8 w-[calc(160px*var(--ui-space-scale,1))] max-sm:w-[min(calc(160px*var(--ui-space-scale,1)),50vw)] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -887,6 +888,8 @@ function VideoGenerator({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
+  // Clear the floating sidebar toggle on mobile.
+  const isMobileShell = useIsMobileShell();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
@@ -3452,7 +3455,12 @@ function VideoGenerator({
       </Dialog>
       {/* Top: the model selector, clear of the sidebar and level with the controls column. Load
           progress shows in a toast. */}
-      <div className="@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div
+        className={cn(
+          "@container pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
+          isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+        )}
+      >
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
@@ -3506,7 +3514,13 @@ function VideoGenerator({
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
-          <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
+          <MediaPageLink
+            to="/images"
+            label="Images"
+            icon={Image03Icon}
+            labelClassName="@max-[30rem]:hidden"
+            arrowClassName="@max-[30rem]:hidden"
+          />
         </div>
       </div>
 
@@ -3514,18 +3528,18 @@ function VideoGenerator({
           pages' content starts at the same 40px. */}
       {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
           wide row pan the page sideways on a phone. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 max-sm:pl-0 max-sm:pr-0 sm:pr-8 lg:flex-row lg:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] md:overflow-hidden md:border-r md:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 max-sm:pl-5 lg:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] lg:overflow-hidden lg:border-r lg:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 max-sm:pr-5 lg:overflow-y-auto",
               settingsFadeClass,
             )}
           >

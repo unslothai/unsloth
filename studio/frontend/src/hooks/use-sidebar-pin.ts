@@ -9,7 +9,8 @@ function loadPinned(): boolean {
   if (typeof window === "undefined") return true;
   try {
     const raw = window.localStorage.getItem(PINNED_KEY);
-    if (raw === null) return true;
+    // Default to unpinned below lg.
+    if (raw === null) return window.innerWidth >= 1024;
     return raw === "true";
   } catch {
     return true;
