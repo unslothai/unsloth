@@ -179,19 +179,13 @@ test("the adapter and recovery follow the turn's think parse state", () => {
     "an abort during load saves the continuation yield, so it must parse with the turn's choice",
   );
 
-  const recovery = readSrc("features/chat/runtime-provider.tsx");
+  // #10910 moved think/reasoning splitting into the replay engine: a frame is split into reasoning by its
+  // own type instead of a client-side parseThinkTags flag, so pin that handling where it now lives.
+  const replay = readSrc("features/chat/utils/chat-generation-replay.ts");
+  assert.match(replay, /THINK_OPEN_TAG/, "the replay engine must split < think> tags into reasoning");
   assert.match(
-    recovery,
-    /let parseThink = metadata\.parseThinkTags !== false;/,
-  );
-  assert.match(recovery, /carried,\s*\{ parseThink \},/);
-  assert.match(
-    recovery,
-    /if \(typeof metadata\.parseThinkTags !== "boolean"\) \{\s*parseThink = requestParsesThinkTags\(update\.run\.requestPayload\);\s*currentMetadata = \{\s*\.\.\.currentMetadata,\s*parseThinkTags: parseThink,\s*\};/,
-    "the server placeholder has no flag until the first client save",
-  );
-  assert.match(
-    recovery,
-    /if \(!parseThink && \(reasoning \|\| hasStructuredReasoning\)\) \{\s*parseThink = true;\s*currentMetadata = \{ \.\.\.currentMetadata, parseThinkTags: true \};/,
+    replay,
+    /reasoningOpen/,
+    "the replay engine must track open reasoning blocks across folded frames",
   );
 });
