@@ -1232,9 +1232,23 @@ def _video_auto_denoiser_scheme(
 DENOISER_SEED_DECLINED = "__declined__"
 
 
-def _pipeline_device_mib(pipe: Any) -> int:
+def _target_ordinal(target: Any) -> Optional[int]:
+    """The card index a device target resolves to (an unindexed CUDA target is the current device);
+    None on a single-device backend, where every accelerator byte is on the target."""
+    ordinal = getattr(target, "ordinal", None)
+    if ordinal is not None or getattr(target, "device", None) != "cuda":
+        return ordinal
+    try:
+        import torch
+        return int(torch.cuda.current_device())
+    except Exception:  # noqa: BLE001 -- unanswerable: count every card, the old reading
+        return None
+
+
+def _pipeline_device_mib(pipe: Any, ordinal: Optional[int] = None) -> int:
     """MiB the pipeline's modules hold on an accelerator, counting a tensor subclass by its inner
-    storages (its logical dtype over-states a quantized weight) and each storage once."""
+    storages (its logical dtype over-states a quantized weight) and each storage once. ``ordinal``
+    counts only that card: tearing down a model on GPU 0 frees nothing on GPU 1."""
     if pipe is None:
         return 0
     seen: set[int] = set()
@@ -1251,7 +1265,10 @@ def _pipeline_device_mib(pipe: Any) -> int:
             except Exception:  # noqa: BLE001 -- fall through to the plain reading
                 pass
         try:
-            if getattr(getattr(t, "device", None), "type", "cpu") in ("cpu", "meta"):
+            device = getattr(t, "device", None)
+            if getattr(device, "type", "cpu") in ("cpu", "meta"):
+                return
+            if ordinal is not None and (getattr(device, "index", None) or 0) != ordinal:
                 return
             storage = t.untyped_storage()
             if storage.data_ptr() in seen:
@@ -2982,7 +2999,10 @@ class VideoBackend:
                     memory_mode = memory_mode,
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
-                    reclaimable_mib = _pipeline_device_mib(getattr(resident, "pipe", None)),
+                    reclaimable_mib = _pipeline_device_mib(
+                        getattr(resident, "pipe", None),
+                        ordinal = _target_ordinal(target),
+                    ),
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
