@@ -537,14 +537,34 @@ test("surfaces the stylesheet paints take the panel muted text too", () => {
     /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar, ([^)]*)\) \{/,
   );
   assert.ok(always);
-  for (const surface of [".menu-soft-surface", ".menu-soft-surface-up", ".hub-download-panel"]) {
+  for (const surface of [
+    ".menu-soft-surface",
+    ".menu-soft-surface-up",
+    ".hub-download-panel",
+    ".hub-download-fab",
+  ]) {
     assert.ok(always[1]?.includes(surface), `${surface} is not a panel`);
     assert.match(
       CSS + HUB_CSS,
-      new RegExp(`^\\s*${surface.replace(".", "\\.")}[,\\s{][^}]*(bg-popover|var\\(--popover\\))`, "m"),
-      `${surface} no longer paints a popover`,
+      new RegExp(
+        `^\\s*(?:\\.[\\w-]+ )?${surface.replace(".", "\\.")}[,\\s{][^}]*(bg-popover|var\\(--(popover|card)\\))`,
+        "m",
+      ),
+      `${surface} no longer paints a palette surface`,
     );
   }
+  // Hub rows are cards in light only: dark paints them over the page, and
+  // the panel target there took their muted text from 4.1:1 to 1.0:1.
+  assert.match(
+    CSS,
+    /html\[data-contrast-adjust\]:not\(\.dark\) \.hub-page \.hub-result-row \{[^}]*var\(--contrast-panel-target, var\(--contrast-target\)\)/,
+  );
+  assert.match(HUB_CSS, /^  \.hub-page \.hub-result-row \{[^}]*background-color: var\(--card\)/m);
+  assert.match(
+    HUB_CSS,
+    /html\.dark \.hub-page \.hub-result-row \{\s*background-color: color-mix\(in srgb, var\(--foreground\) [^;]*, var\(--background\)\);/,
+  );
+  assert.doesNotMatch(always[1] ?? "", /hub-result-row/);
   // Painted as cards only in dark, so scoped to dark, with their page panes
   // (the Settings content pane) sent back unless a card in dark as well.
   const dark = [".settings-surface", ".chat-composer-surface", ".unsloth-composer-surface", ".unsloth-plus-menu", ".dialog-soft-surface"];
