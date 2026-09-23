@@ -13964,24 +13964,28 @@ def _whatwg_codec(label: bytes) -> str | None:
 def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
     # only the prolog in XML. A headerless body is XML if it opens with a prolog, HTML if it looks it.
-    is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
-    is_xml = is_xml or (not content_type and _XML_ENCODING_RE.match(head) is not None)
-    if not is_xml and content_type != "text/html":
-        if content_type or not _looks_like_html(head.decode("latin-1")):
-            return None
-    for tag in () if is_xml else _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
-        attrs = {}
-        for name, *values in _META_ATTR_RE.findall(tag.group(1)):
-            attrs.setdefault(name.lower(), b"".join(values))
-        label = attrs.get(b"charset")
-        if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
-            match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
-            label = match and match.group(1)
-        codec = label and _whatwg_codec(label)
-        if codec:
-            return codec
-    match = _XML_ENCODING_RE.match(head)
-    return match and _whatwg_codec(match.group(1))
+    prolog = _XML_ENCODING_RE.match(head)
+    if content_type:
+        is_html = content_type == "text/html"
+        is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
+    else:
+        is_xml = prolog is not None
+        is_html = not is_xml and _looks_like_html(head.decode("latin-1"))
+    if is_html:
+        for tag in _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
+            attrs = {}
+            for name, *values in _META_ATTR_RE.findall(tag.group(1)):
+                attrs.setdefault(name.lower(), b"".join(values))
+            label = attrs.get(b"charset")
+            if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
+                match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
+                label = match and match.group(1)
+            codec = label and _whatwg_codec(label)
+            if codec:
+                return codec
+    elif not is_xml:
+        return None
+    return prolog and _whatwg_codec(prolog.group(1))
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14728,19 +14732,19 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        meta_codec = None
-        if bom_codec is None:
-            meta_codec = _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
+        fallback_codec = (
+            bom_codec
+            or _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
+            or "utf-8"
+        )
         try:
-            raw_html = raw_bytes.decode(
-                declared or bom_codec or meta_codec or "utf-8", errors = "replace"
-            )
+            raw_html = raw_bytes.decode(declared or fallback_codec, errors = "replace")
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
-            raw_html = raw_bytes.decode(bom_codec or meta_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(fallback_codec, errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):

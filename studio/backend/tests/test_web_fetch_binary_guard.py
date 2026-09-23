@@ -448,6 +448,7 @@ def _html_page(head: str, text: str) -> str:
         '<meta charset="windows-31j">',
         '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS">',
         '<meta content="text/html; charset=shift_jis" http-equiv="content-type">',
+        '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=Shift_JIS">',
     ],
 )
 def test_meta_charset_read_when_header_names_none(monkeypatch, head):
@@ -498,9 +499,7 @@ def test_header_charset_wins_over_contradicting_meta(monkeypatch):
 
 
 def test_bom_wins_over_contradicting_meta(monkeypatch):
-    body = codecs.BOM_UTF16_LE + _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode(
-        "utf-16-le"
-    )
+    body = codecs.BOM_UTF8 + _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode()
     out = _fetch_with(monkeypatch, body, "text/html")
     assert _JAPANESE in out
     assert "�" not in out
