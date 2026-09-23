@@ -10,7 +10,7 @@ registerStoreStubResolver();
 
 const { buildCachedInventoryRow, buildLocalInventoryRows } =
   await import("../src/features/hub/inventory/view-models.ts");
-const { buildDiscoverRows } =
+const { buildDiscoverRows, discoveryInventorySignature } =
   await import("../src/features/hub/lib/view-models.ts");
 
 const REPO_ID = "Qwen/Qwen-Image-2.1";
@@ -127,4 +127,26 @@ test("the detail pane offers a plain Download, never Run, for a companion-only r
       name,
     );
   }
+});
+
+test("a companion fetch finishing changes the Discover memo key", () => {
+  // Mid-fetch and finished, both rows are partial; only the flag moves.
+  const fetching = discoveryInventorySignature([], localRow(false));
+  const finished = discoveryInventorySignature([], localRow(true));
+  assert.notEqual(fetching, finished);
+  const cached = (companion_prefetch: boolean) =>
+    buildCachedInventoryRow(
+      {
+        repo_id: REPO_ID,
+        model_format: "safetensors",
+        size_bytes: 1,
+        partial: true,
+        companion_prefetch,
+      },
+      "safetensors",
+    );
+  assert.notEqual(
+    discoveryInventorySignature([cached(false)], []),
+    discoveryInventorySignature([cached(true)], []),
+  );
 });

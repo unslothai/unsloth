@@ -190,6 +190,28 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
+// buildDiscoverRows reads each row's repo, format, partial and companion state; a change in any of
+// them has to change this key, or the memoised Discover grid keeps the stale state.
+export function discoveryInventorySignature(
+  cachedRows: readonly CachedInventoryRow[],
+  localRows: readonly LocalInventoryRow[],
+): string {
+  const state = (row: { partial?: boolean; companionPrefetch?: boolean }) =>
+    row.companionPrefetch ? "x" : row.partial ? "p" : "c";
+  const parts: string[] = [];
+  for (const row of cachedRows) {
+    parts.push(
+      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  for (const row of localRows) {
+    parts.push(
+      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  return parts.sort().join("|");
+}
+
 export function buildDiscoverRows(
   results: HfModelResult[],
   cachedRows: CachedInventoryRow[],
