@@ -17310,6 +17310,8 @@ def _check_signal_escape_patterns(code: str):
             self.class_family: "dict[int, str]" = {}
             # Class name -> its family, so `API()` makes an `<API>` instance.
             self.class_names: "dict[str, str]" = {}
+            # Class name -> its `__init__`, so `Wrapper(session)` binds `session` inside it.
+            self.class_inits: "dict[str, list[ast.AST]]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
             self.method_self: "dict[int, tuple[str, str]]" = {}
             if network_possible:
@@ -17329,6 +17331,9 @@ def _check_signal_escape_patterns(code: str):
                     family = f"<{find(c.name)}>"
                     self.class_family[id(c)] = family
                     self.class_names[c.name] = family
+                    for fn in c.body:
+                        if isinstance(fn, ast.FunctionDef) and fn.name == "__init__":
+                            self.class_inits.setdefault(c.name, []).append(fn)
                     for fn in c.body:
                         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
                             (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
@@ -17436,7 +17441,7 @@ def _check_signal_escape_patterns(code: str):
                     (fn, 0)
                     for name in sorted(self._local_callees(node.func))
                     for fn in self.local_functions.get(name, ())
-                ]
+                ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
             elif isinstance(node.func, ast.Attribute):
                 # `obj.m(s)` and `A.m(obj, s)` look alike, so a method is bound both ways.
                 methods = self.local_methods.get(node.func.attr, [])
@@ -17985,11 +17990,15 @@ def _check_signal_escape_patterns(code: str):
         def _record_env_proxy(self, key, value) -> None:
             """`os.environ["HTTPS_PROXY"] = ...` routes every client that trusts the environment,
             which requests, httpx and urllib do by default."""
-            if (
-                isinstance(key, ast.Constant)
-                and isinstance(key.value, str)
-                and key.value.lower() in _ENV_PROXY_VARIABLES
-            ):
+            if isinstance(key, ast.Constant):
+                names = [key.value] if isinstance(key.value, str) else []
+            elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
+                names = list(self.literal_names[key.id])  # `key = "HTTPS_PROXY"`
+            else:
+                # A key this screen cannot read may name a proxy variable: fail closed.
+                self.env_proxies.append(_UNREADABLE)
+                return
+            if any(name.lower() in _ENV_PROXY_VARIABLES for name in names):
                 self.env_proxies.append(value)
 
         def _apply_proxy(self, target, value, mutated) -> None:

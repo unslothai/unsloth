@@ -1024,6 +1024,17 @@ class TestNetworkTargetResolution:
                 "aiohttp.ClientSession(trust_env=True).get('https://pypi.org/')",
                 id = "proxy_environment_aiohttp_opted_in",
             ),
+            pytest.param(
+                f"import os, requests\nkey = 'HTTPS_PROXY'\nos.environ[key] = 'http://{_H}:8080'\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_key_in_a_variable",
+            ),
+            pytest.param(
+                "import requests\nclass Wrapper:\n    def __init__(self, session):\n"
+                "        self.session = session\n    def go(self):\n"
+                f"        self.session.get('http://{_H}/')\nWrapper(requests.Session()).go()",
+                id = "client_passed_to_a_local_constructor",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1161,6 +1172,7 @@ class TestNetworkTargetResolution:
             # aiohttp ignores the proxy environment unless a session sets `trust_env`.
             "import os, aiohttp\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "aiohttp.ClientSession().get('https://pypi.org/')",
+            "import os, requests\nkey = 'HF_HOME'\nos.environ[key] = '/tmp'\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
@@ -1237,6 +1249,8 @@ class TestNetworkTargetResolution:
                 id = "or_default_url",
             ),
             "import os, requests\nos.environ.update(load())\nrequests.get('https://pypi.org/')",
+            # An environment key that cannot be read may name a proxy variable.
+            "import os, requests\nfor k, v in cfg.items():\n    os.environ[k] = v\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_unreadable_destination_refused(self, code):
