@@ -118,6 +118,7 @@ from .diffusion_memory import (
     unified_memory_shortfall_message,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -1037,6 +1038,10 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # "denoise" until the pipeline enters its decoder. The decode runs INSIDE pipe(), after the
+    # last step callback, so without this the bar sits at steps/steps through a decode that on a
+    # batch is seconds long and reads as a hang.
+    phase: str = "denoise"
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -7449,9 +7454,17 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
+                    # Per chunk, not once per generation: a later chunk denoises again, and a phase
+                    # left on "decode" would report the rest of a batch as decoding.
+                    gen.phase = "denoise"
+
+                    def _enter_decode_phase(gen = gen) -> None:
+                        gen.phase = "decode"
+                        gen.eta_seconds = None
+
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
+                        with torch.inference_mode(), decode_phase(pipe, _enter_decode_phase):
                             out = pipe(**chunk_kwargs).images
                     except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                         oom = is_oom_error(exc)
@@ -7570,6 +7583,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "phase": "denoise",
             }
         return {
             "active": True,
@@ -7577,6 +7591,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "phase": gen.phase,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

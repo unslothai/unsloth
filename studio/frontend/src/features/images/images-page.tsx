@@ -500,6 +500,9 @@ function formatTimestamp(epochSeconds: number): string {
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  // The decode runs inside the pipeline call, after the last step. Without this the bar reads
+  // "Step 40/40" through all of it, which is the whole reason a finished render looks hung.
+  if (p.phase === "decode") return "Decoding…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
