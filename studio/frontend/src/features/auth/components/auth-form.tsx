@@ -5,7 +5,7 @@ import { useAppShellReadySignal } from "@/components/app-readiness";
 import { apiUrl } from "@/lib/api-base";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
-import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
+import { fetchAuthStatus, fetchOIDCConfig, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
@@ -66,6 +66,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [oidcProvider, setOidcProvider] = useState<string | null>(null);
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
@@ -149,6 +150,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     }
 
     void initializeAuthForm();
+    if (isLoginMode) {
+      void fetchOIDCConfig()
+        .then((config) => {
+          if (!canceled && config.enabled) setOidcProvider(config.display_name || "SSO");
+        })
+        .catch(() => undefined);
+    }
 
     return () => {
       canceled = true;
@@ -186,7 +194,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     helperText = "Password already updated. Use the login screen.";
   }
   const title = isLoginMode ? "Welcome back" : "Setup your account";
-  const subtitle = isLoginMode  
+  const subtitle = isLoginMode
     ? "Sign in with your password."
     : "Create a new password";
   const submitLabel = isLoginMode ? "Login" : "Change password";
@@ -509,11 +517,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               />
             </div>
             <p
-              className={`min-h-4 text-xs ${
-                showWhitespaceWarning || showPasswordMismatchWarning
+              className={`min-h-4 text-xs ${showWhitespaceWarning || showPasswordMismatchWarning
                   ? "text-destructive"
                   : "text-muted-foreground"
-              }`}
+                }`}
               aria-live="polite"
             >
               {showWhitespaceWarning
@@ -548,6 +555,27 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           {loading ? "Please wait..." : submitLabel}
         </Button>
       </form>
+
+      {isLoginMode && oidcProvider && !blockedByState && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3" aria-hidden="true">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">or</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            disabled={loading || statusLoading}
+            onClick={() => {
+              window.location.assign(apiUrl("/api/auth/oidc/login"));
+            }}
+          >
+            Sign in with {oidcProvider}
+          </Button>
+        </div>
+      )}
 
       {showSwitchLink && (
         <p className="text-center text-sm text-muted-foreground">

@@ -328,6 +328,7 @@ from datetime import datetime
 
 from routes import (
     auth_router,
+    oidc_router,
     chat_history_router,
     data_recipe_router,
     datasets_router,
@@ -1589,6 +1590,7 @@ from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # n
 app.add_middleware(RemoteAccessStopResponseMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(oidc_router, prefix = "/api/auth/oidc", tags = ["auth"])
 app.include_router(
     __import__("routes.accounts", fromlist = ["router"]).router,
     prefix = "/api/accounts",
