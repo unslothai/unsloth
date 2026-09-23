@@ -253,7 +253,12 @@ class StaticStepSkip:
         self.last_stats = dict(self.stats)
         self.reset(None)
 
-    def reset(self, steps: Optional[int], *, step_signal: bool = False) -> "StaticStepSkip":
+    def reset(
+        self,
+        steps: Optional[int],
+        *,
+        step_signal: bool = False,
+    ) -> "StaticStepSkip":
         """Start a generation of ``steps`` effective denoise steps (None: compute every step)."""
         self.plan = (
             static_schedule(steps, head = self.head, tail = self.tail, every = self.every)
@@ -405,7 +410,10 @@ def _find(pipe: Any) -> Optional[StaticStepSkip]:
 
 
 def install_static_step_skip(
-    pipe: Any, *, settings: Optional[dict] = None, logger: Any = None
+    pipe: Any,
+    *,
+    settings: Optional[dict] = None,
+    logger: Any = None,
 ) -> Optional[str]:
     """Put the static step skip on ``pipe.transformer``. Returns ``TC_STATIC``, or None when the
     pipe cannot take it (it then runs uncached). Never sets ``_unsloth_step_cache``: that marker
@@ -468,7 +476,10 @@ def install_static_step_skip(
 
 
 def reset_static_step_skip(
-    pipe: Any, steps: Optional[int], *, step_signal: bool = False
+    pipe: Any,
+    steps: Optional[int],
+    *,
+    step_signal: bool = False,
 ) -> bool:
     """Arm the schedule for one pipeline call of ``steps`` effective denoise steps."""
     skip = _find(pipe)
