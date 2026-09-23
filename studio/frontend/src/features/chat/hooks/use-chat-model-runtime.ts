@@ -1185,6 +1185,8 @@ export function useChatModelRuntime() {
       // error cleanup must not restore its previous config over settings the new
       // caller has already applied.
       const loadIntentId = ++modelSelectionIntentEpoch;
+      const activeRunBeforeCredentials = activeLoadRunRef.current;
+
       const isLocal = isLocalModelPath(modelId);
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       // Credential prompts must complete before cancelling a pending run: a decline must not
@@ -1196,6 +1198,23 @@ export function useChatModelRuntime() {
         if (!preparedToken.proceed) {
           if (modelSelectionIntentEpoch === loadIntentId) {
             toast.error("Model load cancelled.");
+            // This pick invalidated the previous run before opening credentials. If that run
+            // fails while the dialog is open, its stale-intent catch cannot restore the config
+            // it staged over the still-resident model. Defer restoration until it fully settles,
+            // and only if the original resident is still the selected checkpoint.
+            if (activeRunBeforeCredentials) {
+              void activeRunBeforeCredentials.settledPromise.then(() => {
+                if (modelSelectionIntentEpoch !== loadIntentId) return;
+                const current = useChatRuntimeStore.getState();
+                if (
+                  !activeRunBeforeCredentials.residentModelUnloaded &&
+                  current.params.checkpoint ===
+                    activeRunBeforeCredentials.rollbackCheckpoint
+                ) {
+                  restoreRollbackConfigForClear(activeRunBeforeCredentials);
+                }
+              });
+            }
           }
           return;
         }

@@ -710,3 +710,22 @@ test("a Transformers upgrade unload is recorded on the active run for cancellati
   assert.notEqual(runMarker, -1, "cancellation reconciliation needs the run-level unloaded marker");
   assert.ok(consumedUnload < runMarker && runMarker < priorFlag);
 });
+
+test("declined Hub credentials restore a failed superseded run's resident config", () => {
+  const runtime = read(RUNTIME);
+  const selection = section(
+    runtime,
+    "const loadIntentId = ++modelSelectionIntentEpoch;",
+    "if (!stopped) {",
+  );
+  const token = selection.indexOf("const activeRunBeforeCredentials = activeLoadRunRef.current;");
+  const prompt = selection.indexOf("await prepareHfTokenForUse(hfToken)");
+  assert.notEqual(token, -1, "capture the in-flight run before opening credentials");
+  assert.ok(token < prompt, "capture the run before awaiting the credential dialog");
+  const decline = section(selection, "if (!preparedToken.proceed) {", "hfToken = preparedToken.token;");
+  assert.match(decline, /activeRunBeforeCredentials\.settledPromise\.then\(/);
+  assert.match(decline, /modelSelectionIntentEpoch !== loadIntentId/);
+  assert.match(decline, /!activeRunBeforeCredentials\.residentModelUnloaded/);
+  assert.match(decline, /current\.params\.checkpoint ===\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
+  assert.match(decline, /restoreRollbackConfigForClear\(activeRunBeforeCredentials\)/);
+});
