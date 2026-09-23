@@ -762,7 +762,7 @@ def test_generate_fbcache_still_bypasses_and_resets(fake_runtime, tmp_path, monk
 
 
 # ── API ─────────────────────────────────────────────────────────────────────────────
-def test_image_load_request_accepts_static_and_video_does_not():
+def test_image_and_video_load_requests_accept_static():
     from pydantic import ValidationError
 
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
@@ -771,8 +771,10 @@ def test_image_load_request_accepts_static_and_video_does_not():
         DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
         == "static"
     )
+    # The video backend wires it too (test_video_static_skip); an unknown mode is still refused.
+    assert VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache == "static"
     with pytest.raises(ValidationError):
-        VideoLoadRequest(model_path = "org/model", transformer_cache = "static")
+        VideoLoadRequest(model_path = "org/model", transformer_cache = "magic")
 
 
 def test_stats_of_the_last_generation_survive_the_post_render_reset():

@@ -69,6 +69,13 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  // Static step skip only: its schedule and the denoiser call counts of the current / last clip.
+  transformer_cache_stats?: {
+    mode?: string;
+    every?: number;
+    planned_skips?: number;
+    stats?: { calls?: number; computed?: number; skipped?: number };
+  } | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
@@ -138,7 +145,7 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16).
   // GGUF / single-file checkpoints carry their own.

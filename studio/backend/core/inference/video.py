@@ -56,9 +56,18 @@ from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
     TC_FBCACHE,
+    TC_STATIC,
     apply_step_cache,
+    cache_breaks_graph,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
+)
+from .diffusion_step_skip import (
+    install_static_step_skip,
+    mark_step_end,
+    reset_static_step_skip,
+    static_skip_stats,
+    uninstall_static_step_skip,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -818,6 +827,8 @@ class _VideoLoadState:
     speed_optims: tuple = ()
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
+    # Step cache engaged ("fbcache" | "static") or None. Only fbcache breaks the graph (cache_breaks_graph); static keeps
+    # the compile fullgraph and the CUDA-graph eligibility of an uncached load.
     transformer_cache: Optional[str] = None
     # AUTO on a cache-capable DiT: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request is never
     # toggled.
@@ -1253,6 +1264,15 @@ class _NamedDiTView:
 def _denoiser_view(pipe: Any, component: str) -> Any:
     """``pipe`` itself for the usual ``transformer``; a view onto ``component`` otherwise."""
     return pipe if component == "transformer" else _NamedDiTView(pipe, component)
+
+
+def _is_static_cache_request(value: Optional[str]) -> bool:
+    """Whether a raw transformer_cache request asks for the static step skip. Never raises: an
+    invalid value is rejected by the load path that validates it, not here."""
+    try:
+        return normalize_transformer_cache(value) == TC_STATIC
+    except ValueError:
+        return False
 
 
 def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
@@ -3988,6 +4008,8 @@ class VideoBackend:
                 _base_local_dir = _base_local_dir,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
+                # Only so a static ask is reported as unsupported; the modular workflow runs uncached.
+                transformer_cache = transformer_cache,
             )
 
         transformer_quant_requested = transformer_quant
@@ -4430,18 +4452,45 @@ class VideoBackend:
             default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
             cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
         cache_engaged = None
-        for view in views:
-            engaged = apply_step_cache(
-                view,
-                mode = cache_request,
-                threshold = transformer_cache_threshold,
-                # A quantized transformer's residuals are larger, so both engaged quant and GGUF need the higher FBCache
-                # threshold.
-                quant_active = cache_quant_active,
-                logger = logger,
-            )
-            if view is pipe:
-                cache_engaged = engaged
+        static_decline: Optional[str] = None
+        if cache_request == TC_STATIC:
+            # Explicit only (auto never resolves to it): a schedule fixed per generation and decided outside the
+            # forward, so the compile and CUDA-graph decisions below see an uncached load. One denoiser only: a
+            # dual-expert MoE hands part of the trajectory to transformer_2, which the per-branch history would not
+            # see, so it runs uncached with the reason on the resolved record.
+            if len(views) > 1 or getattr(pipe, "transformer_2", None) is not None:
+                static_decline = (
+                    "static step skip needs a single denoiser; this family runs two experts "
+                    "(transformer_2), so it runs uncached"
+                )
+                logger.warning("video.step_skip: %s", static_decline)
+            elif getattr(fam, "has_audio", False):
+                # LTX-2 returns (video, audio) predictions per call, which a skip does not reproduce: engaged, it would
+                # report static while every call still computed.
+                static_decline = (
+                    "static step skip reuses one noise prediction per call; this family's denoiser "
+                    "returns joint video and audio predictions, so it runs uncached"
+                )
+                logger.warning("video.step_skip: %s", static_decline)
+            else:
+                cache_engaged = install_static_step_skip(pipe, logger = logger)
+                if cache_engaged is None:
+                    static_decline = "static step skip is unavailable for this pipeline; it runs uncached"
+        else:
+            for view in views:
+                engaged = apply_step_cache(
+                    view,
+                    mode = cache_request,
+                    threshold = transformer_cache_threshold,
+                    # A quantized transformer's residuals are larger, so both engaged quant and GGUF need the higher
+                    # FBCache threshold.
+                    quant_active = cache_quant_active,
+                    logger = logger,
+                )
+                if view is pipe:
+                    cache_engaged = engaged
+        # What the compile and CUDA-graph decisions below see: static counts as uncached.
+        cache_graph_break = cache_breaks_graph(cache_engaged)
         # The auto decision can flip at generation time, but only on a cache-capable DiT.
         cache_may_toggle = cache_auto and callable(
             getattr(getattr(pipe, "transformer", None), "enable_cache", None)
@@ -4460,7 +4509,7 @@ class VideoBackend:
                     f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                 )
         else:
-            cache_reason = "requested"
+            cache_reason = static_decline or "requested"
         attention_engaged = None
         # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every denoiser DiT itself).
         # Before apply_attention_backend below, so the requested kernel pins onto the new processors. Held off on
@@ -4498,8 +4547,8 @@ class VideoBackend:
                 family = fam,
                 speed_mode = effective_speed,
                 # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT
-                # crashes)
-                cache_active = cache_engaged is not None or cache_may_toggle,
+                # crashes). The static skip decides outside the forward, so it keeps fullgraph and the graph.
+                cache_active = cache_graph_break or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
             )
@@ -4560,6 +4609,8 @@ class VideoBackend:
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
                         cache_reason,
+                        # A declined static ask stays visible as such instead of reading as an honored "off".
+                        RESOLVED_UNSUPPORTED if static_decline else None,
                     ),
                     "transformer_quant": (
                         transformer_quant_requested,
@@ -4721,6 +4772,7 @@ class VideoBackend:
         _base_local_dir: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
         local_files_only: bool = False,
+        transformer_cache: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -5286,7 +5338,18 @@ class VideoBackend:
                     attention_engaged or "native",
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
-                "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                # No step cache here. Only a static ask is echoed back, so it reads as declined rather than honored;
+                # every other ask keeps its existing record.
+                "transformer_cache": (
+                    (
+                        transformer_cache,
+                        "off",
+                        "static step skip is not supported by this modular workflow",
+                        RESOLVED_UNSUPPORTED,
+                    )
+                    if _is_static_cache_request(transformer_cache)
+                    else (None, "off", "not supported by this modular workflow")
+                ),
                 "cuda_graph": (
                     None,
                     "on" if "cuda_graph" in speed_optims else "off",
@@ -6204,7 +6267,12 @@ class VideoBackend:
                         return
                     _report(ticker.completed())
 
+                static_skip = state.transformer_cache == TC_STATIC
+
                 def _on_step(p, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        # The step boundary the static schedule counts on (one per denoise step, whatever the CFG).
+                        mark_step_end(pipe)
                     # diffusers calls this at the END of a loop iteration, after scheduler.step, so
                     # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
@@ -6265,7 +6333,11 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
-                if state.transformer_cache:
+                if static_skip:
+                    # A fresh schedule per clip. Counted on the step callback when the pipeline has one; a pipeline
+                    # without (HunyuanVideo-1.5) is counted per CFG branch from its cache_context names.
+                    reset_static_step_skip(pipe, steps, step_signal = has_step_callback)
+                elif state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
                     with torch.inference_mode(), progress_ctx(), sigma_ctx:
@@ -6280,6 +6352,12 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001 -- cleanup is best-effort
                             pass
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                finally:
+                    if static_skip:
+                        logger.debug("video.step_skip: %s", static_skip_stats(pipe))
+                        # Drop the outputs kept for reuse (one latent per CFG branch), raised or not; the next clip
+                        # arms its own schedule, and status keeps this clip's counts.
+                        reset_static_step_skip(pipe, None)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -6846,6 +6924,8 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
+            # Idempotent, and a no-op for any load that never engaged the static skip.
+            uninstall_static_step_skip(getattr(state, "pipe", None))
             del state
             clear_gpu_cache()
 
@@ -6904,6 +6984,7 @@ class VideoBackend:
                 "speed_optims": [],
                 "attention_backend": None,
                 "transformer_cache": None,
+                "transformer_cache_stats": None,
                 "transformer_quant": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
@@ -6945,6 +7026,10 @@ class VideoBackend:
             "speed_optims": list(state.speed_optims),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            # The static schedule and its counts for the clip in flight, else the last one; null otherwise.
+            "transformer_cache_stats": (
+                static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
+            ),
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
