@@ -514,6 +514,39 @@ def test_buffers_filled_through_a_helper_are_left_alone():
     torch.testing.assert_close(model.block.table, torch.full((2,), 5.0))
 
 
+def test_integer_and_bool_buffers_the_remote_init_weights_fills_are_left_alone():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Tables(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("index", torch.zeros(3, dtype = torch.long), persistent = False)
+            self.register_buffer("mask", torch.zeros(3, dtype = torch.bool), persistent = False)
+            self.register_buffer("steps", torch.arange(3), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Tables()
+
+        def _init_weights(self, module):
+            if isinstance(module, Tables):
+                module.index.copy_(torch.tensor([2, 0, 1]))
+                module.mask.fill_(True)
+
+    for cls in (Tables, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model._init_weights(model.block)
+    model.block.steps.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    assert model.block.index.tolist() == [2, 0, 1]
+    assert model.block.mask.all()
+    assert model.block.steps.tolist() == [0, 1, 2]
+
+
 def test_a_module_whose_init_weights_raises_is_skipped():
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():

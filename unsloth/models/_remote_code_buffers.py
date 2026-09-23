@@ -99,25 +99,31 @@ def _cache_key(module, kwargs):
 
 def _written_by_init_weights(fresh, buffers, init_weights):
     """Names of ``buffers`` the model's own ``_init_weights`` writes on ``fresh``, found by
-    running it on the rebuilt module with those buffers set to NaN. None when it cannot be
-    run, since then a live value it may have written cannot be told apart."""
-    if init_weights is None:
+    running it on the rebuilt module with those buffers set to sentinels: NaN for floats,
+    and 0 then 1 for other dtypes, since a write cannot leave both in place. None when it
+    cannot be run, since then a live value it may have written cannot be told apart."""
+    if init_weights is None or not buffers:
         return set()
-    probed = {name: buffer for name, buffer in buffers.items() if buffer.is_floating_point()}
-    if not probed:
-        return set()
+    others = [name for name, buffer in buffers.items() if not buffer.is_floating_point()]
+    written = set()
     with torch.no_grad():
-        for name, buffer in probed.items():
-            fresh._buffers[name] = torch.full_like(buffer, float("nan"))
-        try:
-            init_weights(fresh)
-        except Exception:
-            return None
-        written = set()
-        for name in probed:
-            after = fresh._buffers.get(name, None)
-            if after is None or after.is_meta or not torch.isnan(after).all():
-                written.add(name)
+        for sentinel in (0, 1) if others else (0,):
+            for name, buffer in buffers.items():
+                fill = float("nan") if buffer.is_floating_point() else sentinel
+                fresh._buffers[name] = torch.full_like(buffer, fill)
+            try:
+                init_weights(fresh)
+            except Exception:
+                return None
+            for name, buffer in buffers.items():
+                after = fresh._buffers.get(name, None)
+                if after is None or after.is_meta:
+                    written.add(name)
+                elif buffer.is_floating_point():
+                    if not torch.isnan(after).all():
+                        written.add(name)
+                elif not after.eq(sentinel).all():
+                    written.add(name)
     return written
 
 
