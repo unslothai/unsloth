@@ -935,7 +935,6 @@ export const ar = {
         source: "مصدر النماذج",
         sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
         sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth Studio.",
-        endpointInactive: "يُستخدم عندما يكون Hugging Face هو مصدر النماذج.",
         sectionTitle: "مركز النماذج",
         endpoint: "نقطة نهاية Hugging Face",
         endpointDescription: "المصدر الذي تُنزَّل منه النماذج ومجموعات البيانات. اتركه فارغًا لاستخدام huggingface.co، أو أدخل مرآة مثل https://hf-mirror.com.",

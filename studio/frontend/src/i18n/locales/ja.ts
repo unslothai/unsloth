@@ -924,7 +924,6 @@ export const ja = {
         source: "モデルの取得元",
         sourceDescription: "モデルハブの検索とダウンロード先です。ネットワークで Hugging Face がブロックされている、または遅い場合は ModelScope を選んでください。",
         sourceFallback: "ModelScope を起動できなかったため、Hugging Face を使用しています。Unsloth Studio のログを確認してください。",
-        endpointInactive: "Hugging Face がモデルの取得元のときに使用されます。",
         sectionTitle: "モデルハブ",
         endpoint: "Hugging Face エンドポイント",
         endpointDescription: "モデルとデータセットのダウンロード元です。空欄なら huggingface.co、ミラーを使う場合は https://hf-mirror.com などを入力します。",

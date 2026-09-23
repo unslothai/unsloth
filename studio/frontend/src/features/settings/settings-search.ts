@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
@@ -296,6 +297,22 @@ export function createSettingsSearchIndex({
       (key) => key !== "settings.about.updates",
     ),
   };
+}
+
+const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.hub.endpoint",
+  "settings.general.hub.datasetsServer",
+]);
+
+/** The tab's entries whose rows are on the page: the endpoint rows are hidden while ModelScope serves. */
+export function renderedSearchEntries(
+  index: Record<SettingsTab, TranslationKey[]>,
+  tab: SettingsTab,
+  hubSource: HubSource,
+): TranslationKey[] {
+  return hubSource === "modelscope"
+    ? index[tab].filter((key) => !HUGGING_FACE_ONLY_ENTRIES.has(key))
+    : index[tab];
 }
 
 /**

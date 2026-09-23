@@ -946,7 +946,6 @@ export const ptBR = {
         source: "Origem dos modelos",
         sourceDescription: "Onde o hub de modelos pesquisa e baixa. Escolha ModelScope se o Hugging Face estiver bloqueado ou lento na sua rede.",
         sourceFallback: "Não foi possível iniciar o ModelScope, então o Hugging Face está em uso. Verifique os logs do Unsloth Studio.",
-        endpointInactive: "Usado quando o Hugging Face é a origem dos modelos.",
         sectionTitle: "Hub de modelos",
         endpoint: "Endpoint do Hugging Face",
         endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",

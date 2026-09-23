@@ -89,6 +89,14 @@ export function HubSettingsSection() {
     }
   };
 
+  // Hidden while ModelScope serves; a ModelScope that failed to start falls back to the endpoint.
+  const showEndpointRows = settings?.activeSource !== "modelscope";
+  const errorNote = error ? (
+    <span className="max-w-[300px] text-right text-xs text-destructive">
+      {error}
+    </span>
+  ) : null;
+
   const saveEndpoint = () =>
     settings &&
     void save({
@@ -141,63 +149,62 @@ export function HubSettingsSection() {
               {t("settings.general.hub.sourceFallback")}
             </span>
           ) : null}
+          {showEndpointRows ? null : errorNote}
         </div>
       </SettingsRow>
-      <SettingsRow
-        alignTop={true}
-        label={t("settings.general.hub.endpoint")}
-        description={t("settings.general.hub.endpointDescription")}
-      >
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex items-center gap-2">
-            <Input
-              type="url"
-              value={draftEndpoint}
-              placeholder={DEFAULT_HF_ENDPOINT}
-              disabled={locked}
-              aria-label={t("settings.general.hub.endpoint")}
-              onChange={(event) => setDraftEndpoint(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && endpointChanged) {
-                  saveEndpoint();
-                }
-              }}
-              className="h-8 w-60"
+      {showEndpointRows ? (
+        <>
+          <SettingsRow
+            alignTop={true}
+            label={t("settings.general.hub.endpoint")}
+            description={t("settings.general.hub.endpointDescription")}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  type="url"
+                  value={draftEndpoint}
+                  placeholder={DEFAULT_HF_ENDPOINT}
+                  disabled={locked}
+                  aria-label={t("settings.general.hub.endpoint")}
+                  onChange={(event) => setDraftEndpoint(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && endpointChanged) {
+                      saveEndpoint();
+                    }
+                  }}
+                  className="h-8 w-60"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={locked || !endpointChanged}
+                  onClick={saveEndpoint}
+                >
+                  {saving ? t("common.saving") : t("common.save")}
+                </Button>
+              </div>
+              {errorNote}
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label={t("settings.general.hub.datasetsServer")}
+            description={t("settings.general.hub.datasetsServerDescription")}
+          >
+            <Switch
+              checked={settings?.datasetsServerFollowsEndpoint ?? false}
+              disabled={locked || !settings?.hfEndpoint}
+              onCheckedChange={(checked) =>
+                settings &&
+                void save({
+                  ...settings,
+                  datasetsServerFollowsEndpoint: checked,
+                })
+              }
             />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={locked || !endpointChanged}
-              onClick={saveEndpoint}
-            >
-              {saving ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
-          {settings?.source === "modelscope" ? (
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-              {t("settings.general.hub.endpointInactive")}
-            </span>
-          ) : null}
-          {error ? (
-            <span className="max-w-[300px] text-right text-xs text-destructive">
-              {error}
-            </span>
-          ) : null}
-        </div>
-      </SettingsRow>
-      <SettingsRow
-        label={t("settings.general.hub.datasetsServer")}
-        description={t("settings.general.hub.datasetsServerDescription")}
-      >
-        <Switch
-          checked={settings?.datasetsServerFollowsEndpoint ?? false}
-          disabled={locked || !settings?.hfEndpoint}
-          onCheckedChange={(checked) =>
-            settings &&
-            void save({ ...settings, datasetsServerFollowsEndpoint: checked })
-          }
-        />
-      </SettingsRow>
+          </SettingsRow>
+        </>
+      ) : null}
     </SettingsSection>
   );
 }

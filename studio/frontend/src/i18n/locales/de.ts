@@ -958,7 +958,6 @@ export const de = {
         source: "Modellquelle",
         sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",
         sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth Studio-Logs.",
-        endpointInactive: "Wird verwendet, wenn Hugging Face die Modellquelle ist.",
         sectionTitle: "Modell-Hub",
         endpoint: "Hugging-Face-Endpunkt",
         endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",
