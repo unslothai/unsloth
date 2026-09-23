@@ -6267,6 +6267,15 @@ def _macos_validation_sandbox_prefix(
             profile_parts.append(f'(subpath "{literal}")')
     profile_parts.append(")")
     if purpose == _VALIDATION_PURPOSE_SERVER:
+        # llama-server offloads to Metal by default and even -ngl 0 still builds a
+        # Metal context, so without these the server exits with "failed to create
+        # command queue" and every install falls back to a source build. GPU user
+        # client class names differ between Apple Silicon generations and virtual
+        # machines, so IOKit opens are not narrowed; the only mach service granted is
+        # the Metal shader compiler. Files and network stay confined as above.
+        profile_parts.append("(allow iokit-open)")
+        profile_parts.append("(allow iokit-get-properties)")
+        profile_parts.append('(allow mach-lookup (global-name "com.apple.MTLCompilerService"))')
         server_port = _extract_loopback_port(command)
         if server_port > 0:
             profile_parts.append(f'(allow network* (local ip "localhost:{server_port}"))')
@@ -7606,8 +7615,10 @@ def validate_server(
             # Older call sites that don't pass install_kind: keep ROCm
             # hosts in the GPU-validation path so an AMD-only Linux host
             # is exercised against the actual hardware rather than the
-            # CPU fallback. NVIDIA stays covered here.
-            _enable_gpu_layers = host.has_usable_nvidia or host.has_rocm
+            # CPU fallback. NVIDIA and macOS-arm64 are already covered.
+            _enable_gpu_layers = (
+                host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
+            )
             if host.is_linux and host.has_usable_nvidia:
                 gpu_backend = "cuda"
             elif host.is_linux and host.has_rocm:

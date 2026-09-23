@@ -9241,3 +9241,40 @@ def test_validate_prebuilt_choice_approved_validation_records_sandbox_routing(
     assert plans.index("quantize") < plans.index("server")
     assert plans[0] == "ldd"
     assert plans[-1] == "server"
+
+
+def test_macos_validation_profile_grants_metal_only_to_the_server(tmp_path):
+    # llama-server builds a Metal context even with -ngl 0, so a server profile
+    # without these exits with "failed to create command queue" (measured on
+    # macos-15 arm64). Quantize and the load probe never touch the GPU.
+    install_dir = tmp_path / "install"
+    binary = install_dir / "llama-server"
+    probe = tmp_path / "probe.gguf"
+
+    def profile(purpose, command):
+        prefix = INSTALL_LLAMA_PREBUILT._macos_validation_sandbox_prefix(
+            command,
+            binary_path = binary,
+            install_dir = install_dir,
+            purpose = purpose,
+            env = {},
+            adapter_path = "/usr/bin/sandbox-exec",
+        )
+        assert prefix[:2] == ["/usr/bin/sandbox-exec", "-p"]
+        return prefix[2]
+
+    server = profile(
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        [str(binary), "-m", str(probe), "--port", "8123"],
+    )
+    assert "(allow iokit-open)" in server
+    assert '(global-name "com.apple.MTLCompilerService")' in server
+    assert '(allow network* (local ip "localhost:8123"))' in server
+    assert "(allow mach-lookup)" not in server
+
+    quantize = profile(
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        [str(binary), str(probe), str(tmp_path / "out.gguf"), "Q6_K", "2"],
+    )
+    assert "iokit-open" not in quantize
+    assert "mach-lookup" not in quantize
