@@ -353,7 +353,7 @@ from torch.nn import functional as F
 import inspect
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
-from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
+from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
 import functools
@@ -1003,6 +1003,92 @@ def _pin_pristine_sft_loss_type(config_cls):
     field.default = "nll"
     # The class attribute is the other copy of the default: dataclasses seeds it at class creation and a later subclass reads the field, so leave the two agreeing rather than half-patched.
     setattr(config_cls, "loss_type", "nll")
+    return True
+
+
+_UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
+
+
+def _guard_kbit_prep_against_peft_models():
+    """Stop TRL below 0.24.0 re-preparing a model Unsloth already prepared.
+
+    ``prepare_peft_model`` calls PEFT's ``prepare_model_for_kbit_training``, which freezes every parameter and then upcasts each one that is not a ``Params4bit`` to float32. The parameter that matters is the ``lm_head``: Unsloth keeps it out of quantization on purpose so a distillation loss can project through it, so it is dense, it is frozen, and at a large vocabulary it is enormous. Upcasting a frozen tensor buys nothing, since fp32 master weights only matter for parameters an optimizer updates, and autocast already computes in fp32 where precision matters. Measured cost on Kaggle 2x T4: 4.74 GiB for Qwen3.8 (248320 tokens) and 5.01 GiB for Muse Glimmer, both of which OOM with the weights already loaded and sharded across both cards.
+
+    Unsloth's own ``prepare_model_for_kbit_training`` avoids this (it passes ``train_lm_head = False`` and gets fp32 through mixed precision), and ``patch_trl_rl_trainers`` strips the call from each generated trainer. Neither reaches this case: ``GKDTrainer`` subclasses ``SFTTrainer``, the generated ``_UnslothGKDTrainer`` inherits TRL's pristine ``SFTTrainer``, and ``super().__init__`` walks into the unpatched call.
+
+    TRL fixed this themselves in 0.24.0 by adding ``and not isinstance(model, PeftModel)`` to the branch, which is exactly our case because Unsloth has applied LoRA before the trainer is built. So apply that same clause to older TRL rather than inventing a different rule, and leave 0.24.0 and above alone.
+    """
+    try:
+        import trl
+    except Exception:
+        return False
+    try:
+        if Version(trl.__version__) >= Version("0.24.0"):
+            return False
+    except Exception:
+        # A TRL run from a source tree with no distribution metadata sets
+        # __version__ = "unknown", which does not parse. Fall through to the
+        # source check rather than bailing, because bailing leaves exactly the
+        # pre-0.24 installs this exists for on the upcast. The source check is
+        # self-guarding: 0.24.0 and above already carry the clause, so they
+        # spell the branch differently and never match OLD.
+        pass
+    try:
+        from trl.models import utils as trl_models_utils
+    except Exception:
+        return False
+
+    original = getattr(trl_models_utils, "prepare_peft_model", None)
+    if original is None or getattr(original, _UNSLOTH_KBIT_PREP_GUARD_FLAG, False):
+        return False
+
+    OLD = "if is_qlora and not is_sharded_qlora:"
+    NEW = "if is_qlora and not is_sharded_qlora and not isinstance(model, PeftModel):"
+    try:
+        source = inspect.getsource(original)
+    except Exception:
+        return False
+    # Bail rather than guess: if the branch is not spelled the way we expect, a
+    # blind edit is worse than leaving the upcast in place.
+    if source.count(OLD) != 1:
+        return False
+    import functools, textwrap
+
+    source = textwrap.dedent(source).replace(OLD, NEW)
+
+    # exec against the module's LIVE __dict__, not a copy of it. The body closes
+    # over PeftModel, prepare_model_for_kbit_training, get_peft_model,
+    # dataclasses and version, and a copy would freeze those at patch time: a
+    # later rebinding in trl.models.utils (another library patching it, a test
+    # swapping it out) would be invisible to the replacement while the original
+    # would have seen it. The exec defines only this one name, which is the name
+    # we are replacing anyway.
+    namespace = vars(trl_models_utils)
+    exec(compile(source, getattr(trl_models_utils, "__file__", "<unsloth>"), "exec"), namespace)
+    patched = namespace.get("prepare_peft_model")
+    if patched is None:
+        return False
+    functools.update_wrapper(patched, original)
+    setattr(patched, _UNSLOTH_KBIT_PREP_GUARD_FLAG, True)
+
+    # Rebind everywhere, not just at the definition. Each trainer module does
+    # `from ..models import prepare_peft_model` at import time, so it holds its
+    # own reference; in TRL 0.22.2 that is seven modules, and sft_trainer is the
+    # one GKD actually inherits.
+    rebound = 0
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        try:
+            if getattr(module, "prepare_peft_model", None) is original:
+                setattr(module, "prepare_peft_model", patched)
+                rebound += 1
+        except Exception:
+            continue
+    logger.info(
+        f"Unsloth: skipping the redundant float32 upcast in TRL {trl.__version__}'s "
+        f"prepare_peft_model for already-PEFT models ({rebound} binding(s) rebound)."
+    )
     return True
 
 
@@ -2714,15 +2800,42 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args = call_args
 
-    # TRL 0.27.0+ forces use_reentrant=False in gradient_checkpointing_kwargs, but Unsloth gradient checkpointing requires True, so remove the setting after super().__init__() applies it.
-    RLConfig_post = ""
-    if trl_version >= Version("0.27.0"):
-        RLConfig_post = (
-            "        # Unsloth: Remove use_reentrant=False forced by TRL 0.27.0+\n"
-            "        if getattr(self, 'gradient_checkpointing_kwargs', None) is not None:\n"
-            "            if 'use_reentrant' in self.gradient_checkpointing_kwargs:\n"
-            "                del self.gradient_checkpointing_kwargs['use_reentrant']\n"
-        )
+    # Unsloth gradient checkpointing requires the reentrant path. The
+    # non-reentrant one recomputes every packed forward during backward and
+    # compares what each pass saved, so a region packed compiled and recomputed
+    # eagerly aborts the backward with "A different number of tensors was saved
+    # during the original forward and recomputation".
+    #
+    # Two different things push it to non-reentrant, and deleting the key only
+    # answers one of them:
+    #
+    #   TRL 0.27.0+ sets use_reentrant=False explicitly, which the delete below
+    #   used to handle on its own.
+    #
+    #   transformers substitutes {"use_reentrant": False} whenever
+    #   gradient_checkpointing_kwargs is None (see gradient_checkpointing_enable
+    #   in modeling_utils). A config on older TRL never sets the key at all, so
+    #   there is nothing to delete and transformers picks False for us.
+    #
+    # So the value is pinned rather than removed, for every TRL version. This is
+    # not hypothetical on older TRL: GKDConfig turns gradient_checkpointing on by
+    # default, so a distillation run reaches the non-reentrant path without ever
+    # having asked for gradient checkpointing at all.
+    #
+    # Only touched when gradient checkpointing is actually on, since otherwise
+    # transformers never reads these kwargs.
+    # A config asking for context_fn or debug is left alone. torch accepts
+    # neither under use_reentrant=True and raises as soon as a checkpointed
+    # forward runs, so pinning those would turn a working non-reentrant setup
+    # into a crash. determinism_check carries over fine and is not excluded.
+    RLConfig_post = (
+        "        # Unsloth: keep the reentrant checkpoint path\n"
+        "        if getattr(self, 'gradient_checkpointing', False):\n"
+        "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None) or {}\n"
+        "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
+        "                _gc_kwargs['use_reentrant'] = True\n"
+        "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
+    )
 
     RLTrainer_extras = patch_functions(
         RLTrainer, trainer_file, RLTrainer_name, all_imports, imports
@@ -3033,6 +3146,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _widen_sft_config_instance_check(_patched_config)
         except Exception as e:
             logger.info(f"Unsloth: Could not widen the {RLConfig_name} isinstance check: {e}")
+        try:
+            # Idempotent: the flag on the replacement makes repeat calls no-ops.
+            # Called from here rather than at import so TRL's trainer modules,
+            # which each hold their own reference to the name, are already
+            # imported and can be rebound in one pass.
+            _guard_kbit_prep_against_peft_models()
+        except Exception as e:
+            logger.info(f"Unsloth: Could not guard the kbit prep against PEFT models: {e}")
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:

@@ -554,7 +554,7 @@ test("a row with no heading over it still names its connection", () => {
   // own left edge is ~30px in and a tooltip opening that way ran off screen.
   assert.match(
     pickers,
-    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[15rem\] break-words"/,
+    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[calc\(15rem\*var\(--ui-space-scale,1\)\)\] break-words"/,
   );
 });
 
@@ -706,7 +706,7 @@ test("a row's name starts where its heading's label does", () => {
     pickers,
     /<span className="flex min-w-0 items-center gap-1\.5 text-ui-10 font-semibold/,
   );
-  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border\/50 pt-3" : "pt-3",/;
+  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border pt-3" : "pt-3",/;
   assert.match(pickers, listLabel);
   assert.match(
     pickers,

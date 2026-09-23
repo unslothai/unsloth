@@ -2105,7 +2105,11 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
-            if allow_disjoint_search_root:
+            # Only a root that does NOT hold the weights: for the one that does, the
+            # ancestor walk above IS this function's guard and rglob defeats it, so a
+            # sibling QUANT's projector becomes a candidate and wins the shorter-stem
+            # tiebreak. A disjoint revision still recurses, which #10210 needs.
+            if allow_disjoint_search_root and not root_contains_start:
                 recursive_root = root_resolved
         except OSError:
             pass

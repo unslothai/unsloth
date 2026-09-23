@@ -481,8 +481,14 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       className={cn(
         "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
         selected
-          ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
-          : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
+          ? // Dark: --accent, the app's one selection colour. The 12% wash it
+            // carried matched --accent at the default but was scaled by the
+            // wash gain, so it fell away from the token across the slider.
+            "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+          : // Dark hover is --accent held back, so it stays under the selected
+            // row at every contrast. As its own wash it closed to within a few
+            // levels of the selection at the top of the slider.
+            "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
       )}
     >
       {/* Status (On device / Partial) sits beside the quant on the
@@ -1011,14 +1017,14 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-transparent"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
             >
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags.
                   The group sizes to its content (it still shrinks when the row
                   is tight) so the chevron follows the tags instead of stranding
                   itself at the far edge of a full-width trigger. */}
-              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -1031,7 +1037,13 @@ export function GgufDownloadCard({
                   </span>
                 )}
                 {selected?.downloaded && (
-                  <DotTag tone="success" label="On device" />
+                  // Dot only on phones.
+                  <DotTag
+                    tone="success"
+                    label="On device"
+                    className="max-sm:border-0 max-sm:px-0"
+                    labelClassName="max-sm:sr-only"
+                  />
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
@@ -1052,7 +1064,8 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <DotTag tone="gguf" label="GGUF" />
+                {/* Size beats format tag on phones. */}
+                <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
                   !selected.downloaded && (
@@ -1072,9 +1085,9 @@ export function GgufDownloadCard({
             side="bottom"
             sideOffset={8}
             avoidCollisions={false}
-            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[300px] gap-0 overflow-hidden p-0 py-2 ring-0"
+            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
-            <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
+            <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
                 const liveState = liveVariantStates.get(item.key);
                 const liveActive = activeDownloadState(liveState?.state);
