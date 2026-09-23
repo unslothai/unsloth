@@ -824,12 +824,17 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
 
     packed_dir, bf16_dir = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
+    # On the GPU when there is one: an earlier FastLanguageModel load patches Llama's forward.
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
-        packed_dir, dtype = torch.bfloat16, quantization_config = CompressedTensorsConfig(**request_kwargs)
+        packed_dir,
+        dtype = torch.bfloat16,
+        device_map = {"": device},
+        quantization_config = CompressedTensorsConfig(**request_kwargs),
     )
     assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
-    reference = AutoModelForCausalLM.from_pretrained(bf16_dir, dtype = torch.bfloat16)
-    ids = torch.randint(0, 256, (1, 12))
+    reference = AutoModelForCausalLM.from_pretrained(bf16_dir, dtype = torch.bfloat16, device_map = {"": device})
+    ids = torch.randint(0, 256, (1, 12), device = device)
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, reference(input_ids = ids).logits)
 
