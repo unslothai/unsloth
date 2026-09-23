@@ -1987,7 +1987,7 @@ export const en = {
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "Rerank document search",
-        ragRerankDescription: "Reorders passages from your documents with this model before chat sees them. Adds a few seconds per search on CPU.",
+        ragRerankDescription: "Reorders passages from your documents with this model before chat sees them. Adds several seconds per search on CPU.",
         checking: "Checking…",
         notDownloaded: "Not downloaded · {size}",
         downloading: "Downloading…",

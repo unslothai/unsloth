@@ -15,10 +15,11 @@ loading it in the background and returns the original retrieval order; later
 searches are reranked once it is resident. A search also keeps the retrieval
 order while a Decision API request is using the model.
 
-Candidates are scored eight at a time. On CPU each passage of about 500 tokens
-costs roughly 0.4 to 0.7 seconds on 8 cores, so the default of 20 candidates
-adds several seconds to a search; choose GPU in the same section, or lower
-`RAG_RERANK_CANDIDATES`, if chat turns with documents feel slow.
+Candidates are scored eight at a time. With 480-token passages, the default 20
+candidates took 6.2 seconds per search on 8 CPU cores and 0.19 seconds on an
+NVIDIA L4 in testing; 10 candidates took 3.1 and 0.11 seconds. Choose GPU in the
+same section, or lower `RAG_RERANK_CANDIDATES`, if chat turns with documents
+feel slow.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
