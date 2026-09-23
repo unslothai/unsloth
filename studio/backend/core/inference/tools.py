@@ -16330,8 +16330,7 @@ def _check_signal_escape_patterns(code: str):
                 client: (0, ("base_url",), "url")
                 for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
             },
-            # A request built ahead of the call carries its URL where no literal can be read, so the
-            # send fails closed rather than trusting a URL chosen elsewhere.
+            # A prebuilt request's URL is not a literal at the send, so the send fails closed.
             **{
                 f"{client}.send": (0, ("request",), "url")
                 for client in (
@@ -16350,7 +16349,6 @@ def _check_signal_escape_patterns(code: str):
             **{
                 f"{client}.connection_from_host": (0, ("host",), "host") for client in _POOL_CLIENTS
             },
-            # Each urllib3 URL factory under the top-level name and under the module defining it.
             **{
                 f"{module}.{factory}": (0, ("url",), "url")
                 for factory, defined_in in (
@@ -16399,7 +16397,6 @@ def _check_signal_escape_patterns(code: str):
             },
         }
     )
-    # Every call with a destination entry is recognised, on top of the prefixes above.
     _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
         fq
         for fq in sorted(_NETWORK_DESTINATION_ARG)
@@ -17268,15 +17265,12 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
-            # Receiver path (a name or dotted chain) -> every client class ever stored there,
-            # accumulated like the maps above. A method's first parameter is written as its class
-            # family, `<A>`, so `self.s` and `this.s` match across methods and subclasses only.
+            # Receiver path -> every client class ever stored there. A method's first parameter is
+            # written as its class family, `<A>`, so `self.s` matches only within that family.
             self.instance_aliases: "dict[str, set[str]]" = {}
-            # Receiver path -> every value stored in its `_DESTINATION_ATTRS`, including by
-            # `update()`, `|=` and subscript.
+            # Receiver path -> every value stored in its `_DESTINATION_ATTRS`.
             self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
-            # Receiver path -> the paths copied to or from it, which may be the same client: a
-            # proxy set through `t` after `t = s` is used by `s.get(...)`.
+            # Receiver path -> the paths copied to or from it: one client under several names.
             self.path_links: "dict[str, set[str]]" = {}
             # Path -> the (client, attribute) whose mapping it names, after `p = s.proxies`.
             self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
@@ -17309,12 +17303,10 @@ def _check_signal_escape_patterns(code: str):
                             if params:
                                 self.method_self[id(fn)] = (params[0].arg, family)
             self.self_names: "list[tuple[str, str]]" = []
-            # Function name -> its local definitions, and every (parameter, argument) a call to
-            # one passes, so `fetch(requests.Session())` makes `s` in `def fetch(s)` a session.
+            # Function name -> its local definitions.
             self.local_functions: "dict[str, list[ast.AST]]" = {}
             # Name -> the names assigned to it, so `factory = make` calls `make`.
             self.callable_aliases: "dict[str, set[str]]" = {}
-            # Function id -> its name, so a `return` knows whose return value it sets.
             self.def_names: "dict[int, str]" = {}
             # Method name -> (definition, parameters the receiver fills: 1, or 0 for a static).
             self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
@@ -17328,9 +17320,8 @@ def _check_signal_escape_patterns(code: str):
                             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                                 skip = 1 if id(m) in self.method_self else 0
                                 self.local_methods.setdefault(m.name, []).append((m, skip))
-            # Every (target, value) that can carry a client, indexed by the paths it reads. They
-            # are read again after the gathering pass whenever such a path gains a client:
-            # `def fetch(s): t = s` is visited before `fetch(requests.Session())` makes `s` one.
+            # Every (target, value) that can carry a client, re-read after the gathering pass when a
+            # path it reads gains one: `def f(s): t = s` is visited before `f(requests.Session())`.
             self.flows: "list[tuple]" = []
             self.flows_from: "dict[str, list[int]]" = {}
             self.pending_calls: "list[tuple]" = []
@@ -17391,8 +17382,7 @@ def _check_signal_escape_patterns(code: str):
                     for fn in self.local_functions.get(name, ())
                 ]
             elif isinstance(node.func, ast.Attribute):
-                # `obj.fetch(session)` fills `self` from the receiver; `A.fetch(obj, session)`
-                # passes it explicitly, so a method is bound both ways.
+                # `obj.m(s)` and `A.m(obj, s)` look alike, so a method is bound both ways.
                 methods = self.local_methods.get(node.func.attr, [])
                 targets = methods + [(fn, 0) for fn, skip in methods if skip]
             else:
@@ -17409,8 +17399,7 @@ def _check_signal_escape_patterns(code: str):
                 pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
                 for param, arg in pairs:
                     target = ast.Name(id = param, ctx = ast.Store())
-                    # Bound where the parameter is, so the body's calls see it; linked so a
-                    # proxy the helper sets on its parameter is the caller's client's proxy.
+                    # Linked so a proxy the helper sets on its parameter is the caller's proxy.
                     self._link(target, arg)
                     self._record_flow(target, arg, at, fn)
 
@@ -17503,9 +17492,8 @@ def _check_signal_escape_patterns(code: str):
                 # rebinding invisible, so a harmless local call was refused as `requests.get`.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    # A def or class binds its name only after its defaults, decorators and bases
-                    # have run: `import requests as fetch` then
-                    # `def fetch(arg = fetch.get(url))` calls `requests.get` first.
+                    # A def or class binds its name after its defaults and bases run:
+                    # `import requests as fetch; def fetch(a = fetch.get(u))` calls requests.
                     where = (node.body[0].lineno, node.body[0].col_offset)
                 for name in self._shadowing_names(node):
                     if name in exempt:
@@ -17622,7 +17610,6 @@ def _check_signal_escape_patterns(code: str):
                     self._register_alias(node.name, node.body[0])
             args = getattr(node, "args", None)
             if self.collecting and args is not None:
-                # A default is what the parameter holds when the caller passes nothing:
                 # `def fetch(f = requests.get): f(url)` calls `requests.get`.
                 positional = args.posonlyargs + args.args
                 defaults = list(
@@ -17864,8 +17851,7 @@ def _check_signal_escape_patterns(code: str):
                 self.generic_visit(node)
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            # Every value is read before any target is bound, the way the runtime does it:
-            # `f, g = g, f` swaps.
+            # Every value is read before any target is bound, so `f, g = g, f` swaps.
             pairs = [
                 (target, value, self._named_by(value, at))
                 for whole in node.targets
@@ -18004,8 +17990,7 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
-            # A client method: `requests.Session().get` and `s.get` both read as
-            # `requests.Session.get`.
+            # `requests.Session().get` and `s.get` both read as `requests.Session.get`.
             held: "list[tuple[set[str], list[str]]]" = []
             if not isinstance(cur, ast.Name):
                 if parts:
@@ -18066,8 +18051,7 @@ def _check_signal_escape_patterns(code: str):
                     "__setitem__",
                     "__ior__",
                 ):
-                    # `s.proxies.update({...})`, `update(https = ...)`, `setdefault(k, v)` and the
-                    # dunder spellings of a subscript store and `|=`.
+                    # `update`, `setdefault` and the dunder spellings of a subscript store and `|=`.
                     args = node.args
                     if func.attr in ("setdefault", "__setitem__"):
                         # The key is a scheme name, not a destination.
@@ -18105,8 +18089,7 @@ def _check_signal_escape_patterns(code: str):
             )
             fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
-            # `getattr(requests, name)(url)` picks the network function at runtime, so neither the
-            # call nor where it sends can be read.
+            # `getattr(requests, name)(url)` picks the function at runtime, unreadably.
             chooser = node.func
             if (
                 network_possible
@@ -18142,8 +18125,7 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # `x.connect((host, port))` on a receiver this screen cannot place is checked for a
-            # literal host only; a tracked socket or SSH client goes through the table below.
+            # An unplaced receiver's `.connect((host, port))` gets main's literal-only check.
             if (
                 not recognised
                 and isinstance(node.func, ast.Attribute)
@@ -18282,12 +18264,9 @@ def _check_signal_escape_patterns(code: str):
                             # is still unparsable after stripping is left as no host, which is
                             # right: the client raises `MissingSchema` on it rather than reaching
                             # anything.
-                            # The URL parser also drops tab, CR and LF anywhere in the URL, so
-                            # `"ht\ttp://evil.example/"` is fetched from `evil.example`.
+                            # The URL parser drops tab, CR and LF anywhere in the URL.
                             reading = re.sub(r"[\t\r\n]", "", head).lstrip()
-                            # `//host/x` has no scheme but aiohttp treats it as absolute and
-                            # connects to `host` (checked on aiohttp 3.14.3), so the authority
-                            # counts with or without a scheme in front of it.
+                            # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
                             m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
@@ -18295,8 +18274,7 @@ def _check_signal_escape_patterns(code: str):
                             if m and (whole or reading[m.end(1) :]):
                                 host = m.group(1)
                             elif not m and kind == "proxy" and whole and reading.strip():
-                                # requests prepends `http://` to a proxy with no scheme, so
-                                # `"host:8080"` is a proxy host, not a path.
+                                # requests prepends `http://` to a scheme-less proxy.
                                 host = reading.strip()
                         if host is None:
                             unreadable = unreadable or (fails_closed and not whole)
