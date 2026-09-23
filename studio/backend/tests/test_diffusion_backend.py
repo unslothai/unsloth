@@ -332,7 +332,9 @@ def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch)
     # A mirror already on disk is kept: no fetch, so nothing to opt out of.
     _all_cached(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
-    assert prefer_ungated_mirror(mirror, files = ["vae/diffusion_pytorch_model.safetensors"]) == mirror
+    assert (
+        prefer_ungated_mirror(mirror, files = ["vae/diffusion_pytorch_model.safetensors"]) == mirror
+    )
     # Without the opt-out a mirror pick is fetched as is.
     _no_cache(monkeypatch)
     assert prefer_ungated_mirror(mirror) == mirror
