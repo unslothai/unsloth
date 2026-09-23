@@ -201,3 +201,44 @@ def test_a_model_mixing_fp8_and_other_schemes_is_not_partly_routed():
     # routed FP8 weights, so nothing is routed.
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
+
+
+@pytest.mark.parametrize("shape", [(2048, 2048), (256, 2048), (11008, 2048), (2048, 11008), (100, 300), (33, 7)])
+@pytest.mark.parametrize("rows", [(1,), (4,), (2, 1)])
+def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+
+    if _fp8_kernel_unsupported_here():
+        pytest.skip("triton cannot read float8_e4m3fn on this GPU")
+    model, ref = _ct_model(*shape, "channel")
+    W, s = model.lin.weight, model.lin.weight_scale
+    X = torch.randn(*rows, shape[1], device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        assert can_use_fp8_rowwise_gemv(X, W, s)
+        y = fp8_rowwise_gemv(X, W, s)
+        y_again = fp8_rowwise_gemv(X, W, s)
+    y_ref = X.float() @ ref.t()
+    assert y.shape == (*rows, shape[0]) and y.dtype == X.dtype
+    assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.01
+    assert torch.equal(y, y_again)  # fixed-order split-K reduction
+
+
+def test_decode_gemv_refuses_what_it_cannot_compute():
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv
+
+    model, _ = _ct_model(2048, 16384, "channel")
+    W, s = model.lin.weight, model.lin.weight_scale
+    X = torch.randn(1, 16384, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        # A 128x128 block grid for this weight has 16 * 128 == 2048 == N elements.
+        assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = "cuda"))
+        assert not can_use_fp8_rowwise_gemv(torch.randn(5, 16384, device = "cuda", dtype = torch.bfloat16), W, s)
+        assert not can_use_fp8_rowwise_gemv(X.float(), W, s)
+        assert not can_use_fp8_rowwise_gemv(X[:, :2048], W.t(), s)
+    assert not can_use_fp8_rowwise_gemv(X.requires_grad_(True), W, s)
+
+
+def _fp8_kernel_unsupported_here():
+    from unsloth.kernels.fp8 import _fp8_kernel_unsupported
+
+    return _fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn))

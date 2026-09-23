@@ -24,8 +24,8 @@ import types
 import torch
 
 
-def _load_function(name):
-    # Only torch is needed, so run the function without importing unsloth (CPU CI has no unsloth_zoo).
+def _load_functions(*names):
+    # Only torch is needed, so run the functions without importing unsloth (CPU CI has no unsloth_zoo).
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "unsloth",
@@ -33,13 +33,15 @@ def _load_function(name):
         "loader_utils.py",
     )
     tree = ast.parse(open(path, encoding = "utf-8").read())
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     namespace = {"torch": torch}
-    exec(compile(ast.Module(body = [node], type_ignores = []), path, "exec"), namespace)
-    return namespace[name]
+    exec(compile(ast.Module(body = nodes, type_ignores = []), path, "exec"), namespace)
+    return namespace
 
 
-_decompress_compressed_tensors_model = _load_function("_decompress_compressed_tensors_model")
+_decompress_compressed_tensors_model = _load_functions(
+    "_decompress_compressed_tensors_model", "_remove_same_device_compressed_tensors_offload"
+)["_decompress_compressed_tensors_model"]
 
 
 class _Status:

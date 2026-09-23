@@ -27,7 +27,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
-from .fp8 import weight_dequant, fp8_linear
+from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -1052,7 +1052,10 @@ def fast_linear_forward(
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         # The bias is added once below; the per-channel fp8_linear path would add it a second time.
-        out = fp8_linear(X, W, W_quant)
+        if can_use_fp8_rowwise_gemv(X, W, W_quant):
+            out = fp8_rowwise_gemv(X, W, W_quant)
+        else:
+            out = fp8_linear(X, W, W_quant)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:

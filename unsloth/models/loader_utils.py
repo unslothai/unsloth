@@ -1327,9 +1327,12 @@ def _compressed_tensors_fp8_block_size(module, weights):
 
 
 def _unsloth_compressed_tensors_fp8_forward(self, input):
-    from unsloth.kernels.fp8 import fp8_linear
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
 
-    out = fp8_linear(input, self.weight, self.weight_scale)
+    if can_use_fp8_rowwise_gemv(input, self.weight, self.weight_scale):
+        out = fp8_rowwise_gemv(input, self.weight, self.weight_scale)
+    else:
+        out = fp8_linear(input, self.weight, self.weight_scale)
     if self.bias is not None:
         out = out + self.bias.to(out.dtype)
     return out
@@ -1527,6 +1530,30 @@ def _restore_dropped_fp8_scales(
         return (0, 0)
 
 
+def _remove_same_device_compressed_tensors_offload(model):
+    """compressed-tensors >= 0.19 `decompress_model` wraps every module's `_parameters` in an OffloadCache,
+    even when nothing is offloaded. Its `__getitem__` compares data pointers, which torch.compile cannot
+    trace, so every compiled Unsloth forward reading `self.weight` fails. Unwrap caches that keep tensors on
+    their onload device; real cpu / disk offloading is left alone. Returns the number unwrapped."""
+    try:
+        from compressed_tensors.offload.cache import OffloadCache
+        from compressed_tensors.offload.module import remove_module_offload
+    except Exception:
+        return 0
+    removed = 0
+    for module in model.modules():
+        cache = module._parameters
+        if not isinstance(cache, OffloadCache):
+            continue
+        onload = getattr(cache, "onload_device", None)
+        offload = getattr(cache, "offload_device", None)
+        if onload is None or offload is None or torch.device(onload) != torch.device(offload):
+            continue
+        remove_module_offload(module)
+        removed += 1
+    return removed
+
+
 def _decompress_compressed_tensors_model(model):
     """Decompress a compressed-tensors checkpoint right after load, so training starts from one state.
     Left alone, compressed-tensors decompresses on the first forward through a pre-hook on the top module:
@@ -1555,6 +1582,7 @@ def _decompress_compressed_tensors_model(model):
         # decompressed weight an inference tensor that a later LoRA backward cannot save.
         with torch.inference_mode(False), torch.no_grad():
             compressor.decompress_model(module)
+        _remove_same_device_compressed_tensors_offload(module)
 
     # Swap the lazy hook first, so the fallback below is safe too; decompress_model removes it by name.
     hook = getattr(model, "ct_decompress_hook", None)
