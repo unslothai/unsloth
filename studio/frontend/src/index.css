@@ -2278,8 +2278,7 @@ html[data-chat-font] .aui-root {
 		}
 
 		.unsloth-composer-left,
-		.unsloth-composer-line .aui-composer-action-wrapper,
-		.unsloth-composer-line .aui-composer-run-controls {
+		.unsloth-composer-line .aui-composer-action-wrapper {
 			gap: var(--composer-tight-gap);
 		}
 
