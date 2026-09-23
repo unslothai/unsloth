@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { type Locale, formatRelativeTime, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import {
   Copy01Icon,
   Delete02Icon,
@@ -56,7 +57,8 @@ export function ApiKeyRow({
 }) {
   const t = useT();
   const locale = useLocale();
-  const prefix = `sk-unsloth-${apiKey.key_prefix}…`;
+  // The ellipsis is display only; a copied prefix must not carry it.
+  const prefix = `sk-unsloth-${apiKey.key_prefix}`;
   return (
     <div className="group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40">
       <span
@@ -69,7 +71,7 @@ export function ApiKeyRow({
             {apiKey.name}
           </span>
           <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
-            {prefix}
+            {prefix}…
           </code>
         </div>
         <div className="flex flex-wrap gap-x-1.5 text-ui-11 text-muted-foreground">
@@ -104,7 +106,15 @@ export function ApiKeyRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={async () => { await copyToClipboard(prefix); }}>
+          <DropdownMenuItem
+            onClick={async () => {
+              if (await copyToClipboard(prefix)) {
+                toast.success(t("settings.apiKeys.copied"));
+              } else {
+                toast.error(t("settings.apiKeys.copyFailed"));
+              }
+            }}
+          >
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.copyPrefix")}
           </DropdownMenuItem>

@@ -132,6 +132,8 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    apply_gfx101x_triton_workaround,
+    gfx101x_triton_workaround_applied,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
@@ -2774,6 +2776,9 @@ patch_torch_compile(
     O3 = UNSLOTH_COMPILE_MAXIMUM,
     ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
 )
+# patch_torch_compile popped the gfx101x Inductor cache dir chosen in _gpu_init.
+if gfx101x_triton_workaround_applied():
+    apply_gfx101x_triton_workaround()
 
 torch_compile_options = {
     "epilogue_fusion": True,

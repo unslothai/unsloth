@@ -83,6 +83,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
+from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
@@ -2081,6 +2082,8 @@ class FastBaseModel:
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
                 _inherit_gradient_checkpointing_support(model)
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,
