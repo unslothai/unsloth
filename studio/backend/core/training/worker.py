@@ -2681,6 +2681,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # A bracketed split names rows the same way the numeric fields do.
     mlx_split_names_rows = "[" in (config.get("train_split") or "")
+    # The bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+    mlx_kept_row_fraction = [1.0]
+
+    def _on_bound(kept, total):
+        mlx_kept_row_fraction[0] = kept / total
+        _send("status", status_message = f"Using {kept} of {total} rows (max_steps run)")
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -2696,10 +2702,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ds,
             mlx_max_train_rows,
             mlx_max_train_rows_seed,
-            on_bound = lambda kept, total: _send(
-                "status",
-                status_message = f"Using {kept} of {total} rows (max_steps run)",
-            ),
+            on_bound = _on_bound,
         )
 
     def _load_local(file_paths):
@@ -3111,7 +3114,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send(
             "progress",
             step = step,
-            epoch = round(trainer.state.epoch, 2) if trainer.state.epoch else 0,
+            epoch = (
+                round(trainer.state.epoch * mlx_kept_row_fraction[0], 2)
+                if trainer.state.epoch
+                else 0
+            ),
             loss = loss,
             learning_rate = lr,
             total_steps = total,

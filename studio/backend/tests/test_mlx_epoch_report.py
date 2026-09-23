@@ -7,6 +7,7 @@ import textwrap
 from types import SimpleNamespace
 
 import core.training.worker as _worker
+from datasets import Dataset
 
 _TREE = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
 
@@ -27,15 +28,26 @@ class _StubMLXTrainer:
 
 def _step_callback_block():
     body = _TREE.body[0].body
+    bound = [
+        n
+        for n in body
+        if ast.unparse(n) == "mlx_kept_row_fraction = [1.0]"
+        or (isinstance(n, ast.FunctionDef) and n.name in ("_on_bound", "_slice"))
+    ]
     starts = [i for i, n in enumerate(body) if ast.unparse(n) == "start_step = 0"]
     ends = [
         i for i, n in enumerate(body) if ast.unparse(n) == "trainer.add_step_callback(_on_step)"
     ]
-    assert len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0]
-    return body[starts[0] : ends[0] + 1]
+    assert len(bound) == 3 and len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0]
+    return bound + body[starts[0] : ends[0] + 1]
 
 
-def _run_step_callback(step, state_epoch):
+def _run_step_callback(
+    step,
+    state_epoch,
+    rows = 0,
+    max_train_rows = None,
+):
     block = compile(ast.Module(body = _step_callback_block(), type_ignores = []), "<on_step>", "exec")
     events = []
     trainer = _StubMLXTrainer()
@@ -44,12 +56,18 @@ def _run_step_callback(step, state_epoch):
         {
             "trainer": trainer,
             "resume_from_checkpoint": None,
+            "slice_start": None,
+            "slice_end": None,
+            "mlx_split_names_rows": False,
+            "mlx_max_train_rows": max_train_rows,
+            "mlx_max_train_rows_seed": 3407,
             "wandb_run": None,
             "tb_writer": None,
             "_send": lambda event_type, **kw: events.append((event_type, kw)),
         }
     )
     exec(block, namespace)
+    namespace["_slice"](Dataset.from_dict({"text": ["row"] * rows}))
     trainer.train(step, state_epoch)
     return [kw for kind, kw in events if kind == "progress"]
 
@@ -64,6 +82,12 @@ def test_mlx_step_callback_reports_the_trainer_epoch():
 
 def test_mlx_step_callback_reports_zero_before_the_trainer_has_an_epoch():
     assert _run_step_callback(1, None)[0]["epoch"] == 0
+
+
+def test_mlx_step_callback_counts_a_bounded_run_over_the_whole_dataset():
+    progress = _run_step_callback(60, 2.0, rows = 1000, max_train_rows = 250)
+
+    assert progress[0]["epoch"] == 0.5
 
 
 def test_mlx_training_never_streams():
