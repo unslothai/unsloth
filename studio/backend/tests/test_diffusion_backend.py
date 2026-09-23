@@ -323,6 +323,21 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
     assert prefer_ungated_mirror(gated) == gated
 
 
+def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch):
+    """The picker lists mirror ids, so the opt-out must also undo a mirror picked directly."""
+    mirror, upstream = "unsloth/FLUX.1-dev", "black-forest-labs/FLUX.1-dev"
+    _no_cache(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(mirror) == upstream
+    # A mirror already on disk is kept: no fetch, so nothing to opt out of.
+    _all_cached(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(mirror) == mirror
+    # Without the opt-out a mirror pick is fetched as is.
+    _no_cache(monkeypatch)
+    assert prefer_ungated_mirror(mirror) == mirror
+
+
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
     """A path that exists on disk is not a Hub id, so it must survive the swap untouched.
 
