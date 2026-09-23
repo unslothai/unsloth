@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/tooltip";
 import { FolderOpenIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useState, type ComponentProps, type ComponentType } from "react";
 
 /**
  * "Open chat folder" for a browser session, where the backend's file manager is not the user's.
@@ -19,11 +19,16 @@ import { useState } from "react";
  * tooltip opens on hover, which a screen reader never reaches and a touch device does not have, so
  * `title` describes the row and selecting it opens the hint rather than doing nothing.
  */
-export function OpenChatFolderUnavailableItem() {
+export function OpenChatFolderUnavailableItem({
+  // The sidebar renders this row into its right-click menu too, which is a different Radix set.
+  Item = DropdownMenuItem,
+}: {
+  Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
+} = {}) {
   const [hintOpen, setHintOpen] = useState(false);
 
   return (
-    <DropdownMenuItem
+    <Item
       aria-disabled={true}
       title="Only the desktop app can open a chat's files folder. In a browser, download a file from the tool result that wrote it."
       className="relative opacity-50"
@@ -52,6 +57,6 @@ export function OpenChatFolderUnavailableItem() {
           file from the tool result that wrote it.
         </TooltipContent>
       </Tooltip>
-    </DropdownMenuItem>
+    </Item>
   );
 }
