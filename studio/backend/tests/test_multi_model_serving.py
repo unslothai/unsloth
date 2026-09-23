@@ -968,3 +968,11 @@ def test_a_token_count_waits_only_on_its_own_models_chats(backends):
         extra.generations.add(on_slot)
         assert asyncio.run(count_on("org/B-GGUF")) == 1
         assert asyncio.run(count_on("org/A-GGUF")) == 0
+
+
+def test_a_sharer_leaving_the_primary_keeps_what_restores_it(backends, monkeypatch):
+    monkeypatch.setattr(inf, "_primary_request", LoadRequest(model_path = "org/A-GGUF"))
+    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(inf.account_access, "release_shared_resident", lambda kind: True)
+    asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/A-GGUF"), "s"))
+    assert inf._primary_request is not None and inf._primary_request.model_path == "org/A-GGUF"

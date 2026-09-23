@@ -18890,8 +18890,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
-    if request.cancel_load_request_id is None:
-        _forget_evicted(request.model_path)
     extra = (
         await _route_to_extra_slot(request.model_path)
         if request.cancel_load_request_id is None
@@ -18900,6 +18898,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     if extra is not None:
         from core.inference.llama_keepwarm import inference_lifecycle_gate
 
+        _forget_evicted(request.model_path)
         async with inference_lifecycle_gate():
             if _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active):
                 # Let the cancelled streams unwind before their server goes; the gate holds off new ones.
@@ -18929,6 +18928,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         account_access.require_resident_control(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
+    # Only once something is really unloaded: a sharer leaving keeps the model, and what brings it back.
+    if request.cancel_load_request_id is None:
+        _forget_evicted(request.model_path)
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
