@@ -16378,6 +16378,10 @@ def _check_signal_escape_patterns(code: str):
             },
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
             **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            # A datagram names its address per send. `sendto(data, flags, address)` puts the int
+            # flags at index 1, which reads as unreadable and fails closed.
+            "socket.socket.sendto": (1, (), "host"),
+            "socket.socket.sendmsg": (3, (), "host"),
             **{
                 f"{client}.connect": (0, ("hostname", "host"), "host")
                 for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")

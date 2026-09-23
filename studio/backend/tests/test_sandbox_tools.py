@@ -945,6 +945,15 @@ class TestNetworkTargetResolution:
                 f"def go():\n    g().get('http://{_H}/')\ng = f\nf = make\ngo()",
                 id = "factory_alias_chain_in_reverse_order",
             ),
+            pytest.param(
+                "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+                f"s.sendto(b'x', ('{_H}', 53))",
+                id = "datagram_sendto",
+            ),
+            pytest.param(
+                f"import socket\ns = socket.socket()\ns.sendmsg([b'x'], [], 0, ('{_H}', 53))",
+                id = "datagram_sendmsg",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1068,6 +1077,7 @@ class TestNetworkTargetResolution:
             "y = d.get('k')\ny.get('http://203.0.113.5/')",
             "import httpx\nhttpx.Client(base_url='https://pypi.org').get('/simple/')",
             "import urllib3\nurllib3.PoolManager().connection_from_host('pypi.org', 443, 'https')",
+            "import socket\ns = socket.socket()\ns.connect(('pypi.org', 443))\ns.sendall(b'x')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
