@@ -31,6 +31,7 @@ static fp8 checkpoint: loaded as published it trains with fp8 base weights, and 
 algorithm are left untouched.
 """
 
+import inspect
 from typing import Optional
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "UNSLOTH_MODELOPT_KEY_MAPPING_ATTR",
     "pop_modelopt_key_mapping",
     "keep_task_heads_unquantized",
+    "modelopt_planner_quantization_config",
 ]
 
 # Private attribute the key mapping is parked on until the loader hands it to from_pretrained.
@@ -227,3 +229,21 @@ def keep_task_heads_unquantized(config, *model_classes) -> bool:
     skip.extend(name for name in _TASK_HEAD_MODULES if name not in skip)
     quant["modules_to_not_convert"] = skip
     return True
+
+
+def modelopt_planner_quantization_config(config, dequantize: bool = False) -> Optional[dict]:
+    """The rewritten fp8 plan on ``config`` as the load will apply it, for the device-map
+    planner, which rebuilds the repo's ModelOpt block and cannot size it. ``dequantize``
+    mirrors a 16-bit load, which asks the fp8 quantizer for bf16 weights."""
+    quant = getattr(config, "quantization_config", None)
+    if not isinstance(quant, dict):
+        return None
+    plan = dict(quant)
+    if dequantize:
+        try:
+            from transformers.utils.quantization_config import FineGrainedFP8Config
+            if "dequantize" in inspect.signature(FineGrainedFP8Config).parameters:
+                plan["dequantize"] = True
+        except Exception:
+            pass
+    return plan
