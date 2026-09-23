@@ -80,6 +80,21 @@ def test_grouped_lora_trains_and_matches_the_merged_weight():
     torch.testing.assert_close(merged_out, out.detach(), atol = 1e-5, rtol = 1e-5)
 
 
+def test_merge_into_an_fp8_grouped_weight_is_refused():
+    """FP8GroupedLinear keeps an fp8 weight plus weight_scale_inv; B @ A cannot be added in place."""
+    if not hasattr(torch, "float8_e4m3fn"):
+        pytest.skip("torch without float8")
+    model = _peft_model(register = True)
+    base = model.base_model.model.o_a_proj.get_base_layer()
+    with torch.no_grad():
+        base.weight = torch.nn.Parameter(base.weight.to(torch.float8_e4m3fn), requires_grad = False)
+    before = base.weight.clone()
+    with pytest.raises(NotImplementedError, match = "fp8 grouped linear"):
+        model.merge_and_unload()
+    assert torch.equal(base.weight.view(torch.uint8), before.view(torch.uint8))
+    assert not model.base_model.model.o_a_proj.merged
+
+
 def test_grouped_lora_equals_the_diagonal_of_the_dense_delta():
     model = _peft_model(register = True)
     layer = model.base_model.model.o_a_proj

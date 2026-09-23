@@ -50,6 +50,17 @@ def _grouped_lora_layer():
     class GroupedLinearLoRA(LoraLinear):
         """PEFT's dense LoRA layer with a block-diagonal LoRA forward."""
 
+        def merge(self, *args, **kwargs):
+            # PEFT adds B @ A to the stored weight; an FP8GroupedLinear's weight is fp8 read
+            # with an unchanged weight_scale_inv, so that merge is wrong or raises.
+            weight = getattr(self.get_base_layer(), "weight", None)
+            if weight is not None and weight.dtype.itemsize == 1 and weight.is_floating_point():
+                raise NotImplementedError(
+                    "Unsloth: cannot merge LoRA into an fp8 grouped linear in place. Load the "
+                    "model in 16-bit to merge, or save the adapter on its own."
+                )
+            return super().merge(*args, **kwargs)
+
         def forward(self, x, *args, **kwargs):
             self._check_forward_args(x, *args, **kwargs)
             adapter_names = kwargs.pop("adapter_names", None)
