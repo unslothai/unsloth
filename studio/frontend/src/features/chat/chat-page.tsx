@@ -250,6 +250,14 @@ import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+  saveChatItemAsProjectSource,
+} from "./prompt-storage/prompt-storage-dialog";
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -1262,14 +1270,13 @@ async function exportProjectConversation(
   threadId: string,
   format: ProjectChatExportFormat,
 ): Promise<void> {
-  const exports = await import("./prompt-storage/prompt-storage-dialog");
-  if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "raw-jsonl") return exportConversationRawJsonl(threadId);
   if (format === "messages-jsonl")
-    return exports.exportConversationMessagesJsonl(threadId);
-  if (format === "csv") return exports.exportConversationCsv(threadId);
+    return exportConversationMessagesJsonl(threadId);
+  if (format === "csv") return exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
-    return exports.exportConversationMarkdown(threadId);
-  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+    return exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
   // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
@@ -1290,9 +1297,6 @@ async function saveProjectChatItemAsSource(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "./prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
