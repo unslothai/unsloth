@@ -2310,6 +2310,27 @@ def _drops_its_marker_on_failure(start):
     return started
 
 
+def _repair_pinned_diffusers(silent: bool) -> None:
+    """Repair before importing the app; exit if packages may still be half replaced at timeout."""
+    echo = (lambda _line: None) if silent else (lambda line: print(line, flush = True))
+    try:
+        from utils.diffusers_repair import (
+            InstallInterrupted,
+            PeerInstallInProgress,
+            repair_diffusers_before_imports,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+        return
+    try:
+        repair_diffusers_before_imports(echo)
+    except (PeerInstallInProgress, InstallInterrupted) as exc:
+        print(f"Error: {exc}", file = sys.stderr, flush = True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+
+
 @_drops_its_marker_on_failure
 def run_server(
     host: str = "127.0.0.1",
@@ -2451,6 +2472,10 @@ def run_server(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
             flush = True,
         )
+
+    _repair_pinned_diffusers(silent)
+
+    if not silent:
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()
