@@ -3244,6 +3244,12 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
                 + "args.use_vllm = True\n"
+                # TRL >= 0.27 hands args.top_k to vLLM's SamplingParams unchanged, and it rejects None;
+                # the config-time guard misses this when vLLM comes only from fast_inference.
+                + " " * 12
+                + "if getattr(args, 'top_k', -1) is None or getattr(args, 'top_k', -1) == 0:\n"
+                + " " * 16
+                + "args.top_k = -1\n"
             )
 
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
