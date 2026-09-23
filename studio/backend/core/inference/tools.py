@@ -13840,11 +13840,14 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
-_META_TAG_RE = re.compile(rb"<meta(?=[\s/])((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>", re.IGNORECASE)
+# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>.
+_HTML_TAG_RE = re.compile(
+    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>|<[!/?][^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
 _META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
 _META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
-_HTML_COMMENT_RE = re.compile(rb"<!--.*?(?:-->|\Z)", re.DOTALL)
-_XML_ENCODING_RE = re.compile(rb"^\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
+_XML_ENCODING_RE = re.compile(rb"\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
 # WHATWG Encoding labels by the Python codec that matches the browser decoder. A meta declaration
 # of UTF-16 or x-user-defined means UTF-8 or windows-1252; "replacement" labels are left out.
 _WHATWG_CHARSET_LABELS = {
@@ -13972,9 +13975,11 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
         is_xml = prolog is not None
         is_html = not is_xml and _looks_like_html(head.decode("latin-1"))
     if is_html:
-        for tag in _META_TAG_RE.finditer(_HTML_COMMENT_RE.sub(b"", head)):
+        for tag in _HTML_TAG_RE.finditer(head):
+            if (tag.group(1) or b"").lower() != b"meta":
+                continue
             attrs = {}
-            for name, *values in _META_ATTR_RE.findall(tag.group(1)):
+            for name, *values in _META_ATTR_RE.findall(tag.group(2)):
                 attrs.setdefault(name.lower(), b"".join(values))
             label = attrs.get(b"charset")
             if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":

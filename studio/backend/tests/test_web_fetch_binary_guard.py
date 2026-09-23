@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for binary bodies poisoning web_search model context (#7084)."""
+"""Regression tests for web fetch decoding: binary bodies poisoning model context (#7084) and page charsets."""
 
 from __future__ import annotations
 
@@ -449,6 +449,7 @@ def _html_page(head: str, text: str) -> str:
         '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS">',
         '<meta content="text/html; charset=shift_jis" http-equiv="content-type">',
         '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=Shift_JIS">',
+        "<meta http-equiv=content-type content=\"text/html; charset='shift_jis'\">",
     ],
 )
 def test_meta_charset_read_when_header_names_none(monkeypatch, head):
@@ -537,7 +538,7 @@ def test_meta_charset_keeps_cp1252_rescue_for_mislabeled_page(monkeypatch, meta)
 
 def test_commented_out_meta_charset_is_ignored(monkeypatch):
     text = "Ünïcödé “smart” 日本語 MARKERWORD "
-    head = '<!-- <meta charset="iso-8859-1"> --><meta charset="utf-8">'
+    head = '<!--[if IE]><meta charset="iso-8859-1"><![endif]--><meta charset="utf-8">'
     body = _html_page(head, text * 20).encode("utf-8")
     out = _fetch_with(monkeypatch, body, "text/html")
     assert text.strip() in out
@@ -566,7 +567,9 @@ def test_unusable_meta_charset_does_not_stop_the_scan(monkeypatch):
         '<meta name="description" content="docs about charset=shift_jis">',
         '<meta http-equiv="refresh" content="0; url=/next?charset=shift_jis">',
         '<meta name="Content-Type" content="text/html; charset=shift_jis">',
-        '<meta property="og:title" content="a > b"><meta name="x" content="charset=shift_jis">',
+        '<meta name="x" content="<meta charset=shift_jis>">',
+        "<script data-x='<meta charset=\"shift_jis\">'></script>",
+        '<meta charset="shift<!-- x -->_jis">',
         '<meta-info charset="shift_jis"><metadata charset="shift_jis">',
     ],
 )
