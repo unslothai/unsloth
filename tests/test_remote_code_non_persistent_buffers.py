@@ -256,6 +256,56 @@ def test_a_stored_meta_device_is_not_passed_back():
     torch.testing.assert_close(module.b, torch.full((2,), 4.0))
 
 
+def test_variadic_constructors_are_skipped():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class TakesKwargs(nn.Module):
+        def __init__(self, **kwargs):
+            super().__init__()
+            base = kwargs.get("base", 1.0)
+            self.register_buffer("b", torch.full((2,), float(base)), persistent = False)
+
+    TakesKwargs.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    module = TakesKwargs(base = 6.0)
+    module.b.zero_()
+    # Rebuilding without `base` would write 1.0 instead of 6.0, so the module is skipped.
+    assert helper._constructor_kwargs(module, None) is None
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 0
+    assert module.b.eq(0).all()
+
+
+def test_dtype_is_recovered_from_the_instance_or_the_module_is_skipped():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class EpsFromDtype(nn.Module):
+        def __init__(
+            self,
+            dtype = torch.float32,
+            keep = True,
+        ):
+            super().__init__()
+            self.keep = keep
+            if keep:
+                self.dtype = dtype
+            eps = torch.finfo(dtype).eps
+            self.register_buffer("b", torch.full((2,), eps, dtype = torch.float32), persistent = False)
+
+    EpsFromDtype.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    module = EpsFromDtype(dtype = torch.float16)
+    module.b.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 1
+    torch.testing.assert_close(module.b, torch.full((2,), torch.finfo(torch.float16).eps))
+
+    module = EpsFromDtype(dtype = torch.float16, keep = False)
+    module.b.zero_()
+    assert helper._constructor_kwargs(module, None) is None
+    assert helper.restore_remote_code_non_persistent_buffers(module) == 0
+
+
 def test_loaders_restore_right_after_from_pretrained():
     for relative, calls in (("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)):
         with open(os.path.join(_ROOT, relative), encoding = "utf-8") as file:

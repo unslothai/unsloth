@@ -32,8 +32,8 @@ import torch
 __all__ = ["restore_remote_code_non_persistent_buffers"]
 
 _SCALAR_TYPES = (bool, int, float, str, type(None))
-# Arguments that only choose where or in what dtype buffers are built, not their values.
-_PLACEMENT_ARGUMENTS = ("device", "dtype")
+# Arguments that only choose where buffers are built, not their values.
+_PLACEMENT_ARGUMENTS = ("device",)
 
 
 def _transformers_builds_on_meta():
@@ -59,7 +59,8 @@ def _constructor_kwargs(module, model_config):
     kwargs = {}
     for name, parameter in list(signature.parameters.items())[1:]:
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            continue
+            # Whatever went through *args / **kwargs cannot be recovered from the instance.
+            return None
         if name == "config":
             value = module.__dict__.get("config", None) or model_config
         elif name in _PLACEMENT_ARGUMENTS:
