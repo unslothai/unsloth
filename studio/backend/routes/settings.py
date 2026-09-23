@@ -1871,7 +1871,7 @@ def update_openai_auto_switch_override(
         strip_shadowing_flags,
         validate_extra_args,
     )
-    from utils.openai_auto_switch_settings import get_model_override
+    from utils.openai_auto_switch_settings import MAX_SEQ_LENGTH_CEILING, get_model_override
 
     try:
         if payload.fill_absent_fields and payload.remove is True:
@@ -2060,15 +2060,17 @@ def update_openai_auto_switch_override(
             # A -c the caller sends with this save is what its own load runs with, since llama.cpp
             # takes the last -c over the slider value, so store the context the same way.
             # Otherwise an API auto-switch strips the flag as a stale shadow of the slider
-            # (#11511). Flags carried over from an earlier save keep that stale-flag rule.
+            # (#11511). Flags carried over from an earlier save keep that stale-flag rule, and so
+            # does a fill, which keeps a stored row's flags rather than this payload's.
             max_seq_length = payload.max_seq_length
             custom_context_length = payload.custom_context_length
-            if payload.llama_extra_args is not None:
+            if payload.llama_extra_args is not None and not payload.fill_absent_fields:
                 try:
                     explicit_ctx = parse_ctx_override(extra_args)
                 except ValueError:
                     explicit_ctx = None
-                if explicit_ctx:
+                # Past the stored ceiling the field would be dropped, leaving the flag unchecked.
+                if explicit_ctx and explicit_ctx <= MAX_SEQ_LENGTH_CEILING:
                     if max_seq_length is not None:
                         max_seq_length = explicit_ctx
                     if custom_context_length is not None:

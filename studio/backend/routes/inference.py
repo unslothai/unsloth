@@ -7672,7 +7672,7 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
 
     if not model_id:
         return ""
-    return (hf_cache_repo_id(model_id) or str(model_id)).strip().lower()
+    return (hf_cache_repo_id(model_id) or str(model_id)).lower()
 
 
 def _as_ollama_manifest_request(request):
