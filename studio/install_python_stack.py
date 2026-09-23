@@ -10644,6 +10644,115 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     return last != "failed"
 
 
+# The backend's startup repair records its failure here, read by the repair alone so an explicit
+# update still retries; that pass rewrites the manifest without it.
+_DIFFUSERS_MAIN_REPAIR_KEY = "diffusers_main_repair"
+
+
+def _startup_repair_failed() -> bool:
+    try:
+        return (install_manifest.read_manifest() or {}).get(_DIFFUSERS_MAIN_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+_REPAIR_LOCK_POLL_S = 5
+
+
+def _repair_diffusers_main() -> int:
+    """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
+
+    An update from a release that predates 11c runs that release's installer, which never installs
+    the build; the backend that starts afterwards is the first new code such a host runs.
+    """
+    import time
+
+    global USE_UV, _STEP, _TOTAL
+    while True:
+        with install_manifest.pass_lock() as uncontended:
+            # Every "nothing to do" answer waits for the lock too: until a sibling backend's repair or an
+            # update leaves the pass it may be rewriting diffusers, and returning would let the backend
+            # that started this import it.
+            if uncontended:
+                if (
+                    not _diffusers_main_requested()
+                    or not _diffusers_main_needs_dependency_pass()
+                    or _startup_repair_failed()
+                ):
+                    return 1
+                USE_UV = _bootstrap_uv()
+                _STEP, _TOTAL = 0, 1
+                _diffusers_main_step()
+                if _diffusers_main_resident():
+                    return 0
+                # Or every start retries a fetch this host cannot make, refusing diffusion loads meanwhile.
+                install_manifest.update_manifest(**{_DIFFUSERS_MAIN_REPAIR_KEY: "failed"})
+                return 2
+        time.sleep(_REPAIR_LOCK_POLL_S)
+
+
+_PREFETCH_SCRATCH_PREFIX = "unsloth-diffusers-prefetch-"
+
+
+def _prefetch_diffusers_main() -> int:
+    """For the startup repair: fetch and build the pinned build into uv's cache, installing nothing.
+
+    The backend stops this at its deadline, which is safe only because ``--target`` points uv at a
+    scratch directory, so site-packages is never touched; the ``--repair-diffusers-main`` that
+    follows then installs from the cache in about a second. 0 fetched, 1 nothing to fetch (pip keeps
+    no cache here, so it fetches during the install), 2 failed.
+    """
+    import time
+
+    global USE_UV
+    req = REQ_ROOT / "diffusers-main.txt"
+    if (
+        not req.is_file()
+        or not _diffusers_main_requested()
+        or not _diffusers_main_needs_dependency_pass()
+        or _startup_repair_failed()
+    ):
+        return 1
+    USE_UV = _bootstrap_uv()
+    if not USE_UV:
+        return 1
+    # A prefetch stopped at the deadline cannot clean up after itself.
+    for stale in Path(tempfile.gettempdir()).glob(f"{_PREFETCH_SCRATCH_PREFIX}*"):
+        try:
+            if time.time() - stale.stat().st_mtime > 3600:
+                shutil.rmtree(stale, ignore_errors = True)
+        except OSError:
+            pass
+    # The same source _diffusers_main_step will install from, so the install hits this cache entry.
+    archive = None if _has_working_git() else _diffusers_main_archive(req)
+    scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
+    temp_reqs: list[Path] = []
+    try:
+        args = ("--no-deps", "--target", str(scratch))
+        if archive is not None:
+            cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
+        else:
+            actual_req, temp_reqs = _effective_requirements(req)
+            cmd = _build_uv_cmd(args) + ["-r", _uv_safe_path(actual_req)]
+        cmd, env = _pinned_cmd_and_env(cmd)
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
+        shutil.rmtree(scratch, ignore_errors = True)
+    if result.returncode != 0:
+        if result.stdout:
+            _safe_print(_redact_install_output(result.stdout))
+        return 2
+    return 0
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -11929,6 +12038,10 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--repair-diffusers-main"]:
+        sys.exit(_repair_diffusers_main())
+    if sys.argv[1:] == ["--prefetch-diffusers-main"]:
+        sys.exit(_prefetch_diffusers_main())
     if sys.argv[1:] == ["--diffusers-main-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _diffusers_main_needs_dependency_pass() else 1)

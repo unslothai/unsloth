@@ -56,7 +56,7 @@ import {
   clampChatSettingsWidth,
   useChatSettingsWidth,
 } from "@/hooks/use-chat-settings-width";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsCompact } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -185,7 +185,7 @@ export function ParamSlider({
     return (
       <div className="flex items-center gap-3">
         {/* A floor rather than a fixed width, so a longer label is never clipped. */}
-        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+        <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
           <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
           </span>
@@ -489,6 +489,7 @@ export function ChatSettingsPanel({
   const {
     width: settingsWidth,
     max: settingsMax,
+    scale: settingsScale,
     stored: settingsStored,
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
@@ -505,7 +506,8 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
-  const isMobile = useIsMobile();
+  // Overlay as a sheet below lg so the thread keeps its width.
+  const isCompact = useIsCompact();
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const activeNativePathToken = useChatRuntimeStore(
@@ -1082,7 +1084,7 @@ export function ChatSettingsPanel({
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
       <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
-        {isMobile ? (
+        {isCompact ? (
           <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
@@ -1649,7 +1651,7 @@ export function ChatSettingsPanel({
                   }}
                   placeholder="Random"
                   aria-label="Seed"
-                  className="panel-field h-8 w-[84px] shrink-0"
+                  className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
                 />
               </div>
             ) : null}
@@ -1783,7 +1785,7 @@ export function ChatSettingsPanel({
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
                 placeholder="You are a helpful assistant..."
                 fieldSizing="fixed"
-                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),48dvh)] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
                 rows={14}
               />
             </div>
@@ -1826,10 +1828,10 @@ export function ChatSettingsPanel({
     </>
   );
 
-  if (isMobile) {
+  if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[18rem] p-0 font-heading">
+        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
@@ -1855,7 +1857,7 @@ export function ChatSettingsPanel({
       )}
       style={
         {
-          "--chat-settings-width": `${settingsWidth}px`,
+          "--chat-settings-width": `${settingsWidth * settingsScale}px`,
           height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
           marginTop: "var(--studio-custom-titlebar-height, 0px)",
         } as CSSProperties
@@ -1869,13 +1871,14 @@ export function ChatSettingsPanel({
         stored={settingsStored}
         min={CHAT_SETTINGS_WIDTH_MIN}
         max={settingsMax}
+        scale={settingsScale}
         clamp={clampChatSettingsWidth}
         setWidth={setSettingsWidth}
         resetWidth={resetSettingsWidth}
         onToggle={() => onOpenChange?.(!open)}
         target={() => asideRef.current}
         cssVar="--chat-settings-width"
-        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+        measure={() => (asideRef.current?.getBoundingClientRect().width ?? 0) / settingsScale}
         label={t("shell.aria.resizeRunSettings")}
         toggleLabel={t("shell.aria.openRunSettings")}
         collapseHint={t("shell.resize.collapse")}

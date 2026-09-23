@@ -167,6 +167,8 @@ export const fr = {
       noChatsYet: "Aucune discussion pour le moment",
       // Shown under an empty project folder in the sidebar.
       noChats: "Aucune discussion",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tous les projets sont epingles",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -2016,6 +2018,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:

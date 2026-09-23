@@ -9,6 +9,7 @@ export {
   jobKeyOf,
   pendingDrafterPresentation,
   scopedVariant,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,

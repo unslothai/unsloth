@@ -263,6 +263,35 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
             pass
 
 
+def open_session_with_retry(
+    factory: Callable[[], Any],
+    *,
+    retry_on: type[BaseException] | tuple[type[BaseException], ...],
+    attempts: int = 3,
+    pause: float = 5.0,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = print,
+) -> Any:
+    """Open a browser session, retrying only the failure to open one.
+
+    On hosted macOS runners safaridriver sometimes times out "finding or launching a compatible
+    local Safari", which fails the whole leg before a page is loaded. That is the runner, not
+    the change under test, so creating the session gets a bounded retry. Nothing after it
+    does: every assertion still runs once, against the session that did open.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    for attempt in range(1, attempts + 1):
+        try:
+            return factory()
+        except retry_on as exc:
+            if attempt == attempts:
+                raise
+            log(f"browser session not created (attempt {attempt}/{attempts}), retrying: {exc}")
+            sleep(pause)
+    raise AssertionError("unreachable")
+
+
 def wait_for_smoke_page(
     url: str,
     entry: str,

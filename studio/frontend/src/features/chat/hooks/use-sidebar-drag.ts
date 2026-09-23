@@ -190,16 +190,14 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
     [],
   );
 
-  /** One step of the edge scroll, true when the list actually moved. Driven by the frame loop,
-   *  not by pointermove: a pointer resting on the edge sends no moves and would stall. */
-  const edgeScroll = useCallback((y: number): boolean => {
+  /** One step of the edge scroll. Driven by the frame loop, not by pointermove: a pointer resting
+   *  on the edge sends no moves and would stall. */
+  const edgeScroll = useCallback((y: number) => {
     const list = scroller.current;
-    if (!list) return false;
+    if (!list) return;
     const rect = list.getBoundingClientRect();
-    const before = list.scrollTop;
     if (y < rect.top + EDGE_PX) list.scrollTop -= EDGE_STEP_PX;
     else if (y > rect.bottom - EDGE_PX) list.scrollTop += EDGE_STEP_PX;
-    return list.scrollTop !== before;
   }, []);
 
   const track = useCallback(
@@ -270,8 +268,10 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             document.body.releasePointerCapture(pointerId);
           }
         };
-        // Scrolling moves the rows, not the pointer, so the frame that scrolls re-aims too or
-        // the cue would sit on whichever row has slid out from under the pointer.
+        // The rows move under the pointer, not the other way about: the list edge-scrolls, a
+        // folder springs open under a pointer that by definition is resting. So every frame
+        // re-aims, not only the ones that scroll, or the cue would describe the layout as it was
+        // when the pointer last moved while the release hit-tests the layout as it is.
         const onFrame = () => {
           // Self-terminating, so an unmount mid-drag cannot leave the loop running.
           if (!sidebarDragSource()) {
@@ -279,7 +279,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             return;
           }
           frame = requestAnimationFrame(onFrame);
-          if (edgeScroll(at.y)) track(at.x, at.y);
+          edgeScroll(at.y);
+          track(at.x, at.y);
         };
         // Abandons this gesture whole, for a drop that never came: the same as a cancel.
         const self = {
