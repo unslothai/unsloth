@@ -222,7 +222,7 @@ const PastedTextAttachmentUI: FC<{
     <button
       className={cn(
         // Borderless, and in dark mode a shade under the composer surface.
-        "aui-pasted-text-chip group flex h-14 max-w-[15rem] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
+        "aui-pasted-text-chip group flex h-14 max-w-[calc(15rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
         // Keep the label clear of the remove button in the corner.
         isComposer && "aui-pasted-text-chip-composer pr-6",
       )}

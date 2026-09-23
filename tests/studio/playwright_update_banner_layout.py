@@ -364,6 +364,8 @@ FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
+# --ui-font-scale as a number, read through a length since the property itself is a calc().
+UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
@@ -1281,14 +1283,14 @@ def main() -> int:
                     context.route(pattern, stub(payload))
                 page = context.new_page()
                 boot(page, "/")
-                scale = page.evaluate(
-                    "() => getComputedStyle(document.documentElement)"
-                    ".getPropertyValue('--ui-font-scale').trim()"
-                )
+                # Resolved through a length: since #11648 --ui-font-scale is a calc() of the size and interface
+                # scales, which reads back as that expression, so comparing the raw string to the default always
+                # said "scaled" and this check could not fail.
+                scale = float(page.evaluate("() => " + UI_FONT_SCALE_JS))
                 check(
                     f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                    abs(scale - UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE) > 1e-3,
+                    f"--ui-font-scale resolved to {scale!r}, the default, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))

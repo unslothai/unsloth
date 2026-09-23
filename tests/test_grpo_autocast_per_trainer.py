@@ -331,7 +331,11 @@ def test_an_unstamped_model_still_takes_the_environments_finetuning_mode():
 
 
 def test_the_loaders_stamp_the_full_finetuning_answer_on_the_model():
-    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+    for rel in (
+        "unsloth/models/loader.py",
+        "unsloth/models/vision.py",
+        "unsloth/models/sentence_transformer.py",
+    ):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_mark_full_finetuning(" in src, rel
 

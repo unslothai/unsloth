@@ -15,7 +15,16 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
-    assert "flex h-full min-h-0 min-w-0 w-full max-sm:flex-col" in source
+    assert "flex h-full min-h-0 min-w-0 w-full" in source
+    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
+    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
+    # Tailwind's data variant reads the attribute on the element carrying the class, so both sit in one tag.
+    at = source.index("min-w-0 w-full data-stacked:flex-col")
+    tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
+    assert (
+        "data-stacked={stacked || undefined}" in tag
+    ), "the stacking attribute left the flex container"
+    assert "group/settings" in tag, "the stacked children read group/settings off this container"
     assert "relative flex min-h-0 min-w-0 flex-1 flex-col" in source
 
 
