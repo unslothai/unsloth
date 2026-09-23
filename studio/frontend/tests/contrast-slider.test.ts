@@ -506,3 +506,26 @@ test("muted text on a palette surface heads away from that surface", () => {
   assert.match(pane[1] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
   assert.doesNotMatch(pane[1] ?? "", /--contrast-panel-target/);
 });
+
+test("every near-opaque card spelling takes the panel muted text", () => {
+  // bg-card/96 or dark:bg-card is a distinct class, so the plain .bg-card
+  // scope missed them and their muted labels followed the page instead.
+  const scoped = CSS.match(
+    /html\[data-contrast-adjust\] :is\(([^)]*)\),\s*html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \{([^}]*)\}/,
+  );
+  assert.ok(scoped, "opacity and dark card spellings are not scoped");
+  assert.match(scoped[3] ?? "", /var\(--contrast-panel-target, var\(--contrast-target\)\)/);
+  const light = (scoped[1] ?? "").replaceAll("\\", "");
+  const dark = (scoped[2] ?? "").replaceAll("\\", "");
+  for (const file of SOURCES.filter((f) => f.endsWith(".tsx"))) {
+    for (const [spelling, isDark, alpha] of readSrc(file).matchAll(
+      /(?<![\w:-])(dark:)?bg-card(?:\/(\d+))?(?![\w/-])/g,
+    )) {
+      if (alpha === undefined ? !isDark : Number(alpha) < 85) continue;
+      assert.ok(
+        (isDark ? dark : light).includes(`.${spelling}`),
+        `${file} paints ${spelling} outside the panel scope`,
+      );
+    }
+  }
+});

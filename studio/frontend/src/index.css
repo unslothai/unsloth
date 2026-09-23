@@ -764,6 +764,16 @@ html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar) .bg-backgroun
 		var(--contrast-target) var(--contrast-text-mix)
 	);
 }
+/* Near-opaque card spellings are cards too; dark-only ones only in dark.
+   After the reset, so a page pane that is a card in dark takes this. */
+html[data-contrast-adjust] :is(.bg-card\/85, .bg-card\/90, .bg-card\/95, .bg-card\/96),
+html[data-contrast-adjust].dark :is(.dark\:bg-card, .dark\:bg-card\/85, .dark\:bg-card\/90) {
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+}
 
 /* Code font size: only overrides when the user sets an explicit size, so the
    per-element Tailwind sizes stay authoritative by default. */
