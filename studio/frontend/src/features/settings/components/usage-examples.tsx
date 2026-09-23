@@ -893,7 +893,7 @@ export function UsageExamples({
                       />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-[260px] text-ui-11 leading-snug">
+                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>

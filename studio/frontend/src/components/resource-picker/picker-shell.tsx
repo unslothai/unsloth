@@ -370,7 +370,7 @@ export function PickerShell({
 
           <div
             ref={scrollRef}
-            className="min-h-0 max-h-[320px] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+            className="min-h-0 max-h-[calc(320px*var(--ui-space-scale,1))] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
           >
             {canUseThis && (
               <button

@@ -416,7 +416,7 @@ export function DownloadedList({
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
+      <div className="flex min-h-[calc(240px*var(--ui-space-scale,1))] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
         <Spinner className="size-4" />
         Loading local inventory...
       </div>

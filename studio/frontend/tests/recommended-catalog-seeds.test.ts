@@ -7,7 +7,10 @@ import test from "node:test";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
+  artifactForRepoId,
   curatedSizeBytesFor,
+  groupForRepoId,
+  loadSpecFor,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import { classifyGgufFit } from "../src/lib/gguf-fit.ts";
 import {
@@ -511,4 +514,103 @@ test("a media row is judged by the rule its quant rows use", () => {
   // answering differently for one row.
   const safetensors = { ...row, id: "unsloth/Some-Image-Model", isGguf: false };
   assert.equal(hfModelFitsDevice(safetensors, mac, { mediaLoad: true }), false);
+});
+
+test("with familyOf, curated families follow the listing's sort, artifacts kept together", () => {
+  const family = (id: string) =>
+    id.toLowerCase().includes("klein") ? "klein" : id.toLowerCase().includes("ltx") ? "ltx" : undefined;
+  const kleinBf16: Row = { id: "unsloth/FLUX.2-klein-9B", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [...SEEDS, kleinBf16];
+  // Trending listing: KLEIN hottest, then an uncurated repo, then LTX; KLEIN's bf16 is not listed.
+  const results: Row[] = [
+    { id: KLEIN, isGguf: true, pipelineTag: "text-to-video" },
+    { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
+    { id: LTX, isGguf: true, pipelineTag: "image-to-video" },
+  ];
+  const order = (familyOf?: (id: string) => string | undefined) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf,
+      }),
+    );
+  assert.deepEqual(order(), [LTX, KLEIN, kleinBf16.id, OTHER]);
+  assert.deepEqual(order(family), [KLEIN, kleinBf16.id, OTHER, LTX]);
+  // A family the listing has not reached yet stays after every listed row.
+  const unlisted = ids(
+    orderRecommendedRows({
+      seeds,
+      results: results.slice(0, 2),
+      keep: keepVideo,
+      deviceFiltered: false,
+      fits: () => true,
+      familyOf: family,
+    }),
+  );
+  assert.deepEqual(unlisted, [KLEIN, kleinBf16.id, OTHER, LTX]);
+});
+
+test("with familyOf, unsloth rows lead even when a vendor family trends higher", () => {
+  const family = (id: string) => (id.toLowerCase().includes("hot") ? "hot" : "cold");
+  const vendorHot: Row = { id: "Vendor/Hot-Model", pipelineTag: "text-to-video" };
+  const seeds: Row[] = [vendorHot, { id: "unsloth/Hot-Model-GGUF", isGguf: true }];
+  const results: Row[] = [
+    { id: "unsloth/Hot-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+    { id: "unsloth/Cold-Model-GGUF", isGguf: true, pipelineTag: "text-to-video" },
+  ];
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: keepVideo,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    ),
+    ["unsloth/Hot-Model-GGUF", "unsloth/Cold-Model-GGUF", "Vendor/Hot-Model"],
+  );
+});
+
+test("a vendor id resolves to the unsloth mirror that replaced it", () => {
+  for (const [vendor, mirror] of [
+    ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"],
+    ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"],
+    ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"],
+  ]) {
+    const hit = artifactForRepoId(vendor, IMAGE_CATALOG);
+    assert.equal(hit?.artifact.repoId, mirror, vendor);
+    assert.equal(hit?.artifact.gated, undefined, vendor);
+    // A cached vendor copy still loads as a pipeline.
+    assert.equal(loadSpecFor(vendor, IMAGE_CATALOG)?.kind, "pipeline", vendor);
+    assert.equal(groupForRepoId(vendor, IMAGE_CATALOG), groupForRepoId(mirror, IMAGE_CATALOG));
+  }
+});
+
+test("with familyOf, an unslothai family the unsloth listing cannot rank keeps its curated slot", () => {
+  const family = (id: string) => id.toLowerCase().replace(/-gguf$/, "");
+  const ASR = "unslothai/Qwen3-ASR-0.6B-GGUF";
+  const TURBO = "unsloth/whisper-large-v3-turbo";
+  const TINY = "unsloth/whisper-tiny";
+  const seeds: Row[] = [{ id: ASR, isGguf: true }, { id: TURBO }, { id: TINY }];
+  const order = (results: Row[]) =>
+    ids(
+      orderRecommendedRows({
+        seeds,
+        results,
+        keep: () => true,
+        deviceFiltered: false,
+        fits: () => true,
+        familyOf: family,
+      }),
+    );
+  // Offline or still loading: catalog order.
+  assert.deepEqual(order([]), [ASR, TURBO, TINY]);
+  // The listing ranks the unsloth rows, and the unslothai row stays above them.
+  assert.deepEqual(order([{ id: TINY }, { id: TURBO }]), [ASR, TINY, TURBO]);
 });

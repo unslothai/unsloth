@@ -24,6 +24,13 @@
 # This exact commit is the tree the Qwen-Image-2.1 FP8 and INT8 artifacts were built and measured
 # against, so what a user gets is what was tested, not "whatever main was that day".
 #
+# Why the URL still says git+ when most hosts have no git. It is the requirement, not the transport:
+# a host with no working git installs the same commit from
+# https://github.com/huggingface/diffusers/archive/<commit>.zip, which needs nothing but https, and
+# _github_archive_url derives that URL from this line so there is still one commit written down in
+# one place. That fallback is why the commit below must stay a full 40-character SHA: an archive
+# records no ref, so only a SHA in the URL makes the resident build identifiable afterwards.
+#
 # Retiring this file: once 0.41.0 ships, bump diffusers-pin.txt to it and delete this. The family
 # entry already records 0.41.0 as QwenImage21Pipeline's minimum, so nothing else has to move.
 diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
