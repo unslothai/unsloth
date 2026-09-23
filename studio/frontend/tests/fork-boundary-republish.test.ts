@@ -37,6 +37,8 @@ function harness(
     failReadsFrom?: number;
     legacyThreads?: Record<string, Record<string, unknown>>;
     syncedMessages?: { id: string; parentId?: string | null }[];
+    // Successive answers from the thread endpoint, for the reads that race a delete.
+    threadReadQueue?: (Record<string, unknown> | null)[];
   } = {},
 ) {
   const published: Published[] = [];
@@ -60,7 +62,8 @@ function harness(
           if (threadReads.length >= (options.failReadsFrom ?? Infinity)) {
             throw new Error("offline");
           }
-          return thread;
+          const queued = options.threadReadQueue?.shift();
+          return queued === undefined ? thread : queued;
         },
         // Echoes the record back, like the real endpoint: returning nothing makes the legacy
         // re-import fail, which would hide the very fallback these tests are about.
@@ -240,4 +243,59 @@ test("a failed thread read leaves the delete alone", async () => {
   await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
 
   assert.deepEqual(published, []);
+});
+
+// --- two reads that disagree about the anchor ---------------------------------
+
+test("an anchor the message list cannot place is re-read, not treated as gone", async () => {
+  // The thread and the messages are read in parallel: another tab deleted "m2" between them,
+  // so the thread still names it while the list already reflects the prune.
+  const { module, published } = harness(undefined, {
+    syncedMessages: [
+      { id: "m0", parentId: null },
+      { id: "m1", parentId: "m0" },
+    ],
+    threadReadQueue: [
+      // the row ensure
+      { id: "fork-1", forkBoundaryMessageId: "m2", forkedFromThreadId: "src" },
+      // the stale half this publish is handed
+      { id: "fork-1", forkBoundaryMessageId: "m2", forkedFromThreadId: "src" },
+      // the re-read, now no earlier than the messages: the backend has reseated it
+      { id: "fork-1", forkBoundaryMessageId: "m1", forkedFromThreadId: "src" },
+    ],
+  });
+
+  await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
+
+  assert.deepEqual(published, [["fork-1", ["m1", "m0"], "src"]]);
+});
+
+test("an anchor still unplaceable after the re-read leaves the divider alone", async () => {
+  // The messages are the older half this time, so the next load settles it. Blanking the
+  // divider now would lose it until the chat is reopened.
+  const { module, published } = harness(undefined, {
+    syncedMessages: [{ id: "m0", parentId: null }],
+    threadReadQueue: [
+      { id: "fork-1", forkBoundaryMessageId: "m9", forkedFromThreadId: "src" },
+      { id: "fork-1", forkBoundaryMessageId: "m9", forkedFromThreadId: "src" },
+      { id: "fork-1", forkBoundaryMessageId: "m9", forkedFromThreadId: "src" },
+    ],
+  });
+
+  await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
+
+  assert.deepEqual(published, []);
+});
+
+test("a boundary the backend really did clear still clears", async () => {
+  // Null is the backend saying there is no inherited history left, not two reads disagreeing.
+  const { module, published } = harness({
+    id: "fork-1",
+    forkBoundaryMessageId: null,
+    forkedFromThreadId: "src",
+  });
+
+  await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
+
+  assert.deepEqual(published, [["fork-1", [], "src"]]);
 });

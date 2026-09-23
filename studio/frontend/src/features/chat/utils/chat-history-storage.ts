@@ -747,13 +747,28 @@ export async function readBackendChatThread(
 }
 
 /** Hand the "Continued from chat" divider where it sits, from a thread just read. */
-function publishForkBoundary(
+async function publishForkBoundary(
   thread: ThreadRecord,
   messages: readonly MessageRecord[],
-): void {
+): Promise<void> {
+  let inherited = inheritedMessageIds(thread.forkBoundaryMessageId, messages);
+  if (thread.forkBoundaryMessageId && inherited.size > 0) {
+    // The anchor placed against these messages, which is the ordinary case.
+  } else if (thread.forkBoundaryMessageId) {
+    // An anchor this list cannot place is not an anchor that is gone. The thread and the
+    // messages are read in parallel, so a delete landing between them leaves the thread
+    // naming a row the messages no longer carry. Re-reading the thread now puts it no
+    // earlier than the messages, so a reseated anchor places; if it still does not, the
+    // messages are the older half and the next load settles it. Either way, do not blank a
+    // divider on the strength of two reads that disagree.
+    const fresh = await getChatThread(thread.id).catch(() => undefined);
+    if (!fresh) return;
+    inherited = inheritedMessageIds(fresh.forkBoundaryMessageId, messages);
+    if (fresh.forkBoundaryMessageId && inherited.size === 0) return;
+  }
   setForkBoundary(
     thread.id,
-    inheritedMessageIds(thread.forkBoundaryMessageId, messages),
+    inherited,
     // A deleted source cannot be opened, so the divider drops its link rather than its text.
     thread.forkedFromThreadId && !isChatThreadDeleted(thread.forkedFromThreadId)
       ? thread.forkedFromThreadId
@@ -802,8 +817,12 @@ export async function listStoredChatMessages(
       throw error;
     }),
   ]);
-  // The backend's own rows, which are the ones the anchor's parent chain runs through.
-  if (backendThread) publishForkBoundary(backendThread, backendMessages ?? []);
+  // The backend's own rows, which are the ones the anchor's parent chain runs through. No list
+  // at all means nothing to place the anchor against, so the divider keeps what it has rather
+  // than reading a failed read as an empty thread. Not awaited: the chat renders either way.
+  if (backendThread && backendMessages) {
+    void publishForkBoundary(backendThread, backendMessages);
+  }
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
@@ -1117,7 +1136,7 @@ export async function syncStoredChatMessages(
     // Nothing else reads the thread again, so without this the divider stays gone until the chat
     // is reopened. Only on a delete, which is rare and already the user waiting on a round trip.
     const thread = await getChatThread(threadId).catch(() => undefined);
-    if (thread) publishForkBoundary(thread, synced);
+    if (thread) await publishForkBoundary(thread, synced);
   }
   return synced;
 }
