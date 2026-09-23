@@ -52,7 +52,6 @@ import {
 } from "@/features/hub";
 import {
   type HfModelResult,
-  type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub";
 import {
@@ -2514,12 +2513,10 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: "recommended" = newly created unsloth GGUF/MLX that fit the
-// device; the rest are plain HF sort keys.
-type RecommendedSortKey = "recommended" | "trendingScore" | "lastModified";
+// Recommended section sort: plain HF sort keys.
+type RecommendedSortKey = "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
-  { value: "recommended", label: "Recommended" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -2803,9 +2800,6 @@ export function HubModelPicker({
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
-  // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedSortBy: HfSortKey =
-    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
   const {
     results,
     isLoading,
@@ -2815,7 +2809,7 @@ export function HubModelPicker({
     hasMore,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2826,7 +2820,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2848,7 +2842,7 @@ export function HubModelPicker({
   const communityQuerySearch = useHubModelSearch(debouncedQuery, {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -2857,7 +2851,7 @@ export function HubModelPicker({
   const communityBrowse = useHubModelSearch("", {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -3483,8 +3477,8 @@ export function HubModelPicker({
     [catalogSeedRows],
   );
 
-  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "recommended" sort
-  // also drops models too big for the device. Downloaded models stay visible.
+  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
+  // tick also drops models too big for the device. Downloaded models stay visible.
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3515,8 +3509,7 @@ export function HubModelPicker({
     const keepCommunity = (r: HfModelResult) =>
       keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): that dropped them from Hub search too.
-    // "recommended" always device-filters; the "Fits on device" tick extends it to other sorts.
-    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const deviceFiltered = fitOnDeviceOnly;
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
@@ -3542,6 +3535,10 @@ export function HubModelPicker({
       keep,
       deviceFiltered,
       fits,
+      // Curated families follow the dropdown's sort, not catalog order.
+      familyOf: catalog
+        ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
+        : undefined,
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
@@ -3560,7 +3557,6 @@ export function HubModelPicker({
     recommendedSearch.results,
     catalogSeedRows,
     downloadedSet,
-    recommendedSort,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
