@@ -406,3 +406,45 @@ test("leaving a new chat for another one after its upload finished drops the job
     app.dispose();
   }
 });
+
+test("a scope passed to an unscoped hook keeps its job when that scope commits late", async () => {
+  const indexed = deferred<void>();
+  let signal: AbortSignal | undefined;
+  const app = harness({
+    events: async function* (_jobId, streamSignal) {
+      signal = streamSignal;
+      yield { type: "progress", progress: 0.4, stage: "captioning" };
+      await new Promise<void>((resolve, reject) => {
+        indexed.promise.then(resolve);
+        streamSignal?.addEventListener("abort", () =>
+          reject(new DOMException("Fetch is aborted", "AbortError")),
+        );
+      });
+      yield { type: "complete", num_chunks: 10 };
+    },
+  });
+  try {
+    app.setScope(null);
+    let hook = app.render();
+    await flush();
+    // The composer hands its scope over directly, since the hook's own is still null on the
+    // render that starts the upload.
+    await hook.upload([report()], { type: "thread", threadId: "thread" });
+    await flush();
+    assert.equal(signal?.aborted, false, "the job was never tracked");
+    app.setScope({ type: "thread", threadId: "thread" });
+    hook = app.render();
+    await flush();
+    assert.equal(
+      signal?.aborted,
+      false,
+      "the passed scope committing late aborted its own upload's job",
+    );
+    indexed.resolve();
+    await flush();
+    await flush();
+    assert.deepEqual(app.errors, []);
+  } finally {
+    app.dispose();
+  }
+});

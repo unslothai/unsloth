@@ -676,7 +676,9 @@ export function useRagDocuments(
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           return;
         }
-        if (knownScope === null && liveKey === null) {
+        // Whenever the hook itself has no scope yet, passed in or materialized alike: the job this
+        // starts may be running before React commits the scope it belongs to.
+        if (liveKey === null) {
           materializedKeyRef.current = resolvedKey;
         }
 
