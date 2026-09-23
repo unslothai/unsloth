@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A remote-code from_pretrained that ends with model.to(dtype) must not break a 4-bit load.
+"""A remote-code from_pretrained ending in model.to(dtype) must not break a 4-bit load.
 
-microsoft/Phi-4-reasoning-vision-15B overrides from_pretrained and finishes with
-`model.to(dtype)` where dtype is the model's own dtype. transformers refuses any
-dtype cast on a bitsandbytes model, so the 4-bit load died with "You cannot cast a
-bitsandbytes model in a new dtype" while the 16-bit load was fine. Inside Unsloth's
-load, that call now casts only the floating tensors that are not quantized weights.
-
-Built on a small PreTrainedModel with a fake packed weight, no downloads; each test
-states which arm it measures.
+Small PreTrainedModel with a fake packed weight, no downloads.
 """
 
 import pytest

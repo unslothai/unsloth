@@ -112,15 +112,10 @@ def _should_pack(config) -> bool:
 
 
 def _forward_accepts_packed_seq_lengths(model) -> bool:
-    """Whether the model's forward can take the `packed_seq_lengths` batch key.
+    """Whether the model's forward takes `packed_seq_lengths` (by name or `**kwargs`).
 
-    Packing and padding-free batching add `packed_seq_lengths` to every batch and
-    the forward is expected to read or ignore it. Unsloth's own forwards and the
-    transformers models that take `**kwargs` do; a remote-code forward with a
-    fixed signature (microsoft/Phi-4-reasoning-vision-15B) raises
-    "got an unexpected keyword argument 'packed_seq_lengths'" on the first step.
-    Unknown shapes (a string model, no forward, an unreadable signature) answer
-    True so nothing else changes.
+    A fixed-signature remote-code forward (Phi-4-reasoning-vision) rejects it.
+    Unknown shapes answer True.
     """
     if model is None or isinstance(model, str):
         return True
@@ -132,12 +127,7 @@ def _forward_accepts_packed_seq_lengths(model) -> bool:
             unwrapped = get_base_model()
         except Exception:
             unwrapped = model
-    # Read the BOUND forward, as the already-merged `_forward_accepts_packing_kwargs`
-    # does. `type(x).forward` is never absent on an nn.Module -- it falls back to
-    # `_forward_unimplemented`, whose `(*input)` signature has no VAR_KEYWORD -- so
-    # the `or` could never reach the instance, and torch.compile (OptimizedModule
-    # sets `forward` on the INSTANCE, not the class) was read as a fixed signature,
-    # silently switching padding-free off for every compiled model.
+    # Read the bound forward: torch.compile sets `forward` on the instance.
     forward = getattr(unwrapped, "forward", None) or getattr(type(unwrapped), "forward", None)
     if forward is None:
         return True
@@ -1474,12 +1464,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif forward_rejects_packing or not forward_takes_packed_seq_lengths:
-                # Both spellings of the same blocker, kept together because `blocked`
-                # above tests both: the instance's forward not taking packed_seq_lengths,
-                # and the resolved class's forward rejecting the packing kwargs. Naming
-                # only one of them lets the other fall through to the UNSLOTH_RETURN_LOGITS
-                # branch and point at a flag nobody set. For a string `model=` the blocker
-                # is the resolved class, not `str`.
+                # Name the real blocker, else this falls through to the
+                # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
+                # `model=` that is the resolved class, not `str`.
                 blocker = (
                     _resolved_class.__name__
                     if _resolved_class is not None
