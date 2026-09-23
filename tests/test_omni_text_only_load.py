@@ -341,7 +341,9 @@ def _capture_adapter_reload(monkeypatch, tmp_path, target_modules):
     base = tmp_path / "base"
     adapter = tmp_path / "adapter"
     _tiny_config().save_pretrained(base)
-    peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = target_modules, base_model_name_or_path = str(base)).save_pretrained(adapter)
+    peft.LoraConfig(
+        r = 2, lora_alpha = 2, target_modules = target_modules, base_model_name_or_path = str(base)
+    ).save_pretrained(adapter)
     seen = {}
 
     def capture(*args, **kwargs):
@@ -362,12 +364,16 @@ def _capture_adapter_reload(monkeypatch, tmp_path, target_modules):
 def test_an_adapter_trained_on_the_thinker_reloads_onto_the_thinker(monkeypatch, tmp_path):
     # A text_only adapter's regex is rooted at model.layers; the composition names them
     # thinker.model.layers, so a default reload could not find its targets.
-    seen = _capture_adapter_reload(monkeypatch, tmp_path, r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn)\.(?:q_proj))")
+    seen = _capture_adapter_reload(
+        monkeypatch, tmp_path, r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn)\.(?:q_proj))"
+    )
     assert seen["text_intent"] is True
 
 
 def test_an_adapter_trained_on_the_kept_wrapper_keeps_the_wrapper(monkeypatch, tmp_path):
-    seen = _capture_adapter_reload(monkeypatch, tmp_path, r"(?:.*?(?:thinker\.model).*?(?:self_attn).*?(?:q_proj))")
+    seen = _capture_adapter_reload(
+        monkeypatch, tmp_path, r"(?:.*?(?:thinker\.model).*?(?:self_attn).*?(?:q_proj))"
+    )
     assert seen["text_intent"] is False
 
 
@@ -392,7 +398,9 @@ def test_a_text_only_adapter_round_trips_through_save_and_reload(tmp_path):
         for name, param in model.named_parameters():
             if "lora_B" in name:
                 param.normal_(0, 0.1)
-    saved = {n: p.detach().float().cpu().clone() for n, p in model.named_parameters() if "lora_" in n}
+    saved = {
+        n: p.detach().float().cpu().clone() for n, p in model.named_parameters() if "lora_" in n
+    }
     assert saved
     model.save_pretrained(tmp_path / "adapter")
     del model
