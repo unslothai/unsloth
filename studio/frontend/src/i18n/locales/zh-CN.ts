@@ -168,6 +168,7 @@ export const zhCN = {
       showLess: "显示更少",
       settings: "设置",
       api: "API",
+      benchmarks: "基准测试",
       lightMode: "浅色模式",
       darkMode: "深色模式",
       guidedTour: "引导教程",

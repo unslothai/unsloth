@@ -172,6 +172,7 @@ export const ptBR = {
       showLess: "Mostrar menos",
       settings: "Configurações",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Modo claro",
       darkMode: "Modo escuro",
       guidedTour: "Tour guiado",

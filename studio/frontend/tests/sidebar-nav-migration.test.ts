@@ -102,7 +102,7 @@ test("a customized version-5 sidebar keeps its order and only gains Audio", () =
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "audio"],
+    [...customizedV5.map((item) => item.id), "audio", "benchmarks"],
   );
   assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
 });

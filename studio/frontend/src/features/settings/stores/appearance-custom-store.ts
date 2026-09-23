@@ -100,6 +100,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "recipes",
   "export",
   "api",
+  "benchmarks",
 ] as const;
 
 export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
@@ -148,6 +149,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   recipes: false,
   export: false,
   api: false,
+  benchmarks: false,
 };
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the

@@ -173,6 +173,7 @@ export const en = {
       showLess: "Show less",
       settings: "Settings",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Light Mode",
       darkMode: "Dark Mode",
       guidedTour: "Guided Tour",
