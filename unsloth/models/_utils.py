@@ -1161,11 +1161,13 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     if cross_repo:
         _, class_ref = class_ref.split("--", 1)
     module_name, class_name = class_ref.rsplit(".", 1)
-    # force_download or code_revision may replace an already imported sibling module.
+    # force_download, code_revision or revision (the code revision for same-repo code) may
+    # replace an already imported sibling module.
     if (
         not cross_repo
         and not hub_kwargs.get("force_download", False)
         and not hub_kwargs.get("code_revision", None)
+        and not hub_kwargs.get("revision", None)
     ):
         # The modeling module is usually already imported next to the config module.
         config_module = str(type(config).__module__)

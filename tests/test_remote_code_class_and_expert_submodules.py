@@ -483,6 +483,11 @@ def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
         )
         is FromCodeRevision
     )
+    # A load revision is the code revision for same-repo code, so it skips the sibling too.
+    assert (
+        _utils._resolve_remote_model_class(auto, config, trust_remote_code = True, revision = "b")
+        is FromCodeRevision
+    )
 
 
 def test_native_per_expert_layouts_are_not_widened():
