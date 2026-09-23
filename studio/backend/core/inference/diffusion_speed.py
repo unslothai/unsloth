@@ -471,12 +471,8 @@ def _compile_repeated_blocks(
     engaged = False
     for transformer in dits:
         dit_kwargs = dict(kwargs)
-        if dit_kwargs["dynamic"] and _carries_torchao_weights(transformer):
-            # dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output
-            # cat (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction,
-            # which inductor cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first
-            # shapes static and only generalises what actually varies: stable after ~3 recompiles, same numerics.
-            dit_kwargs["dynamic"] = None
+        dit_kwargs["dynamic"] = compile_dynamic(transformer, kwargs["dynamic"])
+        if dit_kwargs["dynamic"] is None:
             transformer._unsloth_auto_dynamic = True
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
@@ -496,6 +492,18 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
+    """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
+
+    dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
+    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
+    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    if dynamic and transformer is not None and _carries_torchao_weights(transformer):
+        return None
+    return dynamic
 
 
 def _carries_torchao_weights(module: Any) -> bool:

@@ -1351,6 +1351,17 @@ def test_torchao_payload_wrapped_in_a_plain_parameter_still_counts():
     )
 
 
+def test_compile_dynamic_is_the_value_the_cache_fingerprint_keys_on():
+    # diffusion.py fingerprints compile-cache bundles with compile_dynamic, so an automatic-dynamic torchao build
+    # never reuses a bundle written by the old explicit-dynamic path.
+    quant = types.SimpleNamespace(parameters = lambda: iter([_TorchaoWeight()]))
+    dense = types.SimpleNamespace(parameters = lambda: iter([object()]))
+    assert ds_mod.compile_dynamic(quant, True) is None
+    assert ds_mod.compile_dynamic(quant, False) is False
+    assert ds_mod.compile_dynamic(dense, True) is True
+    assert ds_mod.compile_dynamic(None, True) is True
+
+
 def test_max_tier_keeps_static_compile_for_torchao_dit(monkeypatch):
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
