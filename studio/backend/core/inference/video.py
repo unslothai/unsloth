@@ -114,6 +114,7 @@ from .diffusion_transformer_quant import (
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
+    transformer_is_quantised,
 )
 from .diffusion import _memory_request_forces_offload
 from .diffusion_batched import is_oom_error
@@ -4367,6 +4368,21 @@ class VideoBackend:
                 raise RuntimeError(
                     f"transformer_quant={engaged[0]} engaged on only "
                     f"{len(engaged)}/{len(views)} experts; retry without quant."
+                )
+            # A clean decline can remain bf16; a view converted part-way and then failed is neither dense nor
+            # usable, even when the precision fallback is allowed.
+            dirty = (
+                []
+                if engaged
+                else [i for i, view in enumerate(views) if transformer_is_quantised(view)]
+            )
+            if dirty:
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' converted part of the denoiser and then "
+                    "failed, leaving it neither dense nor usable. Reload with Precision set to Off to "
+                    "run the checkpoint as-is."
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
