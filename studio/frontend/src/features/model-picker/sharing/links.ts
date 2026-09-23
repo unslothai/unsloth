@@ -14,7 +14,6 @@ import {
   isRunConfigLink,
   nativeRunAddress,
 } from "./link-address";
-import { SHARED_CONFIG_VALIDATORS } from "./validators";
 
 export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
@@ -51,22 +50,15 @@ function validVariant(value: string): boolean {
   );
 }
 
-function decodeField(key: string, value: string): unknown {
-  if (
-    isSharedConfigKey(key) &&
-    !SHARED_CONFIG_FIELDS[key].text &&
-    SHARED_CONFIG_VALIDATORS[key](value)
-  ) {
-    return value;
-  }
-  if (
-    isSharedConfigKey(key) &&
-    SHARED_CONFIG_FIELDS[key].text &&
-    value !== "null"
-  ) {
-    return value.startsWith('"') ? JSON.parse(value) : value;
-  }
-  return JSON.parse(value);
+function decodeField(key: SharedConfigKey, value: string): unknown {
+  return SHARED_CONFIG_FIELDS[key].valid(value) ? value : JSON.parse(value);
+}
+
+function configFieldError(key: SharedConfigKey): string {
+  return (
+    SHARED_CONFIG_FIELDS[key].error ??
+    `The setting “${SHARED_CONFIG_FIELDS[key].label}” is invalid.`
+  );
 }
 
 function linkQuery(raw: string, url: URL, native: boolean): string {
@@ -146,18 +138,15 @@ function readConfigField(
   try {
     decoded = decodeField(key, value);
   } catch {
-    throw new Error(`The setting “${key}” is invalid.`);
+    throw new Error(configFieldError(key));
   }
   validateConfigField(key, decoded);
   Object.assign(config, { [key]: decoded });
 }
 
 function validateConfigField(key: SharedConfigKey, value: unknown): void {
-  if (!SHARED_CONFIG_VALIDATORS[key](value)) {
-    throw new Error(
-      SHARED_CONFIG_FIELDS[key].error ??
-        `The setting “${SHARED_CONFIG_FIELDS[key].label}” is invalid.`,
-    );
+  if (!SHARED_CONFIG_FIELDS[key].valid(value)) {
+    throw new Error(configFieldError(key));
   }
 }
 
@@ -251,9 +240,7 @@ function encodeParameters(value: SharedRunConfig): URLSearchParams {
       validateConfigField(key, field);
       params.set(
         key,
-        typeof field === "string" && !SHARED_CONFIG_FIELDS[key].text
-          ? field
-          : JSON.stringify(field),
+        typeof field === "string" ? field : JSON.stringify(field),
       );
     }
   }

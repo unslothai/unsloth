@@ -3,8 +3,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
-import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-review.tsx";
+import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-ui.tsx";
 import type { SharedRunConfigActions as Actions } from "../src/features/model-picker/sharing/config-ui.tsx";
 import * as events from "../src/features/model-picker/sharing/editor-events.ts";
 import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
@@ -24,9 +25,6 @@ registerBundlerResolver();
 installLocalStorageFake();
 const fields = await import("../src/features/model-picker/sharing/fields.ts");
 const { mergeSharedRunConfig } = fields;
-const validators = await import(
-  "../src/features/model-picker/sharing/validators.ts"
-);
 const sharedArgs = await import(
   "../src/features/model-picker/sharing/extra-args.ts"
 );
@@ -42,6 +40,25 @@ const { createRunConfigInbox } = await import(
 );
 const targetModule = await import("./helpers/sharing-target.ts");
 const { reconcileGpuSelection } = await import("../src/hooks/gpu-selection.ts");
+
+const { SharedRunConfigReview } = loadWithStubs<{
+  SharedRunConfigReview: typeof Review;
+}>(
+  new URL(
+    "../src/features/model-picker/sharing/config-ui.tsx",
+    import.meta.url,
+  ),
+  {
+    "react/jsx-runtime": stubJsxRuntime(),
+    react: {},
+    "@/components/ui/button": {},
+    "../model-config/model-config-draft": {},
+    "./inbox": {},
+    "./import-config": {},
+    "./share-dialog": {},
+    "./fields": fields,
+  },
+);
 
 function elements(node: unknown): StubElement[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -59,10 +76,10 @@ function text(node: unknown): string {
     : "";
 }
 
-test("sharing empty arguments and templates preserves recipient overrides unless explicitly selected", () => {
+function shareDialogHarness(config: PerModelConfig) {
   const checkbox = Symbol("checkbox");
   const textarea = Symbol("textarea");
-  let states: unknown[] = [];
+  const states: unknown[] = [];
   let cursor = 0;
   const { ShareRunConfigDialog } = loadWithStubs<{
     ShareRunConfigDialog: typeof ShareDialog;
@@ -117,10 +134,42 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       "../model-config/per-model-config": { DEFAULT_PER_MODEL_CONFIG },
       "./extra-args": sharedArgs,
       "./fields": fields,
-      "./validators": validators,
       "./links": links,
     },
   );
+  return () => {
+    cursor = 0;
+    const tree = elements(
+      ShareRunConfigDialog({
+        target: {
+          id: "owner/Model-GGUF",
+          displayName: "Model",
+          ggufVariant: "Q4_K_M",
+          isGguf: true,
+          apiLoadable: true,
+          meta: { source: "hub", isLora: false },
+        },
+        config,
+        onClose: () => undefined,
+      }),
+    );
+    const link = tree.find((element) => element.type === textarea)?.props.value;
+    assert.equal(typeof link, "string");
+    const parsed = links.parseRunConfigLink(link as string);
+    assert.ok(parsed.kind === "valid");
+    return {
+      tree,
+      config: parsed.value.config,
+      choice: (key: string) =>
+        tree.find(
+          (element) =>
+            element.type === checkbox && element.props.id === `share-${key}`,
+        ),
+    };
+  };
+}
+
+test("sharing empty arguments and templates preserves recipient overrides unless explicitly selected", () => {
   const recipient = {
     ...DEFAULT_PER_MODEL_CONFIG,
     llamaExtraArgs: ["--threads", "8"],
@@ -128,58 +177,24 @@ test("sharing empty arguments and templates preserves recipient overrides unless
     reasoningBudgetMessage: "Recipient message",
   };
   for (const llamaExtraArgs of [undefined, null, [], ["--threads", "4"]]) {
-    states = [];
-    const config = {
+    const render = shareDialogHarness({
       ...DEFAULT_PER_MODEL_CONFIG,
       llamaExtraArgs,
       chatTemplateOverride: "",
       reasoningBudgetMessage: "Sender instruction",
-    };
-    const render = () => {
-      cursor = 0;
-      return elements(
-        ShareRunConfigDialog({
-          target: {
-            id: "owner/Model-GGUF",
-            displayName: "Model",
-            ggufVariant: "Q4_K_M",
-            isGguf: true,
-            apiLoadable: true,
-            meta: { source: "hub", isLora: false },
-          },
-          config,
-          onClose: () => undefined,
-        }),
-      );
-    };
-    const importedConfig = (tree: StubElement[]) => {
-      const link = tree.find((element) => element.type === textarea)?.props
-        .value;
-      assert.equal(typeof link, "string");
-      const parsed = links.parseRunConfigLink(link as string);
-      assert.equal(parsed.kind, "valid");
-      assert.ok(parsed.kind === "valid");
-      return mergeSharedRunConfig(recipient, parsed.value.config, true);
-    };
-    const tree = render();
-    const templateChoice = tree.find(
-      (element) =>
-        element.type === checkbox &&
-        element.props.id === "share-chatTemplateOverride",
-    );
-    const messageChoice = tree.find(
-      (element) => element.props.id === "share-reasoningBudgetMessage",
-    );
+    });
+    const { tree, config, choice } = render();
+    const imported = mergeSharedRunConfig(recipient, config, true);
+    const templateChoice = choice("chatTemplateOverride");
+    const messageChoice = choice("reasoningBudgetMessage");
     assert.ok(messageChoice);
     assert.equal(messageChoice.props.disabled, true);
     assert.equal(messageChoice.props.checked, false);
     assert.equal(
-      importedConfig(tree).reasoningBudgetMessage,
+      imported.reasoningBudgetMessage,
       recipient.reasoningBudgetMessage,
     );
-    assert.ok(
-      text(tree).includes("Custom reasoning messages cannot be shared"),
-    );
+    assert.match(text(tree), /Custom reasoning messages cannot be shared/);
     assert.ok(templateChoice);
     assert.equal(templateChoice.props.checked, false);
     assert.equal(
@@ -190,39 +205,82 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       ),
       "Default",
     );
-    assert.equal(
-      importedConfig(tree).chatTemplateOverride,
-      recipient.chatTemplateOverride,
-    );
+    assert.equal(imported.chatTemplateOverride, recipient.chatTemplateOverride);
     (templateChoice.props.onCheckedChange as (checked: boolean) => void)(true);
-    assert.equal(importedConfig(render()).chatTemplateOverride, "");
-    const choice = tree.find(
-      (element) =>
-        element.type === checkbox &&
-        element.props.id === "share-llamaExtraArgs",
-    );
+    assert.equal(render().config.chatTemplateOverride, "");
+    const argsChoice = choice("llamaExtraArgs");
     const nonempty = (llamaExtraArgs?.length ?? 0) > 0;
     assert.deepEqual(
-      importedConfig(tree).llamaExtraArgs,
+      imported.llamaExtraArgs,
       nonempty ? llamaExtraArgs : recipient.llamaExtraArgs,
     );
     if (llamaExtraArgs === undefined) {
-      assert.equal(choice, undefined);
+      assert.equal(argsChoice, undefined);
       continue;
     }
-    assert.ok(choice);
-    assert.equal(choice.props.checked, nonempty);
+    assert.ok(argsChoice);
+    assert.equal(argsChoice.props.checked, nonempty);
     if (!nonempty) {
-      (choice.props.onCheckedChange as (checked: boolean) => void)(true);
+      (argsChoice.props.onCheckedChange as (checked: boolean) => void)(true);
       const selected = render();
-      assert.equal(
-        selected.find((element) => element.props.id === "share-llamaExtraArgs")
-          ?.props.checked,
-        true,
-      );
-      assert.ok(text(selected).includes("No extra arguments"));
-      assert.deepEqual(importedConfig(selected).llamaExtraArgs, llamaExtraArgs);
+      assert.equal(selected.choice("llamaExtraArgs")?.props.checked, true);
+      assert.match(text(selected.tree), /No extra arguments/);
+      assert.deepEqual(selected.config.llamaExtraArgs, llamaExtraArgs);
     }
+  }
+});
+
+test("automatic GPU settings preserve recipient overrides until explicitly selected", () => {
+  const automatic = {
+    gpuMemoryMode: "auto" as const,
+    gpuLayers: -1,
+    nCpuMoe: 0,
+    selectedGpuIds: null,
+    selectedGpuIndexKind: null,
+  };
+  const manual = {
+    gpuMemoryMode: "manual" as const,
+    gpuLayers: 20,
+    nCpuMoe: 4,
+    selectedGpuIds: [1, 0],
+    selectedGpuIndexKind: "physical" as const,
+  };
+  const recipient = { ...DEFAULT_PER_MODEL_CONFIG, ...manual };
+  const render = shareDialogHarness({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    ...automatic,
+  });
+  const initial = render();
+  assert.deepEqual(initial.config, {});
+  assert.deepEqual(
+    mergeSharedRunConfig(recipient, initial.config, true),
+    recipient,
+  );
+  for (const key of Object.keys(automatic)) {
+    const choice = initial.choice(key);
+    assert.ok(choice, key);
+    assert.equal(choice.props.checked, false, key);
+    assert.equal(choice.props.disabled, false, key);
+    (choice.props.onCheckedChange as (checked: boolean) => void)(true);
+  }
+  assert.deepEqual(render().config, automatic);
+  assert.deepEqual(mergeSharedRunConfig(recipient, render().config, true), {
+    ...recipient,
+    ...automatic,
+  });
+  const selected = shareDialogHarness({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    ...manual,
+  })();
+  assert.deepEqual(selected.config, manual);
+  for (const key of Object.keys(manual)) {
+    assert.equal(selected.choice(key)?.props.checked, true, key);
+  }
+  for (const gpu of [{}, { gpuMemoryMode: "auto" as const }]) {
+    assert.deepEqual(
+      shareDialogHarness({ ...DEFAULT_PER_MODEL_CONFIG, ...gpu })().config,
+      {},
+    );
   }
 });
 
@@ -271,7 +329,7 @@ test("Share opens and closes its dialog", () => {
       },
       "./inbox": { runConfigInbox: inbox },
       "./import-config": { scheduleRunConfigImport: () => undefined },
-      "./config-review": {},
+      "./fields": fields,
       "./share-dialog": { ShareRunConfigDialog: dialog },
     },
   );
@@ -350,7 +408,11 @@ test("closing an editor before its sharing UI loads cancels the import, while ef
             notices.push(options),
         },
       },
-      "../model-config/model-config-draft": { modelConfigDraftKey },
+      "../model-config/model-config-draft": {
+        modelConfigDraftKey,
+        isExtraArgsHydratedForDraft: () => false,
+      },
+      "./variant": { isRunConfigVariantUnresolved: () => false },
       "./inbox": { runConfigInbox: inbox },
     },
   );
@@ -359,7 +421,7 @@ test("closing an editor before its sharing UI loads cancels the import, while ef
     target,
     config: DEFAULT_PER_MODEL_CONFIG,
     ready: true,
-    hydrated: true,
+    isDiffusion: false,
     canImport: true,
     disabled: false,
     onImport: () => undefined,
@@ -434,18 +496,6 @@ test("edit cancellation includes contained controls and excludes portaled dialog
 });
 
 test("review renders field labels and argument values as text", () => {
-  const { SharedRunConfigReview } = loadWithStubs<{
-    SharedRunConfigReview: typeof Review;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/config-review.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      "./fields": fields,
-    },
-  );
   assert.equal(
     SharedRunConfigReview({
       config: null,
@@ -535,18 +585,6 @@ test("review renders field labels and argument values as text", () => {
 });
 
 test("GPU reconciliation keeps imported settings visible and explains removed or filtered GPU choices", () => {
-  const { SharedRunConfigReview } = loadWithStubs<{
-    SharedRunConfigReview: typeof Review;
-  }>(
-    new URL(
-      "../src/features/model-picker/sharing/config-review.tsx",
-      import.meta.url,
-    ),
-    {
-      "react/jsx-runtime": stubJsxRuntime(),
-      "./fields": fields,
-    },
-  );
   const imported = {
     selectedGpuIds: [0, 1],
     selectedGpuIndexKind: "physical" as const,

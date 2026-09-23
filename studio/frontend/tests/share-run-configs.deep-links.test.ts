@@ -6,8 +6,6 @@ import test from "node:test";
 import type { DeepLinkHandler as Handler } from "../src/features/deep-links/deep-link-handler.tsx";
 import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
 import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
-import * as linkAddress from "../src/features/model-picker/sharing/link-address.ts";
-import type * as Receiver from "../src/features/model-picker/sharing/receive-link.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -16,16 +14,14 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
-const { createRunConfigInbox } = await import(
-  "../src/features/model-picker/sharing/inbox.ts"
+const { receiverHarness, settle } = await import(
+  "./helpers/sharing-receiver.ts"
 );
-const { parseRunConfigLink } = await import("./helpers/sharing-links.ts");
 
 const hub = "unsloth://open_from_hf?model=owner/model";
 const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
 const invalid =
   "unsloth://run?v=1&llamaExtraArgs=%5B%22--host%22%2C%220.0.0.0%22%5D";
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function desktopSession() {
   const values = new Map<string, string>();
@@ -39,14 +35,12 @@ function desktopSession() {
 }
 
 function harness(sharedLinks = true) {
-  const inbox = createRunConfigInbox();
+  const { inbox, errors, receiver } = receiverHarness({ desktop: true });
   const navigations: Array<{
     to: string;
     search: { model: string; intent: number };
   }> = [];
   const commands: string[] = [];
-  const errors: string[] = [];
-  let nextId = 0;
   let listener: ((urls: string[]) => void) | undefined;
   let cleanup: (() => void) | undefined;
   let subscriptions = 0;
@@ -55,33 +49,6 @@ function harness(sharedLinks = true) {
   const startup = new Promise<string[] | null>((resolve) => {
     releaseStartup = resolve;
   });
-  const { receiveSharedRunConfigUrls } = loadWithStubs<typeof Receiver>(
-    new URL(
-      "../src/features/model-picker/sharing/receive-link.ts",
-      import.meta.url,
-    ),
-    {
-      "@/lib/api-base": { isTauri: true },
-      "@/lib/toast": {
-        toast: { error: (message: string) => errors.push(message) },
-      },
-      "@/features/deep-links": {
-        createDeepLinkIntentGate,
-        parseUnslothDeepLink,
-      },
-      "../model-config/model-config-draft": {
-        markModelConfigDraftEdited: () => undefined,
-      },
-      "../model-config/model-config-handoff": {
-        clearModelConfigHandoff: () => undefined,
-        createModelConfigHandoffRequestId: () => `request-${++nextId}`,
-      },
-      "./inbox": { runConfigInbox: inbox },
-      "./link-address": linkAddress,
-      "./runtime": { parseRunConfigLink },
-      "@/features/auth": { hasAuthToken: () => true },
-    },
-  );
   const { DeepLinkHandler } = loadWithStubs<{
     DeepLinkHandler: typeof Handler;
   }>(
@@ -122,7 +89,7 @@ function harness(sharedLinks = true) {
     },
   );
   DeepLinkHandler(
-    sharedLinks ? { onOpenUrls: receiveSharedRunConfigUrls } : {},
+    sharedLinks ? { onOpenUrls: receiver.receiveSharedRunConfigUrls } : {},
   );
   return {
     inbox,

@@ -40,7 +40,15 @@ import {
   createRunConfigLink,
   isShareableModelId,
 } from "./links";
-import { SHARED_CONFIG_VALIDATORS } from "./validators";
+
+const SHARING_DEFAULTS: PerModelConfig = {
+  ...DEFAULT_PER_MODEL_CONFIG,
+  gpuMemoryMode: "auto",
+  gpuLayers: -1,
+  nCpuMoe: 0,
+  selectedGpuIds: null,
+  selectedGpuIndexKind: null,
+};
 
 function linkPreview(value: SharedRunConfig, destination: string) {
   try {
@@ -92,7 +100,7 @@ export function ShareRunConfigDialog({
           const error =
             key === "llamaExtraArgs" && config[key] !== null
               ? sharedExtraArgsError(config[key])
-              : SHARED_CONFIG_VALIDATORS[key](config[key])
+              : SHARED_CONFIG_FIELDS[key].valid(config[key])
                 ? null
                 : (SHARED_CONFIG_FIELDS[key].error ??
                   "This value cannot be shared.");
@@ -124,7 +132,7 @@ export function ShareRunConfigDialog({
               (key === "llamaExtraArgs"
                 ? (config.llamaExtraArgs?.length ?? 0) > 0
                 : JSON.stringify(config[key]) !==
-                  JSON.stringify(DEFAULT_PER_MODEL_CONFIG[key])),
+                  JSON.stringify(SHARING_DEFAULTS[key])),
           )
           .map(({ key }) => key),
       ),
@@ -303,8 +311,7 @@ export function ShareRunConfigDialog({
               </output>
             )}
           <p className="text-xs text-muted-foreground">
-            Anyone with the link can read the included settings. Check extra
-            arguments and text for private values before sharing. Custom
+            Anyone with the link can read the included settings. Custom text,
             template code and file, network or tool arguments cannot be shared.
           </p>
         </div>

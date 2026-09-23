@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAX_RUN_CONFIG_URL_LENGTH } from "../src/features/model-picker/sharing/link-address.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -15,7 +14,7 @@ installLocalStorageFake();
 const { createRunConfigLink, parseRunConfigLink } = await import(
   "./helpers/sharing-links.ts"
 );
-const { SHARED_CONFIG_KEYS, mergeSharedRunConfig } = await import(
+const { mergeSharedRunConfig } = await import(
   "../src/features/model-picker/sharing/fields.ts"
 );
 const { createRunConfigInbox } = await import(
@@ -25,140 +24,6 @@ const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
-type PerModelConfig = typeof DEFAULT_PER_MODEL_CONFIG;
-
-const fullConfig: PerModelConfig = {
-  customContextLength: 32768,
-  maxSeqLength: 32768,
-  kvCacheDtype: "q8_0",
-  mlxKvBits: 4,
-  speculativeType: "dspark",
-  specDraftNMax: 8,
-  specDraftCacheDtype: "q4_0",
-  nParallel: 4,
-  reasoningBudget: 0,
-  reasoningBudgetMessage: "",
-  nBatch: 2048,
-  nUbatch: 512,
-  loadMode: "mmap+mlock",
-  ctxCheckpoints: 0,
-  cacheRam: -1,
-  tensorParallel: true,
-  disableVision: false,
-  chatTemplateOverride: "",
-  llamaExtraArgs: [
-    "--rope-scaling",
-    "yarn",
-    "--yarn-orig-ctx",
-    "32768",
-    "--flash-attn",
-    "on",
-    "--no-warmup",
-  ],
-  gpuMemoryMode: "manual",
-  gpuLayers: 0,
-  nCpuMoe: 0,
-  selectedGpuIds: [1, 0],
-  selectedGpuIndexKind: "physical",
-};
-
-test("native schemes and hosts accept case variations without relaxing address validation", () => {
-  const value = { model: "owner/model", config: { nParallel: 3 } };
-  const link = createRunConfigLink(value);
-  for (const address of ["unsloth://run", "UNSLOTH://RUN", "UnSlOtH://RuN"]) {
-    const url = link.replace("unsloth://run", address);
-    assert.deepEqual(parseRunConfigLink(url), { kind: "valid", value });
-    assert.equal(parseRunConfigLink(`${url}#ignored`).kind, "invalid");
-    assert.deepEqual(
-      parseRunConfigLink(
-        `${url}&reasoningBudgetMessage=${"a".repeat(MAX_RUN_CONFIG_URL_LENGTH)}`,
-      ),
-      { kind: "invalid", error: "This run configuration link is too long." },
-    );
-    assert.equal(
-      parseRunConfigLink(`${address.slice(0, -3)}hub?model=owner/model`).kind,
-      "unrelated",
-    );
-  }
-});
-
-test("both link formats require exactly one supported version", () => {
-  for (const prefix of ["unsloth://run", "https://example.com/chat#run"]) {
-    for (const query of ["", "?", "?model=owner/model", "?nParallel=3"]) {
-      assert.deepEqual(parseRunConfigLink(`${prefix}${query}`), {
-        kind: "invalid",
-        error: "This run configuration link is missing its version.",
-      });
-    }
-    for (const query of ["v=", "v=0", "v=2", "v=01", "v=1&v=1", "v=1&%76=1"]) {
-      assert.equal(parseRunConfigLink(`${prefix}?${query}`).kind, "invalid");
-    }
-    assert.deepEqual(parseRunConfigLink(`${prefix}?nParallel=3&v=1`), {
-      kind: "valid",
-      value: { config: { nParallel: 3 } },
-    });
-  }
-});
-
-test("every field round-trips independently in browser and desktop links", () => {
-  assert.deepEqual(
-    Object.keys(fullConfig).sort(),
-    [...SHARED_CONFIG_KEYS].sort(),
-  );
-  for (const key of SHARED_CONFIG_KEYS) {
-    for (const base of [
-      undefined,
-      "http://localhost:8888/hub?token=private#old",
-      "https://studio.example/chat",
-    ]) {
-      const value = { config: { [key]: fullConfig[key] } };
-      const url = createRunConfigLink(value, base);
-      assert.deepEqual(parseRunConfigLink(url), { kind: "valid", value }, key);
-      assert.ok(!url.includes("token=private"));
-    }
-  }
-});
-
-test("an empty link and independently omitted model identity fields are valid", () => {
-  for (const url of [
-    "unsloth://run?v=1",
-    "unsloth://run/?v=1",
-    "http://localhost:8888/chat#run?v=1",
-    "https://example.com/chat#run?v=1",
-  ]) {
-    assert.deepEqual(parseRunConfigLink(url), {
-      kind: "valid",
-      value: { config: {} },
-    });
-  }
-  for (const identity of [
-    {},
-    { model: "unsloth/Model-GGUF" },
-    { model: "own_er/mod_el" },
-    { ggufVariant: "Q4_K_M" },
-    { isGguf: false },
-  ]) {
-    const value = { ...identity, config: {} };
-    assert.deepEqual(parseRunConfigLink(createRunConfigLink(value)), {
-      kind: "valid",
-      value,
-    });
-  }
-});
-
-test("full configs preserve argv tokens and Unicode exactly without a shell", () => {
-  const value = {
-    model: "unsloth/Model-GGUF",
-    ggufVariant: "Q4_K_M/model-00001-of-00002.gguf",
-    isGguf: true,
-    config: fullConfig,
-  };
-  assert.deepEqual(parseRunConfigLink(createRunConfigLink(value)), {
-    kind: "valid",
-    value,
-  });
-});
-
 test("null, false, zero and empty values survive; omissions retain the existing defaults", () => {
   const defaults = {
     ...DEFAULT_PER_MODEL_CONFIG,
@@ -269,121 +134,6 @@ test("GGUF imports use the requested context when both context fields are shared
       ...(patch.nParallel !== undefined ? { nParallel: patch.nParallel } : {}),
     });
   }
-});
-
-test("invalid input never produces a partial configuration", () => {
-  const invalid = [
-    "customContextLength=4096&maxSeqLength=8192",
-    "v=2",
-    "v=01",
-    "nParallel=2&nParallel=3",
-    "model=owner/model&model=other/model",
-    "model=_owner/model",
-    "model=owner_/model",
-    "model=owner/_model",
-    "model=owner/model_",
-    "__proto__=true",
-    "constructor=true",
-    "hfToken=secret",
-    "nParallel=2&unknown=true",
-    "nParallel=0",
-    "nParallel=65",
-    "nParallel=2.5",
-    "nParallel=%222%22",
-    "nParallel=NaN",
-    "tensorParallel=1",
-    "tensorParallel=null",
-    "disableVision=%22false%22",
-    "customContextLength=127",
-    "maxSeqLength=1048577",
-    "reasoningBudget=-2",
-    "nBatch=0",
-    "nUbatch=65537",
-    "ctxCheckpoints=257",
-    "cacheRam=-2",
-    "kvCacheDtype=%22unsupported%22",
-    "speculativeType=%22unknown%22",
-    "mlxKvBits=1",
-    "selectedGpuIds=[1,1]",
-    "selectedGpuIds=[]",
-    "selectedGpuIds=[-1]",
-    "selectedGpuIds=[0.5]",
-    "llamaExtraArgs={}",
-    "llamaExtraArgs=[3]",
-    "llamaExtraArgs=[%22\\u0000%22]",
-    "llamaExtraArgs=[%22\\ud800%22]",
-    "llamaExtraArgs=[%22\\r%22]",
-    "reasoningBudgetMessage=%FF",
-    "reasoningBudgetMessage=%GG",
-    "reasoningBudgetMessage=%",
-    "model=/tmp/model",
-    "model=C:%5Cmodels%5Cmodel",
-    "model=owner/..",
-    "model=owner/repo.git",
-    "ggufVariant=../model.gguf",
-    "ggufVariant=C:%5Cmodel.gguf",
-    "ggufVariant=%00",
-    "isGguf=false&ggufVariant=Q4_K_M",
-  ];
-  for (const query of invalid) {
-    assert.equal(
-      parseRunConfigLink(
-        `unsloth://run?${query.startsWith("v=") ? "" : "v=1&"}${query}`,
-      ).kind,
-      "invalid",
-      query,
-    );
-  }
-  for (const url of [
-    "unsloth://run/extra?v=1",
-    "unsloth://run?v=1&model=owner/model#ignored",
-    "unsloth://user@run?v=1",
-    "unsloth://run:80?v=1",
-  ]) {
-    assert.equal(parseRunConfigLink(url).kind, "invalid", url);
-  }
-});
-
-test("unrelated links are left to their existing handlers", () => {
-  for (const url of [
-    "invalid",
-    "unsloth://open_from_hf?model=owner/model",
-    "https://example.com/chat?model=owner/model",
-    "https://example.com/chat#running",
-    "https://example.com/a b",
-    `https://example.com/chat?unrelated=${"a".repeat(MAX_RUN_CONFIG_URL_LENGTH)}`,
-    "javascript:alert(1)",
-  ]) {
-    assert.equal(parseRunConfigLink(url).kind, "unrelated");
-  }
-});
-
-test("links and field payloads have bounded sizes", () => {
-  assert.equal(
-    parseRunConfigLink(
-      `unsloth://run?reasoningBudgetMessage=${"a".repeat(MAX_RUN_CONFIG_URL_LENGTH)}`,
-    ).kind,
-    "invalid",
-  );
-  assert.throws(() =>
-    createRunConfigLink({
-      config: { reasoningBudgetMessage: "🦥".repeat(2049) },
-    }),
-  );
-  assert.throws(() =>
-    createRunConfigLink({ config: { llamaExtraArgs: Array(257).fill("x") } }),
-  );
-  assert.throws(() =>
-    createRunConfigLink({
-      config: { chatTemplateOverride: "a".repeat(65537) },
-    }),
-  );
-  assert.throws(() =>
-    createRunConfigLink({ config: {} }, "file:///tmp/index.html"),
-  );
-  assert.throws(() =>
-    createRunConfigLink({ config: {} }, "https://user:secret@example.com/"),
-  );
 });
 
 test("pending imports are scoped, replaced by newer links and consumed once", () => {

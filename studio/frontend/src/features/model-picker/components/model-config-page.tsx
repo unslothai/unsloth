@@ -3161,24 +3161,12 @@ export function ModelConfigPage({
         </div>
       )}
 
-      {importedConfig && (
-        <SharedRunConfigReview
-          config={importedConfig}
-          draftConfig={configState}
-          currentConfig={config}
-        />
-      )}
-      {sharedVariantUnresolved && (
-        <p
-          role="status"
-          className="mb-5 rounded-lg border p-3 text-sm text-muted-foreground"
-        >
-          The GGUF variant could not be resolved. You can edit and share these
-          settings offline. Reopen the link when the Hugging Face model is
-          accessible before loading. To keep any edits, copy a new link with
-          Share first.
-        </p>
-      )}
+      <SharedRunConfigReview
+        target={target}
+        config={importedConfig}
+        draftConfig={configState}
+        currentConfig={config}
+      />
       <div className="space-y-5">
         {target.isGguf && (
           <>
@@ -3427,11 +3415,7 @@ export function ModelConfigPage({
             config={config}
             ready={!extraArgsHydrating}
             canImport={variant !== "sidebar"}
-            hydrated={
-              !target.isGguf ||
-              resolvedIsDiffusion ||
-              isExtraArgsHydratedForDraft(draftKey)
-            }
+            isDiffusion={resolvedIsDiffusion}
             disabled={
               sharedExtraArgsRefused ||
               (!extraArgsLoadable && !sharedExtraArgsCleared)

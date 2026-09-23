@@ -3,32 +3,23 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDeepLinkIntentGate } from "../src/features/deep-links/deep-link-intent.ts";
-import { parseUnslothDeepLink } from "../src/features/deep-links/parse-deep-link.ts";
-import * as linkAddress from "../src/features/model-picker/sharing/link-address.ts";
-import type * as Receiver from "../src/features/model-picker/sharing/receive-link.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
-import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
 const links = await import("./helpers/sharing-links.ts");
-const { createRunConfigInbox } = await import(
-  "../src/features/model-picker/sharing/inbox.ts"
+const { receiverHarness, settle } = await import(
+  "./helpers/sharing-receiver.ts"
 );
 const events = await import("../src/features/auth/session-events.ts");
-const sessionMark = "unsloth_auth_session_mark";
-const recoveryKey = "unsloth.run-config-login.v1";
 const run = "unsloth://run?v=1&model=owner/model&nParallel=3";
 const browserRun =
   "http://localhost/chat#run?v=1&model=owner/model&nParallel=3";
 const otherBrowserRun =
   "http://localhost/chat#run?v=1&model=owner/other&nParallel=4";
-
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function deferredParser() {
   let resolve!: (value: typeof links) => void;
@@ -69,100 +60,87 @@ function harness({
     },
   });
   let signedIn = false;
-  let nextId = 0;
   const errors: string[] = [];
   const cleared: string[] = [];
   let parserLoads = 0;
   const loadDocument = () => {
-    const inbox = createRunConfigInbox();
-    const receiver = loadWithStubs<typeof Receiver>(
-      new URL(
-        "../src/features/model-picker/sharing/receive-link.ts",
-        import.meta.url,
-      ),
-      {
-        "@/lib/api-base": { isTauri: desktop },
-        "@/lib/toast": {
-          toast: { error: (message: string) => errors.push(message) },
-        },
-        "@/features/auth": {
-          ...events,
-          AUTH_SESSION_MARK_KEY: sessionMark,
-          hasAuthToken: () => signedIn,
-        },
-        "@/features/deep-links": {
-          createDeepLinkIntentGate,
-          parseUnslothDeepLink,
-        },
-        "../model-config/model-config-draft": {
-          markModelConfigDraftEdited: () => undefined,
-        },
-        "../model-config/model-config-handoff": {
-          clearModelConfigHandoff: (id: string) => cleared.push(id),
-          createModelConfigHandoffRequestId: () => `request-${++nextId}`,
-        },
-        "./inbox": { runConfigInbox: inbox },
-        "./link-address": linkAddress,
-        get "./runtime"() {
-          parserLoads += 1;
-          return loadParser();
-        },
+    const { inbox, receiver } = receiverHarness({
+      desktop,
+      signedIn: () => signedIn,
+      errors,
+      cleared,
+      loadParser: () => {
+        parserLoads += 1;
+        return loadParser();
       },
-    );
+    });
     const dispose = receiver.subscribeRunConfigSession(() => undefined);
     return { inbox, receiver, dispose };
   };
   return {
     loadDocument,
     storage,
-    readRecovery: () => {
-      const raw = storage.get(recoveryKey);
-      assert.ok(raw);
-      return JSON.parse(raw);
-    },
     errors,
     cleared,
     parserLoads: () => parserLoads,
-    signIn: (session = "first") => {
+    signIn: () => {
       signedIn = true;
-      localStorage.setItem(sessionMark, session);
       browser.fireWindowEvent(events.AUTH_SESSION_STORED_EVENT, {});
     },
     signOut: () => {
       signedIn = false;
-      localStorage.removeItem(sessionMark);
       browser.fireWindowEvent(events.AUTH_SESSION_CLEARED_EVENT, {});
     },
   };
 }
 
-test("login recovery survives the account purge and document replacement exactly once", async () => {
-  for (const native of [true, false]) {
-    const app = harness({ url: native ? "http://localhost/chat" : browserRun });
+test("sign-in retains pending links in memory; a reload requires reopening the link", async () => {
+  for (const desktop of [true, false]) {
+    const app = harness({
+      desktop,
+      url: desktop ? "http://localhost/chat" : browserRun,
+    });
     const before = app.loadDocument();
-    if (native) {
-      before.receiver.receiveSharedRunConfigUrls([run]);
+    if (desktop) {
+      before.receiver.receiveSharedRunConfigUrls([run], "startup");
       await settle();
     } else await before.receiver.receiveStartupRunConfigUrl();
+    const pending = before.inbox.getSnapshot();
+    assert.ok(pending);
+    app.signOut();
+    assert.equal(before.inbox.getSnapshot(), pending);
     app.storage.clear();
     app.signIn();
-    assert.equal(app.storage.has(recoveryKey), true);
+    assert.equal(before.inbox.getSnapshot(), pending);
     before.dispose();
     const after = app.loadDocument();
     await after.receiver.receiveStartupRunConfigUrl();
-    assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
-    assert.equal(after.inbox.getSnapshot()?.replaceHistory, !native);
-    assert.equal(app.storage.has(recoveryKey), false);
+    if (desktop) {
+      assert.equal(
+        after.receiver.receiveSharedRunConfigUrls([run], "startup"),
+        "ignored",
+      );
+    }
+    assert.equal(after.inbox.getSnapshot(), null);
+    assert.equal(app.parserLoads(), 1);
+    if (desktop) {
+      after.receiver.receiveSharedRunConfigUrls([run]);
+      await settle();
+      assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
+    } else {
+      after.dispose();
+      window.location.href = browserRun;
+      const reopened = app.loadDocument();
+      await reopened.receiver.receiveStartupRunConfigUrl();
+      assert.equal(reopened.inbox.getSnapshot()?.value.config.nParallel, 3);
+      reopened.dispose();
+    }
     after.dispose();
-    const next = app.loadDocument();
-    await next.receiver.receiveStartupRunConfigUrl();
-    assert.equal(next.inbox.getSnapshot(), null);
-    next.dispose();
     assert.deepEqual(app.errors, []);
   }
 });
 
-test("sign-out discards both pending and recoverable links before another session", async () => {
+test("sign-out discards pending links before another session", async () => {
   const app = harness();
   const doc = app.loadDocument();
   doc.receiver.receiveSharedRunConfigUrls([run]);
@@ -171,10 +149,8 @@ test("sign-out discards both pending and recoverable links before another sessio
   const id = doc.inbox.getSnapshot()?.id;
   app.signOut();
   assert.equal(doc.inbox.getSnapshot(), null);
-  assert.equal(app.storage.has(recoveryKey), false);
   assert.deepEqual(app.cleared, [id]);
-  app.signIn("second");
-  assert.equal(app.storage.has(recoveryKey), false);
+  app.signIn();
   doc.receiver.receiveSharedRunConfigUrls([run]);
   await settle();
   assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
@@ -192,7 +168,7 @@ test("an account purge cannot replay a previously handled desktop link", async (
   before.inbox.bind(pending.id, "draft");
   app.signOut();
   app.storage.clear();
-  app.signIn("second");
+  app.signIn();
   before.dispose();
 
   const after = app.loadDocument();
@@ -207,151 +183,6 @@ test("an account purge cannot replay a previously handled desktop link", async (
   await settle();
   assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
   after.dispose();
-});
-
-for (const recoveryFirst of [false, true]) {
-  test(`desktop login recovery imports once regardless of startup callback order: recovery first ${recoveryFirst}`, async () => {
-    const app = harness({ desktop: true });
-    const before = app.loadDocument();
-    before.receiver.receiveSharedRunConfigUrls([run], "startup");
-    await settle();
-    app.storage.clear();
-    app.signIn();
-    before.dispose();
-
-    const after = app.loadDocument();
-    if (recoveryFirst) {
-      await after.receiver.receiveStartupRunConfigUrl();
-    }
-    assert.equal(
-      after.receiver.receiveSharedRunConfigUrls([run], "startup"),
-      "ignored",
-    );
-    if (!recoveryFirst) {
-      await after.receiver.receiveStartupRunConfigUrl();
-    }
-    assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
-    assert.equal(app.parserLoads(), 2);
-    after.dispose();
-
-    const next = app.loadDocument();
-    next.receiver.receiveSharedRunConfigUrls([run], "startup");
-    await next.receiver.receiveStartupRunConfigUrl();
-    assert.equal(next.inbox.getSnapshot(), null);
-    assert.equal(app.parserLoads(), 2);
-    next.dispose();
-    assert.deepEqual(app.errors, []);
-  });
-}
-
-test("pending links survive repeated login reloads before signing in", async (t) => {
-  let now = 1_000;
-  t.mock.method(Date, "now", () => now);
-  for (const native of [true, false]) {
-    const app = harness({ url: native ? "http://localhost/chat" : browserRun });
-    let doc = app.loadDocument();
-    if (native) {
-      doc.receiver.receiveSharedRunConfigUrls([run]);
-      await settle();
-    } else await doc.receiver.receiveStartupRunConfigUrl();
-    assert.equal(app.storage.has(recoveryKey), true);
-    const saved = app.readRecovery();
-    for (let reload = 0; reload < 2; reload += 1) {
-      now += 60_000;
-      doc.dispose();
-      window.location.href = "http://localhost/login";
-      doc = app.loadDocument();
-      await doc.receiver.receiveStartupRunConfigUrl();
-      assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
-      assert.equal(doc.inbox.getSnapshot()?.replaceHistory, !native);
-      assert.equal(app.storage.has(recoveryKey), true);
-      assert.equal(app.readRecovery().expiresAt, saved.expiresAt);
-    }
-    app.storage.clear();
-    app.signIn();
-    doc.dispose();
-    const signedIn = app.loadDocument();
-    await signedIn.receiver.receiveStartupRunConfigUrl();
-    assert.equal(signedIn.inbox.getSnapshot()?.value.config.nParallel, 3);
-    assert.equal(app.storage.has(recoveryKey), false);
-    signedIn.dispose();
-    assert.deepEqual(app.errors, []);
-  }
-});
-
-test("clearing absent credentials during an auth redirect preserves a pre-login link", async () => {
-  const app = harness({ url: browserRun });
-  const before = app.loadDocument();
-  await before.receiver.receiveStartupRunConfigUrl();
-  app.signOut();
-  before.dispose();
-  window.location.href = "http://localhost/login";
-  const after = app.loadDocument();
-  await after.receiver.receiveStartupRunConfigUrl();
-  assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
-  after.dispose();
-});
-
-test("pre-login recovery cannot outlive its expiry or cross a session boundary", async () => {
-  for (const change of ["expired", "session"] as const) {
-    const app = harness({ url: browserRun });
-    const before = app.loadDocument();
-    await before.receiver.receiveStartupRunConfigUrl();
-    before.dispose();
-    assert.equal(app.storage.has(recoveryKey), true);
-    const saved = app.readRecovery();
-    if (change === "expired") saved.expiresAt = 0;
-    else saved.session = "other-account";
-    app.storage.set(recoveryKey, JSON.stringify(saved));
-    window.location.href = "http://localhost/login";
-    const after = app.loadDocument();
-    await after.receiver.receiveStartupRunConfigUrl();
-    assert.equal(after.inbox.getSnapshot(), null);
-    assert.equal(app.storage.has(recoveryKey), false);
-    after.dispose();
-  }
-});
-
-for (const change of ["session", "expired", "invalid", "newer"] as const) {
-  test(`login recovery rejects ${change} stored intents`, async () => {
-    const app = harness();
-    const before = app.loadDocument();
-    before.receiver.receiveSharedRunConfigUrls([run]);
-    await settle();
-    app.signIn();
-    before.dispose();
-    const saved = app.readRecovery();
-    if (change === "session") saved.session = "other-account";
-    if (change === "expired") saved.expiresAt = 0;
-    if (change === "invalid") saved.url = "unsloth://run?v=1&hfToken=secret";
-    app.storage.set(recoveryKey, JSON.stringify(saved));
-    const after = app.loadDocument();
-    if (change === "newer")
-      after.receiver.receiveSharedRunConfigUrls([
-        "unsloth://open_from_hf?model=owner/other",
-      ]);
-    await settle();
-    await after.receiver.receiveStartupRunConfigUrl();
-    assert.equal(after.inbox.getSnapshot(), null);
-    assert.equal(app.storage.has(recoveryKey), false);
-    after.dispose();
-  });
-}
-
-test("binding or cancelling an in-document import removes login recovery", async () => {
-  for (const bind of [true, false]) {
-    const app = harness();
-    const doc = app.loadDocument();
-    doc.receiver.receiveSharedRunConfigUrls([run]);
-    await settle();
-    app.signIn();
-    const pending = doc.inbox.getSnapshot();
-    assert.ok(pending);
-    if (bind) doc.inbox.bind(pending.id, "draft");
-    else doc.inbox.clear(pending.id);
-    assert.equal(app.storage.has(recoveryKey), false);
-    doc.dispose();
-  }
 });
 
 test("startup imports the captured URL once even after a router redirect or anchor change", async () => {
@@ -518,34 +349,8 @@ for (const newer of [
   });
 }
 
-test("a login remount preserves recovery until binding or rejection", async () => {
-  const app = harness({ url: browserRun });
-  const doc = app.loadDocument();
-  await doc.receiver.receiveStartupRunConfigUrl();
-  app.signIn();
-  const pending = doc.inbox.getSnapshot();
-  doc.dispose();
-  await doc.receiver.receiveStartupRunConfigUrl();
-  assert.equal(doc.inbox.getSnapshot(), pending);
-  assert.equal(app.storage.has(recoveryKey), true);
-  window.location.href = "http://localhost/chat";
-  const reloaded = app.loadDocument();
-  await reloaded.receiver.receiveStartupRunConfigUrl();
-  assert.equal(reloaded.inbox.getSnapshot()?.value.config.nParallel, 3);
-  assert.equal(app.storage.has(recoveryKey), false);
-  reloaded.dispose();
-});
-
-test("ordinary startup, unrelated links and expired recovery never load the parser", async () => {
+test("ordinary startup and unrelated links never load the parser", async () => {
   const app = harness({ url: "http://localhost/chat#unrelated" });
-  app.storage.set(
-    recoveryKey,
-    JSON.stringify({
-      url: run,
-      expiresAt: 0,
-      session: null,
-    }),
-  );
   const doc = app.loadDocument();
   await doc.receiver.receiveStartupRunConfigUrl();
   assert.equal(doc.receiver.receiveSharedRunConfigUrls([browserRun]), false);
@@ -592,33 +397,26 @@ test("sign-out retires a parser load before another account can receive its sett
   const doc = app.loadDocument();
   assert.equal(doc.receiver.receiveSharedRunConfigUrls([run]), true);
   app.signOut();
-  app.signIn("second");
+  app.signIn();
   parser.resolve(links);
   await settle();
   assert.equal(doc.inbox.getSnapshot(), null);
-  assert.equal(app.storage.has(recoveryKey), false);
   assert.deepEqual(app.errors, []);
   doc.dispose();
 });
 
-test("login recovery is saved even before the parser chunk arrives", async () => {
+test("clearing absent credentials preserves a pre-login link while the parser loads", async () => {
   const parser = deferredParser();
   const app = harness({ url: browserRun, loadParser: () => parser.promise });
-  const before = app.loadDocument();
-  const startup = before.receiver.receiveStartupRunConfigUrl();
+  const doc = app.loadDocument();
+  const startup = doc.receiver.receiveStartupRunConfigUrl();
   app.signOut();
   app.signIn();
-  assert.equal(app.storage.has(recoveryKey), true);
-  before.dispose();
-  window.location.href = "http://localhost/chat";
-  const after = app.loadDocument();
-  const recovered = after.receiver.receiveStartupRunConfigUrl();
   parser.resolve(links);
-  await Promise.all([startup, recovered]);
-  assert.equal(after.inbox.getSnapshot()?.value.config.nParallel, 3);
-  assert.equal(app.storage.has(recoveryKey), false);
+  await startup;
+  assert.equal(doc.inbox.getSnapshot()?.value.config.nParallel, 3);
   assert.deepEqual(app.errors, []);
-  after.dispose();
+  doc.dispose();
 });
 
 test("a failed parser chunk reports an error and permits reopening the same native link", async () => {

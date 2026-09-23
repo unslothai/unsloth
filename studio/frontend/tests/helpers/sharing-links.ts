@@ -5,7 +5,6 @@ import { isValidRepoId } from "../../src/features/deep-links/parse-deep-link.ts"
 import * as fields from "../../src/features/model-picker/sharing/fields.ts";
 import * as linkAddress from "../../src/features/model-picker/sharing/link-address.ts";
 import type * as Links from "../../src/features/model-picker/sharing/links.ts";
-import * as validators from "../../src/features/model-picker/sharing/validators.ts";
 import { loadWithStubs } from "./module-stubs.ts";
 
 export const { createRunConfigLink, parseRunConfigLink, isShareableModelId } =
@@ -17,7 +16,6 @@ export const { createRunConfigLink, parseRunConfigLink, isShareableModelId } =
     {
       "@/features/deep-links": { isValidRepoId },
       "./fields": fields,
-      "./validators": validators,
       "./link-address": linkAddress,
     },
   );
