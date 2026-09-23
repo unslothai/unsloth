@@ -25,6 +25,7 @@ import utils.prebuilt.runtime_libs as runtime_libs
 # the multiarch arms assert on the shipped value, not on a pinned one.
 _REAL_LOADER_DEFAULT_LIB_DIRS = runtime_libs._LOADER_DEFAULT_LIB_DIRS
 _REAL_LD_CACHE_ENTRIES = runtime_libs._ld_cache_entries
+_REAL_LOADER_RESOLVES = runtime_libs._loader_resolves_sonames
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason = "the vendored roots are Linux paths"
@@ -65,6 +66,7 @@ def _host_loader_unknown(monkeypatch):
     # arms that need it pin their own answer.
     monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
+    monkeypatch.setattr(runtime_libs, "_loader_resolves_sonames", lambda _sonames: False)
 
 
 def test_matches_the_marker_runtime_line(tmp_path):
@@ -354,6 +356,14 @@ def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monke
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
 
+def test_probes_loader_when_ldconfig_cache_query_fails(monkeypatch):
+    monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
+    monkeypatch.setattr(runtime_libs, "_loader_resolves_sonames", lambda _sonames: True)
+
+    assert runtime_libs._loader_already_provides_runtime("13")
+
+
+
 def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
     sonames = ("libcudart.so.13", "libcublas.so.13")
     native_abis = runtime_libs._NATIVE_LOADER_ABIS.get(
@@ -399,6 +409,7 @@ def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
     if loader_probe.returncode:
         pytest.skip("dynamic loader cannot resolve the cached CUDA 13 pair on this host")
 
+    monkeypatch.setattr(runtime_libs, "_loader_resolves_sonames", _REAL_LOADER_RESOLVES)
     monkeypatch.setattr(runtime_libs, "_ld_cache_entries", _REAL_LD_CACHE_ENTRIES)
     monkeypatch.setattr(runtime_libs.shutil, "which", lambda _candidate: None)
     original_exists = runtime_libs.os.path.exists

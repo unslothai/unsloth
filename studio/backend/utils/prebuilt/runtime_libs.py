@@ -111,14 +111,6 @@ def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
     return None
 
 
-def _ldconfig_executable_available() -> bool:
-    for candidate in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
-        exe = shutil.which(candidate) if "/" not in candidate else candidate
-        if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-            return True
-    return False
-
-
 def _loader_resolves_sonames(sonames: tuple[str, ...]) -> bool:
     """Ask the dynamic loader in a child process, without loading CUDA into Studio."""
     script = "import ctypes, sys; [ctypes.CDLL(name) for name in sys.argv[1:]]"
@@ -155,11 +147,7 @@ def _loader_already_provides_runtime(major: str) -> bool:
     """
     sonames = (f"libcudart.so.{major}", f"libcublas.so.{major}")
     cached = _ld_cache_entries()
-    if (
-        cached is None
-        and not _ldconfig_executable_available()
-        and _loader_resolves_sonames(sonames)
-    ):
+    if cached is None and _loader_resolves_sonames(sonames):
         return True
     native_abis = _NATIVE_LOADER_ABIS.get(platform.machine().lower(), frozenset())
     for soname in sonames:
