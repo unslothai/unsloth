@@ -17355,6 +17355,14 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         self.local_functions.setdefault(fn.name, []).append(fn)
                         self.def_names[id(fn)] = fn.name
+                    elif (
+                        isinstance(fn, ast.Assign)
+                        and isinstance(fn.value, ast.Lambda)
+                        and len(fn.targets) == 1
+                        and isinstance(fn.targets[0], ast.Name)
+                    ):
+                        # `make = lambda: requests.Session()` is a local function named `make`.
+                        self.local_functions.setdefault(fn.targets[0].id, []).append(fn.value)
                     elif isinstance(fn, ast.ClassDef):
                         for m in fn.body:
                             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -18041,6 +18049,9 @@ def _check_signal_escape_patterns(code: str):
                 self._record_flow(target, value, at, node)
                 if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
                     self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
+                    returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
+                    self._record_flow(returns, value.body, at, node)
                 if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
                     self._record_dict_mutation(
                         target.value.id, "__setitem__", [target.slice, value], []

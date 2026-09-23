@@ -1035,6 +1035,14 @@ class TestNetworkTargetResolution:
                 f"        self.session.get('http://{_H}/')\nWrapper(requests.Session()).go()",
                 id = "client_passed_to_a_local_constructor",
             ),
+            pytest.param(
+                f"import requests\nmake = lambda: requests.Session()\nmake().get('http://{_H}/')",
+                id = "client_from_a_lambda_factory",
+            ),
+            pytest.param(
+                f"import requests\nfetch = lambda s: s.get('http://{_H}/')\nfetch(requests.Session())",
+                id = "client_passed_to_a_lambda",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
