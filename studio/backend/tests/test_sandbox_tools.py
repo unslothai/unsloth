@@ -935,6 +935,16 @@ class TestNetworkTargetResolution:
                 "pool.request('GET', '/')",
                 id = "pool_connection_from_host",
             ),
+            pytest.param(
+                f"import requests\ndef fetch(s):\n    s.get('http://{_H}/')\n"
+                "def use():\n    helper(requests.Session())\nhelper = fetch\nuse()",
+                id = "helper_alias_assigned_below_its_call",
+            ),
+            pytest.param(
+                "import requests\ndef make():\n    return requests.Session()\n"
+                f"def go():\n    g().get('http://{_H}/')\ng = f\nf = make\ngo()",
+                id = "factory_alias_chain_in_reverse_order",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
