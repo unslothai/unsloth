@@ -174,11 +174,15 @@ def _split_output(out: Any) -> tuple:
 
 
 def _timestep_of(kwargs: dict) -> Any:
-    """The call's timestep as a one-element float32 tensor on its own device (no host sync)."""
+    """The call's timestep as a one-element float32 tensor on its own device (no host sync).
+
+    The max, not the first element: a per-token timestep (Wan2.2 TI2V ``expand_timesteps``, LTX)
+    is ``mask * t`` with 0 on conditioned tokens, so the first element can be 0 at every step and
+    would turn taylor1 into a silent reuse. On a per-sample timestep the max is the step's t."""
     t = kwargs.get("timestep")
     try:
         if _is_tensor(t):
-            return t.detach().reshape(-1)[:1].to(dtype = _torch().float32).clone()
+            return t.detach().reshape(-1).float().amax().reshape(1).clone()
         if isinstance(t, (int, float)) and not isinstance(t, bool):
             return _torch().tensor([float(t)], dtype = _torch().float32)
     except Exception:  # noqa: BLE001 - no timestep, taylor1 falls back to reuse
