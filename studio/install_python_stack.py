@@ -7178,11 +7178,13 @@ def _install_wheelhouse_optionals() -> None:
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
-def _evict_xformers_built_for_another_torch() -> bool:
+def _evict_xformers_built_for_another_torch(scope: str = "windows on arm") -> bool:
     """Remove a resident xFormers whose extension was built against another torch. True iff removed.
 
     xFormers links its extension against ONE (torch, CUDA) pair; beside any other it is mute,
-    and a package install never uninstalls what an earlier run left behind.
+    and a package install never uninstalls what an earlier run left behind. Any repair that can
+    move torch -- including the Linux ROCm repair -- needs the same check, not just the
+    Windows-on-ARM wheelhouse.
     """
     built_for = _resident_xformers_build_torch()
     resident = str(_probe_installed_torch_version() or "")
@@ -7190,7 +7192,7 @@ def _evict_xformers_built_for_another_torch() -> bool:
         return False
     _uninstall_distribution("xformers")
     _note(
-        f"windows on arm: the wheelhouse xformers was built for torch "
+        f"{scope}: xFormers was built for torch "
         f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
     )
     return True
@@ -11715,6 +11717,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+            _evict_xformers_built_for_another_torch(scope = "linux torch repair")
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.
