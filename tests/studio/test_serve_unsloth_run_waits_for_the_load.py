@@ -10,7 +10,8 @@ from the banner" while the model was still loading.
 
 The script runs here against a stand-in `unsloth` on PATH, and a stand-in `sleep` that returns
 at once and counts its calls, so the script's seconds are counted polls. The stand-in prints
-the banner after 40 polls, past the old window, in well under a second of real time.
+the banner 40 polls after it first answers health, past the old window, in well under a second
+of real time.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ pytestmark = pytest.mark.skipif(
     reason = "the script needs bash, setsid and jq, as on the Linux runner",
 )
 
-# `unsloth run -H HOST -p PORT ...`: healthy at once, banner after BANNER_AFTER sleeps, or exit
-# before any banner when BANNER_AFTER is negative.
+# `unsloth run -H HOST -p PORT ...`: healthy at once, banner BANNER_AFTER sleeps after the first
+# health answer, or exit that many sleeps after it without a banner when BANNER_AFTER is negative.
 STANDIN_UNSLOTH = textwrap.dedent(
     f"""\
     #!{sys.executable}
@@ -46,9 +47,19 @@ STANDIN_UNSLOTH = textwrap.dedent(
     after = int(os.environ["BANNER_AFTER"])
     counter = os.environ["SLEEP_COUNTER"]
 
+    healthy_at = []  # the poll count when /api/health first answered
+
+    def polls():
+        try:
+            return len(open(counter).read())
+        except FileNotFoundError:
+            return 0
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             body = {{"status": "healthy"}}
+            if self.path.startswith("/api/health") and not healthy_at:
+                healthy_at.append(polls())
             if self.path.startswith("/v1/models"):
                 if self.headers.get("Authorization") != "Bearer {KEY}":
                     self.send_response(401); self.end_headers(); return
@@ -63,20 +74,22 @@ STANDIN_UNSLOTH = textwrap.dedent(
         def log_message(self, *args):
             pass
 
+    # A slow start: health is not answered until the script has polled it this many times.
+    while polls() < int(os.environ["START_AFTER"]):
+        time.sleep(0.005)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
 
-    def polls():
-        try:
-            return len(open(counter).read())
-        except FileNotFoundError:
-            return 0
-
+    # Counted from health, so a slow start cannot spend the banner's polls before the wait begins.
+    while not healthy_at:
+        time.sleep(0.005)
+    with open(os.environ["HEALTHY_AT"], "w") as out:
+        out.write(str(healthy_at[0]))
     if after < 0:
-        while polls() < -after:
+        while polls() < healthy_at[0] - after:
             time.sleep(0.005)
         sys.exit(1)
-    while polls() < after:
+    while polls() < healthy_at[0] + after:
         time.sleep(0.005)
     print("  API Key:      {KEY}", flush = True)
     time.sleep(600)
@@ -93,7 +106,11 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _serve(tmp_path: Path, banner_after: int) -> tuple[subprocess.CompletedProcess, int]:
+def _serve(
+    tmp_path: Path,
+    banner_after: int,
+    start_after: int = 0,
+) -> tuple[subprocess.CompletedProcess, int]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("unsloth", STANDIN_UNSLOTH), ("sleep", STANDIN_SLEEP)):
@@ -105,7 +122,9 @@ def _serve(tmp_path: Path, banner_after: int) -> tuple[subprocess.CompletedProce
     env.update(
         PATH = f"{bin_dir}{os.pathsep}{env['PATH']}",
         BANNER_AFTER = str(banner_after),
+        START_AFTER = str(start_after),
         SLEEP_COUNTER = str(counter),
+        HEALTHY_AT = str(tmp_path / "healthy_at"),
         STUDIO_HOME = str(tmp_path / "studio"),
     )
     port = _free_port()
@@ -130,11 +149,16 @@ def _serve(tmp_path: Path, banner_after: int) -> tuple[subprocess.CompletedProce
         # The script leaves the server running for the steps after it, as CI wants.
         subprocess.run(["pkill", "-f", f"{bin_dir}/unsloth run "], capture_output = True)
     polls = len(counter.read_text()) if counter.exists() else 0
+    healthy_at = tmp_path / "healthy_at"
+    # Polls spent waiting for the banner, not starting the server.
+    if healthy_at.exists():
+        polls -= int(healthy_at.read_text())
     return result, polls
 
 
 def test_a_banner_after_the_old_30_second_window_is_still_read(tmp_path):
-    result, polls = _serve(tmp_path, banner_after = 40)
+    # 15 polls to come up healthy, then 40 more to load: the load alone outlasts the old window.
+    result, polls = _serve(tmp_path, banner_after = 40, start_after = 15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"UNSLOTH_API_KEY={KEY}" in result.stdout
     assert "UNSLOTH_MODEL_ID=standin-model" in result.stdout
