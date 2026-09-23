@@ -139,16 +139,22 @@ def native_linear_class():
 
         def _forward_int_mm(self, x: Any) -> Any:
             """W8A8: per-row symmetric int8 activations x the stored int8 weight, int32 accumulate, one rescale."""
+            # Written for eager as much as for compile (Windows ROCm has no Triton): every op below is one pass,
+            # with the float32 upcasts folded into mixed-dtype ops instead of separate .float() copies.
             x2 = x.reshape(-1, self.in_features)
-            xf = x2.float()
-            x_scale = xf.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / 127.0
-            xq = (xf / x_scale).round_().clamp_(-127, 127).to(torch.int8)
+            x_scale = torch.linalg.vector_norm(
+                x2, ord = float("inf"), dim = 1, keepdim = True, dtype = torch.float32
+            )
+            x_scale = x_scale.clamp_(min = 1e-12).div_(127.0)
+            xq = torch.mul(x2, x_scale.reciprocal()).round_().clamp_(-127, 127).to(torch.int8)
             acc = torch._int_mm(xq, self.weight_q.t())
-            out = acc.float() * x_scale * self.weight_scale.view(torch.float32)[None, :]
-            out = out.to(x.dtype)
+            w_scale = self.weight_scale.view(torch.float32)
+            out = torch.mul(acc, x_scale)
             if self.bias is not None:
-                out = out + self.bias.to(x.dtype)
-            return out.reshape(*x.shape[:-1], self.out_features)
+                out = torch.addcmul(self.bias.float(), out, w_scale)
+            else:
+                out = out.mul_(w_scale)
+            return out.to(x.dtype).reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x: Any) -> Any:
             if self.rot_group:
