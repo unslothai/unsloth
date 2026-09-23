@@ -17520,7 +17520,10 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
                         found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
                     continue
-                if isinstance(alt, ast.Name) and self._is_shadowed(alt.id, at):
+                receiver = isinstance(alt, ast.Name) and any(
+                    n == alt.id for n, _f in self.self_names
+                )
+                if isinstance(alt, ast.Name) and not receiver and self._is_shadowed(alt.id, at):
                     continue
                 for path in self._path_variants(alt):
                     found.update(self.instance_aliases.get(path, ()))
@@ -17665,6 +17668,10 @@ def _check_signal_escape_patterns(code: str):
                 }
                 if inherited:
                     self.func_aliases.setdefault(node.name, set()).update(inherited)
+                    # Its own methods reach the inherited client through `self`.
+                    family = self.class_family.get(id(node))
+                    if family is not None:
+                        self.instance_aliases.setdefault(family, set()).update(inherited)
                     # Registered where the class name is bound, after its bases have run.
                     self._register_alias(node.name, node.body[0])
             args = getattr(node, "args", None)
@@ -18124,8 +18131,10 @@ def _check_signal_escape_patterns(code: str):
                 for root in self._roots(parts[0]):
                     for k in range(1, len(parts)):
                         path = ".".join([root] + parts[1:k])
+                        # A method's receiver is a parameter, which is exactly what names the
+                        # instance, so its family key is not subject to the shadow check.
                         if path in self.instance_aliases and not (
-                            k == 1 and self._is_shadowed(parts[0], at)
+                            k == 1 and root == parts[0] and self._is_shadowed(parts[0], at)
                         ):
                             held.append((self.instance_aliases[path], parts[k:]))
             for classes, rest in held:
@@ -18185,7 +18194,10 @@ def _check_signal_escape_patterns(code: str):
                         for arg in node.args:
                             self._record_env_mapping(arg)
                         for kw in node.keywords:
-                            self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+                            if kw.arg is None:
+                                self._record_env_mapping(kw.value)  # `update(**cfg)`
+                            else:
+                                self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
                 elif isinstance(func, ast.Attribute) and func.attr in (
                     "update",
                     "setdefault",

@@ -999,6 +999,16 @@ class TestNetworkTargetResolution:
                 f"api = API()\napi.s.get('http://{_H}/')",
                 id = "client_held_by_a_wrapper_instance",
             ),
+            pytest.param(
+                "import requests\nclass S(requests.Session):\n    def go(self):\n"
+                f"        self.get('http://{_H}/')\nS().go()",
+                id = "inherited_method_through_self",
+            ),
+            pytest.param(
+                f"import os, requests\ncfg = {{'HTTPS_PROXY': 'http://{_H}:8080'}}\n"
+                "os.environ.update(**cfg)\nrequests.get('https://pypi.org/')",
+                id = "proxy_environment_from_expanded_keywords",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1132,6 +1142,7 @@ class TestNetworkTargetResolution:
             # A raw socket does not read the proxy environment variables.
             "import os, socket\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "socket.create_connection(('pypi.org', 443))",
+            "class D(dict):\n    def go(self):\n        return self.get('http://203.0.113.5/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
