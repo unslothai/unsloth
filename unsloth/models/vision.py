@@ -2418,6 +2418,10 @@ class FastBaseModel:
                 _moe_module_detect,
                 moe_module_targets = _moe_module_targets,
             )
+            from .remote_moe_shims import packed_expert_target_parameters
+            target_parameters = packed_expert_target_parameters(
+                model, target_parameters, _moe_detect_target
+            )
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):

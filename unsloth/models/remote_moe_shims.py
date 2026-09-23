@@ -40,7 +40,12 @@ import functools
 
 import torch
 
-__all__ = ["prepare_remote_moe_for_training", "is_remote_deepseek_gate", "is_remote_deepseek_moe"]
+__all__ = [
+    "prepare_remote_moe_for_training",
+    "is_remote_deepseek_gate",
+    "is_remote_deepseek_moe",
+    "packed_expert_target_parameters",
+]
 
 
 def _is_remote_code(cls) -> bool:
@@ -140,9 +145,10 @@ def is_remote_deepseek_moe(module) -> bool:
     # Matched on structure rather than class name: DeepSeek-derived remote code renames the
     # block (sarvam's `SarvamMLAMoE`) but keeps the same inference-only port.
     cls = type(module)
+    experts = getattr(module, "experts", None)
     return (
         _is_remote_code(cls)
-        and isinstance(getattr(module, "experts", None), torch.nn.ModuleList)
+        and (isinstance(experts, torch.nn.ModuleList) or _is_packed_experts(experts))
         and hasattr(module, "moe_infer")
         and hasattr(module, "gate")
         and _forward_has_no_training_branch(cls)
@@ -167,6 +173,20 @@ def _gate_forward_without_training_assert(original):
 
 
 _MISSING = object()
+
+
+def _is_packed_experts(experts) -> bool:
+    # unsloth_zoo's Mxfp4StackedExperts: the routed experts of an MXFP4 checkpoint kept packed,
+    # possibly under PEFT ParamWrappers for expert LoRA.
+    while hasattr(experts, "base_layer"):
+        experts = experts.base_layer
+    return getattr(type(experts), "_unsloth_mxfp4_stacked_experts", False) is True
+
+
+def _packed_moe_dispatch(block, x, topk_idx, topk_weight):
+    """`moe_infer` for packed MXFP4 experts: one grouped GEMM per projection, called through
+    the experts module so a PEFT expert LoRA wrapper around it still applies."""
+    return block.experts(x, topk_idx, topk_weight)
 
 
 def _moe_train_dispatch(block, x, topk_idx, topk_weight):
@@ -208,8 +228,12 @@ def _moe_forward_with_training_path(original):
 
     @functools.wraps(original)
     def forward(self, hidden_states):
-        if not self.training or getattr(self, "ep_size", 1) > 1:
+        if getattr(self, "ep_size", 1) > 1:
             return original(self, hidden_states)
+        packed = _is_packed_experts(getattr(self, "experts", None))
+        if not self.training and not packed:
+            return original(self, hidden_states)
+        was_training = self.training
         gate = getattr(self, "gate", None)
         gate_was_training = isinstance(gate, torch.nn.Module) and gate.training
         own = self.__dict__.get("moe_infer", _MISSING)
@@ -219,11 +243,12 @@ def _moe_forward_with_training_path(original):
         self.training = False
         if gate_was_training:
             gate.training = False
-        self.__dict__["moe_infer"] = functools.partial(_moe_train_dispatch, self)
+        dispatch = _packed_moe_dispatch if packed else _moe_train_dispatch
+        self.__dict__["moe_infer"] = functools.partial(dispatch, self)
         try:
             return original(self, hidden_states)
         finally:
-            self.training = True
+            self.training = was_training
             if gate_was_training:
                 gate.training = True
             if own is _MISSING:
@@ -294,3 +319,22 @@ def prepare_remote_moe_for_training(model, verbose = True):
             + "."
         )
     return patched
+
+
+def packed_expert_target_parameters(model, target_parameters, requested_leaves):
+    """Expert LoRA on packed MXFP4 experts is opt in, as it was on their per-expert Linears.
+
+    The automatic MoE detection sees the stacks' `gate_up_proj` / `down_proj` and would add
+    them for the default MLP targets; drop those, and add them back only for the leaves that
+    named the per-expert Linears (`w1` / `w3` share the fused `gate_up_proj`, `w2` is
+    `down_proj`)."""
+    if not any(_is_packed_experts(m) for m in model.modules()):
+        return target_parameters
+    names = ("experts.gate_up_proj", "experts.down_proj")
+    kept = [p for p in (target_parameters or []) if not p.endswith(names)]
+    leaves = set(requested_leaves or ())
+    if leaves & {"w1", "w3"}:
+        kept.append("experts.gate_up_proj")
+    if "w2" in leaves:
+        kept.append("experts.down_proj")
+    return kept or None
