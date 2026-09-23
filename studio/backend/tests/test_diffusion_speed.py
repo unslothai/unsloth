@@ -1338,9 +1338,13 @@ def test_torchao_dit_compiles_with_automatic_dynamic(monkeypatch):
 def test_torchao_payload_wrapped_in_a_plain_parameter_still_counts():
     # Some torchao builds keep Linear.weight an nn.Parameter whose .data is the subclass.
     wrapped = types.SimpleNamespace(data = _TorchaoWeight())
-    assert ds_mod._carries_torchao_weights(types.SimpleNamespace(parameters = lambda: iter([wrapped])))
+    assert ds_mod._carries_torchao_weights(
+        types.SimpleNamespace(parameters = lambda: iter([wrapped]))
+    )
     other = types.SimpleNamespace(data = object())
-    assert not ds_mod._carries_torchao_weights(types.SimpleNamespace(parameters = lambda: iter([other])))
+    assert not ds_mod._carries_torchao_weights(
+        types.SimpleNamespace(parameters = lambda: iter([other]))
+    )
 
 
 def test_max_tier_keeps_static_compile_for_torchao_dit(monkeypatch):
