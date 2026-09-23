@@ -1532,10 +1532,10 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex h-5 items-center">
+              <div className="flex h-5 min-w-0 items-center">
                 <span
                   data-settings-label={t("settings.agents.quantization")}
-                  className="text-xs font-medium text-foreground"
+                  className="truncate text-xs font-medium text-foreground"
                 >
                   {t("settings.agents.quantization")}
                 </span>
@@ -1575,7 +1575,7 @@ export function AgentsTab() {
                     )}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start" className="min-w-[16rem]">
+                <SelectContent align="start" className="min-w-[min(calc(16rem*var(--ui-space-scale,1)),calc(100vw-32px))]">
                   {variants.map((variant) => {
                     // Size only: the recommended/downloaded tags wrapped every
                     // row onto two lines and made the list hard to scan.
