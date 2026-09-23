@@ -145,7 +145,12 @@ def _backend_non_vulkan(
     return _backend(*args, vulkan = vulkan, **kwargs)
 
 
-def _launch(backend, gguf, model_identifier = "test", **load_kwargs):
+def _launch(
+    backend,
+    gguf,
+    model_identifier = "test",
+    **load_kwargs,
+):
     captured = {}
 
     def fake_popen(cmd, **kwargs):

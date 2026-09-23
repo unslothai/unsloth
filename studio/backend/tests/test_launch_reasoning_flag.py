@@ -250,7 +250,14 @@ def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
 
 
 def _launched(
-    tmp_path, monkeypatch, *, os_label, vendor, modern, template, model_identifier = "test"
+    tmp_path,
+    monkeypatch,
+    *,
+    os_label,
+    vendor,
+    modern,
+    template,
+    model_identifier = "test",
 ):
     """The backend and argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
