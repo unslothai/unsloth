@@ -226,7 +226,9 @@ for (const id of [
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
 ]) {
-  assert.ok(imageOptionIds.has(id), `image option missing: ${id}`);
+  // A vendor id now resolves to the unsloth mirror that replaced its row.
+  const offered = artifactForRepoId(id, IMAGE_CATALOG)?.artifact.repoId ?? id;
+  assert.ok(imageOptionIds.has(offered), `image option missing: ${id}`);
 }
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
 for (const id of [
@@ -408,7 +410,7 @@ for (const id of [
 // per-card kernel probe; `resolved` reports that after the load. Predicting it here would mean
 // mirroring the backend selector's inputs, which is unbounded.
 {
-  const id = "Tongyi-MAI/Z-Image-Turbo";
+  const id = "unsloth/Z-Image-Turbo";
   // The chip is the STORED precision, exactly as on a host without the fast path.
   assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant"), {
     name: "Z-Image-Turbo (Fast)",
@@ -818,32 +820,21 @@ assert.equal(
     .repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
-// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded even on a big
-// GPU: the download would fail without license/token access.
+// FLUX.1-dev BF16 is the open unsloth mirror, so a big GPU auto-routes to it.
 const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDevRoute);
 assert.equal(
   pickDefaultArtifact(fluxDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
-    .format,
-  "gguf",
+    .repoId,
+  "unsloth/FLUX.1-dev",
 );
-// But an already-downloaded gated BF16 (the user clearly has access) is still returned.
-assert.equal(
-  pickDefaultArtifact(fluxDevRoute, {
-    gpuGb: 80,
-    systemRamGb: 128,
-    isDownloaded: (id) => id === "black-forest-labs/FLUX.1-dev",
-  }).repoId,
-  "black-forest-labs/FLUX.1-dev",
-);
-// FLUX.1 Krea dev: gated BF16 skipped when undownloaded, so the open QuantStack GGUF wins;
-// its repo id also resolves to the group.
+// FLUX.1 Krea dev: the open mirror wins on a big GPU; the vendor id still resolves to the group.
 const kreaDevRoute = groupForRepoId("black-forest-labs/FLUX.1-Krea-dev", IMAGE_CATALOG);
 assert.ok(kreaDevRoute);
 assert.equal(
   pickDefaultArtifact(kreaDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .repoId,
-  "QuantStack/FLUX.1-Krea-dev-GGUF",
+  "unsloth/FLUX.1-Krea-dev",
 );
 assert.equal(
   groupForRepoId("QuantStack/FLUX.1-Krea-dev-GGUF", IMAGE_CATALOG),
@@ -855,7 +846,7 @@ assert.ok(lumina);
 assert.equal(
   pickDefaultArtifact(lumina, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .repoId,
-  "Alpha-VLLM/Lumina-Image-2.0",
+  "unsloth/Lumina-Image-2.0",
 );
 assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
 // HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to
@@ -886,20 +877,19 @@ assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG), hidrea
 assert.equal(
   pickDefaultArtifact(hidream, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
     .repoId,
-  "HiDream-ai/HiDream-I1-Full",
+  "unsloth/HiDream-I1-Full",
 );
 assert.equal(
   catalogGroupFitsDevice(hidream, { gpuGb: 24, systemRamGb: 32 }, notDownloaded),
   false,
 );
-// FLUX.1-schnell is Apache-2.0 but gated on the Hub, so an undownloaded BF16 is skipped and
-// the open GGUF wins even on a GPU that fits the pipeline.
+// FLUX.1-schnell BF16 is the open unsloth mirror, so a GPU that fits the pipeline takes it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);
 assert.equal(
   pickDefaultArtifact(fluxSchnellRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
-  "gguf",
+  "bf16",
 );
 // HunyuanVideo on 80 GB: the highest-quality artifact that FITS (720p, 52 GB <= budget 56) wins.
 const hunyuan = groupForRepoId(
@@ -967,7 +957,7 @@ assert.equal(
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .repoId,
-  "Qwen/Qwen-Image-2512",
+  "unsloth/Qwen-Image-2512",
 );
 // Z-Image-Turbo BF16 (30 GB) misses 24 GB (bnb-4bit wins) but fits a 48 GB GPU (budget 33.6) and wins.
 const zturbo = groupForRepoId("unsloth/Z-Image-Turbo", IMAGE_CATALOG);
@@ -982,22 +972,14 @@ assert.equal(
     .format,
   "bf16",
 );
-// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU but is GATED, so a bare click routes to the open
-// GGUF unless already downloaded. Small GPU also goes to GGUF.
+// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU and its mirror is open, so a bare click takes it.
+// Small GPU goes to GGUF.
 const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
 assert.equal(
   pickDefaultArtifact(fluxDev, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
-  "gguf",
-);
-assert.equal(
-  pickDefaultArtifact(fluxDev, {
-    gpuGb: 48,
-    systemRamGb: 64,
-    isDownloaded: (id) => id === "black-forest-labs/FLUX.1-dev",
-  }).format,
   "bf16",
 );
 assert.equal(
@@ -1177,7 +1159,7 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
 }
 
 // Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
-const zTurboId = "Tongyi-MAI/Z-Image-Turbo";
+const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
   false,
@@ -1237,7 +1219,7 @@ assert.equal(
     denseQuantSchemes: ["int8", "fp8"],
     isDownloaded: notDownloaded,
   }).repoId,
-  "Qwen/Qwen-Image",
+  "unsloth/Qwen-Image",
 );
 // A ladder no rung of which fits is still refused, and still routes to the bnb row.
 assert.equal(

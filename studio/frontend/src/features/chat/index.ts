@@ -111,6 +111,11 @@ export {
   type ReasoningRoundState,
 } from "./stores/reasoning-round-store";
 export {
+  setForkBoundary,
+  useForkBoundaryStore,
+  type ForkBoundaryState,
+} from "./stores/fork-boundary-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,
@@ -322,6 +327,7 @@ export {
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
+  readBackendChatThread,
 } from "./utils/chat-history-storage";
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
