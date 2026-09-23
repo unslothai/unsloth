@@ -585,6 +585,14 @@ def test_cached_decode_past_index_topk_warns(tmp_path):
 
 def test_4bit_keeps_the_mla_up_projections_in_16bit():
     # NF4 on q_b_proj / kv_b_proj alone took the real Flash-Lite-Sparse loss from 0.70 to 2.73.
+    # The device-map planner must size them the way the load keeps them.
+    import ast
+
+    from unsloth.models.vision import _architecture_skip_modules
+
+    for model_type in ("longcat_flash", "longcat_flash_lsa"):
+        assert {"q_b_proj", "kv_b_proj"} <= set(_architecture_skip_modules([model_type]))
+    assert _architecture_skip_modules(["llama"]) == []
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "unsloth",
@@ -592,6 +600,14 @@ def test_4bit_keeps_the_mla_up_projections_in_16bit():
         "vision.py",
     )
     with open(path, encoding = "utf-8") as f:
-        source = f.read()
-    rule = source[source.index('"longcat_flash_lsa") for mt in') :]
-    assert '_skip_modules.extend(("q_b_proj", "kv_b_proj"))' in rule.split("\n\n")[0]
+        tree = ast.parse(f.read())
+    planner = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "planner_quantization_kwargs"
+    ]
+    assert planner
+    for call in planner:
+        extra = next(k.value for k in call.keywords if k.arg == "extra_skip_modules")
+        assert "_architecture_skip_modules" in ast.unparse(extra)
