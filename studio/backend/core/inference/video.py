@@ -4659,7 +4659,9 @@ class VideoBackend:
                         transformer_quant_engaged or "off",
                         # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but
                         # per-step GEMMs are at best bf16 parity.
-                        native_quant_reason(getattr(pipe, "transformer", None), transformer_quant_engaged)
+                        native_quant_reason(
+                            getattr(pipe, "transformer", None), transformer_quant_engaged
+                        )
                         if transformer_quant_engaged is not None and native_scheme is not None
                         else "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
                         "load time; per-step speed is roughly bf16 parity)"

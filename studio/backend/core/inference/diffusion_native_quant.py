@@ -41,14 +41,12 @@ _INT_MM_MIN_ROWS = 17
 def int8_act_requested() -> bool:
     """``UNSLOTH_NATIVE_INT8_ACT=1``: the opt-in AMD reads."""
     import os
-
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "1"
 
 
 def int8_act_disabled() -> bool:
     """``UNSLOTH_NATIVE_INT8_ACT=0``: the kill switch the NVIDIA offload route reads, where W8A8 is the default."""
     import os
-
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "0"
 
 
@@ -73,7 +71,13 @@ def native_linear_class():
     class NativeWeightOnlyLinear(nn.Module):
         """A Linear whose weight is stored as int8 / fp8 with a per-output-row scale."""
 
-        def __init__(self, linear: Any, scheme: str, act_int8: bool = False, rot_group: int = 0):
+        def __init__(
+            self,
+            linear: Any,
+            scheme: str,
+            act_int8: bool = False,
+            rot_group: int = 0,
+        ):
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -125,7 +129,9 @@ def native_linear_class():
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
-            return (x.reshape(-1, self.in_features // g, g) @ self.rot_h.to(x.dtype)).reshape(x.shape)
+            return (x.reshape(-1, self.in_features // g, g) @ self.rot_h.to(x.dtype)).reshape(
+                x.shape
+            )
 
         def dequantized_weight(self, dtype: Any) -> Any:
             """The weight in the model's own basis, rotation undone (``H`` is orthogonal and symmetric)."""
@@ -134,7 +140,9 @@ def native_linear_class():
                 return w
             g = self.rot_group
             h = self.rot_h.to(torch.float32)
-            return (w.reshape(self.out_features, -1, g) @ h).reshape(self.out_features, -1).to(dtype)
+            return (
+                (w.reshape(self.out_features, -1, g) @ h).reshape(self.out_features, -1).to(dtype)
+            )
 
         @property
         def weight(self) -> Any:
@@ -171,7 +179,11 @@ def native_linear_class():
         def forward(self, x: Any) -> Any:
             if self.rot_group:
                 x = self._rotate(x)
-            if self.act_int8 and x.is_cuda and self._int_mm_ok(x.numel() // max(1, self.in_features)):
+            if (
+                self.act_int8
+                and x.is_cuda
+                and self._int_mm_ok(x.numel() // max(1, self.in_features))
+            ):
                 return self._forward_int_mm(x)
             # Rotated or not, x and the stored weight share a basis here, so no un-rotation is needed.
             return F.linear(x, self._stored_weight(x.dtype), self.bias)
@@ -222,12 +234,16 @@ def apply_native_weight_quant(
     for name in names:
         parent_name, _, leaf = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
-        setattr(parent, leaf, cls(getattr(parent, leaf), scheme, act_int8 = act_int8, rot_group = rot_group))
+        setattr(
+            parent, leaf, cls(getattr(parent, leaf), scheme, act_int8 = act_int8, rot_group = rot_group)
+        )
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: %s %s (torchao-free) on %d linears",
             scheme,
-            ("W8A8 torch._int_mm" + (f" ConvRot g{rot_group}" if rot_group else "")) if act_int8 else "weight-only",
+            ("W8A8 torch._int_mm" + (f" ConvRot g{rot_group}" if rot_group else ""))
+            if act_int8
+            else "weight-only",
             len(names),
         )
     return len(names)

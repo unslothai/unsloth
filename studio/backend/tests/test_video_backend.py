@@ -9776,7 +9776,14 @@ def _stub_nvidia_video_offload(monkeypatch, *, offload = True):
     _stub_apply_memory_plan(monkeypatch, video_mod, policy = "model" if offload else "none")
     calls: list = []
 
-    def _quantize(view, target, *, mode, family = None, **kw):
+    def _quantize(
+        view,
+        target,
+        *,
+        mode,
+        family = None,
+        **kw,
+    ):
         calls.append({"view": view, "mode": mode, **kw})
         return mode
 

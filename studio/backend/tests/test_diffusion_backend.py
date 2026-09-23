@@ -11788,7 +11788,12 @@ def test_an_explicit_scheme_on_nvidia_keeps_the_torchao_path_and_its_wording(
 # ---- NVIDIA: an explicit int8 under offload runs torchao-free W8A8 -------------------------------------
 
 
-def _stub_nvidia_offload_host(backend, monkeypatch, *, engages = "int8"):
+def _stub_nvidia_offload_host(
+    backend,
+    monkeypatch,
+    *,
+    engages = "int8",
+):
     """An NVIDIA bf16 host with the torchao path open. Records every quantise call's kwargs, and every
     status-reason lookup, so a test can tell the native route from the torchao one."""
     from core.inference import diffusion as dmod

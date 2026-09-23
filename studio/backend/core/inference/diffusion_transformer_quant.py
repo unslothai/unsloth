@@ -1489,13 +1489,7 @@ def quantize_transformer(
 
 
 def _quantize_native(
-    pipe: Any,
-    scheme: str,
-    *,
-    family: Optional[str],
-    min_features: int,
-    act_int8: bool,
-    logger: Any,
+    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
 ) -> Optional[str]:
     """The torchao-free branch of ``quantize_transformer``: the same layer filter, weight-only or (int8 with
     ``act_int8``) W8A8."""
