@@ -241,7 +241,12 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
+from .device_type import (
+    arch_lacks_bf16,
+    arch_lacks_buffer_ops,
+    apply_gfx101x_triton_workaround,
+    hip_visible_archs,
+)
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
@@ -249,6 +254,8 @@ from .import_fixes import (
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_remote_rope_scaling_none,
+    fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -307,6 +314,9 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+# Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
+fix_transformers_remote_rope_scaling_none()
+fix_transformers_is_torch_fx_available()
 # Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
@@ -362,6 +372,8 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_remote_rope_scaling_none
+del fix_transformers_is_torch_fx_available
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -441,6 +453,10 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
+
+# gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
+if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
+    apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
