@@ -1014,3 +1014,18 @@ def test_a_model_still_loading_alongside_keeps_the_chat_claim(backends, monkeypa
     monkeypatch.setattr(inf, "_loading_slot", None)
     inf.release_chat_gpu_claim()
     assert gpu_arbiter.current_owner() != gpu_arbiter.CHAT
+
+
+def test_an_idle_sweep_spares_the_slot_a_load_is_filling(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
+    assert inf.unload_extra_models(keep = lambda llama: False, stash = True) == 0
+    assert inf._extra_slots == [extra] and extra.llama.is_active
+
+
+def test_a_llama_update_leaves_safetensors_slots_loaded(backends):
+    _, extra = backends
+    safetensors = inf._ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner")
+    inf._extra_slots.append(safetensors)
+    assert inf.unload_extra_models(keep = lambda llama: not llama.is_active, stash = True) == 1
+    assert inf._extra_slots == [safetensors] and safetensors.orchestrator.active_model_name

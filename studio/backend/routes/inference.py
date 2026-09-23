@@ -8104,8 +8104,12 @@ def _drop_extra_slot(slot: _ExtraSlot, stash: bool = False) -> None:
 def unload_extra_models(keep = None, stash: bool = False) -> int:
     """Drop every extra slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
     dropped = 0
+    filling = _loading_slot[0] if _loading_slot else None
     for slot in list(_extra_slots):
         loaded = slot.llama.is_loaded or slot.orchestrator.active_model_name
+        # A selective sweep (idle) spares the slot a load is still filling; its load finishes it.
+        if keep is not None and slot is filling:
+            continue
         if keep is None or (loaded and not keep(slot.llama)):
             dropped += 1
             try:

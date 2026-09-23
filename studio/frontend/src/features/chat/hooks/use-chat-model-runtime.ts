@@ -483,9 +483,21 @@ async function readIdleUnloadArmed(): Promise<boolean> {
   return lastIdleUnloadArmed;
 }
 
-function publishLoadedModels(ids: string[]): void {
+function publishLoadedModels(
+  ids: string[],
+  statusId?: string | null,
+  statusQuant?: string | null,
+): void {
   const current = useChatRuntimeStore.getState().loadedModels;
-  const known = new Map(current.map((m) => [m.id, m]));
+  // The status names the quant it serves now: an entry kept from before a quant swap drops its old one.
+  const known = new Map(
+    current.map((m) => [
+      m.id,
+      statusQuant && m.id === statusId && m.quant && m.quant !== statusQuant
+        ? { id: m.id }
+        : m,
+    ]),
+  );
   const next = ids.map((id) => known.get(id) ?? { id });
   const unchanged =
     next.length === current.length && next.every((m, i) => m === current[i]);
@@ -580,7 +592,11 @@ async function syncInferenceStatusToStore(options?: {
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
-    publishLoadedModels(statusRes.loaded ?? []);
+    publishLoadedModels(
+      statusRes.loaded ?? [],
+      statusRes.active_model,
+      statusRes.gguf_variant,
+    );
 
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // A replacement names the outgoing model active and the incoming one loading. Adopting
