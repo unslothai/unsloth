@@ -1146,6 +1146,14 @@ def load_prequantized_transformer(
             transformer.eval()
         except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
+        if scheme == "nvfp4":
+            # Here, not per caller, so a video load tunes the M = 1 shapes too; the tuned set is keyed per shape, so the
+            # image loader's own call is then a no-op. Its own try: a tuning failure must not discard a loaded checkpoint.
+            try:
+                from .diffusion_nvfp4_linear import nvfp4_prewarm
+                nvfp4_prewarm(transformer, (1,), logger = logger)
+            except Exception as exc:  # noqa: BLE001 - an untuned layer still runs
+                _warn(logger, f"{scheme}:prewarm", exc)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort
