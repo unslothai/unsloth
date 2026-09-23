@@ -7368,9 +7368,11 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
     assert retired["walked_back_from"] is None and retired["walked_back_on_macos"] is None
 
 
-def test_binary_env_linux_strips_loader_injections_and_broad_inherited_paths(
+def test_binary_env_linux_strips_loader_injections_but_keeps_inherited_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    # Inherited LD_LIBRARY_PATH entries reach the payload as on main (dropping them
+    # rejected installs that load only through them); broad ones are just not bound.
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "build" / "bin"
     runtime_lib = tmp_path / "runtime" / "lib"
@@ -7392,8 +7394,11 @@ def test_binary_env_linux_strips_loader_injections_and_broad_inherited_paths(
     assert "LD_PRELOAD" not in env
     assert "LD_AUDIT" not in env
     ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(Path("/")) not in ld_dirs
+    assert str(Path("/").resolve()) in ld_dirs
     assert str(runtime_lib.resolve()) in ld_dirs
+    binds = INSTALL_LLAMA_PREBUILT._sandbox_library_path_targets(env, "LD_LIBRARY_PATH")
+    assert Path("/") not in binds
+    assert runtime_lib.resolve() in binds
 
 
 def test_binary_env_macos_strips_inherited_dyld_loader_controls(
@@ -7978,7 +7983,7 @@ def test_build_validation_sandbox_plan_linux_gpu_validates_directly_without_setu
     assert cpu_plan.command[0] == str(bwrap_path.resolve())
 
 
-def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
+def test_linux_validation_server_probe_command_keeps_payload_env_off_the_command_line():
     probe_command = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
         [
             "/opt/llama-server",
@@ -7989,16 +7994,86 @@ def test_linux_validation_server_probe_command_passes_payload_env_to_server_spaw
         ],
         {
             "LD_LIBRARY_PATH": "/tmp/libs",
-            "PYTHONPATH": "/tmp/python",
+            "SOME_TOKEN": "s3cr3t-value",
         },
     )
     assert len(probe_command) == 3
-    _, script = probe_command[0], probe_command[2]
-    assert 'payload_env = {"LD_LIBRARY_PATH": "/tmp/libs", "PYTHONPATH": "/tmp/python"}' in script
+    script = probe_command[2]
+    assert "s3cr3t-value" not in script
+    assert "/tmp/libs" not in script
     assert "server_env = dict(os.environ)" in script
-    assert "server_env.update(payload_env)" in script
     assert "timeout = 5" in script
     assert "with urllib.request.urlopen(request, timeout = 5)" in script
+
+
+def test_linux_bwrap_plan_passes_payload_env_through_the_environment(monkeypatch, tmp_path):
+    # --setenv arguments are world-readable in /proc/<pid>/cmdline; main passed the
+    # payload env privately, so only loader paths may appear on the command line.
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    binary_path = tmp_path / "llama-quantize"
+    binary_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
+    )
+    env = {"LD_LIBRARY_PATH": str(tmp_path), "SOME_TOKEN": "s3cr3t-value", "PATH": "/usr/bin"}
+    for purpose in (
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+    ):
+        command = [str(binary_path), "in", "out", "--port", "7777"]
+        plan = build_validation_sandbox_plan(
+            command,
+            binary_path = binary_path,
+            install_dir = tmp_path,
+            host = linux_host(),
+            purpose = purpose,
+            runtime_line = None,
+            env = env,
+        )
+        assert plan.sandbox_kind == "linux_bwrap"
+        assert not any("s3cr3t-value" in part for part in plan.command)
+        assert plan.env["SOME_TOKEN"] == "s3cr3t-value"
+        assert "LD_LIBRARY_PATH" not in plan.env
+        loader_name = (
+            "UNSLOTH_VALIDATION_LD_LIBRARY_PATH"
+            if purpose == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER
+            else "LD_LIBRARY_PATH"
+        )
+        index = plan.command.index(loader_name)
+        assert plan.command[index - 1] == "--setenv"
+        assert plan.command[index + 1] == str(tmp_path)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux bwrap helper")
+def test_linux_server_helper_survives_non_bmp_text_and_restores_loader_env(tmp_path):
+    # json.dumps escapes non-BMP text as surrogate pairs, which a Python literal
+    # reads back as lone surrogates that Popen cannot encode.
+    marker = tmp_path / "env.txt"
+    fake_server = tmp_path / "fake-server"
+    fake_server.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s|%s|%s" "$LD_LIBRARY_PATH" "$UNSLOTH_VALIDATION_LD_LIBRARY_PATH" "$EMOJI" > {marker}\n'
+    )
+    fake_server.chmod(0o755)
+    helper = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
+        [str(fake_server), "--port", "1", "\U0001F600"], {}, timeout = 5
+    )
+    result = subprocess.run(
+        helper,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "EMOJI": "\U0001F600",
+            "UNSLOTH_VALIDATION_LD_LIBRARY_PATH": "/opt/bundle",
+        },
+    )
+    assert "UnicodeEncodeError" not in result.stdout + result.stderr
+    assert marker.read_text() == "/opt/bundle||\U0001F600"
 
 
 def test_run_validation_capture_uses_launcher_env_for_linux_bwrap(monkeypatch):
@@ -8262,7 +8337,8 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
     assert any("nvidiactl" in part for part in plan.command)
     assert any("nvidia0" in part for part in plan.command)
     assert any("nvidia-cap1" in part for part in plan.command)
-    assert not any("dxg" in part for part in plan.command)
+    # WSL exposes CUDA through /dev/dxg.
+    assert any("dxg" in part for part in plan.command)
     assert not _command_contains_path(plan, "dri/card0")
     assert not _command_contains_path(plan, "dri/renderD128")
     assert not any("kfd" in part for part in plan.command)
@@ -9278,3 +9354,144 @@ def test_macos_validation_profile_grants_metal_only_to_the_server(tmp_path):
     )
     assert "iokit-open" not in quantize
     assert "mach-lookup" not in quantize
+
+
+def _synthetic_elf(path: Path, *, is64: bool, little: bool, dynamic_tags: list[int]) -> Path:
+    import struct
+
+    order = "<" if little else ">"
+    ehdr_size = 64 if is64 else 52
+    phentsize = 56 if is64 else 32
+    dyn_step = 16 if is64 else 8
+    dyn_offset = ehdr_size + phentsize
+    dynamic = b"".join(
+        struct.pack(order + ("qQ" if is64 else "iI"), tag, 0) for tag in [*dynamic_tags, 0]
+    )
+    ident = b"\x7fELF" + bytes([2 if is64 else 1, 1 if little else 2, 1]) + bytes(9)
+    if is64:
+        header = struct.pack(
+            order + "HHIQQQIHHHHHH", 3, 62, 1, 0, ehdr_size, 0, 0, ehdr_size, phentsize, 1, 0, 0, 0
+        )
+        phdr = struct.pack(order + "IIQQQQQQ", 2, 6, dyn_offset, 0, 0, len(dynamic), len(dynamic), 8)
+    else:
+        header = struct.pack(
+            order + "HHIIIIIHHHHHH", 3, 3, 1, 0, ehdr_size, 0, 0, ehdr_size, phentsize, 1, 0, 0, 0
+        )
+        phdr = struct.pack(order + "IIIIIIII", 2, dyn_offset, 0, 0, len(dynamic), len(dynamic), 6, 4)
+    assert len(dynamic) % dyn_step == 0
+    path.write_bytes(ident + header + phdr + dynamic)
+    return path
+
+
+@pytest.mark.parametrize("is64", [True, False], ids = ["elf64", "elf32"])
+@pytest.mark.parametrize("little", [True, False], ids = ["le", "be"])
+def test_elf_audit_module_detection_reads_the_dynamic_section(tmp_path, is64, little):
+    detect = INSTALL_LLAMA_PREBUILT._elf_requests_audit_modules
+    dt_needed, dt_audit, dt_depaudit = 1, 0x6FFFFEFC, 0x6FFFFEFB
+    plain = _synthetic_elf(tmp_path / "plain", is64 = is64, little = little, dynamic_tags = [dt_needed])
+    audit = _synthetic_elf(tmp_path / "audit", is64 = is64, little = little, dynamic_tags = [dt_needed, dt_audit])
+    depaudit = _synthetic_elf(tmp_path / "dep", is64 = is64, little = little, dynamic_tags = [dt_depaudit])
+    assert detect(plain) is False
+    assert detect(audit) is True
+    assert detect(depaudit) is True
+    not_elf = tmp_path / "not-elf"
+    not_elf.write_bytes(b"#!/bin/sh\n")
+    assert detect(not_elf) is None
+
+
+def test_rtld_probe_refuses_to_trace_a_binary_that_requests_audit_modules(monkeypatch, tmp_path):
+    # glibc loads DT_AUDIT modules and runs their callbacks even in trace mode, so
+    # tracing such a binary outside a sandbox would run the bundle's code.
+    binary = _synthetic_elf(
+        tmp_path / "llama-server", is64 = True, little = True, dynamic_tags = [0x6FFFFEFC]
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_system_rtld_path", lambda _ldd: "/lib64/ld.so")
+    calls = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "run_capture", lambda *a, **k: calls.append(a) or None
+    )
+    result = INSTALL_LLAMA_PREBUILT._run_rtld_list_ldd_probe(
+        binary, ldd_path = "/usr/bin/ldd", env = {}, reason = "no sandbox"
+    )
+    assert result.status == LINUX_LDD_PROBE_SKIPPED
+    assert "audit" in (result.reason or "")
+    assert calls == []
+
+
+def test_build_validation_sandbox_plan_linux_vulkan_gpu_server_validates_directly(
+    monkeypatch, tmp_path
+):
+    # bwrap binds no Vulkan device nodes, so a sandboxed Vulkan GPU run would test
+    # the CPU fallback instead of the GPU path main validates.
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    binary_path = tmp_path / "llama-server"
+    binary_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
+    )
+    for setuid in (False, True):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _p: setuid)
+        command = [str(binary_path), "--port", "7777", "--n-gpu-layers", "1"]
+        plan = build_validation_sandbox_plan(
+            command,
+            binary_path = binary_path,
+            install_dir = tmp_path,
+            host = linux_host(),
+            purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+            runtime_line = None,
+            env = {},
+            enable_gpu_layers = True,
+            gpu_backend = None,
+        )
+        assert plan.sandbox_kind == "linux_direct_validation"
+        assert plan.command == command
+
+
+def test_bwrap_capability_probe_resolves_true_from_the_fixed_path(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_sandbox_capability", {})
+    monkeypatch.setenv("PATH", "/nonexistent-shadow")
+
+    def fake_which(name, mode = os.F_OK | os.X_OK, path = None):
+        seen[name] = path
+        return "/usr/bin/true" if name == "true" else None
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "which", fake_which)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "run_capture",
+        lambda command, **k: seen.setdefault("command", command)
+        and subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    assert bwrap_can_sandbox("/usr/bin/bwrap") is True
+    assert seen["true"] == INSTALL_LLAMA_PREBUILT._LINUX_VALIDATION_LAUNCHER_PATH
+    assert seen["command"][-1] == "/usr/bin/true"
+
+
+def test_macos_validation_plan_keeps_payload_env_off_the_command_line(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+    binary_path = tmp_path / "llama-server"
+    env = {"DYLD_LIBRARY_PATH": str(tmp_path), "SOME_TOKEN": "s3cr3t-value", "HOME": "/h"}
+    command = [str(binary_path), "-m", str(tmp_path / "m.gguf"), "--port", "8123"]
+    plan = build_validation_sandbox_plan(
+        command,
+        binary_path = binary_path,
+        install_dir = tmp_path,
+        host = macos_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = env,
+    )
+    assert plan.sandbox_kind == "macos_sandbox_exec"
+    assert not any("s3cr3t-value" in part for part in plan.command)
+    assert "-i" not in plan.command
+    assert f"DYLD_LIBRARY_PATH={tmp_path}" in plan.command
+    assert plan.env == {"SOME_TOKEN": "s3cr3t-value", "HOME": "/h"}
+    assert plan.command[-len(command):] == command

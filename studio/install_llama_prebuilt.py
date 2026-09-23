@@ -5813,7 +5813,7 @@ def _bwrap_can_sandbox(bwrap_path: str) -> bool:
                 "/",
                 "--unshare-all",
                 "--die-with-parent",
-                _resolve_command_path("true") or "/bin/true",
+                shutil.which("true", path = _LINUX_VALIDATION_LAUNCHER_PATH) or "/bin/true",
             ],
             env = _linux_validation_launcher_env({}),
             timeout = 20,
@@ -5881,19 +5881,36 @@ def _sandbox_library_path_targets(
     ]
 
 
+_LINUX_VALIDATION_LAUNCHER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# The helper that starts llama-server inside bwrap is the system Python, which must
+# not load the bundle's libraries, so loader paths reach it under this prefix and
+# are restored only for the server it spawns.
+_LINUX_VALIDATION_LOADER_ENV_PREFIX = "UNSLOTH_VALIDATION_"
+
+
+def _is_linux_loader_env_var(key: str) -> bool:
+    return key in _LINUX_DYNAMIC_LOADER_ENV_VARS or key.upper().startswith("LD_")
+
+
 def _linux_validation_launcher_env(payload_env: dict[str, str]) -> dict[str, str]:
-    env = scrubbed_environ()
-    for key in (*payload_env, *_LINUX_DYNAMIC_LOADER_ENV_VARS):
-        env.pop(key, None)
-    # Keep a stable base command search path.
-    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # bwrap passes its environment to the payload, so the payload env travels here
+    # rather than as --setenv arguments, which any local user can read from
+    # /proc/<pid>/cmdline. Loader variables are withheld because they would steer
+    # bwrap's own dynamic linking, which runs outside the sandbox.
+    env = {key: value for key, value in payload_env.items() if not _is_linux_loader_env_var(key)}
+    env.setdefault("PATH", _LINUX_VALIDATION_LAUNCHER_PATH)
     return env
 
 
-def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
+def _linux_validation_setenv_args(
+    payload_env: dict[str, str], *, for_server_helper: bool = False
+) -> list[str]:
+    # Only loader paths go on the command line: directory lists, not secrets.
+    prefix = _LINUX_VALIDATION_LOADER_ENV_PREFIX if for_server_helper else ""
     args: list[str] = []
     for key, value in sorted(payload_env.items()):
-        args.extend(["--setenv", key, value])
+        if _is_linux_loader_env_var(key):
+            args.extend(["--setenv", f"{prefix}{key}", value])
     return args
 
 
@@ -5935,8 +5952,8 @@ def _linux_validation_server_probe_command(
         import urllib.error
         import urllib.request
 
-        command = {json.dumps(server_command)}
-        payload_env = {json.dumps(payload_env)}
+        command = {server_command!r}
+        loader_prefix = {_LINUX_VALIDATION_LOADER_ENV_PREFIX!r}
         body = b'{{"prompt":"a","n_predict":1}}'
         timeout = {int(timeout)}
         deadline = time.time() + timeout
@@ -5966,7 +5983,8 @@ def _linux_validation_server_probe_command(
         try:
             with open(log_path, "w", encoding = "utf-8", errors = "replace") as log_handle:
                 server_env = dict(os.environ)
-                server_env.update(payload_env)
+                for key in [name for name in server_env if name.startswith(loader_prefix)]:
+                    server_env[key[len(loader_prefix):]] = server_env.pop(key)
                 process = subprocess.Popen(
                     command,
                     stdout = log_handle,
@@ -6115,8 +6133,7 @@ def _linux_validation_bwrap_prefix(
         ]
     )
     is_server_helper = payload_command is not None and purpose == _VALIDATION_PURPOSE_SERVER
-    if not is_server_helper:
-        args.extend(_linux_validation_setenv_args(payload_env))
+    args.extend(_linux_validation_setenv_args(payload_env, for_server_helper = is_server_helper))
 
     seen: set[str] = set()
     if enable_gpu_devices:
@@ -6136,6 +6153,8 @@ def _linux_validation_bwrap_prefix(
                     "/dev/nvidia-modeset",
                     "/dev/nvidia-uvm",
                     "/dev/nvidia-uvm-tools",
+                    # WSL exposes the GPU through /dev/dxg, not /dev/nvidia*.
+                    "/dev/dxg",
                 ]
             )
             for path in Path("/dev").glob("nvidia*"):
@@ -6324,15 +6343,14 @@ def build_validation_sandbox_plan(
     if _host_is_linux(host):
         bwrap_path = _resolve_command_path("bwrap")
         sandbox_usable = bwrap_path is not None and _bwrap_can_sandbox(bwrap_path)
-        gpu_server = (
-            purpose == _VALIDATION_PURPOSE_SERVER
-            and enable_gpu_layers
-            and gpu_backend in {"cuda", "rocm"}
-        )
-        if sandbox_usable and gpu_server and not _binary_is_setuid_root(bwrap_path):
-            # GPU access inside a non-setuid bwrap's user namespace is unproven, and
-            # validating on the CPU instead would let a bundle whose GPU path is
-            # broken through. Keep main's direct GPU smoke test for this case.
+        gpu_server = purpose == _VALIDATION_PURPOSE_SERVER and enable_gpu_layers
+        if sandbox_usable and gpu_server and not (
+            gpu_backend in {"cuda", "rocm"} and _binary_is_setuid_root(bwrap_path)
+        ):
+            # Only setuid bwrap binds CUDA/ROCm device nodes (Vulkan gets none), and
+            # GPU access inside a non-setuid bwrap's user namespace is unproven. A CPU
+            # run would let a bundle whose GPU path is broken through, so keep main's
+            # direct GPU smoke test in these cases.
             sandbox_usable = False
         if sandbox_usable:
             payload_command = _resolve_sandbox_command(command)
@@ -6436,12 +6454,22 @@ def build_validation_sandbox_plan(
                         env = env,
                         adapter_path = sandbox_exec_path,
                     ),
+                    # SIP strips DYLD_* when exec'ing the platform adapters, so the
+                    # loader path is restored by env; everything else travels in the
+                    # environment, which other local users cannot read from ps.
                     "/usr/bin/env",
-                    "-i",
-                    *[f"{name}={value}" for name, value in sorted(env.items())],
+                    *[
+                        f"{name}={value}"
+                        for name, value in sorted(env.items())
+                        if name.upper().startswith("DYLD_")
+                    ],
                     *launch_command,
                 ],
-                env = launcher_env,
+                env = {
+                    name: value
+                    for name, value in env.items()
+                    if not name.upper().startswith("DYLD_")
+                },
                 action = _VALIDATION_LAUNCH_RUN,
                 purpose = purpose,
                 sandbox_kind = "macos_sandbox_exec",
@@ -6581,6 +6609,57 @@ def _system_rtld_path(ldd_path: str) -> str | None:
     return None
 
 
+_ELF_PT_DYNAMIC = 2
+_ELF_DT_AUDIT_TAGS = {0x6FFFFEFB, 0x6FFFFEFC}  # DT_DEPAUDIT, DT_AUDIT
+
+
+def _elf_requests_audit_modules(path: Path) -> bool | None:
+    """Whether the ELF names audit libraries (DT_AUDIT / DT_DEPAUDIT), read from the
+    file without running it. glibc loads those modules and calls into them even in
+    trace mode, so such a binary must not be traced outside a sandbox. None when the
+    file is not an ELF this parser can read."""
+
+    try:
+        with open(path, "rb") as handle:
+            ident = handle.read(16)
+            if len(ident) < 16 or ident[:4] != b"\x7fELF" or ident[4] not in (1, 2):
+                return None
+            is64 = ident[4] == 2
+            order = "<" if ident[5] == 1 else ">"
+            header = handle.read(48 if is64 else 36)
+            if is64:
+                phoff, = struct.unpack_from(order + "Q", header, 16)
+                phentsize, phnum = struct.unpack_from(order + "HH", header, 38)
+            else:
+                phoff, = struct.unpack_from(order + "I", header, 12)
+                phentsize, phnum = struct.unpack_from(order + "HH", header, 26)
+            for index in range(min(phnum, 4096)):
+                handle.seek(phoff + index * phentsize)
+                entry = handle.read(phentsize)
+                if is64:
+                    p_type, _flags, offset, _vaddr, _paddr, filesz = struct.unpack_from(
+                        order + "IIQQQQ", entry
+                    )
+                else:
+                    p_type, offset, _vaddr, _paddr, filesz = struct.unpack_from(
+                        order + "IIIII", entry
+                    )
+                if p_type != _ELF_PT_DYNAMIC:
+                    continue
+                handle.seek(offset)
+                dynamic = handle.read(min(filesz, 1 << 20))
+                step = 16 if is64 else 8
+                for start in range(0, len(dynamic) - step + 1, step):
+                    tag, = struct.unpack_from(order + ("q" if is64 else "i"), dynamic, start)
+                    if tag == 0:
+                        break
+                    if tag in _ELF_DT_AUDIT_TAGS:
+                        return True
+            return False
+    except (OSError, struct.error):
+        return None
+
+
 def _run_rtld_list_ldd_probe(
     binary_path: Path, *, ldd_path: str, env: dict[str, str], reason: str
 ) -> LinuxLibraryProbeResult:
@@ -6601,6 +6680,12 @@ def _run_rtld_list_ldd_probe(
             status = _LINUX_LDD_PROBE_SKIPPED,
             missing = [],
             reason = f"{reason}; no system loader for list mode",
+        )
+    if _elf_requests_audit_modules(binary_path):
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = f"{reason}; binary requests audit modules, not traced unsandboxed",
         )
     probe_env = {
         key: value
@@ -7492,21 +7577,16 @@ def binary_env(
         _native_rocm = _native_linux_system_rocm_lib_dirs(str(binary_path.parent))
         if _native_rocm:
             ld_dirs = [*_native_rocm, *ld_dirs]
-        existing = [
-            str(_resolve_existing_path(Path(part)))
-            for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
-            if part and not _is_broad_sandbox_library_path(part)
-        ]
+        # An inherited entry under a mode-000 parent or a stale NFS mount is not
+        # ours to require. The bundle's own dirs stay strict. Broad entries are kept
+        # here, as the host loader sees them; only sandbox binds are narrowed.
+        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         required = dedupe_existing_dirs(ld_dirs)
         inherited = dedupe_existing_dirs(existing, skip_unusable = True)
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
-        existing = [
-            str(_resolve_existing_path(Path(part)))
-            for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
-            if part and not _is_broad_sandbox_library_path(part, require_library_dir = True)
-        ]
+        existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
         required = dedupe_existing_dirs(dyld_dirs)
         inherited = dedupe_existing_dirs(existing, skip_unusable = True)
         env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
