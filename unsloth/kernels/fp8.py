@@ -389,15 +389,7 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
 
 @triton.jit
 def _fp8_rowwise_gemv_kernel(
-    x_ptr,
-    w_ptr,
-    s_ptr,
-    y_ptr,
-    N,
-    K,
-    stride_wn,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
 ):
     offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
     # Accumulate the whole (BLOCK_N, BLOCK_K) tile and reduce once: one launch, no split-K partials.
