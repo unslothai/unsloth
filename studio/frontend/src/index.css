@@ -180,21 +180,21 @@
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
-	--foreground: oklch(0.2686 0 0);
+	--foreground-base: oklch(0.2686 0 0);
 	--card-base: oklch(1 0 0);
-	--card-foreground: oklch(0.1281 0.0179 169.2764);
+	--card-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--popover-base: oklch(1 0 0);
-	--popover-foreground: oklch(0.1281 0.0179 169.2764);
+	--popover-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary-base: oklch(0.9596 0.0275 167.8295);
-	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
+	--secondary-foreground-base: oklch(0.2868 0.0649 159.9823);
 	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
 	--accent-base: #ececec;
-	--accent-foreground: #262626;
+	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
@@ -216,11 +216,11 @@
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
-	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
+	--sidebar-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent-base: #ececec;
-	--sidebar-accent-foreground: #262626;
+	--sidebar-accent-foreground-base: #262626;
 	/* Selected tab on the line variant, a step above the page. */
 	--tabs-line-indicator-base: #ececec;
 	--sidebar-border-base: #f2f2f2;
@@ -263,10 +263,10 @@
 	--tracking-normal: 0em;
 
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
-	--nav-fg: #383835;
-	--nav-fg-muted: #858279;
+	--nav-fg-base: #383835;
+	--nav-fg-muted-base: #858279;
 	--nav-surface-hover-base: #f0f0f0;
-	--nav-icon-idle: #8f8f8f;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #e0ded6;
 	--panel-surface-hover-base: #ebebeb;
 	/* Right-side chat-parameters panel: matches the chat content
@@ -295,7 +295,7 @@
 	   Mid-dark gray on the light surface — visible enough to read as
 	   active controls, not so dark that they compete with message
 	   text. */
-	--chat-icon-fg: #555555;
+	--chat-icon-fg-base: #555555;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #ededec;
 
@@ -374,22 +374,22 @@
 	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #dfdfdf;
+	--foreground-base: #dfdfdf;
 	--card-base: #272727;
-	--card-foreground: #dfdfdf;
+	--card-foreground-base: #dfdfdf;
 	--popover-base: #272727;
-	--popover-foreground: #dfdfdf;
+	--popover-foreground-base: #dfdfdf;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
 	--secondary-base: #303030;
-	--secondary-foreground: #dfdfdf;
+	--secondary-foreground-base: #dfdfdf;
 	--muted-base: #303030;
 	/* Secondary text: settings descriptions, empty states, captions.
 	   Under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
 	/* Shared hover tone: one step over --popover. */
 	--accent-base: #3a3a3a;
-	--accent-foreground: #dfdfdf;
+	--accent-foreground-base: #dfdfdf;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
@@ -408,11 +408,11 @@
 	/* A step over --background; the tone difference is the separator.
 	   Matches --card, so every elevated surface reads as one plane. */
 	--sidebar-base: #272727;
-	--sidebar-foreground: #dfdfdf;
+	--sidebar-foreground-base: #dfdfdf;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent-base: #3a3a3a;
-	--sidebar-accent-foreground: #dfdfdf;
+	--sidebar-accent-foreground-base: #dfdfdf;
 	--tabs-line-indicator-base: #3a3a3a;
 	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
@@ -440,11 +440,11 @@
 	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
-	--nav-fg: #dfdfdf;
-	--nav-fg-muted: #b0b0b0;
+	--nav-fg-base: #dfdfdf;
+	--nav-fg-muted-base: #b0b0b0;
 	--nav-surface-hover-base: #3a3a3a;
 	/* Lifted with the surfaces: the sidebar is #272727, not #1f1f1f. */
-	--nav-icon-idle: #767676;
+	--nav-icon-idle-base: #767676;
 	--nav-beta-border: #3a3a3a;
 	--panel-surface-hover-base: #3a3a3a;
 	/* Right-side chat-parameters panel: matches the chat content
@@ -464,7 +464,7 @@
 	--panel-slider-fg-base: #b0b0b0;
 	/* Chat action icons: under the ink so they read as controls, not text.
 	   Hover restores full --foreground. */
-	--chat-icon-fg: #c4c4c4;
+	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #3a3a3a;
 }
@@ -491,11 +491,11 @@
    surfaces in dark, neutral gray hovers, and blue (#339cff) as the accent. */
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
-	--foreground: #1a1c1f;
+	--foreground-base: #1a1c1f;
 	--card-base: #ffffff;
-	--card-foreground: #1a1c1f;
+	--card-foreground-base: #1a1c1f;
 	--popover-base: #ffffff;
-	--popover-foreground: #1a1c1f;
+	--popover-foreground-base: #1a1c1f;
 	/* Neutral black primary; blue is reserved for small controls via
 	   --control-accent (toggles, badges, focus rings). */
 	--primary: #0d0d0d;
@@ -503,13 +503,13 @@
 	--control-accent: #339cff;
 	--control-accent-foreground: #ffffff;
 	--secondary-base: #f5f5f5;
-	--secondary-foreground: #1a1c1f;
+	--secondary-foreground-base: #1a1c1f;
 	--muted-base: #f7f7f7;
 	/* 4.88:1 on white. #8f8f8f was 3.23:1, under AA for normal text and the
 	   only light palette below it; standard is 4.84:1 and minimal 5.02:1. */
 	--muted-foreground: #717171;
 	--accent-base: #ececec;
-	--accent-foreground: #1a1c1f;
+	--accent-foreground-base: #1a1c1f;
 	--bypass: #9a7b1e;
 	--border-base: #e6e6e6;
 	--input-base: #e6e6e6;
@@ -522,18 +522,18 @@
 	/* Same as the standard palette; the sidebar surface does not change
 	   with the palette. */
 	--sidebar-base: #ffffff;
-	--sidebar-foreground: #1a1c1f;
+	--sidebar-foreground-base: #1a1c1f;
 	--sidebar-primary: #0d0d0d;
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ececec;
-	--sidebar-accent-foreground: #1a1c1f;
+	--sidebar-accent-foreground-base: #1a1c1f;
 	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
-	--nav-fg: #2d2f31;
-	--nav-fg-muted: #8f8f8f;
+	--nav-fg-base: #2d2f31;
+	--nav-fg-muted-base: #8f8f8f;
 	--nav-surface-hover-base: #ececec;
-	--nav-icon-idle: #8f8f8f;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #e0e0e0;
 	--panel-surface-hover-base: #ececec;
 	--panel-input-surface-base: #f4f4f4;
@@ -541,7 +541,7 @@
 	/* Same lift on the contrast-slider base: #7a7c7e was 4.19:1. Now 4.90:1. */
 	--panel-surface-fg-muted: #6f7174;
 	--panel-slider-fg-base: #9b9d9f;
-	--chat-icon-fg: #5d5f61;
+	--chat-icon-fg-base: #5d5f61;
 	--chat-icon-bg-hover-base: #ececec;
 }
 
@@ -568,19 +568,19 @@
 /* -------------------------------- Minimal -------------------------------- */
 :root[data-palette="minimal"]:not(.dark) {
 	--background: #ffffff;
-	--foreground: #171717;
+	--foreground-base: #171717;
 	--card-base: #ffffff;
-	--card-foreground: #171717;
+	--card-foreground-base: #171717;
 	--popover-base: #ffffff;
-	--popover-foreground: #171717;
+	--popover-foreground-base: #171717;
 	--primary: #171717;
 	--primary-foreground: #ffffff;
 	--secondary-base: #f5f5f5;
-	--secondary-foreground: #262626;
+	--secondary-foreground-base: #262626;
 	--muted-base: #f5f5f5;
 	--muted-foreground: #6f6f6f;
 	--accent-base: #ebebeb;
-	--accent-foreground: #171717;
+	--accent-foreground-base: #171717;
 	--bypass: #6f6f6f;
 	--border-base: #e2e2e2;
 	--input-base: #e2e2e2;
@@ -592,25 +592,25 @@
 	--chart-5: #d1d1d1;
 	/* White sidebar on white content; the border alone is the separator. */
 	--sidebar-base: #ffffff;
-	--sidebar-foreground: #171717;
+	--sidebar-foreground-base: #171717;
 	--sidebar-primary: #171717;
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent-base: #ebebeb;
-	--sidebar-accent-foreground: #171717;
+	--sidebar-accent-foreground-base: #171717;
 	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
-	--nav-fg: #333333;
-	--nav-fg-muted: #8a8a8a;
+	--nav-fg-base: #333333;
+	--nav-fg-muted-base: #8a8a8a;
 	--nav-surface-hover-base: #efefef;
-	--nav-icon-idle: #8f8f8f;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #dddddd;
 	--panel-surface-hover-base: #ececec;
 	--panel-input-surface-base: #f4f4f4;
 	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #757575;
 	--panel-slider-fg-base: #9b9b9b;
-	--chat-icon-fg: #555555;
+	--chat-icon-fg-base: #555555;
 	--chat-icon-bg-hover-base: #ececec;
 }
 
@@ -642,11 +642,8 @@
 
 /* Contrast slider (Settings > Appearance).
 
-   The palettes above author their surfaces and lines as --*-base; these two
-   rules are what the app reads, so the slider retunes every card, menu row,
-   button, input pill and hairline from one place. At the default the store
-   sets nothing, this rule is the identity, and the palettes render as
-   authored. */
+   Palettes author surfaces, lines and text as --*-base; the app reads the
+   tokens derived below. At the default this block is the identity. */
 :root {
 	/* Boxes and buttons: the fill that lifts a surface off the page. */
 	--card: var(--card-base);
@@ -671,24 +668,36 @@
 	--sidebar-border: var(--sidebar-border-base);
 	/* Slider fill and thumb, the one panel control that takes neither. */
 	--panel-slider-fg: var(--panel-slider-fg-base);
+	/* Ink: body copy, headings, menu and sidebar labels. */
+	--foreground: var(--foreground-base);
+	--card-foreground: var(--card-foreground-base);
+	--popover-foreground: var(--popover-foreground-base);
+	--secondary-foreground: var(--secondary-foreground-base);
+	--accent-foreground: var(--accent-foreground-base);
+	--sidebar-foreground: var(--sidebar-foreground-base);
+	--sidebar-accent-foreground: var(--sidebar-accent-foreground-base);
+	--nav-fg: var(--nav-fg-base);
+	/* Quiet ink: idle nav labels and icons, chat action icons. */
+	--nav-fg-muted: var(--nav-fg-muted-base);
+	--nav-icon-idle: var(--nav-icon-idle-base);
+	--chat-icon-fg: var(--chat-icon-fg-base);
 }
 
-/* Off the default, each token is mixed toward --contrast-target (foreground
-   above 50, background below) by the amount its group takes. See
-   applyCustomizationToDocument for the curves. Beats the palette blocks on
-   specificity, so it reaches all three palettes. */
+/* Off the default, each token mixes toward --contrast-target (foreground
+   above 50, background below). Curves live in applyCustomizationToDocument.
+   Ink mixes toward --contrast-ink-target instead: pure black or white when
+   raising, so text gets crisper rather than the surfaces going grey. */
 html[data-contrast-adjust] {
 	--card: color-mix(in oklab, var(--card-base), var(--contrast-target) var(--contrast-surface-mix));
 	/* Same curve as its rows, so the step between them survives the slider. */
 	--sidebar: color-mix(in oklab, var(--sidebar-base), var(--contrast-target) var(--contrast-surface-mix));
 	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-target) var(--contrast-surface-mix));
-	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-target) var(--contrast-surface-mix));
-	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-target) var(--contrast-surface-mix));
-	/* Hover and selection fills take --contrast-state-mix, a shorter curve than
-	   the surfaces they sit on. Sharing the surface curve, they fell toward the
-	   page at the same rate as the sidebar and the cards, so near the bottom a
-	   lit row was no lighter than its own background. The fallback keeps a
-	   snapshot written before this token on the old behaviour. */
+	/* Chips and secondary buttons: between the planes and the lit rows. */
+	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	/* Hover and selection fills: shorter than the surfaces when lowering, so a
+	   lit row never sinks below its background; longest when raising, so the
+	   step to the lit row grows with the slider. */
 	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
 	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
 	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
@@ -704,6 +713,15 @@ html[data-contrast-adjust] {
 	   affordance still has to be findable at the bottom of the range. */
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Ink. The 0% fallback is the identity for older reload snapshots. */
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--card-foreground: color-mix(in oklab, var(--card-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--popover-foreground: color-mix(in oklab, var(--popover-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--secondary-foreground: color-mix(in oklab, var(--secondary-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--accent-foreground: color-mix(in oklab, var(--accent-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--sidebar-foreground: color-mix(in oklab, var(--sidebar-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--sidebar-accent-foreground: color-mix(in oklab, var(--sidebar-accent-foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--nav-fg: color-mix(in oklab, var(--nav-fg-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
 	/* Secondary text keeps a gentler curve, it has to stay readable at both
 	   ends. --panel-surface-fg-muted is its stable base. */
 	--muted-foreground: color-mix(
@@ -711,6 +729,10 @@ html[data-contrast-adjust] {
 		var(--panel-surface-fg-muted),
 		var(--contrast-target) var(--contrast-text-mix)
 	);
+	/* Quiet ink, on the --muted-foreground curve. */
+	--nav-fg-muted: color-mix(in oklab, var(--nav-fg-muted-base), var(--contrast-target) var(--contrast-text-mix));
+	--nav-icon-idle: color-mix(in oklab, var(--nav-icon-idle-base), var(--contrast-target) var(--contrast-text-mix));
+	--chat-icon-fg: color-mix(in oklab, var(--chat-icon-fg-base), var(--contrast-target) var(--contrast-text-mix));
 	/* Slider fill and thumb read as marks on the panel, so they take the
 	   text curve rather than the surface one. */
 	--panel-slider-fg: color-mix(
@@ -1322,8 +1344,8 @@ html[data-chat-font] .aui-root {
 		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
-		   lighter than the near-black nav items. */
-		color: #80868b;
+		   lighter than the near-black nav items. Follows the contrast slider. */
+		color: color-mix(in oklab, #80868b, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* These compound selectors must beat the base label's pr-3 declaration.
@@ -1341,7 +1363,7 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-sticky-label {
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
 		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
-		color: #9aa0a6;
+		color: color-mix(in oklab, #9aa0a6, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* Panel input fields. Light mode matches the settings fields: white

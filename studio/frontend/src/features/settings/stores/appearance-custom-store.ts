@@ -288,9 +288,14 @@ export const CONTRAST_SURFACE_MIX_VAR = "--contrast-surface-mix";
 export const CONTRAST_LINE_MIX_VAR = "--contrast-line-mix";
 /** Control outlines and switch tracks, which fade less far than a divider. */
 export const CONTRAST_CONTROL_MIX_VAR = "--contrast-control-mix";
+/** Chips, secondary buttons and muted hovers, between the planes and the states. */
+export const CONTRAST_FILL_MIX_VAR = "--contrast-fill-mix";
 /** Hover and selection fills, which fade less far than the surface under them. */
 export const CONTRAST_STATE_MIX_VAR = "--contrast-state-mix";
 export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
+/** Primary ink: how far it heads for pure black/white, or into the page. */
+export const CONTRAST_INK_MIX_VAR = "--contrast-ink-mix";
+export const CONTRAST_INK_TARGET_VAR = "--contrast-ink-target";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
@@ -678,6 +683,16 @@ const PALETTE_SURFACES: Record<
   dark: { background: "#181818", elevated: "#272727" },
 };
 
+/** Black or white, whichever is further from the page (custom or palette). */
+function inkExtreme(c: AppearanceCustomization, resolved: ResolvedTheme) {
+  const background =
+    c.colors[resolved].background ?? PALETTE_SURFACES[resolved].background;
+  const page = hexLuminance(background);
+  return contrastRatio(page, 0) >= contrastRatio(page, 1)
+    ? "#000000"
+    : "#ffffff";
+}
+
 function minimumAccentTextContrast(
   accent: string,
   backgrounds: readonly string[],
@@ -862,7 +877,10 @@ export function applyCustomizationToDocument(
     setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
-  setVar("--foreground", colors.foreground);
+  // Written as the base so a custom foreground still follows the contrast curve.
+  setVar("--foreground-base", colors.foreground);
+  // Clear the token older builds wrote inline; it would pin the ink.
+  setVar("--foreground", null);
   // keep the full-width inset from making narrow panes smaller than wide.
   setVar(
     "--custom-chat-max-width",
@@ -960,40 +978,43 @@ export function applyCustomizationToDocument(
       "--contrast-target",
       raising ? "var(--foreground)" : "var(--background)",
     );
-    // Not symmetric. Lowering flattens, so surfaces and lines collapse most
-    // of the way into the page. Raising only needs a nudge: a card mixed far
-    // toward the foreground reads as a block, not a surface. Neither floor
-    // reaches the page colour, a menu still has to be findable at 0.
-    setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 8 : 70));
+    // Not symmetric. Lowering flattens surfaces most of the way into the page.
+    // Raising only nudges them: a card pushed far toward the foreground reads
+    // as a block. Neither floor reaches the page, so a menu stays findable.
+    setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 4 : 70));
+    setVar(CONTRAST_FILL_MIX_VAR, mix(raising ? 10 : 62));
     setVar(CONTRAST_LINE_MIX_VAR, mix(raising ? 45 : 80));
     setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
-    // Hover and selection fills stop well short of the surfaces they sit on.
-    // On the surface curve they collapsed toward the page faster than the
-    // sidebar and cards did, so at the bottom the lit row was darker than its
-    // own background: the pointer stopped telling you where it was.
-    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 8 : 30));
-    // Text sits on a gentler curve at both ends: it has to stay readable.
-    setVar(CONTRAST_TEXT_MIX_VAR, mix(40));
-    // Controls that wash the page with translucent white or black instead of
-    // taking a token multiply their authored alpha by these, so they move in
-    // step with the tokens above.
+    // Hover and selection: steepest curve when raising, so the step to the lit
+    // row grows; short of the surfaces when lowering, so it never sinks below.
+    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 16 : 55));
+    // Secondary text stays readable at both ends.
+    setVar(CONTRAST_TEXT_MIX_VAR, mix(raising ? 40 : 30));
+    // Primary ink heads for pure black/white raising, and into the page
+    // lowering, stopping well short so body copy stays readable at 0.
+    setVar(
+      CONTRAST_INK_TARGET_VAR,
+      raising ? inkExtreme(c, resolved) : "var(--background)",
+    );
+    setVar(CONTRAST_INK_MIX_VAR, mix(raising ? 70 : 30));
+    // Hand-written washes multiply their alpha by these to match the tokens.
     const gain = (span: number) =>
       (raising ? 1 + distance * span : 1 - distance * span).toFixed(3);
-    // Lowering keeps most of a wash rather than a quarter of it. These washes
-    // are the chrome you aim at, not decoration: tab tracks, header pills,
-    // chips, filter triggers. At a quarter strength a 4% fill landed 2 levels
-    // off the page, so the unselected half of a segmented control and the whole
-    // Hub toolbar read as bare background.
-    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 0.7 : 0.4));
+    // Lowering keeps most of a wash: tab tracks, chips and filter triggers are
+    // chrome you aim at. Raising doubles it, level with the state tokens.
+    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 1 : 0.4));
     setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
   } else {
     el.removeAttribute("data-contrast-adjust");
     setVar("--contrast-target", null);
     setVar(CONTRAST_SURFACE_MIX_VAR, null);
+    setVar(CONTRAST_FILL_MIX_VAR, null);
     setVar(CONTRAST_LINE_MIX_VAR, null);
     setVar(CONTRAST_CONTROL_MIX_VAR, null);
     setVar(CONTRAST_STATE_MIX_VAR, null);
     setVar(CONTRAST_TEXT_MIX_VAR, null);
+    setVar(CONTRAST_INK_TARGET_VAR, null);
+    setVar(CONTRAST_INK_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);
   }

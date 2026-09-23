@@ -36,12 +36,12 @@ const SURFACE_TOKENS = [
   // darker than the sidebar behind it.
   "sidebar",
   "popover",
-  "secondary",
-  "muted",
   "panel-input-surface",
   "panel-input-surface-hover",
   "tabs-line-indicator",
 ];
+/** Chips, secondary buttons and the muted hovers, between planes and states. */
+const CHIP_TOKENS = ["secondary", "muted"];
 /** Hover and selection fills, on a shorter curve so the state stays findable. */
 const STATE_TOKENS = [
   "accent",
@@ -51,7 +51,20 @@ const STATE_TOKENS = [
   "chat-icon-bg-hover",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
-const FILL_TOKENS = [...SURFACE_TOKENS, ...STATE_TOKENS];
+const FILL_TOKENS = [...SURFACE_TOKENS, ...CHIP_TOKENS, ...STATE_TOKENS];
+/** Body copy and labels: head for pure black/white raising, into the page lowering. */
+const INK_TOKENS = [
+  "foreground",
+  "card-foreground",
+  "popover-foreground",
+  "secondary-foreground",
+  "accent-foreground",
+  "sidebar-foreground",
+  "sidebar-accent-foreground",
+  "nav-fg",
+];
+/** Idle labels and icons, on the same curve as --muted-foreground. */
+const QUIET_INK_TOKENS = ["nav-fg-muted", "nav-icon-idle", "chat-icon-fg"];
 
 function block(marker: string): string {
   const at = CSS.indexOf(marker);
@@ -61,7 +74,12 @@ function block(marker: string): string {
 }
 
 test("the palettes author base values, never the token the app reads", () => {
-  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [
+    ...FILL_TOKENS,
+    ...LINE_TOKENS,
+    ...INK_TOKENS,
+    ...QUIET_INK_TOKENS,
+  ]) {
     const authored = CSS.match(new RegExp(`^\\t--${token}-base:`, "gm")) ?? [];
     assert.ok(
       authored.length >= 2,
@@ -81,7 +99,12 @@ test("the palettes author base values, never the token the app reads", () => {
 
 test("at the default the derivation is the identity", () => {
   const identity = block("--card: var(--card-base);");
-  for (const token of [...FILL_TOKENS, ...LINE_TOKENS]) {
+  for (const token of [
+    ...FILL_TOKENS,
+    ...LINE_TOKENS,
+    ...INK_TOKENS,
+    ...QUIET_INK_TOKENS,
+  ]) {
     assert.ok(
       identity.includes(`--${token}: var(--${token}-base);`),
       `--${token} does not fall back to its authored value`,
@@ -97,6 +120,14 @@ test("off the default, fills and lines each take their own curve", () => {
         `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-surface-mix));`,
       ),
       `--${token} is not on the surface curve`,
+    );
+  }
+  for (const token of CHIP_TOKENS) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));`,
+      ),
+      `--${token} is not on the fill curve`,
     );
   }
   // A hover nobody can find is the same failure as an outline nobody can find.
@@ -133,6 +164,7 @@ test("lowering flattens further than raising lifts", () => {
   };
   for (const name of [
     "CONTRAST_SURFACE_MIX_VAR",
+    "CONTRAST_FILL_MIX_VAR",
     "CONTRAST_LINE_MIX_VAR",
     "CONTRAST_CONTROL_MIX_VAR",
     "CONTRAST_STATE_MIX_VAR",
@@ -159,6 +191,74 @@ test("a lit row never sinks below the surface it sits on", () => {
     ceiling("CONTRAST_STATE_MIX_VAR") < ceiling("CONTRAST_SURFACE_MIX_VAR"),
     "hover fills flatten as fast as the surfaces under them",
   );
+});
+
+test("raising widens the step from a row to the lit row", () => {
+  // The lit row and the surface under it both head for the foreground. While
+  // they shared a ceiling the step between them held still, and in light mode
+  // it closed: raising the slider made hover and selection harder to see. The
+  // states take the steepest curve, the chips the next, the planes a nudge.
+  const raising = (name: string) => {
+    const hit = new RegExp(`${name}, mix\\(raising \\? (\\d+) :`).exec(STORE);
+    assert.ok(hit, `${name} is not set from the two ceilings`);
+    return Number(hit[1]);
+  };
+  const surface = raising("CONTRAST_SURFACE_MIX_VAR");
+  const fill = raising("CONTRAST_FILL_MIX_VAR");
+  const state = raising("CONTRAST_STATE_MIX_VAR");
+  assert.ok(surface < fill, "chips lift no further than the planes");
+  assert.ok(fill < state, "hovers lift no further than the chips under them");
+  assert.ok(state >= 2 * surface, "the lit row barely separates from its row");
+});
+
+test("ink follows the slider", () => {
+  // Contrast is first of all text against its background. Held fixed, a
+  // raised slider only greyed the surfaces behind the text and lowered it.
+  const adjusted = block("--card: color-mix(in oklab, var(--card-base)");
+  for (const token of INK_TOKENS) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));`,
+      ),
+      `--${token} is not on the ink curve`,
+    );
+  }
+  for (const token of QUIET_INK_TOKENS) {
+    assert.ok(
+      adjusted.includes(
+        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-text-mix));`,
+      ),
+      `--${token} is not on the text curve`,
+    );
+  }
+  // Raising heads away from the page, lowering into it.
+  assert.match(
+    STORE,
+    /CONTRAST_INK_TARGET_VAR,\s*raising \? inkExtreme\(c, resolved\) : "var\(--background\)"/,
+  );
+  // Lowering stops well short of the page, or body copy stops being legible.
+  const hit = /CONTRAST_INK_MIX_VAR, mix\(raising \? (\d+) : (\d+)\)/.exec(
+    STORE,
+  );
+  assert.ok(hit, "the ink mix is not set from the two ceilings");
+  assert.ok(Number(hit[2]) <= 35, "lowering washes the ink into the page");
+  // A custom foreground is written as the base, so it takes the curve too.
+  assert.match(STORE, /setVar\("--foreground-base", colors\.foreground\)/);
+  assert.doesNotMatch(STORE, /setVar\("--foreground", colors\.foreground\)/);
+  assert.ok(SNAPSHOT.includes('"--foreground-base"'));
+});
+
+test("the sidebar section labels follow the slider", () => {
+  // Authored as fixed greys, "Recents" and "Train" held still while every
+  // label around them moved.
+  for (const grey of ["#80868b", "#9aa0a6"]) {
+    assert.ok(
+      CSS.includes(
+        `color: color-mix(in oklab, ${grey}, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));`,
+      ),
+      `${grey} is not on the text curve`,
+    );
+  }
 });
 
 test("a dark selection fill takes the token, not a wash", () => {
