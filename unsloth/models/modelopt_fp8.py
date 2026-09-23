@@ -186,9 +186,36 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
     return plan
 
 
-def pop_modelopt_key_mapping(config, kwargs: dict) -> None:
+def _class_checkpoint_mapping(model_class) -> dict:
+    """The class-level VLM checkpoint renames that transformers applies only when the caller
+    passes no ``key_mapping`` (``if key_mapping ... elif VLM`` in 5.3). Empty where the class
+    carries none, as on the transformers releases that collect them from the registry and
+    add a caller ``key_mapping`` on top."""
+    mapping = getattr(model_class, "_checkpoint_conversion_mapping", None)
+    if not isinstance(mapping, dict) or not mapping:
+        return {}
+    try:
+        from transformers.conversion_mapping import VLMS
+    except Exception:
+        try:
+            from transformers.modeling_utils import VLMS
+        except Exception:
+            return {}
+    mro = getattr(model_class, "__mro__", ())[:-1]
+    if not any(name in cls.__name__.lower() for cls in mro for name in VLMS):
+        return {}
+    return dict(mapping)
+
+
+def pop_modelopt_key_mapping(
+    config,
+    kwargs: dict,
+    model_class = None,
+) -> None:
     """Move a parked ModelOpt key mapping off ``config`` into ``kwargs['key_mapping']``. A
-    caller-supplied ``key_mapping`` is kept and extended, never replaced."""
+    caller-supplied ``key_mapping`` is kept and extended, never replaced. Without one, the
+    VLM checkpoint renames of ``model_class`` are carried over, since passing any
+    ``key_mapping`` makes some transformers releases skip them."""
     mapping = getattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, None)
     if mapping is None:
         return
@@ -197,7 +224,10 @@ def pop_modelopt_key_mapping(config, kwargs: dict) -> None:
     except Exception:
         pass
     user = kwargs.get("key_mapping", None)
-    merged = dict(user) if isinstance(user, dict) else {}
+    if isinstance(user, dict):
+        merged = dict(user)
+    else:
+        merged = _class_checkpoint_mapping(model_class)
     for pattern, target in mapping.items():
         # A user rule for the same pattern wins.
         merged.setdefault(pattern, target)

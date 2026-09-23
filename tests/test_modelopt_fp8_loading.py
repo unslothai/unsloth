@@ -184,6 +184,63 @@ def test_arm_rewrites_config_and_hands_mapping_to_kwargs():
     assert kwargs == before
 
 
+def _pin_vlm_names(monkeypatch, names):
+    """Point both places transformers has kept its VLM name list at ``names``."""
+    import importlib
+    for module_name in ("transformers.conversion_mapping", "transformers.modeling_utils"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        monkeypatch.setattr(module, "VLMS", list(names), raising = False)
+
+
+def test_key_mapping_keeps_the_vlm_checkpoint_renames(monkeypatch):
+    """transformers 5.3 picks either the caller key_mapping or a VLM's class-level checkpoint
+    renames, never both, so the scale renames alone left a VLM's weights unmatched."""
+    _pin_vlm_names(monkeypatch, ["llava"])
+
+    class LlavaForConditionalGeneration:
+        _checkpoint_conversion_mapping = {r"^language_model\.model": "model.language_model"}
+
+    config = SimpleNamespace(quantization_config = _sarvam_quant())
+    if arm_modelopt_fp8_loading(config, verbose = False) is None:
+        pytest.skip("this transformers has no per-tensor fp8")
+    kwargs = {}
+    pop_modelopt_key_mapping(config, kwargs, LlavaForConditionalGeneration)
+    assert kwargs["key_mapping"] == {
+        r"^language_model\.model": "model.language_model",
+        r"\.weight_scale$": ".weight_scale_inv",
+        r"\.input_scale$": ".activation_scale",
+    }
+
+
+def test_key_mapping_adds_no_class_renames_transformers_would_not_apply(monkeypatch):
+    _pin_vlm_names(monkeypatch, ["llava"])
+    renames = {r"^language_model\.model": "model.language_model"}
+
+    class MistralForCausalLM:
+        _checkpoint_conversion_mapping = dict(renames)
+
+    class LlavaForConditionalGeneration:
+        _checkpoint_conversion_mapping = dict(renames)
+
+    scale_only = {
+        r"\.weight_scale$": ".weight_scale_inv",
+        r"\.input_scale$": ".activation_scale",
+    }
+    for model_class, kwargs in (
+        (MistralForCausalLM, {}),  # not a VLM
+        (None, {}),  # class not resolved
+        (LlavaForConditionalGeneration, {"key_mapping": {}}),  # the caller's mapping wins
+    ):
+        config = SimpleNamespace(quantization_config = _sarvam_quant())
+        if arm_modelopt_fp8_loading(config, verbose = False) is None:
+            pytest.skip("this transformers has no per-tensor fp8")
+        pop_modelopt_key_mapping(config, kwargs, model_class)
+        assert kwargs["key_mapping"] == scale_only, model_class
+
+
 def test_transformers_without_per_tensor_fp8_keep_the_config():
     if _transformers_accepts_fp8_plan({"quant_method": "fp8", "weight_block_size": None}):
         pytest.skip("this transformers loads per-tensor fp8")
