@@ -297,6 +297,8 @@ class CachedModelRepo(CachedRepoBase):
     # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
     # tens of GB and the row is how they are seen and deleted.
     companion: bool = False
+    # Pipeline repo holding only what a GGUF load borrowed (VAE, text encoder): partial for loading, not an unfinished download.
+    companion_prefetch: bool = False
     # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
     # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
     # left the CLI and the frontend disagreeing about the same row.

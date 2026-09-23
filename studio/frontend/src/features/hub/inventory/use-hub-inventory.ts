@@ -576,7 +576,9 @@ export function useHubInventory(
 
   const availableSet = useMemo(() => {
     const set = new Set<string>();
-    for (const row of cachedRows) set.add(row.repoId.toLowerCase());
+    for (const row of cachedRows) {
+      if (!row.companionPrefetch) set.add(row.repoId.toLowerCase());
+    }
     for (const row of effectiveLocalRows) {
       if (row.repoId) set.add(row.repoId.toLowerCase());
     }
@@ -585,7 +587,10 @@ export function useHubInventory(
 
   const partialSet = useMemo(() => {
     return partialSetFromRows(
-      [...cachedRows, ...effectiveLocalRows],
+      [
+        ...cachedRows.filter((row) => !row.companionPrefetch),
+        ...effectiveLocalRows,
+      ],
       (row) => row.repoId,
     );
   }, [cachedRows, effectiveLocalRows]);

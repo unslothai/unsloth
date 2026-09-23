@@ -109,7 +109,8 @@ export function useSelectedModelView({
       const onDevicePath =
         selectedCachedRow?.cachePath ?? selectedLocalRow?.path ?? null;
       const isResolvedPartial = selectedCachedRow
-        ? Boolean(selectedCachedRow.partial)
+        ? Boolean(selectedCachedRow.partial) &&
+          !selectedCachedRow.companionPrefetch
         : selectedLocalRow?.source === "hf_cache"
           ? Boolean(selectedLocalRow.partial)
           : selectedDiscoverRow.isPartialOnDevice;
@@ -231,7 +232,9 @@ export function useSelectedModelView({
         baseModelHubId: mergedBaseModel,
         isDownloaded: !selectedCachedRow.partial,
         runtimeCanChat: selectedCachedRow.capabilities.canChat,
-        isPartial: selectedCachedRow.partial ?? false,
+        isPartial:
+          Boolean(selectedCachedRow.partial) &&
+          !selectedCachedRow.companionPrefetch,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
         capabilities: detectViewCapabilities(

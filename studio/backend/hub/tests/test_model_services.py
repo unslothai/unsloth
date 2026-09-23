@@ -2274,6 +2274,7 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     )
 
     assert row["partial"] is True
+    assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
@@ -2296,6 +2297,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     )
 
     assert row["partial"] is False
+    assert row["companion_prefetch"] is False
     assert row["single_file"] is False
 
 

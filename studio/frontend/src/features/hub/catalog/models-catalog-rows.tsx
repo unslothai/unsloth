@@ -593,15 +593,16 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
-  const partialRepoId = row.partial
-    ? row.kind === "cache"
-      ? row.repoId
-      : (row.repoId ?? row.loadId)
-    : undefined;
+  const partialRepoId =
+    row.partial && !(row.kind === "cache" && row.companionPrefetch)
+      ? row.kind === "cache"
+        ? row.repoId
+        : (row.repoId ?? row.loadId)
+      : undefined;
   const tooltip = buildRowStatusTooltip({
     isGguf: row.isGguf,
     isAdapter: row.modelFormat === "adapter",
-    isAvailableOnDevice: !partialRepoId,
+    isAvailableOnDevice: !row.partial,
     partialRepoId,
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
