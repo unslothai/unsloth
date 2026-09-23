@@ -234,7 +234,9 @@ def test_offloaded_leftovers_materialize_in_the_requested_dtype(offload, tmp_pat
     if offload == "cpu":
         accelerate.cpu_offload(model, execution_device = torch.device("cpu"))
     else:
-        accelerate.disk_offload(model, offload_dir = str(tmp_path), execution_device = torch.device("cpu"))
+        accelerate.disk_offload(
+            model, offload_dir = str(tmp_path), execution_device = torch.device("cpu")
+        )
     assert model.embed_tokens.weight.device.type == "meta"
     assert model.embed_tokens.weight.dtype == torch.float16
     cast(model, torch.float32)
