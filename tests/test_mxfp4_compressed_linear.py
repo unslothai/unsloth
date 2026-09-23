@@ -798,3 +798,35 @@ def test_full_finetuning_keeps_the_stock_compressed_tensors_route(tmp_path, monk
     monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
     model = AutoModelForCausalLM.from_pretrained(packed_dir, dtype = torch.bfloat16)
     assert sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7
+
+
+def _decompress_requests():
+    """The ways this transformers asks compressed-tensors to decompress at load."""
+    try:
+        import inspect
+        from transformers import CompressedTensorsConfig
+    except Exception:
+        return []
+    params = inspect.signature(CompressedTensorsConfig).parameters
+    return [{k: v} for k, v in (("run_compressed", False), ("dequantize", True)) if k in params]
+
+
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+@pytest.mark.parametrize("request_kwargs", _decompress_requests(), ids = lambda kw: next(iter(kw)))
+def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tmp_path):
+    """`run_compressed=False` (transformers 5.4) and `dequantize=True` (5.5+) ask compressed-tensors
+    to decompress after the weights load: nothing may be adopted, or the adopted modules would
+    lose their packed bytes to that decompress and fail on the first forward."""
+    from transformers import AutoModelForCausalLM, CompressedTensorsConfig
+    from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
+    packed_dir, bf16_dir = _write_tiny_mxfp4_llama(str(tmp_path))
+    assert install_compressed_tensors_keep_packed()
+    model = AutoModelForCausalLM.from_pretrained(
+        packed_dir, dtype = torch.bfloat16, quantization_config = CompressedTensorsConfig(**request_kwargs)
+    )
+    assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
+    reference = AutoModelForCausalLM.from_pretrained(bf16_dir, dtype = torch.bfloat16)
+    ids = torch.randint(0, 256, (1, 12))
+    with torch.no_grad():
+        assert torch.equal(model(input_ids = ids).logits, reference(input_ids = ids).logits)

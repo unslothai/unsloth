@@ -394,10 +394,13 @@ def install_compressed_tensors_keep_packed() -> bool:
         result = original_before(self, model, **kwargs)
         self._unsloth_mxfp4_blocks = []
         config = getattr(self, "quantization_config", None)
+        # An explicit decompress request: `dequantize=True` (transformers 5.5+) or
+        # `run_compressed=False` (older), which the stock after-load step then carries out.
         if (
             not mxfp4_keep_packed_enabled()
             or _full_finetuning()
             or getattr(config, "dequantize", False)
+            or getattr(self, "run_compressed", True) is False
         ):
             return result
         fmt = getattr(config, "format", None) or getattr(
