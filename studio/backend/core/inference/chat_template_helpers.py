@@ -2709,6 +2709,46 @@ def _split_parallel_tool_calls(messages: list) -> list:
     return out
 
 
+def _repair_orphan_tool_results(messages: list) -> list:
+    """Insert a synthetic assistant tool call before a replayed orphan result."""
+    mutated = False
+    out: list = []
+
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "tool":
+            previous_role = (
+                out[-1].get("role")
+                if out and isinstance(out[-1], dict)
+                else None
+            )
+            if previous_role not in ("assistant", "tool"):
+                call_id = message.get("tool_call_id") or f"replayed_tool_{len(out)}"
+                tool_name = message.get("name") or "tool"
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": {},
+                                },
+                            }
+                        ],
+                    }
+                )
+                if not message.get("tool_call_id"):
+                    message = {**message, "tool_call_id": call_id}
+                mutated = True
+
+        out.append(message)
+
+    return out if mutated else messages
+
+
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
@@ -3237,6 +3277,9 @@ def apply_chat_template_for_generation(
         split = _split_parallel_tool_calls(normalized)
         if split is not normalized:
             candidates.append(split)
+        repaired = _repair_orphan_tool_results(split)
+        if repaired is not split:
+            candidates.append(repaired)
         for candidate in candidates:
             try:
                 return _render_with_fallback(candidate)
